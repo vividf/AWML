@@ -3,7 +3,6 @@
 /.vscode/ satoshi.tanaka@tier4.jp
 /autoware_ml/ satoshi.tanaka@tier4.jp
 /docs/ satoshi.tanaka@tier4.jp
-/pipelines/deploy_detection3d/ satoshi.tanaka@tier4.jp
 /pipelines/project_adaptation/ satoshi.tanaka@tier4.jp
 /pipelines/test_integration/ satoshi.tanaka@tier4.jp
 /pipelines/webauto/ satoshi.tanaka@tier4.jp
