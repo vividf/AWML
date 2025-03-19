@@ -14,11 +14,11 @@ info_test_file_name = "t4dataset_x2_infos_test.pkl"
 # dataset scene setting
 dataset_version_config_root = "autoware_ml/configs/t4dataset/"
 dataset_version_list = [
-    "db_gsm8_v1",
+    #"db_gsm8_v1",
     "db_j6_v1",
     "db_j6_v2",
     "db_j6_v3",
-    "db_j6_v5",
+    #"db_j6_v5",
 ]
 
 # dataset format setting
@@ -109,3 +109,12 @@ filter_attributes = [
     ("motorcycle", "cycle_state.without_rider"),
     ("motorcycle", "motorcycle_state.without_rider"),
 ]
+
+evaluator_metric_configs = dict(
+    evaluation_task="detection",
+    target_labels=class_names,
+    center_distance_thresholds=[0.5, 1.0, 2.0, 4.0],
+    plane_distance_thresholds=[2.0, 4.0],
+    iou_2d_thresholds=None,
+    iou_3d_thresholds=None,
+)

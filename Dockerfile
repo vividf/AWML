@@ -49,6 +49,8 @@ RUN mim install \
     mmpretrain[multimodal]==${MMPRETRAIN} \
     mmsegmentation==${MMSEGMENTATION}
 
+RUN python3 -m pip install git+https://github.com/tier4/autoware_perception_evaluation@feat/add_serialization_to_frame_results
+
 # Install rerun
 RUN apt update && DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends \
     libgtk-3-dev \

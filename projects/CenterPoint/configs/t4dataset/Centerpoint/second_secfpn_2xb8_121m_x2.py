@@ -40,9 +40,9 @@ eval_class_range = {
 
 # user setting
 data_root = "data/t4dataset/"
-info_directory_path = "info/user_name/"
-train_gpu_size = 2
-train_batch_size = 8
+info_directory_path = "info/"
+train_gpu_size = 1
+train_batch_size = 2
 test_batch_size = 2
 num_workers = 32
 val_interval = 1
@@ -189,28 +189,62 @@ test_dataloader = dict(
     ),
 )
 
+
+# Add evaluator configs
+evaluator_configs = dict(
+    _base_.evaluator_metric_configs,
+    label_prefix="autoware",
+    max_distance=121,
+    min_distance=0,
+    min_point_numbers=0,
+)
+
+perception_evaluator_configs = dict(
+    dataset_paths=data_root,
+    frame_id="base_link",
+    result_root_directory=work_dir + "/result",
+    evaluation_config_dict=evaluator_configs,
+    load_raw_data=False,
+)
+
+critical_object_filter_config = dict(
+    target_labels=_base_.class_names,
+    ignore_attributes=None,
+    max_distance_list=[121.0, 121.0, 121.0, 121.0, 121.0],
+    min_distance_list=[0.0, 0.0, 0.0, 0.0, 0.0],
+)
+
+perception_pass_fail_config = dict(
+    target_labels=_base_.class_names,
+    matching_threshold_list=None,
+    confidence_threshold_list=None,
+)
+
 val_evaluator = dict(
     type="T4Metric",
     data_root=data_root,
     ann_file=data_root + info_directory_path + _base_.info_val_file_name,
-    metric="bbox",
-    backend_args=backend_args,
     class_names={{_base_.class_names}},
     name_mapping={{_base_.name_mapping}},
-    eval_class_range=eval_class_range,
-    filter_attributes=_base_.filter_attributes,
+    perception_evaluator_configs=perception_evaluator_configs,
+    critical_object_filter_config=critical_object_filter_config,
+    perception_pass_fail_config=perception_pass_fail_config,
+    save_prediction_result_to_pickle = False,
+    load_prediction_result_from_pickle = False,
 )
 
 test_evaluator = dict(
     type="T4Metric",
     data_root=data_root,
     ann_file=data_root + info_directory_path + _base_.info_test_file_name,
-    metric="bbox",
-    backend_args=backend_args,
     class_names={{_base_.class_names}},
     name_mapping={{_base_.name_mapping}},
-    eval_class_range=eval_class_range,
-    filter_attributes=_base_.filter_attributes,
+    perception_evaluator_configs=perception_evaluator_configs,
+    critical_object_filter_config=critical_object_filter_config,
+    perception_pass_fail_config=perception_pass_fail_config,
+    save_prediction_result_to_pickle = True,
+    load_prediction_result_from_pickle = False, 
+    pickle_path = '/workspace/results'
 )
 
 model = dict(
