@@ -342,12 +342,8 @@ class T4MetricV2(BaseMetric):
             object_results=objects_with_perception,
             frame_ground_truth=frame_ground_truth,
             metrics_config=MetricsScoreConfig(
-                EvaluationTask.DETECTION,
+                self.perception_evaluator_configs.evaluation_task,
                 target_labels={AutowareLabel[label.upper()] for label in self.class_names},
-                center_distance_thresholds=0.1,
-                plane_distance_thresholds=0.1,
-                iou_2d_thresholds=0.1,
-                iou_3d_thresholds=0.1,
             ),
             critical_object_filter_config=self.critical_object_filter_config,
             frame_pass_fail_config=self.frame_pass_fail_config,
