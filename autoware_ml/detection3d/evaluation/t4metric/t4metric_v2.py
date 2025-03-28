@@ -2,9 +2,9 @@ import json
 import os
 import pickle
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-# Third-party Libraries
 import numpy as np
 from mmdet3d.registry import METRICS
 from mmengine.evaluator import BaseMetric
@@ -14,8 +14,6 @@ from perception_eval.common.evaluation_task import EvaluationTask
 from perception_eval.common.label import AutowareLabel, Label
 from perception_eval.common.object import DynamicObject
 from perception_eval.common.shape import Shape, ShapeType
-
-# TIER IV Perception Evaluation Library
 from perception_eval.config.perception_evaluation_config import PerceptionEvaluationConfig
 from perception_eval.evaluation.metrics import MetricsScoreConfig
 from perception_eval.evaluation.result.object_result import DynamicObjectWithPerceptionResult
@@ -58,14 +56,15 @@ class T4MetricV2(BaseMetric):
             Configuration dictionary for filtering critical objects during evaluation.
         frame_pass_fail_config (Dict[str, Any]):
             Configuration dictionary that defines pass/fail criteria for perception evaluation.
-        save_preds_and_gt_to_pickle (bool):
-            If True, saves the predictions and groud truth to a pickle file.
-            Defaults to False.
-        load_preds_and_gt_from_pickle (bool):
-            If True, loads the predictions and ground truth from a pickle file.
-            Defaults to False.
-        results_pickle_path (Optional[str]):
-            Path to the pickle file used for saving or loading prediction results.
+        results_pickle_path (Optional[Union[Path, str]]):
+            Path to the pickle file used for saving or loading prediction and ground truth results.
+
+            - If not provided: runs `process()` and `compute_metrics()`.
+            - If provided but the file does not exist: runs `process()` and `compute_metrics()`,
+              then saves predictions and ground truth to the given path.
+            - If provided and the file exists: skips `process()`, loads predictions and
+              ground truth from the pickle file, and runs `compute_metrics()`.
+
             Defaults to None.
     """
 
@@ -75,14 +74,12 @@ class T4MetricV2(BaseMetric):
         ann_file: str,
         prefix: Optional[str] = None,
         collect_device: str = "cpu",
-        class_names: List[str] = [],
+        class_names: List[str] = None,
         name_mapping: Optional[dict] = None,
-        perception_evaluator_configs: Dict[str, Any] = {},
-        critical_object_filter_config: Dict[str, Any] = {},
-        frame_pass_fail_config: Dict[str, Any] = {},
-        save_preds_and_gt_to_pickle: bool = False,
-        load_preds_and_gt_from_pickle: bool = False,
-        results_pickle_path: Optional[str] = None,
+        perception_evaluator_configs: Optional[Dict[str, Any]] = None,
+        critical_object_filter_config: Optional[Dict[str, Any]] = None,
+        frame_pass_fail_config: Optional[Dict[str, Any]] = None,
+        results_pickle_path: Optional[Union[Path, str]] = None,
     ) -> None:
 
         self.default_prefix = "T4MetricV2"
@@ -96,18 +93,19 @@ class T4MetricV2(BaseMetric):
         if name_mapping is not None:
             self.class_names = [self.name_mapping.get(name, name) for name in self.class_names]
 
-        self.save_preds_and_gt_to_pickle = save_preds_and_gt_to_pickle
-        self.load_preds_and_gt_from_pickle = load_preds_and_gt_from_pickle
-        self.results_pickle_path = results_pickle_path
+        self.results_pickle_path: Optional[Path] = None
+        if results_pickle_path:
+            path_obj = Path(results_pickle_path)
+            if path_obj.suffix != ".pkl":
+                raise ValueError(f"results_pickle_path must end with '.pkl', got: {path_obj}")
+            self.results_pickle_path = path_obj
 
-        self.perception_evaluator_configs: PerceptionEvaluationConfig = PerceptionEvaluationConfig(
-            **perception_evaluator_configs
-        )
+        self.perception_evaluator_configs = PerceptionEvaluationConfig(**perception_evaluator_configs)
 
-        self.critical_object_filter_config: CriticalObjectFilterConfig = CriticalObjectFilterConfig(
+        self.critical_object_filter_config = CriticalObjectFilterConfig(
             evaluator_config=self.perception_evaluator_configs, **critical_object_filter_config
         )
-        self.frame_pass_fail_config: PerceptionPassFailConfig = PerceptionPassFailConfig(
+        self.frame_pass_fail_config = PerceptionPassFailConfig(
             evaluator_config=self.perception_evaluator_configs, **frame_pass_fail_config
         )
 
@@ -123,7 +121,8 @@ class T4MetricV2(BaseMetric):
             data_samples (Sequence[dict]): A batch of outputs from the model and the ground truth of dataset  I am
         """
 
-        if self.load_preds_and_gt_from_pickle:
+        if self.results_pickle_path and self.results_pickle_path.exists():
+            # Skip processing if result pickle already exists
             return
 
         for data_sample in data_samples:
@@ -132,9 +131,6 @@ class T4MetricV2(BaseMetric):
             frame_ground_truth = self.parse_ground_truth_from_sample(current_time, data_sample)
             perception_frame_result = self.parse_predictions_from_sample(current_time, data_sample, frame_ground_truth)
             self.save_perception_results(scene_id, data_sample["sample_idx"], perception_frame_result)
-
-        if self.save_preds_and_gt_to_pickle:
-            self.save_results_to_pickle(self.results_pickle_path)
 
     # override of BaseMetric.compute_metrics
     def compute_metrics(
@@ -152,9 +148,11 @@ class T4MetricV2(BaseMetric):
         """
         logger: MMLogger = MMLogger.get_current_instance()
 
-        if self.load_preds_and_gt_from_pickle:
-            logger.info("Loading predictions and ground truth result from pickle...")
-            results = self.load_results_from_pickle(self.results_pickle_path)
+        if self.results_pickle_path:
+            if self.results_pickle_path.exists():
+                results = self.load_results_from_pickle(self.results_pickle_path)
+            else:
+                self.save_results_to_pickle(self.results_pickle_path)
 
         evaluator = PerceptionEvaluationManager(evaluation_config=self.perception_evaluator_configs)
 
@@ -386,40 +384,34 @@ class T4MetricV2(BaseMetric):
         # If scene does not exist, create a new entry
         self.results.append({scene_id: {sample_idx: perception_frame_result}})
 
-    def save_results_to_pickle(self, path: str) -> None:
-        """Save self.results to a pickle file inside the given directory.
+    def save_results_to_pickle(self, path: Path) -> None:
+        """Save self.results to the given pickle file path.
 
         Args:
-            path (str): The directory path where the pickle file will be stored.
+            path (Path): The full path where the pickle file will be saved.
         """
+        logger.info(f"Saving predictions and ground truth result to pickle: {path.resolve()}")
 
-        if not path:
-            print("[Error] Path is not specified. Please provide a valid directory path for saving results.")
-            return
-        os.makedirs(path, exist_ok=True)
-        file_path = os.path.join(path, "prediction_and_ground_truth.pkl")
-        with open(file_path, "wb") as f:
+        # Create parent directory if needed
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(path, "wb") as f:
             pickle.dump(self.results, f)
 
-    def load_results_from_pickle(self, path: str) -> List[Dict]:
-        """Loads self.results from a pickle file.
+    def load_results_from_pickle(self, path: Path) -> List[Dict]:
+        """Load results from a pickle file.
 
         Args:
-            path (str, optional): The file path to load the pickle file from. Defaults to "prediction_and_ground_truth.pkl".
+            path (Path): The full path to the pickle file.
 
         Returns:
             List[Dict]: The deserialized results from the pickle file.
+
+        Raises:
+            FileNotFoundError: If the pickle file does not exist.
         """
-
-        if not path:
-            print("[Error] Path is not specified. Please provide a valid directory path for loading results.")
-            return
-
-        file_path = os.path.join(path, "prediction_and_ground_truth.pkl")
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Pickle file not found: {file_path}")
-
-        with open(file_path, "rb") as f:
+        logger.info(f"Loading pickle from: {path.resolve()}")
+        with open(path, "rb") as f:
             results = pickle.load(f)
 
         return results

@@ -29,14 +29,6 @@ point_load_dim = 5  # x, y, z, intensity, ring_id
 point_use_dim = 3  # x, y, z
 lidar_sweep_dims = [0, 1, 2, 4]
 
-# eval parameter
-eval_class_range = {
-    "car": 121,
-    "truck": 121,
-    "bus": 121,
-    "bicycle": 121,
-    "pedestrian": 121,
-}
 
 # user setting
 data_root = "data/t4dataset/"
@@ -201,7 +193,7 @@ critical_object_filter_config = dict(
     target_labels=_base_.class_names,
     ignore_attributes=None,
     max_distance_list=[121.0, 121.0, 121.0, 121.0, 121.0],
-    min_distance_list=[0.0, 0.0, 0.0, 0.0, 0.0],
+    min_distance_list=[-121.0, -121.0, -121.0, -121.0, -121.0],
 )
 
 frame_pass_fail_config = dict(
@@ -219,8 +211,6 @@ val_evaluator = dict(
     perception_evaluator_configs=perception_evaluator_configs,
     critical_object_filter_config=critical_object_filter_config,
     frame_pass_fail_config=frame_pass_fail_config,
-    save_preds_and_gt_to_pickle=False,
-    load_preds_and_gt_from_pickle=False,
 )
 
 test_evaluator = dict(
@@ -232,9 +222,7 @@ test_evaluator = dict(
     perception_evaluator_configs=perception_evaluator_configs,
     critical_object_filter_config=critical_object_filter_config,
     frame_pass_fail_config=frame_pass_fail_config,
-    save_preds_and_gt_to_pickle=True,
-    load_preds_and_gt_from_pickle=False,
-    results_pickle_path="/workspace/pickles",
+    results_pickle_path="/workspace/pickles/prediction_and_ground_truth.pkl",
 )
 
 model = dict(
