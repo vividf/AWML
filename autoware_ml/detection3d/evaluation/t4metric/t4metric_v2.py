@@ -279,7 +279,7 @@ class T4MetricV2(BaseMetric):
         # num_lidar_pts: (N,) array of int, number of LiDAR points inside each GT box
         num_lidar_pts: np.ndarray = eval_info.get("num_lidar_pts", np.array([]))
 
-        objects = [
+        dynamic_objects = [
             DynamicObject(
                 unix_time=time,
                 frame_id=self.perception_evaluator_configs.frame_id,
@@ -292,12 +292,13 @@ class T4MetricV2(BaseMetric):
                 pointcloud_num=int(num_pts),
             )
             for bbox, label, num_pts in zip(bboxes, gt_labels_3d, num_lidar_pts)
+            if not (np.isnan(label) or np.isnan(num_pts) or np.any(np.isnan(bbox)))
         ]
 
         return FrameGroundTruth(
             unix_time=time,
             frame_name=sample_id,
-            objects=objects,
+            objects=dynamic_objects,
             transforms=None,
             raw_data=None,
         )
@@ -324,12 +325,9 @@ class T4MetricV2(BaseMetric):
         bboxes: np.ndarray = bboxes_3d.tensor.cpu().numpy()
 
         # scores_3d: (N,) Tensor of detection confidence scores
-        scores: torch.Tensor = pred_3d.get("scores_3d", torch.empty(0))
-
+        scores: torch.Tensor = pred_3d.get("scores_3d", torch.empty(0)).cpu()
         # labels_3d: (N,) Tensor of predicted class indices
-        labels: torch.Tensor = pred_3d.get("labels_3d", torch.empty(0))
-
-        # List comprehension with better clarity
+        labels: torch.Tensor = pred_3d.get("labels_3d", torch.empty(0)).cpu()
         dynamic_objects_with_perception = [
             DynamicObjectWithPerceptionResult(
                 estimated_object=DynamicObject(
@@ -345,6 +343,7 @@ class T4MetricV2(BaseMetric):
                 ground_truth_object=None,
             )
             for bbox, score, label in zip(bboxes, scores, labels)
+            if not (np.isnan(score) or np.isnan(label) or np.any(np.isnan(bbox)))
         ]
 
         return PerceptionFrameResult(
