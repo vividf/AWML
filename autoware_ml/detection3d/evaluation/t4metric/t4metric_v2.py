@@ -3,7 +3,7 @@ import os
 import pickle
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 from mmdet3d.registry import METRICS
@@ -109,6 +109,8 @@ class T4MetricV2(BaseMetric):
             evaluator_config=self.perception_evaluator_configs, **frame_pass_fail_config
         )
 
+        self.logger = MMLogger.get_current_instance()
+
     # override of BaseMetric.process
     def process(self, data_batch: dict, data_samples: Sequence[dict]) -> None:
         """Process one batch of data samples and predictions.
@@ -146,7 +148,6 @@ class T4MetricV2(BaseMetric):
             Dict[str, float]: The computed metrics. The keys are the names of
             the metrics, and the values are corresponding results.
         """
-        logger: MMLogger = MMLogger.get_current_instance()
 
         if self.results_pickle_path:
             if self.results_pickle_path.exists():
@@ -189,7 +190,7 @@ class T4MetricV2(BaseMetric):
                             process_map_instance(map_instance, scene_metrics[scene_id][sample_id])
 
         final_metric_score = evaluator.get_scene_result()
-        logger.info(f"final metrics result {final_metric_score}")
+        self.logger.info(f"final metrics result {final_metric_score}")
 
         metric_dict = {}
         aggregated_metrics = {"aggregated_metrics": {}}
@@ -203,7 +204,7 @@ class T4MetricV2(BaseMetric):
                 aggregated_metrics["aggregated_metrics"].setdefault(label, {})
                 aggregated_metrics["aggregated_metrics"][label][key] = value
 
-        logger.info(f"Metric dictionary: {metric_dict}")
+        self.logger.info(f"Metric dictionary: {metric_dict}")
 
         with open("scene_metrics.json", "w") as scene_file:
             json.dump(scene_metrics, scene_file, indent=4)
@@ -236,10 +237,14 @@ class T4MetricV2(BaseMetric):
 
         Args:
             lidar_path (str): The full file path of the LiDAR data.
+            Example of the lidar_path: 'db_j6_v1/43e6e09a-93ce-488f-8f40-515187bc2753/2/data/LIDAR_CONCAT/0.pcd.bin'
 
         Returns:
             str: The extracted scene ID, or "unknown" if extraction fails.
+            Example of the extracted scene ID: 'db_j6_v1/43e6e09a-93ce-488f-8f40-515187bc2753/2'
         """
+        # TODO(vividf): This will be eventually moved to t4_devkit
+
         if not lidar_path or not lidar_path.startswith(self.data_root):
             return "unknown"
 
@@ -390,7 +395,7 @@ class T4MetricV2(BaseMetric):
         Args:
             path (Path): The full path where the pickle file will be saved.
         """
-        logger.info(f"Saving predictions and ground truth result to pickle: {path.resolve()}")
+        self.logger.info(f"Saving predictions and ground truth result to pickle: {path.resolve()}")
 
         # Create parent directory if needed
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -410,7 +415,7 @@ class T4MetricV2(BaseMetric):
         Raises:
             FileNotFoundError: If the pickle file does not exist.
         """
-        logger.info(f"Loading pickle from: {path.resolve()}")
+        self.logger.info(f"Loading pickle from: {path.resolve()}")
         with open(path, "rb") as f:
             results = pickle.load(f)
 
