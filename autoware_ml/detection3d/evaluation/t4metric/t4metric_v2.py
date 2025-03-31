@@ -164,25 +164,23 @@ class T4MetricV2(BaseMetric):
 
         evaluator = PerceptionEvaluationManager(evaluation_config=self.perception_evaluator_configs)
 
-        scene_metrics = {}
-        for scene_dict in results:
-            for scene_id, samples in scene_dict.items():
-                scene_metrics.setdefault(scene_id, {})
-                for sample_id, frame_result in samples.items():
-                    scene_metrics[scene_id].setdefault(sample_id, {})
-                    if isinstance(frame_result, PerceptionFrameResult):
-                        object_with_results = frame_result.object_results
-                        estimated_objects = [obj.estimated_object for obj in object_with_results]
-                        frame_result: PerceptionFrameResult = evaluator.add_frame_result(
-                            unix_time=time.time(),
-                            ground_truth_now_frame=frame_result.frame_ground_truth,
-                            estimated_objects=estimated_objects,
-                            critical_object_filter_config=self.critical_object_filter_config,
-                            frame_pass_fail_config=self.frame_pass_fail_config,
-                        )
+        scenes, scene_metrics = self.init_scene_metrics_from_results(results)
 
-                        for map_instance in frame_result.metrics_score.maps:
-                            self.process_map_instance(map_instance, scene_metrics[scene_id][sample_id])
+        for scene_id, samples in scenes.items():
+            for sample_id, frame_result in samples.items():
+                object_with_results = frame_result.object_results
+                estimated_objects = [obj.estimated_object for obj in object_with_results]
+
+                frame_result: PerceptionFrameResult = evaluator.add_frame_result(
+                    unix_time=time.time(),
+                    ground_truth_now_frame=frame_result.frame_ground_truth,
+                    estimated_objects=estimated_objects,
+                    critical_object_filter_config=self.critical_object_filter_config,
+                    frame_pass_fail_config=self.frame_pass_fail_config,
+                )
+
+                for map_instance in frame_result.metrics_score.maps:
+                    self.process_map_instance(map_instance, scene_metrics[scene_id][sample_id])
 
         final_metric_score = evaluator.get_scene_result()
         self.logger.info(f"final metrics result {final_metric_score}")
@@ -434,3 +432,23 @@ class T4MetricV2(BaseMetric):
             # Construct the metric key
             key = f"T4MetricV2/{label}_AP_{matching_mode.lower().replace(' ', '_')}_{threshold}"
             metrics_store[key] = ap_value
+
+    def init_scene_metrics_from_results(self, results: list[Dict[str, Dict[str, Any]]]) -> tuple[dict, dict]:
+        """
+        Flattens scene dictionaries from the results and initializes scene_metrics structure.
+
+        Args:
+            results (list): List of dictionaries mapping scene_id to sample_id-frame_result pairs.
+
+        Returns:
+            tuple:
+                - scenes (dict): Flattened dict of {scene_id: {sample_id: frame_result}}.
+                - scene_metrics (dict): Initialized dict of {scene_id: {sample_id: dict}} for metric storage.
+        """
+        scenes = {scene_id: samples for scene in results for scene_id, samples in scene.items()}
+
+        scene_metrics = {
+            scene_id: {sample_id: {} for sample_id in samples.keys()} for scene_id, samples in scenes.items()
+        }
+
+        return scenes, scene_metrics
