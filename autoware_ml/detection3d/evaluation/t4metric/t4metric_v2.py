@@ -1,12 +1,13 @@
 import json
-import os
 import pickle
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
+import torch
 from mmdet3d.registry import METRICS
+from mmdet3d.structures import LiDARInstance3DBoxes
 from mmengine.evaluator import BaseMetric
 from mmengine.logging import MMLogger
 from perception_eval.common.dataset import FrameGroundTruth
@@ -208,21 +209,19 @@ class T4MetricV2(BaseMetric):
 
         return metric_dict
 
-    def get_label_from_model_output(self, model_output: int) -> Label:
+    def convert_index_to_label(self, bbox_label_index: int) -> Label:
         """
-        Retrieves a label from the model's output index
+        Convert a bounding box label index into a Label object containing the corresponding AutowareLabel.
 
         Args:
-            model_output (int): The index output by the model.
+            bbox_label_index (int): Index from the model output representing the predicted class.
 
         Returns:
-            Label: A Label object containing the corresponding AutowareLabel
-                and the original class name.
+            Label: A Label object with the corresponding AutowareLabel enum and class name string.
         """
-        # Check if the model output index is within the valid range
-        name = self.class_names[model_output] if 0 <= model_output < len(self.class_names) else "unknown"
-        autoware_label = AutowareLabel.__members__.get(name.upper(), AutowareLabel.UNKNOWN)
-        return Label(label=autoware_label, name=name)
+        class_name = self.class_names[bbox_label_index] if 0 <= bbox_label_index < len(self.class_names) else "unknown"
+        autoware_label = AutowareLabel.__members__.get(class_name.upper(), AutowareLabel.UNKNOWN)
+        return Label(label=autoware_label, name=class_name)
 
     def parse_scene_id(self, lidar_path: str) -> str:
         """parse scene ID from the LiDAR file path.
@@ -253,69 +252,82 @@ class T4MetricV2(BaseMetric):
         except ValueError:
             return "unknown"
 
-    def parse_ground_truth_from_sample(self, time: float, data_sample: Dict) -> FrameGroundTruth:
+    def parse_ground_truth_from_sample(self, time: float, data_sample: Dict[str, Any]) -> FrameGroundTruth:
         """Parses ground truth objects from the given data sample.
 
         Args:
-            time (float): The timestamp (in seconds) of the frame.
-            data_sample (Dict): A dictionary containing ground truth annotations,
-                                including 3D bounding boxes, labels, and LiDAR point counts.
+            time (float): The timestamp in seconds of the frame (sample).
+            A dictionary containing the predicted instances, including 3D bounding boxes, scores, and labels.
 
         Returns:
             FrameGroundTruth: A structured representation of the ground truth objects,
                             including position, orientation, shape, velocity, and labels.
         """
-        eval_info = data_sample.get("eval_ann_info", {})
-        sample_id = data_sample.get("sample_idx", "unknown")
 
-        gt_bboxes_3d = eval_info.get("gt_bboxes_3d", [])
-        gt_labels_3d = eval_info.get("gt_labels_3d", [])
-        num_lidar_pts = eval_info.get("num_lidar_pts", [])
+        # Extract evaluation annotation info for the current sample
+        eval_info: dict = data_sample.get("eval_ann_info", {})
+        sample_id: str = data_sample.get("sample_idx", "unknown")
 
-        bboxes = (bbox.tolist() for bbox in gt_bboxes_3d.tensor.cpu().numpy())
+        # gt_bboxes_3d: LiDARInstance3DBoxes with tensor of shape (N, 9)
+        # Format per box: [x, y, z, w, l, h, yaw, vx, vy]
+        gt_bboxes_3d: LiDARInstance3DBoxes = eval_info.get("gt_bboxes_3d", LiDARInstance3DBoxes([]))
+        bboxes: np.ndarray = gt_bboxes_3d.tensor.cpu().numpy()
 
-        objects = (
+        # gt_labels_3d: (N,) array of class indices (e.g., [0, 1, 2, 3, ...])
+        gt_labels_3d: np.ndarray = eval_info.get("gt_labels_3d", np.array([]))
+
+        # num_lidar_pts: (N,) array of int, number of LiDAR points inside each GT box
+        num_lidar_pts: np.ndarray = eval_info.get("num_lidar_pts", np.array([]))
+
+        objects = [
             DynamicObject(
                 unix_time=time,
                 frame_id=self.perception_evaluator_configs.frame_id,
                 position=tuple(bbox[:3]),
-                orientation=Quaternion(0, 0, np.sin(bbox[6] / 2), np.cos(bbox[6] / 2)),
+                orientation=Quaternion(np.cos(bbox[6] / 2), 0, 0, np.sin(bbox[6] / 2)),
                 shape=Shape(shape_type=ShapeType.BOUNDING_BOX, size=tuple(bbox[3:6])),
                 velocity=(bbox[7], bbox[8], 0.0),
                 semantic_score=1.0,
-                semantic_label=self.get_label_from_model_output(int(label)),
+                semantic_label=self.convert_index_to_label(int(label)),
                 pointcloud_num=int(num_pts),
             )
             for bbox, label, num_pts in zip(bboxes, gt_labels_3d, num_lidar_pts)
-        )
+        ]
 
         return FrameGroundTruth(
             unix_time=time,
-            frame_name=str(sample_id),
-            objects=list(objects),
+            frame_name=sample_id,
+            objects=objects,
             transforms=None,
             raw_data=None,
         )
 
     def parse_predictions_from_sample(
-        self, time: float, data_sample: Dict, frame_ground_truth: FrameGroundTruth
+        self, time: float, data_sample: Dict[str, Any], frame_ground_truth: FrameGroundTruth
     ) -> PerceptionFrameResult:
         """
         Parses predicted objects from the data sample and creates a perception frame result.
 
         Args:
-            time (float): The timestamp associated with the predictions.
-            data_sample (Dict): A dictionary containing the predicted instances, including 3D bounding boxes, scores, and labels.
+            time (float): The timestamp in seconds of the frame (sample).
+            data_sample (Dict[str, Any]): A dictionary containing the predicted instances, including 3D bounding boxes, scores, and labels.
             frame_ground_truth (FrameGroundTruth): The ground truth data corresponding to the current frame.
 
         Returns:
             PerceptionFrameResult: A structured result containing the predicted objects, frame ground truth, and evaluation configurations.
         """
-        pred_3d = data_sample.get("pred_instances_3d", {})
+        pred_3d: Dict[str, Any] = data_sample.get("pred_instances_3d", {})
 
-        bboxes = pred_3d.get("bboxes_3d", {}).tensor.cpu().numpy()
-        scores = pred_3d.get("scores_3d", [])
-        labels = pred_3d.get("labels_3d", [])
+        # bboxes_3d: LiDARInstance3DBoxes with tensor of shape (N, 9)
+        # Format per box: [x, y, z, w, l, h, yaw, vx, vy]
+        bboxes_3d = pred_3d.get("bboxes_3d", LiDARInstance3DBoxes([]))
+        bboxes: np.ndarray = bboxes_3d.tensor.cpu().numpy()
+
+        # scores_3d: (N,) Tensor of detection confidence scores
+        scores: torch.Tensor = pred_3d.get("scores_3d", torch.empty(0))
+
+        # labels_3d: (N,) Tensor of predicted class indices
+        labels: torch.Tensor = pred_3d.get("labels_3d", torch.empty(0))
 
         # List comprehension with better clarity
         dynamic_objects_with_perception = [
@@ -324,11 +336,11 @@ class T4MetricV2(BaseMetric):
                     unix_time=time,
                     frame_id=self.perception_evaluator_configs.frame_id,
                     position=tuple(bbox[:3]),
-                    orientation=Quaternion(0, 0, np.sin(bbox[6] / 2), np.cos(bbox[6] / 2)),
+                    orientation=Quaternion(np.cos(bbox[6] / 2), 0, 0, np.sin(bbox[6] / 2)),
                     shape=Shape(shape_type=ShapeType.BOUNDING_BOX, size=tuple(bbox[3:6])),
                     velocity=(bbox[7], bbox[8], 0.0),
                     semantic_score=float(score),
-                    semantic_label=self.get_label_from_model_output(int(label)),
+                    semantic_label=self.convert_index_to_label(int(label)),
                 ),
                 ground_truth_object=None,
             )
