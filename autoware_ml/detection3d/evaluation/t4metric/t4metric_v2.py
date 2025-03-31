@@ -116,6 +116,8 @@ class T4MetricV2(BaseMetric):
             self.perception_evaluator_configs.evaluation_task, target_labels=self.target_labels
         )
 
+        self.scene_id_to_index_map: Dict[str, int] = {}  # scene_id to index map in self.results
+
         self.logger = MMLogger.get_current_instance()
 
     # override of BaseMetric.process
@@ -154,6 +156,16 @@ class T4MetricV2(BaseMetric):
         Returns:
             Dict[str, float]: The computed metrics. The keys are the names of
             the metrics, and the values are corresponding results.
+        Example:
+            Metric dictionary:
+            {
+                'T4MetricV2/car_AP_center_distance_0.5': 0.7
+                'T4MetricV2/truck_AP_center_distance_0.5': 0.7,
+                'T4MetricV2/bus_AP_center_distance_0.5': 0.7,
+                'T4MetricV2/bicycle_AP_center_distance_0.5': 0.7,
+                'T4MetricV2/pedestrian_AP_center_distance_0.5': 0.7,
+                ...
+            }
         """
 
         if self.results_pickle_path:
@@ -196,8 +208,6 @@ class T4MetricV2(BaseMetric):
                 label = key.split("/")[1].split("_")[0]  # Extract label name
                 aggregated_metrics["aggregated_metrics"].setdefault(label, {})
                 aggregated_metrics["aggregated_metrics"][label][key] = value
-
-        self.logger.info(f"Metric dictionary: {metric_dict}")
 
         with open("scene_metrics.json", "w") as scene_file:
             json.dump(scene_metrics, scene_file, indent=4)
@@ -388,6 +398,14 @@ class T4MetricV2(BaseMetric):
 
         # If scene does not exist, create a new entry
         self.results.append({scene_id: {sample_idx: perception_frame_result}})
+
+        if scene_id in self.scene_id_to_index_map:
+            index = self.scene_id_to_index_map[scene_id]
+            self.results[index][scene_id][sample_idx] = perception_frame_result
+        else:
+            # New scene: append to results and record its index
+            self.results.append({scene_id: {sample_idx: perception_frame_result}})
+            self.scene_id_to_index_map[scene_id] = len(self.results) - 1
 
     def save_results_to_pickle(self, path: Path) -> None:
         """Save self.results to the given pickle file path.
