@@ -100,6 +100,8 @@ class T4MetricV2(BaseMetric):
                 raise ValueError(f"results_pickle_path must end with '.pkl', got: {path_obj}")
             self.results_pickle_path = path_obj
 
+        self.target_labels = [AutowareLabel[label.upper()] for label in self.class_names]
+
         self.perception_evaluator_configs = PerceptionEvaluationConfig(**perception_evaluator_configs)
 
         self.critical_object_filter_config = CriticalObjectFilterConfig(
@@ -107,6 +109,10 @@ class T4MetricV2(BaseMetric):
         )
         self.frame_pass_fail_config = PerceptionPassFailConfig(
             evaluator_config=self.perception_evaluator_configs, **frame_pass_fail_config
+        )
+
+        self.metrics_config = MetricsScoreConfig(
+            self.perception_evaluator_configs.evaluation_task, target_labels=self.target_labels
         )
 
         self.logger = MMLogger.get_current_instance()
@@ -157,18 +163,6 @@ class T4MetricV2(BaseMetric):
 
         evaluator = PerceptionEvaluationManager(evaluation_config=self.perception_evaluator_configs)
 
-        def process_map_instance(map_instance, metrics_store):
-            matching_mode = map_instance.matching_mode.value  # e.g., "Center Distance" or "Plane Distance"
-
-            for ap in map_instance.aps:
-                label = ap.target_labels[0].value  # AutowareLabel
-                threshold = ap.matching_threshold_list[0]
-                ap_value = ap.ap
-
-                # Construct the metric key
-                key = f"T4MetricV2/{label}_AP_{matching_mode.lower().replace(' ', '_')}_{threshold}"
-                metrics_store[key] = ap_value
-
         scene_metrics = {}
         for scene_dict in results:
             for scene_id, samples in scene_dict.items():
@@ -187,7 +181,7 @@ class T4MetricV2(BaseMetric):
                         )
 
                         for map_instance in frame_result.metrics_score.maps:
-                            process_map_instance(map_instance, scene_metrics[scene_id][sample_id])
+                            self.process_map_instance(map_instance, scene_metrics[scene_id][sample_id])
 
         final_metric_score = evaluator.get_scene_result()
         self.logger.info(f"final metrics result {final_metric_score}")
@@ -197,7 +191,7 @@ class T4MetricV2(BaseMetric):
 
         # Iterate over the list of maps in final_metric_score
         for map_instance in final_metric_score.maps:
-            process_map_instance(map_instance, metric_dict)
+            self.process_map_instance(map_instance, metric_dict)
 
             for key, value in metric_dict.items():
                 label = key.split("/")[1].split("_")[0]  # Extract label name
@@ -324,7 +318,7 @@ class T4MetricV2(BaseMetric):
         labels = pred_3d.get("labels_3d", [])
 
         # List comprehension with better clarity
-        objects_with_perception = [
+        dynamic_objects_with_perception = [
             DynamicObjectWithPerceptionResult(
                 estimated_object=DynamicObject(
                     unix_time=time,
@@ -342,16 +336,13 @@ class T4MetricV2(BaseMetric):
         ]
 
         return PerceptionFrameResult(
-            object_results=objects_with_perception,
+            object_results=dynamic_objects_with_perception,
             frame_ground_truth=frame_ground_truth,
-            metrics_config=MetricsScoreConfig(
-                self.perception_evaluator_configs.evaluation_task,
-                target_labels={AutowareLabel[label.upper()] for label in self.class_names},
-            ),
+            metrics_config=self.metrics_config,
             critical_object_filter_config=self.critical_object_filter_config,
             frame_pass_fail_config=self.frame_pass_fail_config,
             unix_time=time,
-            target_labels=[AutowareLabel[label.upper()] for label in self.class_names],
+            target_labels=self.target_labels,
         )
 
     def save_perception_results(
@@ -420,3 +411,15 @@ class T4MetricV2(BaseMetric):
             results = pickle.load(f)
 
         return results
+
+    def process_map_instance(self, map_instance, metrics_store):
+        matching_mode = map_instance.matching_mode.value  # e.g., "Center Distance" or "Plane Distance"
+
+        for ap in map_instance.aps:
+            label = ap.target_labels[0].value  # AutowareLabel
+            threshold = ap.matching_threshold_list[0]
+            ap_value = ap.ap
+
+            # Construct the metric key
+            key = f"T4MetricV2/{label}_AP_{matching_mode.lower().replace(' ', '_')}_{threshold}"
+            metrics_store[key] = ap_value
