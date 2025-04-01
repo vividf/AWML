@@ -137,7 +137,7 @@ class T4MetricV2(BaseMetric):
             return
 
         for data_sample in data_samples:
-            current_time = time.time()
+            current_time = data_sample["timestamp"]
             scene_id = self.parse_scene_id(data_sample["lidar_path"])
             frame_ground_truth = self.parse_ground_truth_from_sample(current_time, data_sample)
             perception_frame_result = self.parse_predictions_from_sample(current_time, data_sample, frame_ground_truth)

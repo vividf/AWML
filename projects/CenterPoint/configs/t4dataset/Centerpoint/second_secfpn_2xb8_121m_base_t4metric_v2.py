@@ -97,7 +97,23 @@ test_pipeline = [
         backend_args=backend_args,
     ),
     dict(type="PointsRangeFilter", point_cloud_range=point_cloud_range),
-    dict(type="Pack3DDetInputs", keys=["points", "gt_bboxes_3d", "gt_labels_3d"]),
+    dict(
+        type="Pack3DDetInputs",
+        keys=["points", "gt_bboxes_3d", "gt_labels_3d"],
+        meta_keys=(
+            "timestamp",
+            "lidar2img",
+            "depth2img",
+            "cam2img",
+            "box_type_3d",
+            "sample_idx",
+            "lidar_path",
+            "ori_cam2img",
+            "cam2global",
+            "lidar2cam",
+            "ego2global",
+        ),
+    ),
 ]
 
 # construct a pipeline for data and gt loading in show function
