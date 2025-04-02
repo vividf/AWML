@@ -27,6 +27,7 @@ from perception_eval.manager import PerceptionEvaluationManager
 from pyquaternion import Quaternion
 
 __all__ = ["T4MetricV2"]
+_UNKNOWN = "unknown"
 
 
 @METRICS.register_module()
@@ -229,7 +230,7 @@ class T4MetricV2(BaseMetric):
         Returns:
             Label: A Label object with the corresponding AutowareLabel enum and class name string.
         """
-        class_name = self.class_names[bbox_label_index] if 0 <= bbox_label_index < len(self.class_names) else "unknown"
+        class_name = self.class_names[bbox_label_index] if 0 <= bbox_label_index < len(self.class_names) else _UNKNOWN
         autoware_label = AutowareLabel.__members__.get(class_name.upper(), AutowareLabel.UNKNOWN)
         return Label(label=autoware_label, name=class_name)
 
@@ -249,7 +250,7 @@ class T4MetricV2(BaseMetric):
         # TODO(vividf): This will be eventually moved to t4_devkit
 
         if not lidar_path or not lidar_path.startswith(self.data_root):
-            return "unknown"
+            return _UNKNOWN
 
         # Remove the data_root prefix
         relative_path = lidar_path[len(self.data_root) :].lstrip("/")  # Remove leading slash if exists
@@ -260,7 +261,7 @@ class T4MetricV2(BaseMetric):
             data_index = path_parts.index("data")
             return "/".join(path_parts[:data_index])
         except ValueError:
-            return "unknown"
+            return _UNKNOWN
 
     def parse_ground_truth_from_sample(self, time: float, data_sample: Dict[str, Any]) -> FrameGroundTruth:
         """Parses ground truth objects from the given data sample.
@@ -276,7 +277,7 @@ class T4MetricV2(BaseMetric):
 
         # Extract evaluation annotation info for the current sample
         eval_info: dict = data_sample.get("eval_ann_info", {})
-        sample_id: str = data_sample.get("sample_idx", "unknown")
+        sample_id: str = data_sample.get("sample_idx", _UNKNOWN)
 
         # gt_bboxes_3d: LiDARInstance3DBoxes with tensor of shape (N, 9)
         # Format per box: [x, y, z, l, w, h, yaw, vx, vy]
