@@ -96,10 +96,9 @@ class T4MetricV2(BaseMetric):
 
         self.results_pickle_path: Optional[Path] = None
         if results_pickle_path:
-            path_obj = Path(results_pickle_path)
-            if path_obj.suffix != ".pkl":
-                raise ValueError(f"results_pickle_path must end with '.pkl', got: {path_obj}")
-            self.results_pickle_path = path_obj
+            self.results_pickle_path = Path(results_pickle_path)
+            if self.results_pickle_path.suffix != ".pkl":
+                raise ValueError(f"results_pickle_path must end with '.pkl', got: {self.results_pickle_path}")
 
         self.target_labels = [AutowareLabel[label.upper()] for label in self.class_names]
 
