@@ -100,6 +100,8 @@ class T4MetricV2(BaseMetric):
             if self.results_pickle_path.suffix != ".pkl":
                 raise ValueError(f"results_pickle_path must end with '.pkl', got: {self.results_pickle_path}")
 
+        self.results_pickle_exists = True if self.results_pickle_path and self.results_pickle_path.exists() else False
+
         self.target_labels = [AutowareLabel[label.upper()] for label in self.class_names]
 
         self.perception_evaluator_configs = PerceptionEvaluationConfig(**perception_evaluator_configs)
@@ -131,7 +133,7 @@ class T4MetricV2(BaseMetric):
             data_samples (Sequence[dict]): A batch of outputs from the model and the ground truth of dataset  I am
         """
 
-        if self.results_pickle_path and self.results_pickle_path.exists():
+        if self.results_pickle_exists:
             # Skip processing if result pickle already exists
             return
 
@@ -167,11 +169,10 @@ class T4MetricV2(BaseMetric):
             }
         """
 
-        if self.results_pickle_path:
-            if self.results_pickle_path.exists():
-                results = self.load_results_from_pickle(self.results_pickle_path)
-            else:
-                self.save_results_to_pickle(self.results_pickle_path)
+        if self.results_pickle_exists:
+            results = self.load_results_from_pickle(self.results_pickle_path)
+        elif self.results_pickle_path:
+            self.save_results_to_pickle(self.results_pickle_path)
 
         evaluator = PerceptionEvaluationManager(evaluation_config=self.perception_evaluator_configs)
 
