@@ -29,7 +29,6 @@ point_load_dim = 5  # x, y, z, intensity, ring_id
 point_use_dim = 3  # x, y, z
 lidar_sweep_dims = [0, 1, 2, 4]
 
-
 # user setting
 data_root = "data/t4dataset/"
 info_directory_path = "info/user_name/"
