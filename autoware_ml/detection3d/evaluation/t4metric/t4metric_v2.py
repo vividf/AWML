@@ -277,7 +277,7 @@ class T4MetricV2(BaseMetric):
         sample_id: str = data_sample.get("sample_idx", "unknown")
 
         # gt_bboxes_3d: LiDARInstance3DBoxes with tensor of shape (N, 9)
-        # Format per box: [x, y, z, w, l, h, yaw, vx, vy]
+        # Format per box: [x, y, z, l, w, h, yaw, vx, vy]
         gt_bboxes_3d: LiDARInstance3DBoxes = eval_info.get("gt_bboxes_3d", LiDARInstance3DBoxes([]))
         bboxes: np.ndarray = gt_bboxes_3d.tensor.cpu().numpy()
 
@@ -328,7 +328,7 @@ class T4MetricV2(BaseMetric):
         pred_3d: Dict[str, Any] = data_sample.get("pred_instances_3d", {})
 
         # bboxes_3d: LiDARInstance3DBoxes with tensor of shape (N, 9)
-        # Format per box: [x, y, z, w, l, h, yaw, vx, vy]
+        # Format per box: [x, y, z, l, w, h, yaw, vx, vy]
         bboxes_3d = pred_3d.get("bboxes_3d", LiDARInstance3DBoxes([]))
         bboxes: np.ndarray = bboxes_3d.tensor.cpu().numpy()
 
