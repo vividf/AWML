@@ -205,7 +205,9 @@ class T4MetricV2(BaseMetric):
             self.process_map_instance(map_instance, metric_dict)
 
             for key, value in metric_dict.items():
-                label = key.split("/")[1].split("_")[0]  # Extract label name
+                # Extract label name from metric_dict's keys
+                # Example: T4MetricV2/car_AP_center_distance_bev_0.5
+                label = key.split("/")[1].split("_")[0]
                 aggregated_metrics["aggregated_metrics"].setdefault(label, {})
                 aggregated_metrics["aggregated_metrics"][label][key] = value
 
@@ -389,15 +391,6 @@ class T4MetricV2(BaseMetric):
             sample_idx (int): The index of the sample within the scene.
             perception_frame_result (PerceptionFrameResult): The processed perception result for the given sample.
         """
-
-        for scene_dict in self.results:
-            if scene_id in scene_dict:
-                # Append the sample to the existing scene
-                scene_dict[scene_id][sample_idx] = perception_frame_result
-                return
-
-        # If scene does not exist, create a new entry
-        self.results.append({scene_id: {sample_idx: perception_frame_result}})
 
         if scene_id in self.scene_id_to_index_map:
             index = self.scene_id_to_index_map[scene_id]
