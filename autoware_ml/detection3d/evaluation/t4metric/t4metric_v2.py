@@ -95,11 +95,9 @@ class T4MetricV2(BaseMetric):
         if name_mapping is not None:
             self.class_names = [self.name_mapping.get(name, name) for name in self.class_names]
 
-        self.results_pickle_path: Optional[Path] = None
-        if results_pickle_path:
-            self.results_pickle_path = Path(results_pickle_path)
-            if self.results_pickle_path.suffix != ".pkl":
-                raise ValueError(f"results_pickle_path must end with '.pkl', got: {self.results_pickle_path}")
+        self.results_pickle_path: Optional[Path] = Path(results_pickle_path) if results_pickle_path else None
+        if self.results_pickle_path is not None and self.results_pickle_path.suffix != ".pkl":
+            raise ValueError(f"results_pickle_path must end with '.pkl', got: {self.results_pickle_path}")
 
         self.results_pickle_exists = True if self.results_pickle_path and self.results_pickle_path.exists() else False
 
@@ -393,8 +391,8 @@ class T4MetricV2(BaseMetric):
             perception_frame_result (PerceptionFrameResult): The processed perception result for the given sample.
         """
 
-        if scene_id in self.scene_id_to_index_map:
-            index = self.scene_id_to_index_map[scene_id]
+        index = self.scene_id_to_index_map.get(scene_id, None)
+        if index is not None:
             self.results[index][scene_id][sample_idx] = perception_frame_result
         else:
             # New scene: append to results and record its index
@@ -437,6 +435,8 @@ class T4MetricV2(BaseMetric):
         matching_mode = map_instance.matching_mode.value  # e.g., "Center Distance" or "Plane Distance"
 
         for ap in map_instance.aps:
+            # Each Ap instance is configured for a single label and threshold,
+            # so we extract the only elements from target_labels and matching_threshold_list.
             label = ap.target_labels[0].value  # AutowareLabel
             threshold = ap.matching_threshold_list[0]
             ap_value = ap.ap

@@ -99,6 +99,10 @@ test_pipeline = [
     dict(
         type="Pack3DDetInputs",
         keys=["points", "gt_bboxes_3d", "gt_labels_3d"],
+        # Specify the metadata keys required by the downstream pipeline.
+        # Refer to the official MMDetection3D formatting transform implementation for details:
+        # https://github.com/open-mmlab/mmdetection3d/blob/main/mmdet3d/datasets/transforms/formating.py#L67
+        # Also see the content structure in "t4dataset_base_infos_test.pkl" for reference.
         meta_keys=(
             "timestamp",
             "lidar2img",
@@ -237,7 +241,7 @@ test_evaluator = dict(
     perception_evaluator_configs=perception_evaluator_configs,
     critical_object_filter_config=critical_object_filter_config,
     frame_pass_fail_config=frame_pass_fail_config,
-    results_pickle_path="/workspace/pickles/prediction_and_ground_truth.pkl",
+    results_pickle_path=f"{work_dir}/evaluation/pickles/results.pkl",
 )
 
 model = dict(
