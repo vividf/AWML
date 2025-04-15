@@ -469,10 +469,10 @@ class T4Metric(NuScenesMetric):
         print("Start to convert detection format...")
         for i, det in enumerate(mmengine.track_iter_progress(results)):
             annos = []
-            # boxes, attrs = output_to_nusc_box(det)
+            boxes, attrs = output_to_nusc_box(det)
             sample_idx = sample_idx_list[i]
             sample_token = self.data_infos[sample_idx]["token"]
-            # boxes = lidar_nusc_box_to_global(self.data_infos[sample_idx], boxes, classes, self.eval_detection_configs)
+            boxes = lidar_nusc_box_to_global(self.data_infos[sample_idx], boxes, classes, self.eval_detection_configs)
             for i, box in enumerate(boxes):
                 name = classes[box.label]
                 if np.sqrt(box.velocity[0] ** 2 + box.velocity[1] ** 2) > 0.2:

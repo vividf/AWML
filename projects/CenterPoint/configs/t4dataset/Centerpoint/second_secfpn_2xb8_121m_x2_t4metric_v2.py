@@ -115,8 +115,6 @@ test_pipeline = [
             "cam2global",
             "lidar2cam",
             "ego2global",
-            "lidar2ego",
-            "lidar_points",
         ),
     ),
 ]
@@ -213,10 +211,8 @@ perception_evaluator_configs = dict(
 critical_object_filter_config = dict(
     target_labels=_base_.class_names,
     ignore_attributes=None,
-    # max_distance_list=[121.0, 121.0, 121.0, 121.0, 121.0],
-    # min_distance_list=[-121.0, -121.0, -121.0, -121.0, -121.0],
-    max_distance_list=[121000.0, 121000.0, 121000.0, 121000.0, 121000.0],
-    min_distance_list=[-121000.0, -121000.0, -121000.0, -121000.0, -121000.0],
+    max_distance_list=[121.0, 121.0, 121.0, 121.0, 121.0],
+    min_distance_list=[-121.0, -121.0, -121.0, -121.0, -121.0],
 )
 
 frame_pass_fail_config = dict(
