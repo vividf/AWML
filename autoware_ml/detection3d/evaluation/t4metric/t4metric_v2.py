@@ -18,11 +18,11 @@ from perception_eval.common.shape import Shape, ShapeType
 from perception_eval.config.perception_evaluation_config import PerceptionEvaluationConfig
 from perception_eval.evaluation.metrics import MetricsScoreConfig
 from perception_eval.evaluation.result.object_result import DynamicObjectWithPerceptionResult
+from perception_eval.evaluation.result.perception_frame import PerceptionFrame
 from perception_eval.evaluation.result.perception_frame_config import (
     CriticalObjectFilterConfig,
     PerceptionPassFailConfig,
 )
-from perception_eval.evaluation.result.perception_frame import PerceptionFrame
 from perception_eval.evaluation.result.perception_frame_result import PerceptionFrameResult
 from perception_eval.manager import PerceptionEvaluationManager
 from pyquaternion import Quaternion
@@ -174,7 +174,9 @@ class T4MetricV2(BaseMetric):
         elif self.results_pickle_path:
             self.save_results_to_pickle(self.results_pickle_path)
 
-        evaluator = PerceptionEvaluationManager(evaluation_config=self.perception_evaluator_configs, load_ground_truth=False)
+        evaluator = PerceptionEvaluationManager(
+            evaluation_config=self.perception_evaluator_configs, load_ground_truth=False
+        )
 
         scenes, scene_metrics = self.init_scene_metrics_from_results(results)
 
@@ -338,15 +340,15 @@ class T4MetricV2(BaseMetric):
         labels: torch.Tensor = pred_3d.get("labels_3d", torch.empty(0)).cpu()
         estimated_objects = [
             DynamicObject(
-                    unix_time=time,
-                    frame_id=self.perception_evaluator_configs.frame_id,
-                    position=tuple(bbox[:3]),
-                    orientation=Quaternion(np.cos(bbox[6] / 2), 0, 0, np.sin(bbox[6] / 2)),
-                    shape=Shape(shape_type=ShapeType.BOUNDING_BOX, size=tuple(bbox[3:6])),
-                    velocity=(bbox[7], bbox[8], 0.0),
-                    semantic_score=float(score),
-                    semantic_label=self.convert_index_to_label(int(label)),
-                )
+                unix_time=time,
+                frame_id=self.perception_evaluator_configs.frame_id,
+                position=tuple(bbox[:3]),
+                orientation=Quaternion(np.cos(bbox[6] / 2), 0, 0, np.sin(bbox[6] / 2)),
+                shape=Shape(shape_type=ShapeType.BOUNDING_BOX, size=tuple(bbox[3:6])),
+                velocity=(bbox[7], bbox[8], 0.0),
+                semantic_score=float(score),
+                semantic_label=self.convert_index_to_label(int(label)),
+            )
             for bbox, score, label in zip(bboxes, scores, labels)
             if not (np.isnan(score) or np.isnan(label) or np.any(np.isnan(bbox)))
         ]
@@ -357,9 +359,7 @@ class T4MetricV2(BaseMetric):
             ground_truth_objects=ground_truth_objects,
         )
 
-    def save_perception_frame(
-        self, scene_id: str, sample_idx: int, perception_frame_result: PerceptionFrame
-    ) -> None:
+    def save_perception_frame(self, scene_id: str, sample_idx: int, perception_frame_result: PerceptionFrame) -> None:
         """
         Stores the processed perceptoin result in self.results following the format.
         [

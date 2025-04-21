@@ -1,15 +1,29 @@
 import json
+import os
 import pickle
+import tempfile
 import time
+from collections import defaultdict
+from os import path as osp
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+import mmengine
 import numpy as np
+import pyquaternion
 import torch
+from mmdet3d.evaluation.metrics import NuScenesMetric
 from mmdet3d.registry import METRICS
-from mmdet3d.structures import LiDARInstance3DBoxes
+from mmdet3d.structures import CameraInstance3DBoxes, LiDARInstance3DBoxes
+
+# Test
+from mmengine import load
 from mmengine.evaluator import BaseMetric
-from mmengine.logging import MMLogger
+from mmengine.logging import MMLogger, print_log
+from nuscenes import NuScenes
+from nuscenes.eval.common.data_classes import EvalBoxes
+from nuscenes.eval.detection.data_classes import DetectionConfig
+from nuscenes.utils.data_classes import Box as NuScenesBox
 from perception_eval.common.dataset import FrameGroundTruth
 from perception_eval.common.evaluation_task import EvaluationTask
 from perception_eval.common.label import AutowareLabel, Label
@@ -26,34 +40,8 @@ from perception_eval.evaluation.result.perception_frame_result import Perception
 from perception_eval.manager import PerceptionEvaluationManager
 from pyquaternion import Quaternion
 
-
-
-from collections import defaultdict
-
-# Test
-from mmengine import load
-import os
-import tempfile
-from os import path as osp
-from typing import Dict, List, Optional, Tuple, Union
-
-import mmengine
-import numpy as np
-import pyquaternion
-from mmdet3d.evaluation.metrics import NuScenesMetric
-from mmdet3d.registry import METRICS
-from mmdet3d.structures import CameraInstance3DBoxes, LiDARInstance3DBoxes
-from mmengine import load
-from mmengine.logging import MMLogger, print_log
-from nuscenes import NuScenes
-from nuscenes.eval.common.data_classes import EvalBoxes
-from nuscenes.eval.detection.data_classes import DetectionConfig
-from nuscenes.utils.data_classes import Box as NuScenesBox
-
 from autoware_ml.detection3d.evaluation.t4metric.evaluation import T4DetectionConfig, T4DetectionEvaluation
 from autoware_ml.detection3d.evaluation.t4metric.loading import t4metric_load_gt, t4metric_load_prediction
-
-
 
 __all__ = ["T4MetricV2"]
 _UNKNOWN = "unknown"
@@ -147,7 +135,6 @@ class T4MetricV2(BaseMetric):
 
         self.logger = MMLogger.get_current_instance()
 
-
         # testing
         # load annotations
         self.backend_args = None
@@ -182,10 +169,9 @@ class T4MetricV2(BaseMetric):
         self.eval_detection_configs = T4DetectionConfig.deserialize(eval_config_dict)
 
         # dict {sample_token: ... , sample_token: ...}
-        self.samples_gts = self.helper() 
+        self.samples_gts = self.helper()
 
         print("get samples_gts")
-
 
     # override of BaseMetric.process
     def process(self, data_batch: dict, data_samples: Sequence[dict]) -> None:
@@ -201,7 +187,7 @@ class T4MetricV2(BaseMetric):
             # Skip processing if result pickle already exists
             return
 
-        #print("data_samples: ", data_samples)
+        # print("data_samples: ", data_samples)
         for data_sample in data_samples:
 
             # print("data_sample: ", data_sample)
@@ -210,7 +196,9 @@ class T4MetricV2(BaseMetric):
             ego2global, lidar2ego = self.get_transformation_matrices(data_sample)
             lidar2global = ego2global @ lidar2ego
             frame_ground_truth = self.parse_ground_truth_from_t4dataset(current_time, data_sample, lidar2global)
-            perception_frame_result = self.parse_predictions_from_sample(current_time, data_sample, frame_ground_truth, lidar2global)
+            perception_frame_result = self.parse_predictions_from_sample(
+                current_time, data_sample, frame_ground_truth, lidar2global
+            )
             self.save_perception_results(scene_id, data_sample["sample_idx"], perception_frame_result)
 
     # override of BaseMetric.compute_metrics
@@ -257,7 +245,6 @@ class T4MetricV2(BaseMetric):
                 #     critical_object_filter_config=self.critical_object_filter_config,
                 #     frame_pass_fail_config=self.frame_pass_fail_config,
                 # )
-
 
                 frame_result: PerceptionFrameResult = evaluator.add_frame_result_vivid(
                     unix_time=time.time(),
@@ -402,7 +389,7 @@ class T4MetricV2(BaseMetric):
     #                 semantic_label=self.convert_index_to_label(int(label)),
     #                 pointcloud_num=int(num_pts),
     #             )
-    #         ) 
+    #         )
     #     return FrameGroundTruth(
     #         unix_time=time,
     #         frame_name=sample_id,
@@ -411,8 +398,9 @@ class T4MetricV2(BaseMetric):
     #         raw_data=None,
     #     )
 
-
-    def parse_ground_truth_from_t4dataset(self, time: float, data_sample: Dict[str, Any], lidar2global: np.ndarray) -> FrameGroundTruth:
+    def parse_ground_truth_from_t4dataset(
+        self, time: float, data_sample: Dict[str, Any], lidar2global: np.ndarray
+    ) -> FrameGroundTruth:
         """Parses ground truth objects from the given data sample.
         Args:
             time (float): The timestamp in seconds of the frame (sample).
@@ -426,31 +414,30 @@ class T4MetricV2(BaseMetric):
         # eval_info: dict = data_sample.get("eval_ann_info", {})
         sample_id: str = data_sample.get("sample_idx", _UNKNOWN)
 
-
-
         dynamic_objects = []
 
-        #print("sample_id: ", sample_id)
-
+        # print("sample_id: ", sample_id)
 
         sample_token = self.data_infos[sample_id]["token"]
-        #print("sample_token: ", sample_token)
+        # print("sample_token: ", sample_token)
         sample_gts = self.samples_gts[sample_token]
         for gt in sample_gts:
-            #print("gt.translation: ", gt.translation)
+            # print("gt.translation: ", gt.translation)
             dynamic_objects.append(
                 DynamicObject(
                     unix_time=time,
                     frame_id=self.perception_evaluator_configs.frame_id,
                     position=gt.translation,
-                    orientation=Quaternion(gt.rotation[1], gt.rotation[2], gt.rotation[3], gt.rotation[0]),  # still in LiDAR frame
+                    orientation=Quaternion(
+                        gt.rotation[1], gt.rotation[2], gt.rotation[3], gt.rotation[0]
+                    ),  # still in LiDAR frame
                     shape=Shape(shape_type=ShapeType.BOUNDING_BOX, size=tuple(gt.size)),
                     velocity=(gt.velocity, 0.0),
                     semantic_score=1.0,
                     semantic_label=self.convert_name_to_label(gt.detection_name),
                     pointcloud_num=int(gt.num_pts),
                 )
-            ) 
+            )
 
         # print("generate gt")
 
@@ -461,7 +448,6 @@ class T4MetricV2(BaseMetric):
             transforms=None,
             raw_data=None,
         )
-
 
     # Tests
     def convert_name_to_label(self, bbox_label_str: str) -> Label:
@@ -494,7 +480,6 @@ class T4MetricV2(BaseMetric):
         bboxes_3d = pred_3d.get("bboxes_3d", LiDARInstance3DBoxes([]))
         bboxes: np.ndarray = bboxes_3d.tensor.cpu().numpy()
 
-
         # scores_3d: (N,) Tensor of detection confidence scores
         scores: torch.Tensor = pred_3d.get("scores_3d", torch.empty(0)).cpu()
         # labels_3d: (N,) Tensor of predicted class indices
@@ -510,7 +495,6 @@ class T4MetricV2(BaseMetric):
             if radius > 121:
                 continue
 
-
             # change from center to bottom
             # print("before origin change: ", bbox[:3])
             bbox[2] += bbox[5] * 0.5
@@ -520,7 +504,7 @@ class T4MetricV2(BaseMetric):
             pos_homogeneous = np.append(bbox[:3], 1.0)  # (x, y, z, 1)
             global_position = (lidar2global @ pos_homogeneous)[:3]  # 取前 3 維
 
-            #print("lidar2global: ", lidar2global)
+            # print("lidar2global: ", lidar2global)
             # === 2. 將 yaw 轉為 quaternion，並轉換到 global frame ===
             q_yaw = Quaternion(axis=[0, 0, 1], angle=bbox[6])  # LiDAR frame 下的 yaw
             q_rot = Quaternion(matrix=lidar2global[:3, :3], rtol=1e-5, atol=1e-7)  # global 的旋轉
@@ -546,7 +530,6 @@ class T4MetricV2(BaseMetric):
                     ground_truth_object=None,
                 )
             )
-
 
         return PerceptionFrameResult(
             object_results=dynamic_objects_with_perception,
@@ -583,9 +566,6 @@ class T4MetricV2(BaseMetric):
             self.logger.warning("lidar2ego not found in data_sample")
 
         return ego2global, lidar2ego
-
-
-
 
     def save_perception_results(
         self, scene_id: str, sample_idx: int, perception_frame_result: PerceptionFrameResult
@@ -678,10 +658,7 @@ class T4MetricV2(BaseMetric):
 
         return scenes, scene_metrics
 
-
-
     ### Testing, remove this later
-
 
     def helper(self):
         all_gt_boxes = defaultdict(list)
@@ -697,9 +674,9 @@ class T4MetricV2(BaseMetric):
         return all_gt_boxes
 
     def get_gt_bboxes(
-            self,
-            scene_token: str,
-        ) -> EvalBoxes:
+        self,
+        scene_token: str,
+    ) -> EvalBoxes:
         """Evaluate the results in T4 format.
         Args:
             scene_token (str): The scene token.
@@ -730,7 +707,7 @@ class T4MetricV2(BaseMetric):
             scene_token,
             post_mapping_dict=self.name_mapping,
             filter_attributions=filter_attributes,
-            verbose=True
+            verbose=True,
         )
 
         return gt_boxes
@@ -756,8 +733,6 @@ class T4MetricV2(BaseMetric):
                 scene_tokens.append(scene_token)
                 directories.append(directory)
         return scene_tokens, directories
-
-
 
     @staticmethod
     def _load_scenes(
