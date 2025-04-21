@@ -114,12 +114,14 @@ filter_attributes = [
 evaluator_metric_configs = dict(
     evaluation_task="detection",
     target_labels=class_names,
-    center_distance_thresholds=[0.5, 1.0, 2.0, 4.0],
-    plane_distance_thresholds=[2.0, 4.0],
+    center_distance_bev_thresholds=[0.5, 1.0],
+    #plane_distance_thresholds=[2.0, 4.0],
     iou_2d_thresholds=None,
     iou_3d_thresholds=None,
     label_prefix="autoware",
     max_distance=121.0,
     min_distance=-121.0,
+    # max_distance=121000.0,
+    # min_distance=-121000.0,
     min_point_numbers=0,
 )

@@ -1,6 +1,6 @@
 _base_ = [
     "../../../../../autoware_ml/configs/detection3d/default_runtime.py",
-    "../../../../../autoware_ml/configs/detection3d/dataset/t4dataset/base.py",
+    "../../../../../autoware_ml/configs/detection3d/dataset/t4dataset/x2.py",
     "../../default/second_secfpn_base.py",
 ]
 custom_imports = dict(imports=["projects.CenterPoint.models"], allow_failed_imports=False)
@@ -31,7 +31,7 @@ lidar_sweep_dims = [0, 1, 2, 4]
 
 # user setting
 data_root = "data/t4dataset/"
-info_directory_path = "info/user_name/"
+info_directory_path = "info/"
 train_gpu_size = 2
 train_batch_size = 8
 test_batch_size = 2
@@ -213,6 +213,8 @@ critical_object_filter_config = dict(
     ignore_attributes=None,
     max_distance_list=[121.0, 121.0, 121.0, 121.0, 121.0],
     min_distance_list=[-121.0, -121.0, -121.0, -121.0, -121.0],
+    # max_distance_list=[121000.0, 121000.0, 121000.0, 121000.0, 121000.0],
+    # min_distance_list=[-121000.0, -121000.0, -121000.0, -121000.0, -121000.0],
 )
 
 frame_pass_fail_config = dict(
@@ -241,7 +243,7 @@ test_evaluator = dict(
     perception_evaluator_configs=perception_evaluator_configs,
     critical_object_filter_config=critical_object_filter_config,
     frame_pass_fail_config=frame_pass_fail_config,
-    results_pickle_path=f"{work_dir}/evaluation/pickles/results.pkl",
+    # results_pickle_path=f"{work_dir}/evaluation/pickles/results.pkl",
 )
 
 model = dict(

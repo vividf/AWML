@@ -1,0 +1,546 @@
+{
+    "db_j6_v1/43e6e09a-93ce-488f-8f40-515187bc2753/2": {
+        "0": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.59429747207525,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.8267489711934156,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/bicycle_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.7139917695473252,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.8267489711934156,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0,
+            "T4MetricV2/bicycle_AP_center_distance_bev_1.0": 0.0
+        },
+        "1": {
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.994708994708995,
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7637943871248787,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.012169312169312167,
+            "T4MetricV2/bicycle_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.994708994708995,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8695954360859165,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.012169312169312167,
+            "T4MetricV2/bicycle_AP_center_distance_bev_1.0": 0.0
+        },
+        "2": {
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9975308641975311,
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7399728276921259,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.18155570837563173,
+            "T4MetricV2/bicycle_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9975308641975311,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8471734892787526,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.18155570837563173,
+            "T4MetricV2/bicycle_AP_center_distance_bev_1.0": 0.0
+        },
+        "3": {
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9958847736625516,
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.786512297226583,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.34891240446796007,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9958847736625516,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9777622452140288,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.34891240446796007
+        },
+        "4": {
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9341563786008231,
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.6251263851502947,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.2084068195179305,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9341563786008231,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8589804589353836,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.2084068195179305
+        },
+        "5": {
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7222222222222223,
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7042181790672128,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.48641975308641966,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7222222222222223,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9094199969199971,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.48641975308641966,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "6": {
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7222222222222223,
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7919116206153243,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9899691358024694,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7222222222222223,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9272750609677837,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9899691358024694
+        },
+        "7": {
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7222222222222223,
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8330729067288207,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.868312757201646,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7222222222222223,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9019352686019356,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.868312757201646
+        },
+        "8": {
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7222222222222223,
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8158487403086169,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.2555555555555556,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7222222222222223,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9491815722168028,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.2555555555555556,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "9": {
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7222222222222223,
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.9283208020050128,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.15569272976680382,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7222222222222223,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.987922893653888,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.15569272976680382,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "10": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7907510934032004,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7222222222222223,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.27967711301044634,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9126369017537889,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7222222222222223,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.27967711301044634
+        },
+        "11": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8056003970647784,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 1.0000000000000004,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.43333333333333335,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9863968043825486,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 1.0000000000000004,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.43333333333333335,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "12": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.9067734401067733,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7191358024691358,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.43333333333333335,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9923458607669134,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7191358024691358,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.43333333333333335,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "13": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8046252873069039,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.43827160493827155,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.43333333333333335,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9584362139917697,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.43827160493827155,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.43333333333333335,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "14": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8377445027176995,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.4444444444444445,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.44003527336860665,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9854994019744978,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.4444444444444445,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.44003527336860665,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "15": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.6831122789456123,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7222222222222223,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9888888888888892,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9644718792866942,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7222222222222223,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9888888888888892
+        },
+        "16": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8624321301031012,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7191358024691358,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.1925925925925926,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9605337183476299,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 1.0000000000000004,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9898989898989901
+        },
+        "17": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7392499563707194,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9917695473251031,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.933677863910422,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9917695473251031
+        },
+        "18": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8067905298320046,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7191358024691358,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.43333333333333335,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9310069706895107,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7191358024691358,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9897119341563788
+        },
+        "19": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.844620314981885,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9938271604938275,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9975308641975311,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9543614401107339,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9938271604938275,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9975308641975311,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "20": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7996909794387321,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.717283950617284,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.1925925925925926,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9319062604465657,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9358024691358026,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9897119341563788,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "21": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7864268440403628,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7222222222222223,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.4351851851851852,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9746728947057862,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7222222222222223,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9938271604938275
+        },
+        "22": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.6864006350624774,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.6222222222222222,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.4345679012345679,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9455523295131161,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.6222222222222222,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9925925925925928,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "23": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7816583081368027,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.43333333333333335,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.6222222222222222,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/bicycle_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9839002267573699,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9898989898989901,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.6222222222222222,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0,
+            "T4MetricV2/bicycle_AP_center_distance_bev_1.0": 0.0
+        },
+        "24": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7254936308857877,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 1.0000000000000004,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9898989898989901,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9357462410952521,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 1.0000000000000004,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9898989898989901
+        },
+        "25": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7760851824638214,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7222222222222223,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.43347050754458166,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9514444530032438,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7222222222222223,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9903978052126203
+        },
+        "26": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8749174128253547,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.4444444444444445,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9917695473251031,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9811861550763314,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.4444444444444445,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9917695473251031,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "27": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8771980771980773,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.43333333333333335,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9633880522769412,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.6195286195286193
+        },
+        "28": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8024691358024689,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9897119341563788,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9413580246913582,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9897119341563788,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "29": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8478309327846366,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9958847736625516,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9911816578483248,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9584362139917697,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9958847736625516,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9911816578483248
+        },
+        "30": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7911479064142477,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.43364197530864196,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8960368581141529,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.43364197530864196
+        },
+        "31": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8767222392624969,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 1.0000000000000004,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.43415637860082307,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9764815635740638,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 1.0000000000000004,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.43415637860082307
+        },
+        "32": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7298775488102973,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9320987654320989,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.43415637860082307,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8722067514465177,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9320987654320989,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.43415637860082307
+        },
+        "33": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.9292933855264479,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.994708994708995,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.7835390946502057,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9292933855264479,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.994708994708995,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.7835390946502057,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "34": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8110935030569169,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.5617283950617284,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9894179894179898,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9192052346464112,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9958847736625516,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9894179894179898
+        },
+        "35": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.9611832611832614,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9611832611832614,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.0,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "36": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.9032101326112217,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 1.0000000000000004,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.5093082500489905,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9800278473962687,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 1.0000000000000004,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.5093082500489905,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "37": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.9288674271886613,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.3781893004115225,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9779485751415578,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.9975308641975311,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.3781893004115225
+        },
+        "38": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7514789565715492,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7222222222222223,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9897119341563788,
+            "T4MetricV2/bicycle_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9500401347623573,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7222222222222223,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9897119341563788,
+            "T4MetricV2/bicycle_AP_center_distance_bev_1.0": 0.0,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        },
+        "39": {
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.7191358024691358,
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.727084429224425,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.7839506172839507,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.7191358024691358,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9596119929453264,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.7839506172839507,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0
+        }
+    },
+    "db_j6_v3/7d350f50-7935-43f3-a689-67ec4d4e22da/0": {
+        "40": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8675687883417353,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8675687883417353,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.0
+        },
+        "41": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7377910155687936,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8692810457516342,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.0
+        },
+        "42": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8986531986531989,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8986531986531989,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.0,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.4444444444444443
+        },
+        "43": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8092473884140551,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8092473884140551,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.9917695473251031,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.0
+        },
+        "44": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7675313640225923,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8994801819363225,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.0
+        },
+        "45": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.9164609053497944,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9888888888888892,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9164609053497944,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9888888888888892,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.0
+        },
+        "46": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7568109977932845,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9888888888888892,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/bicycle_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8914504681815473,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.0,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9888888888888892,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.0,
+            "T4MetricV2/bicycle_AP_center_distance_bev_1.0": 0.0
+        },
+        "47": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8703703703703705,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.9901234567901236,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9274691358024693,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.9901234567901236,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.0
+        },
+        "48": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.9473262032085562,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 1.0000000000000004,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9888888888888892,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9473262032085562,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 1.0000000000000004,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9888888888888892,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.0
+        },
+        "49": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8371556686195909,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.4351851851851852,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.1648148148148148,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.958465146202838,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.4351851851851852,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.1648148148148148,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.0
+        },
+        "50": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.9246187363834424,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.9911816578483248,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9246187363834424,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.9911816578483248,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.0,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.0
+        },
+        "51": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8854203409758966,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.9911816578483248,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.4395061728395061,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8854203409758966,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.9911816578483248,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.4395061728395061,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.0
+        },
+        "52": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8649610136452244,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.9938271604938275,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8649610136452244,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.9938271604938275,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.0
+        },
+        "53": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7573637610674648,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.9903978052126203,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8648698626476404,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.9903978052126203,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.0
+        },
+        "54": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7555947481873408,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.9911816578483248,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8864128909217477,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.9911816578483248,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.0
+        },
+        "55": {
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.9917695473251031,
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.7803663878932697,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9888888888888892,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.9917695473251031,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9067546813160848,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9888888888888892
+        },
+        "56": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8074508832394595,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.9938271604938275,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.07325102880658435,
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.893431286948015,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.9938271604938275,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.07325102880658435,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.0
+        },
+        "57": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8423056580144704,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.9938271604938275,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9888888888888892,
+            "T4MetricV2/bicycle_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.89865519899801,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.9938271604938275,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9888888888888892,
+            "T4MetricV2/bicycle_AP_center_distance_bev_1.0": 0.0
+        },
+        "58": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8278569167458056,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.9925925925925928,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.9888888888888892,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.8859501952094545,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.9925925925925928,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.9888888888888892
+        },
+        "59": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8185871056241426,
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.9911816578483248,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.4395061728395061,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9180181870489199,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.9911816578483248,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.4395061728395061
+        }
+    }
+}

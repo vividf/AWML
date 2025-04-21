@@ -1,0 +1,24 @@
+{
+    "aggregated_metrics": {
+        "car": {
+            "T4MetricV2/car_AP_center_distance_bev_0.5": 0.8032318671703921,
+            "T4MetricV2/car_AP_center_distance_bev_1.0": 0.9333414211885672
+        },
+        "truck": {
+            "T4MetricV2/truck_AP_center_distance_bev_0.5": 0.808041427924469,
+            "T4MetricV2/truck_AP_center_distance_bev_1.0": 0.8277428513295961
+        },
+        "bus": {
+            "T4MetricV2/bus_AP_center_distance_bev_0.5": 0.8148081449219374,
+            "T4MetricV2/bus_AP_center_distance_bev_1.0": 0.83845637450649
+        },
+        "bicycle": {
+            "T4MetricV2/bicycle_AP_center_distance_bev_0.5": 0.0,
+            "T4MetricV2/bicycle_AP_center_distance_bev_1.0": 0.0
+        },
+        "pedestrian": {
+            "T4MetricV2/pedestrian_AP_center_distance_bev_0.5": 0.38877048693924654,
+            "T4MetricV2/pedestrian_AP_center_distance_bev_1.0": 0.505524123722082
+        }
+    }
+}
