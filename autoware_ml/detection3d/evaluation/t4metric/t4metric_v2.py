@@ -11,13 +11,11 @@ from mmdet3d.structures import LiDARInstance3DBoxes
 from mmengine.evaluator import BaseMetric
 from mmengine.logging import MMLogger
 from perception_eval.common.dataset import FrameGroundTruth
-from perception_eval.common.evaluation_task import EvaluationTask
 from perception_eval.common.label import AutowareLabel, Label
 from perception_eval.common.object import DynamicObject
 from perception_eval.common.shape import Shape, ShapeType
 from perception_eval.config.perception_evaluation_config import PerceptionEvaluationConfig
 from perception_eval.evaluation.metrics import MetricsScoreConfig
-from perception_eval.evaluation.result.object_result import DynamicObjectWithPerceptionResult
 from perception_eval.evaluation.result.perception_frame import PerceptionFrame
 from perception_eval.evaluation.result.perception_frame_config import (
     CriticalObjectFilterConfig,
