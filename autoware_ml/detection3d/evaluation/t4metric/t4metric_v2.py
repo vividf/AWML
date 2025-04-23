@@ -181,12 +181,12 @@ class T4MetricV2(BaseMetric):
         scenes, scene_metrics = self.init_scene_metrics_from_results(results)
 
         for scene_id, samples in scenes.items():
-            for sample_id, frame_result in samples.items():
-                estimated_objects = frame_result.estimated_objects
+            for sample_id, perception_frame in samples.items():
+
                 frame_result: PerceptionFrameResult = evaluator.add_frame_result(
                     unix_time=time.time(),
-                    ground_truth_now_frame=frame_result.ground_truth_objects,
-                    estimated_objects=estimated_objects,
+                    ground_truth_now_frame=perception_frame.ground_truth_objects,
+                    estimated_objects=perception_frame.estimated_objects,
                     critical_object_filter_config=self.critical_object_filter_config,
                     frame_pass_fail_config=self.frame_pass_fail_config,
                 )
@@ -359,7 +359,7 @@ class T4MetricV2(BaseMetric):
             ground_truth_objects=ground_truth_objects,
         )
 
-    def save_perception_frame(self, scene_id: str, sample_idx: int, perception_frame_result: PerceptionFrame) -> None:
+    def save_perception_frame(self, scene_id: str, sample_idx: int, perception_frame: PerceptionFrame) -> None:
         """
         Stores the processed perceptoin result in self.results following the format.
         [
@@ -385,10 +385,10 @@ class T4MetricV2(BaseMetric):
 
         index = self.scene_id_to_index_map.get(scene_id, None)
         if index is not None:
-            self.results[index][scene_id][sample_idx] = perception_frame_result
+            self.results[index][scene_id][sample_idx] = perception_frame
         else:
             # New scene: append to results and record its index
-            self.results.append({scene_id: {sample_idx: perception_frame_result}})
+            self.results.append({scene_id: {sample_idx: perception_frame}})
             self.scene_id_to_index_map[scene_id] = len(self.results) - 1
 
     def save_results_to_pickle(self, path: Path) -> None:
@@ -440,11 +440,11 @@ class T4MetricV2(BaseMetric):
         Flattens scene dictionaries from the results and initializes scene_metrics structure.
 
         Args:
-            results (list): List of dictionaries mapping scene_id to sample_id-frame_result pairs.
+            results (list): List of dictionaries mapping scene_id to sample_id-perception_frame pairs.
 
         Returns:
             tuple:
-                - scenes (dict): Flattened dict of {scene_id: {sample_id: frame_result}}.
+                - scenes (dict): Flattened dict of {scene_id: {sample_id: perception_frame}}.
                 - scene_metrics (dict): Initialized dict of {scene_id: {sample_id: dict}} for metric storage.
         """
         scenes = {scene_id: samples for scene in results for scene_id, samples in scene.items()}
