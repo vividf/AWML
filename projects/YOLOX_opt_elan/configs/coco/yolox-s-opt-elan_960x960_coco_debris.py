@@ -5,9 +5,14 @@ _base_ = [
 ]
 
 custom_imports = dict(
-    imports=["projects.YOLOX_opt_elan.yolox", "autoware_ml.detection2d.metrics",
-        "projects.YOLOX_opt_elan.yolox.models", "projects.YOLOX_opt_elan.yolox.datasets.t4_dataset"],
-    allow_failed_imports=False)
+    imports=[
+        "projects.YOLOX_opt_elan.yolox",
+        "autoware_ml.detection2d.metrics",
+        "projects.YOLOX_opt_elan.yolox.models",
+        "projects.YOLOX_opt_elan.yolox.datasets.t4_dataset",
+    ],
+    allow_failed_imports=False,
+)
 
 # conv_yoloxで変換したumedaモデル
 load_from = "/workspace/tlr-yolox/autoware-ml/checkpoints/epoch_12_ckpt_mmdet.pth"
