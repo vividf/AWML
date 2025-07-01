@@ -189,7 +189,7 @@ class T4MetricV2(BaseMetric):
                     frame_pass_fail_config=self.frame_pass_fail_config,
                 )
 
-                for map_instance in frame_result.metrics_score.maps:
+                for map_instance in frame_result.metrics_score.mean_ap_values:
                     self.process_map_instance(map_instance, scene_metrics[scene_id][sample_id])
 
         final_metric_score = evaluator.get_scene_result()
@@ -199,7 +199,7 @@ class T4MetricV2(BaseMetric):
         aggregated_metrics = {"aggregated_metrics": {}}
 
         # Iterate over the list of maps in final_metric_score
-        for map_instance in final_metric_score.maps:
+        for map_instance in final_metric_score.mean_ap_values:
             self.process_map_instance(map_instance, metric_dict)
 
             for key, value in metric_dict.items():
@@ -424,14 +424,13 @@ class T4MetricV2(BaseMetric):
     def process_map_instance(self, map_instance, metrics_store):
         matching_mode = map_instance.matching_mode.value  # e.g., "Center Distance" or "Plane Distance"
 
-        for ap in map_instance.aps:
-            label = ap.target_labels[0].value  # AutowareLabel
-            threshold = ap.matching_threshold
-            ap_value = ap.ap
 
-            # Construct the metric key
-            key = f"T4MetricV2/{label}_AP_{matching_mode.lower().replace(' ', '_')}_{threshold}"
-            metrics_store[key] = ap_value
+        for label, aps in map_instance.label_to_aps.items():
+            for ap in aps:
+                threshold = ap.matching_threshold
+                ap_value = ap.ap
+                key = f"T4MetricV2/{label.value}_AP_{matching_mode.lower().replace(' ', '_')}_{threshold}"
+                metrics_store[key] = ap_value
 
     def init_scene_metrics_from_results(self, results: list[Dict[str, Dict[str, Any]]]) -> tuple[dict, dict]:
         """
