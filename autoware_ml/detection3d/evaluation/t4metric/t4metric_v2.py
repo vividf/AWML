@@ -212,8 +212,11 @@ class T4MetricV2(BaseMetric):
         with open("scene_metrics.json", "w") as scene_file:
             json.dump(scene_metrics, scene_file, indent=4)
 
-        with open("aggregated_metrics.json", "w") as agg_file:
-            json.dump(aggregated_metrics, agg_file, indent=4)
+        with open("aggregated_metrics.json", "w") as aggregated_file:
+            json.dump(aggregated_metrics, aggregated_file, indent=4)
+
+        # Reset
+        self.scene_id_to_index_map.clear()
 
         return metric_dict
 
@@ -422,6 +425,39 @@ class T4MetricV2(BaseMetric):
         return results
 
     def process_map_instance(self, map_instance, metrics_store):
+        """Processes a single map instance object and stores the AP (Average Precision)
+        metrics into the provided metrics store dictionary.
+
+        Each map instance represents evaluation results for a particular matching mode
+        (e.g., Center Distance, Plane Distance), containing AP values for different
+        classes and matching thresholds.
+
+        This method converts these AP values into metric names following the pattern:
+            T4MetricV2/{label_name}_AP_{matching_mode}_{threshold}
+        For example:
+            T4MetricV2/car_AP_center_distance_0.5
+
+        Args:
+            map_instance: An object containing the evaluation results for one metric,
+                with attributes:
+                  - matching_mode (Enum): The matching mode used for AP calculation.
+                  - label_to_aps (Dict[Label, List[Ap]]): A mapping from label
+                        to a list of AP results under different thresholds.
+            metrics_store (dict): A dictionary into which the processed metric key-value
+                pairs will be stored. Keys are metric names as strings, and values are
+                the corresponding AP scores as floats.
+
+        Example:
+            Given:
+                map_instance.matching_mode.value = "Center Distance"
+                map_instance.label_to_aps = {
+                    AutowareLabel.CAR: [Ap]
+                }
+            The resulting metric inserted into metrics_store will be:
+                {
+                    'T4MetricV2/car_AP_center_distance_0.5': 0.7
+                }
+        """
         matching_mode = map_instance.matching_mode.value  # e.g., "Center Distance" or "Plane Distance"
 
         for label, aps in map_instance.label_to_aps.items():
