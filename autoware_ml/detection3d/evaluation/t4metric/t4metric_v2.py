@@ -424,7 +424,6 @@ class T4MetricV2(BaseMetric):
     def process_map_instance(self, map_instance, metrics_store):
         matching_mode = map_instance.matching_mode.value  # e.g., "Center Distance" or "Plane Distance"
 
-
         for label, aps in map_instance.label_to_aps.items():
             for ap in aps:
                 threshold = ap.matching_threshold
