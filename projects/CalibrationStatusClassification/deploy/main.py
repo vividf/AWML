@@ -73,7 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("deploy_cfg", help="deploy config path")
     parser.add_argument("model_cfg", help="model config path")
     parser.add_argument("checkpoint", help="model checkpoint path")
-    parser.add_argument("img", help="image used to convert model model")
+    parser.add_argument("img", help="image used to convert model")
     parser.add_argument("--work-dir", default=os.getcwd(), help="output directory")
     parser.add_argument("--device", default="cpu", help="device for conversion")
     parser.add_argument("--log-level", default="INFO", choices=list(logging._nameToLevel.keys()), help="logging level")

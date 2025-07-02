@@ -8,7 +8,7 @@ from mmcv.transforms import BaseTransform
 from mmpretrain.registry import TRANSFORMS
 from mmpretrain.structures import DataSample
 
-from autoware_ml.classification2d.datasets.transforms.camera_lidar_augumentation import alter_calibration
+from autoware_ml.classification2d.datasets.transforms.camera_lidar_augmentation import alter_calibration
 
 
 @TRANSFORMS.register_module()

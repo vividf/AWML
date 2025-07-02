@@ -46,7 +46,7 @@ def bounded_gaussian(center, min_value, max_value, scale):
 
 
 def random_unit_sphere():
-    """This method generates a single random point in the unir sphere"""
+    """This method generates a single random point in the unit sphere"""
 
     u1 = np.random.rand()
     u2 = np.random.rand()
