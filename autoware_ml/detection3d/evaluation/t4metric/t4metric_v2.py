@@ -15,7 +15,7 @@ from perception_eval.common.label import AutowareLabel, Label
 from perception_eval.common.object import DynamicObject
 from perception_eval.common.shape import Shape, ShapeType
 from perception_eval.config.perception_evaluation_config import PerceptionEvaluationConfig
-from perception_eval.evaluation.metrics import MetricsScoreConfig
+from perception_eval.evaluation.metrics import MetricsScore, MetricsScoreConfig
 from perception_eval.evaluation.result.perception_frame import PerceptionFrame
 from perception_eval.evaluation.result.perception_frame_config import (
     CriticalObjectFilterConfig,
@@ -117,6 +117,8 @@ class T4MetricV2(BaseMetric):
 
         self.scene_id_to_index_map: Dict[str, int] = {}  # scene_id to index map in self.results
 
+        self.frame_results_with_info = []
+
         self.logger = MMLogger.get_current_instance()
 
     # override of BaseMetric.process
@@ -176,7 +178,7 @@ class T4MetricV2(BaseMetric):
             evaluation_config=self.perception_evaluator_configs, load_ground_truth=False
         )
 
-        scenes, scene_metrics = self.init_scene_metrics_from_results(results)
+        scenes = self.init_scene_from_results(results)
 
         for scene_id, samples in scenes.items():
             for sample_id, perception_frame in samples.items():
@@ -189,36 +191,117 @@ class T4MetricV2(BaseMetric):
                     frame_pass_fail_config=self.frame_pass_fail_config,
                 )
 
-                for map_instance in frame_result.metrics_score.mean_ap_values:
-                    self.process_map_instance(map_instance, scene_metrics[scene_id][sample_id])
+                self.frame_results_with_info.append(
+                    {"scene_id": scene_id, "sample_id": sample_id, "frame_result": frame_result}
+                )
+
+        self.write_scene_metrics(scenes)
+        metric_dict = self.get_metric_dict()
 
         final_metric_score = evaluator.get_scene_result()
         self.logger.info(f"final metrics result {final_metric_score}")
 
-        metric_dict = {}
-        aggregated_metrics = {"aggregated_metrics": {}}
-
-        # Iterate over the list of maps in final_metric_score
-        for map_instance in final_metric_score.mean_ap_values:
-            self.process_map_instance(map_instance, metric_dict)
-
-            for key, value in metric_dict.items():
-                # Extract label name from metric_dict's keys
-                # Example: T4MetricV2/car_AP_center_distance_bev_0.5
-                label = key.split("/")[1].split("_")[0]
-                aggregated_metrics["aggregated_metrics"].setdefault(label, {})
-                aggregated_metrics["aggregated_metrics"][label][key] = value
-
-        with open("scene_metrics.json", "w") as scene_file:
-            json.dump(scene_metrics, scene_file, indent=4)
-
-        with open("aggregated_metrics.json", "w") as aggregated_file:
-            json.dump(aggregated_metrics, aggregated_file, indent=4)
+        self.write_aggregated_metrics(final_metric_score)
 
         # Reset
         self.scene_id_to_index_map.clear()
 
         return metric_dict
+
+    def get_metric_dict(self) -> Dict[str, float]:
+        """
+        Extract metrics from frame_results and return as a dictionary.
+
+        Returns:
+            Dict[str, float]: Dictionary containing metric names and values.
+        """
+        metric_dict = {}
+
+        for frame_info in self.frame_results_with_info:
+            frame_result = frame_info["frame_result"]
+            for map_instance in frame_result.metrics_score.mean_ap_values:
+                self.process_map_instance(map_instance, metric_dict)
+
+        return metric_dict
+
+    def write_scene_metrics(self, scenes: dict):
+        """
+        Writes scene metrics to a JSON file in nested format.
+        """
+        # Initialize scene_metrics with empty dicts for each sample in each scene
+        scene_metrics = {
+            scene_id: {sample_id: {} for sample_id in samples.keys()} for scene_id, samples in scenes.items()
+        }
+
+        for frame_info in self.frame_results_with_info:
+            scene_id = frame_info["scene_id"]
+            sample_id = frame_info["sample_id"]
+            frame_result = frame_info["frame_result"]
+
+            # Create "all" section if not yet present
+            all_metrics = scene_metrics[scene_id][sample_id].setdefault("all", {})
+
+            # Use process_map_instance to handle the metrics processing
+            for map_instance in frame_result.metrics_score.mean_ap_values:
+                matching_mode = map_instance.matching_mode.value.lower().replace(" ", "_")
+                matching_metrics = all_metrics.setdefault(matching_mode, {})
+
+                for label, aps in map_instance.label_to_aps.items():
+                    label_name = label.value
+                    matching_metrics.setdefault(label_name, {})
+                    matching_metrics[label_name].setdefault("ap", {})
+
+                    for ap in aps:
+                        threshold_str = str(ap.matching_threshold)
+                        matching_metrics[label_name]["ap"][threshold_str] = ap.ap
+
+                for label, aphs in map_instance.label_to_aphs.items():
+                    label_name = label.value
+                    matching_metrics.setdefault(label_name, {})
+                    matching_metrics[label_name].setdefault("aph", {})
+                    for aph in aphs:
+                        threshold_str = str(aph.matching_threshold)
+                        matching_metrics[label_name]["aph"][threshold_str] = aph.ap
+
+        # Write the nested metrics to JSON
+        with open("scene_metrics.json", "w") as scene_file:
+            json.dump(scene_metrics, scene_file, indent=4)
+
+    def write_aggregated_metrics(self, metrics_score: MetricsScore):
+        """
+        Writes aggregated metrics to a JSON file with the specified format.
+
+        Args:
+            metrics_score (MetricsScore): The final metrics score from the evaluator.
+        """
+        # Initialize the simple structure
+        aggregated_metrics = {"all": {"metrics": {}, "aggregated_metric_label": {}}}
+
+        for map_instance in metrics_score.mean_ap_values:
+            matching_mode = map_instance.matching_mode.value.lower().replace(" ", "_")
+
+            for label, aps in map_instance.label_to_aps.items():
+                label_name = label.value
+
+                for ap in aps:
+                    threshold = ap.matching_threshold
+                    ap_value = ap.ap
+
+                    # Create the metric key
+                    key = f"T4MetricV2/{label_name}_AP_{matching_mode}_{threshold}"
+
+                    # Add to metrics
+                    aggregated_metrics["all"]["aggregated_metric_label"][key] = ap_value
+
+            # Calculate mAP as the mean of all AP values
+            map_key = f"T4MetricV2/mAP_{matching_mode}"
+            maph_key = f"T4MetricV2/mAPH_{matching_mode}"
+            aggregated_metrics["all"]["metrics"][map_key] = map_instance.map
+            aggregated_metrics["all"]["metrics"][maph_key] = map_instance.maph
+
+        # Write to JSON file
+        with open("aggregated_metrics.json", "w") as aggregated_file:
+            json.dump(aggregated_metrics, aggregated_file, indent=4)
 
     def convert_index_to_label(self, bbox_label_index: int) -> Label:
         """
@@ -486,3 +569,16 @@ class T4MetricV2(BaseMetric):
         }
 
         return scenes, scene_metrics
+
+    def init_scene_from_results(self, results: list[Dict[str, Dict[str, Any]]]) -> dict:
+        """
+        Flattens scene dictionaries from the results (self.results)
+
+        Args:
+            results (list): List of dictionaries mapping scene_id to sample_id-perception_frame pairs.
+
+        Returns:
+            - scenes (dict): Flattened dict of {scene_id: {sample_id: perception_frame}}.
+        """
+        scenes = {scene_id: samples for scene in results for scene_id, samples in scene.items()}
+        return scenes
