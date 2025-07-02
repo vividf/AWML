@@ -217,12 +217,85 @@ class T4MetricV2(BaseMetric):
         """
         metric_dict = {}
 
+        # Process metrics from all frame results
         for frame_info in self.frame_results_with_info:
             frame_result = frame_info["frame_result"]
-            for map_instance in frame_result.metrics_score.mean_ap_values:
-                self.process_map_instance(map_instance, metric_dict)
+            # Use the shared method to process metrics from this frame
+            frame_metrics = self.process_metrics_for_aggregation(frame_result.metrics_score)
+            # Merge the metrics into the overall metric_dict
+            metric_dict.update(frame_metrics)
+
+        print("metric_dict", metric_dict)
+        return metric_dict
+
+    def process_metrics_for_aggregation(self, metrics_score: MetricsScore) -> Dict[str, float]:
+        """
+        Process metrics from MetricsScore and return a dictionary of all metrics.
+        This is a shared method used by both get_metric_dict and write_aggregated_metrics.
+
+        Args:
+            metrics_score (MetricsScore): The metrics score to process.
+
+        Returns:
+            Dict[str, float]: Dictionary containing all processed metrics.
+        """
+        metric_dict = {}
+
+        for map_instance in metrics_score.mean_ap_values:
+            matching_mode = map_instance.matching_mode.value.lower().replace(" ", "_")
+
+            # Process individual AP values
+            for label, aps in map_instance.label_to_aps.items():
+                label_name = label.value
+
+                for ap in aps:
+                    threshold = ap.matching_threshold
+                    ap_value = ap.ap
+
+                    # Create the metric key
+                    key = f"T4MetricV2/{label_name}_AP_{matching_mode}_{threshold}"
+                    metric_dict[key] = ap_value
+
+            # Add mAP and mAPH values
+            map_key = f"T4MetricV2/mAP_{matching_mode}"
+            maph_key = f"T4MetricV2/mAPH_{matching_mode}"
+            metric_dict[map_key] = map_instance.map
+            metric_dict[maph_key] = map_instance.maph
 
         return metric_dict
+
+    def write_aggregated_metrics(self, metrics_score: MetricsScore):
+        """
+        Writes aggregated metrics to a JSON file with the specified format.
+
+        Args:
+            metrics_score (MetricsScore): The final metrics score from the evaluator.
+        """
+        # Get all metrics using the shared method
+        all_metrics = self.process_metrics_for_aggregation(metrics_score)
+
+        # Initialize the structure
+        aggregated_metrics = {"all": {"metrics": {}, "aggregated_metric_label": {}}}
+
+        # Organize metrics by label
+        for key, value in all_metrics.items():
+            if key.startswith("T4MetricV2/mAP_") or key.startswith("T4MetricV2/mAPH_"):
+                # These are overall metrics, put them in the metrics section
+                aggregated_metrics["all"]["metrics"][key] = value
+            else:
+                # These are per-label metrics, extract label name and organize
+                # Example: T4MetricV2/car_AP_center_distance_0.5
+                parts = key.split("/")[1].split("_")
+                label_name = parts[0]  # car, truck, etc.
+
+                if label_name not in aggregated_metrics["all"]["aggregated_metric_label"]:
+                    aggregated_metrics["all"]["aggregated_metric_label"][label_name] = {}
+
+                aggregated_metrics["all"]["aggregated_metric_label"][label_name][key] = value
+
+        # Write to JSON file
+        with open("aggregated_metrics.json", "w") as aggregated_file:
+            json.dump(aggregated_metrics, aggregated_file, indent=4)
 
     def write_scene_metrics(self, scenes: dict):
         """
@@ -241,7 +314,6 @@ class T4MetricV2(BaseMetric):
             # Create "all" section if not yet present
             all_metrics = scene_metrics[scene_id][sample_id].setdefault("all", {})
 
-            # Use process_map_instance to handle the metrics processing
             for map_instance in frame_result.metrics_score.mean_ap_values:
                 matching_mode = map_instance.matching_mode.value.lower().replace(" ", "_")
                 matching_metrics = all_metrics.setdefault(matching_mode, {})
@@ -266,42 +338,6 @@ class T4MetricV2(BaseMetric):
         # Write the nested metrics to JSON
         with open("scene_metrics.json", "w") as scene_file:
             json.dump(scene_metrics, scene_file, indent=4)
-
-    def write_aggregated_metrics(self, metrics_score: MetricsScore):
-        """
-        Writes aggregated metrics to a JSON file with the specified format.
-
-        Args:
-            metrics_score (MetricsScore): The final metrics score from the evaluator.
-        """
-        # Initialize the simple structure
-        aggregated_metrics = {"all": {"metrics": {}, "aggregated_metric_label": {}}}
-
-        for map_instance in metrics_score.mean_ap_values:
-            matching_mode = map_instance.matching_mode.value.lower().replace(" ", "_")
-
-            for label, aps in map_instance.label_to_aps.items():
-                label_name = label.value
-
-                for ap in aps:
-                    threshold = ap.matching_threshold
-                    ap_value = ap.ap
-
-                    # Create the metric key
-                    key = f"T4MetricV2/{label_name}_AP_{matching_mode}_{threshold}"
-
-                    # Add to metrics
-                    aggregated_metrics["all"]["aggregated_metric_label"][key] = ap_value
-
-            # Calculate mAP as the mean of all AP values
-            map_key = f"T4MetricV2/mAP_{matching_mode}"
-            maph_key = f"T4MetricV2/mAPH_{matching_mode}"
-            aggregated_metrics["all"]["metrics"][map_key] = map_instance.map
-            aggregated_metrics["all"]["metrics"][maph_key] = map_instance.maph
-
-        # Write to JSON file
-        with open("aggregated_metrics.json", "w") as aggregated_file:
-            json.dump(aggregated_metrics, aggregated_file, indent=4)
 
     def convert_index_to_label(self, bbox_label_index: int) -> Label:
         """
@@ -376,7 +412,7 @@ class T4MetricV2(BaseMetric):
         dynamic_objects = [
             DynamicObject(
                 unix_time=time,
-                frame_id=self.perception_evaluator_configs.frame_id,
+                frame_id=self.pprocess_metrics_for_aggregationerception_evaluator_configs.frame_id,
                 position=tuple(bbox[:3]),
                 orientation=Quaternion(np.cos(bbox[6] / 2), 0, 0, np.sin(bbox[6] / 2)),
                 shape=Shape(shape_type=ShapeType.BOUNDING_BOX, size=tuple(bbox[3:6])),
