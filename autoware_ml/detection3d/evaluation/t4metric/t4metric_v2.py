@@ -203,8 +203,7 @@ class T4MetricV2(BaseMetric):
             self.logger.error(f"Error in compute_metrics: {e}")
             raise
         finally:
-            # Cleanup
-            self._cleanup()
+            self._clean_up()
 
     def _validate_results(self, results: List[dict]) -> None:
         """Validate that the results contain valid data.
@@ -296,7 +295,7 @@ class T4MetricV2(BaseMetric):
         except Exception as e:
             self.logger.error(f"Failed to write output files: {e}")
 
-    def _cleanup(self) -> None:
+    def _clean_up(self) -> None:
         """Clean up resources after computation."""
         self.scene_id_to_index_map.clear()
         self.frame_results_with_info.clear()
@@ -345,6 +344,7 @@ class T4MetricV2(BaseMetric):
         """
         try:
             # Initialize the structure
+            # TODO(vividf): change this when we have multiple metrics for different distance thresholds
             aggregated_metrics = {"all": {"metrics": {}, "aggregated_metric_label": {}}}
 
             # Organize metrics by label
