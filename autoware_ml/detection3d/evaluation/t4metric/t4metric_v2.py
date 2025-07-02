@@ -383,39 +383,11 @@ class T4MetricV2(BaseMetric):
                           perception frame data.
         """
         try:
-            # Initialize scene_metrics with empty dicts for each sample in each scene
-            scene_metrics = {
-                scene_id: {sample_id: {} for sample_id in samples.keys()} for scene_id, samples in scenes.items()
-            }
+            # Initialize scene_metrics structure
+            scene_metrics = self._initialize_scene_metrics_structure(scenes)
 
-            for frame_info in self.frame_results_with_info:
-                scene_id = frame_info["scene_id"]
-                sample_id = frame_info["sample_id"]
-                frame_result = frame_info["frame_result"]
-
-                # Create "all" section if not yet present
-                all_metrics = scene_metrics[scene_id][sample_id].setdefault("all", {})
-
-                for map_instance in frame_result.metrics_score.mean_ap_values:
-                    matching_mode = map_instance.matching_mode.value.lower().replace(" ", "_")
-                    matching_metrics = all_metrics.setdefault(matching_mode, {})
-
-                    for label, aps in map_instance.label_to_aps.items():
-                        label_name = label.value
-                        matching_metrics.setdefault(label_name, {})
-                        matching_metrics[label_name].setdefault("ap", {})
-
-                        for ap in aps:
-                            threshold_str = str(ap.matching_threshold)
-                            matching_metrics[label_name]["ap"][threshold_str] = ap.ap
-
-                    for label, aphs in map_instance.label_to_aphs.items():
-                        label_name = label.value
-                        matching_metrics.setdefault(label_name, {})
-                        matching_metrics[label_name].setdefault("aph", {})
-                        for aph in aphs:
-                            threshold_str = str(aph.matching_threshold)
-                            matching_metrics[label_name]["aph"][threshold_str] = aph.ap
+            # Process all frame results and populate metrics
+            self._populate_scene_metrics(scene_metrics)
 
             # Write the nested metrics to JSON
             output_path = self.output_dir / "scene_metrics.json"
@@ -427,6 +399,102 @@ class T4MetricV2(BaseMetric):
         except Exception as e:
             self.logger.error(f"Failed to write scene metrics: {e}")
             raise
+
+    def _initialize_scene_metrics_structure(self, scenes: dict) -> dict:
+        """Initialize the scene metrics structure with empty dictionaries.
+
+        Args:
+            scenes (dict): Dictionary mapping scene_id to samples.
+
+        Returns:
+            dict: Initialized scene metrics structure.
+        """
+        return {scene_id: {sample_id: {} for sample_id in samples.keys()} for scene_id, samples in scenes.items()}
+
+    def _populate_scene_metrics(self, scene_metrics: dict) -> None:
+        """Populate scene metrics with data from frame results.
+
+        Args:
+            scene_metrics (dict): The scene metrics structure to populate.
+        """
+        for frame_info in self.frame_results_with_info:
+            scene_id = frame_info["scene_id"]
+            sample_id = frame_info["sample_id"]
+            frame_result = frame_info["frame_result"]
+
+            # Get or create the metrics structure for this frame
+            frame_metrics = scene_metrics[scene_id][sample_id].setdefault("all", {})
+
+            # Process all map instances for this frame
+            self._process_frame_map_instances(frame_metrics, frame_result.metrics_score.mean_ap_values)
+
+    def _process_frame_map_instances(self, frame_metrics: dict, map_instances) -> None:
+        """Process all map instances for a single frame and populate the metrics structure.
+
+        This method iterates through map instances (e.g., center_distance, plane_distance)
+        and processes both AP (Average Precision) and APH (Average Precision with Heading)
+        values for each label and threshold.
+
+        Args:
+            frame_metrics (dict): The metrics structure for this frame. This dictionary
+                will be populated with the processed metrics. The structure is:
+                {
+                    "matching_mode1": {
+                        "label_name": {
+                            "ap": {"threshold": value},
+                            "aph": {"threshold": value}
+                        }
+                    },
+                    "matching_mode2": {
+                        ...
+                    }
+                }
+            map_instances: List of map instances to process. Each instance contains
+                label_to_aps and label_to_aphs dictionaries.
+        """
+        for map_instance in map_instances:
+            matching_mode = map_instance.matching_mode.value.lower().replace(" ", "_")
+            matching_metrics = frame_metrics.setdefault(matching_mode, {})
+
+            # Process AP values
+            self._process_ap_values(matching_metrics, map_instance.label_to_aps)
+
+            # Process APH values
+            self._process_aph_values(matching_metrics, map_instance.label_to_aphs)
+
+    def _process_ap_values(self, matching_metrics: dict, label_to_aps: dict) -> None:
+        """Process AP values for all labels.
+
+        Args:
+            matching_metrics (dict): The matching metrics structure to populate.
+            label_to_aps (dict): Dictionary mapping labels to AP values.
+        """
+        for label, aps in label_to_aps.items():
+            label_name = label.value
+            label_metrics = matching_metrics.setdefault(label_name, {})
+            ap_metrics = label_metrics.setdefault("ap", {})
+
+            # Add AP values for each threshold
+            for ap in aps:
+                threshold_str = str(ap.matching_threshold)
+                ap_metrics[threshold_str] = ap.ap
+
+    def _process_aph_values(self, matching_metrics: dict, label_to_aphs: dict) -> None:
+        """Process APH values for all labels.
+
+        Args:
+            matching_metrics (dict): The matching metrics structure to populate.
+            label_to_aphs (dict): Dictionary mapping labels to APH values.
+        """
+        for label, aphs in label_to_aphs.items():
+            label_name = label.value
+            label_metrics = matching_metrics.setdefault(label_name, {})
+            aph_metrics = label_metrics.setdefault("aph", {})
+
+            # Add APH values for each threshold
+            for aph in aphs:
+                threshold_str = str(aph.matching_threshold)
+                aph_metrics[threshold_str] = aph.ap
 
     def _convert_index_to_label(self, bbox_label_index: int) -> Label:
         """
