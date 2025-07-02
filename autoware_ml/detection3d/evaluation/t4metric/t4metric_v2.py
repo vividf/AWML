@@ -67,6 +67,9 @@ class T4MetricV2(BaseMetric):
               ground truth from the pickle file, and runs `compute_metrics()`.
 
             Defaults to None.
+        output_dir (Optional[Union[Path, str]]):
+            Path to the output directory for metrics files.
+            Defaults to None.
     """
 
     def __init__(
@@ -81,6 +84,7 @@ class T4MetricV2(BaseMetric):
         critical_object_filter_config: Optional[Dict[str, Any]] = None,
         frame_pass_fail_config: Optional[Dict[str, Any]] = None,
         results_pickle_path: Optional[Union[Path, str]] = None,
+        output_dir: Optional[Union[Path, str]] = None,
     ) -> None:
 
         self.default_prefix = "T4MetricV2"
@@ -99,6 +103,10 @@ class T4MetricV2(BaseMetric):
             raise ValueError(f"results_pickle_path must end with '.pkl', got: {self.results_pickle_path}")
 
         self.results_pickle_exists = True if self.results_pickle_path and self.results_pickle_path.exists() else False
+
+        # Set output directory for metrics files
+        self.output_dir = Path(output_dir) if output_dir else Path.cwd()
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.target_labels = [AutowareLabel[label.upper()] for label in self.class_names]
 
@@ -130,7 +138,7 @@ class T4MetricV2(BaseMetric):
 
         Args:
             data_batch (dict): A batch of data from the dataloader.
-            data_samples (Sequence[dict]): A batch of outputs from the model and the ground truth of dataset  I am
+            data_samples (Sequence[dict]): A batch of outputs from the model and the ground truth of dataset.
         """
 
         if self.results_pickle_exists:
@@ -139,10 +147,10 @@ class T4MetricV2(BaseMetric):
 
         for data_sample in data_samples:
             current_time = data_sample["timestamp"]
-            scene_id = self.parse_scene_id(data_sample["lidar_path"])
-            frame_ground_truth = self.parse_ground_truth_from_sample(current_time, data_sample)
-            perception_frame = self.parse_predictions_from_sample(current_time, data_sample, frame_ground_truth)
-            self.save_perception_frame(scene_id, data_sample["sample_idx"], perception_frame)
+            scene_id = self._parse_scene_id(data_sample["lidar_path"])
+            frame_ground_truth = self._parse_ground_truth_from_sample(current_time, data_sample)
+            perception_frame = self._parse_predictions_from_sample(current_time, data_sample, frame_ground_truth)
+            self._save_perception_frame(scene_id, data_sample["sample_idx"], perception_frame)
 
     # override of BaseMetric.compute_metrics
     def compute_metrics(
@@ -168,70 +176,134 @@ class T4MetricV2(BaseMetric):
                 ...
             }
         """
+        try:
+            # Load or save results based on pickle configuration
+            results = self._handle_results_persistence(results)
+            # Validate input
+            self._validate_results(results)
 
+            # Initialize evaluator and process scenes
+            evaluator = self._create_evaluator()
+            scenes = self._init_scene_from_results(results)
+
+            # Process all frames and collect results
+            self._process_all_frames(evaluator, scenes)
+
+            # Compute final metrics
+            final_metric_score = evaluator.get_scene_result()
+            self.logger.info(f"Final metrics result: {final_metric_score}")
+            final_metric_dict = self._process_metrics_for_aggregation(final_metric_score)
+
+            # Write output files
+            self._write_output_files(scenes, final_metric_dict)
+
+            return final_metric_dict
+
+        except Exception as e:
+            self.logger.error(f"Error in compute_metrics: {e}")
+            raise
+        finally:
+            # Cleanup
+            self._cleanup()
+
+    def _validate_results(self, results: List[dict]) -> None:
+        """Validate that the results contain valid data.
+
+        Args:
+            results (List[dict]): The results to validate.
+
+        Raises:
+            ValueError: If results are invalid.
+        """
+        if not results:
+            raise ValueError("Results list is empty")
+
+        if not isinstance(results, list):
+            raise ValueError(f"Results must be a list, got {type(results)}")
+
+        # Check that each result is a dictionary
+        for i, result in enumerate(results):
+            if not isinstance(result, dict):
+                raise ValueError(f"Result at index {i} must be a dictionary, got {type(result)}")
+
+            # Check that each result contains scene data
+            if not result:
+                raise ValueError(f"Result at index {i} is empty")
+
+        self.logger.info(f"Validated {len(results)} result entries")
+
+    def _handle_results_persistence(self, results: List[dict]) -> List[dict]:
+        """Handle loading or saving results based on pickle configuration.
+
+        Args:
+            results (List[dict]): The current results.
+
+        Returns:
+            List[dict]: The results to use for evaluation.
+        """
         if self.results_pickle_exists:
-            results = self.load_results_from_pickle(self.results_pickle_path)
+            self.logger.info("Loading results from pickle file")
+            return self._load_results_from_pickle(self.results_pickle_path)
         elif self.results_pickle_path:
-            self.save_results_to_pickle(self.results_pickle_path)
+            self.logger.info("Saving results to pickle file")
+            self._save_results_to_pickle(self.results_pickle_path)
+        return results
 
-        evaluator = PerceptionEvaluationManager(
+    def _create_evaluator(self) -> PerceptionEvaluationManager:
+        """Create and return a perception evaluation manager.
+
+        Returns:
+            PerceptionEvaluationManager: The configured evaluator.
+        """
+        return PerceptionEvaluationManager(
             evaluation_config=self.perception_evaluator_configs, load_ground_truth=False
         )
 
-        scenes = self.init_scene_from_results(results)
+    def _process_all_frames(self, evaluator: PerceptionEvaluationManager, scenes: dict) -> None:
+        """Process all frames in all scenes and collect frame results.
 
+        Args:
+            evaluator (PerceptionEvaluationManager): The evaluator instance.
+            scenes (dict): Dictionary of scenes and their samples.
+        """
         for scene_id, samples in scenes.items():
             for sample_id, perception_frame in samples.items():
+                try:
+                    frame_result: PerceptionFrameResult = evaluator.add_frame_result(
+                        unix_time=time.time(),
+                        ground_truth_now_frame=perception_frame.ground_truth_objects,
+                        estimated_objects=perception_frame.estimated_objects,
+                        critical_object_filter_config=self.critical_object_filter_config,
+                        frame_pass_fail_config=self.frame_pass_fail_config,
+                    )
 
-                frame_result: PerceptionFrameResult = evaluator.add_frame_result(
-                    unix_time=time.time(),
-                    ground_truth_now_frame=perception_frame.ground_truth_objects,
-                    estimated_objects=perception_frame.estimated_objects,
-                    critical_object_filter_config=self.critical_object_filter_config,
-                    frame_pass_fail_config=self.frame_pass_fail_config,
-                )
+                    self.frame_results_with_info.append(
+                        {"scene_id": scene_id, "sample_id": sample_id, "frame_result": frame_result}
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Failed to process frame {scene_id}/{sample_id}: {e}")
 
-                self.frame_results_with_info.append(
-                    {"scene_id": scene_id, "sample_id": sample_id, "frame_result": frame_result}
-                )
+    def _write_output_files(self, scenes: dict, final_metric_dict: dict) -> None:
+        """Write scene metrics and aggregated metrics to files.
 
-        self.write_scene_metrics(scenes)
-        metric_dict = self.get_metric_dict()
+        Args:
+            scenes (dict): Dictionary of scenes and their samples.
+            final_metric_dict (dict): The final metrics dictionary.
+        """
+        try:
+            self._write_scene_metrics(scenes)
+            self._write_aggregated_metrics(final_metric_dict)
+        except Exception as e:
+            self.logger.error(f"Failed to write output files: {e}")
 
-        final_metric_score = evaluator.get_scene_result()
-        self.logger.info(f"final metrics result {final_metric_score}")
-
-        self.write_aggregated_metrics(final_metric_score)
-
-        # Reset
+    def _cleanup(self) -> None:
+        """Clean up resources after computation."""
         self.scene_id_to_index_map.clear()
+        self.frame_results_with_info.clear()
 
-        return metric_dict
-
-    def get_metric_dict(self) -> Dict[str, float]:
-        """
-        Extract metrics from frame_results and return as a dictionary.
-
-        Returns:
-            Dict[str, float]: Dictionary containing metric names and values.
-        """
-        metric_dict = {}
-
-        # Process metrics from all frame results
-        for frame_info in self.frame_results_with_info:
-            frame_result = frame_info["frame_result"]
-            # Use the shared method to process metrics from this frame
-            frame_metrics = self.process_metrics_for_aggregation(frame_result.metrics_score)
-            # Merge the metrics into the overall metric_dict
-            metric_dict.update(frame_metrics)
-
-        print("metric_dict", metric_dict)
-        return metric_dict
-
-    def process_metrics_for_aggregation(self, metrics_score: MetricsScore) -> Dict[str, float]:
+    def _process_metrics_for_aggregation(self, metrics_score: MetricsScore) -> Dict[str, float]:
         """
         Process metrics from MetricsScore and return a dictionary of all metrics.
-        This is a shared method used by both get_metric_dict and write_aggregated_metrics.
 
         Args:
             metrics_score (MetricsScore): The metrics score to process.
@@ -264,82 +336,99 @@ class T4MetricV2(BaseMetric):
 
         return metric_dict
 
-    def write_aggregated_metrics(self, metrics_score: MetricsScore):
+    def _write_aggregated_metrics(self, final_metric_dict: dict):
         """
         Writes aggregated metrics to a JSON file with the specified format.
 
         Args:
-            metrics_score (MetricsScore): The final metrics score from the evaluator.
+            final_metric_dict (dict): Dictionary containing processed metrics from the evaluator.
         """
-        # Get all metrics using the shared method
-        all_metrics = self.process_metrics_for_aggregation(metrics_score)
+        try:
+            # Initialize the structure
+            aggregated_metrics = {"all": {"metrics": {}, "aggregated_metric_label": {}}}
 
-        # Initialize the structure
-        aggregated_metrics = {"all": {"metrics": {}, "aggregated_metric_label": {}}}
+            # Organize metrics by label
+            for key, value in final_metric_dict.items():
+                if key.startswith("T4MetricV2/mAP_") or key.startswith("T4MetricV2/mAPH_"):
+                    # These are overall metrics, put them in the metrics section
+                    aggregated_metrics["all"]["metrics"][key] = value
+                else:
+                    # These are per-label metrics, extract label name and organize
+                    # Example: T4MetricV2/car_AP_center_distance_0.5
+                    parts = key.split("/")[1].split("_")
+                    label_name = parts[0]  # car, truck, etc.
 
-        # Organize metrics by label
-        for key, value in all_metrics.items():
-            if key.startswith("T4MetricV2/mAP_") or key.startswith("T4MetricV2/mAPH_"):
-                # These are overall metrics, put them in the metrics section
-                aggregated_metrics["all"]["metrics"][key] = value
-            else:
-                # These are per-label metrics, extract label name and organize
-                # Example: T4MetricV2/car_AP_center_distance_0.5
-                parts = key.split("/")[1].split("_")
-                label_name = parts[0]  # car, truck, etc.
+                    if label_name not in aggregated_metrics["all"]["aggregated_metric_label"]:
+                        aggregated_metrics["all"]["aggregated_metric_label"][label_name] = {}
 
-                if label_name not in aggregated_metrics["all"]["aggregated_metric_label"]:
-                    aggregated_metrics["all"]["aggregated_metric_label"][label_name] = {}
+                    aggregated_metrics["all"]["aggregated_metric_label"][label_name][key] = value
 
-                aggregated_metrics["all"]["aggregated_metric_label"][label_name][key] = value
+            # Write to JSON file
+            output_path = self.output_dir / "aggregated_metrics.json"
+            with open(output_path, "w") as aggregated_file:
+                json.dump(aggregated_metrics, aggregated_file, indent=4)
 
-        # Write to JSON file
-        with open("aggregated_metrics.json", "w") as aggregated_file:
-            json.dump(aggregated_metrics, aggregated_file, indent=4)
+            self.logger.info(f"Aggregated metrics written to: {output_path}")
 
-    def write_scene_metrics(self, scenes: dict):
+        except Exception as e:
+            self.logger.error(f"Failed to write aggregated metrics: {e}")
+            raise
+
+    def _write_scene_metrics(self, scenes: dict):
         """
         Writes scene metrics to a JSON file in nested format.
+
+        Args:
+            scenes (dict): Dictionary mapping scene_id to samples, where each sample contains
+                          perception frame data.
         """
-        # Initialize scene_metrics with empty dicts for each sample in each scene
-        scene_metrics = {
-            scene_id: {sample_id: {} for sample_id in samples.keys()} for scene_id, samples in scenes.items()
-        }
+        try:
+            # Initialize scene_metrics with empty dicts for each sample in each scene
+            scene_metrics = {
+                scene_id: {sample_id: {} for sample_id in samples.keys()} for scene_id, samples in scenes.items()
+            }
 
-        for frame_info in self.frame_results_with_info:
-            scene_id = frame_info["scene_id"]
-            sample_id = frame_info["sample_id"]
-            frame_result = frame_info["frame_result"]
+            for frame_info in self.frame_results_with_info:
+                scene_id = frame_info["scene_id"]
+                sample_id = frame_info["sample_id"]
+                frame_result = frame_info["frame_result"]
 
-            # Create "all" section if not yet present
-            all_metrics = scene_metrics[scene_id][sample_id].setdefault("all", {})
+                # Create "all" section if not yet present
+                all_metrics = scene_metrics[scene_id][sample_id].setdefault("all", {})
 
-            for map_instance in frame_result.metrics_score.mean_ap_values:
-                matching_mode = map_instance.matching_mode.value.lower().replace(" ", "_")
-                matching_metrics = all_metrics.setdefault(matching_mode, {})
+                for map_instance in frame_result.metrics_score.mean_ap_values:
+                    matching_mode = map_instance.matching_mode.value.lower().replace(" ", "_")
+                    matching_metrics = all_metrics.setdefault(matching_mode, {})
 
-                for label, aps in map_instance.label_to_aps.items():
-                    label_name = label.value
-                    matching_metrics.setdefault(label_name, {})
-                    matching_metrics[label_name].setdefault("ap", {})
+                    for label, aps in map_instance.label_to_aps.items():
+                        label_name = label.value
+                        matching_metrics.setdefault(label_name, {})
+                        matching_metrics[label_name].setdefault("ap", {})
 
-                    for ap in aps:
-                        threshold_str = str(ap.matching_threshold)
-                        matching_metrics[label_name]["ap"][threshold_str] = ap.ap
+                        for ap in aps:
+                            threshold_str = str(ap.matching_threshold)
+                            matching_metrics[label_name]["ap"][threshold_str] = ap.ap
 
-                for label, aphs in map_instance.label_to_aphs.items():
-                    label_name = label.value
-                    matching_metrics.setdefault(label_name, {})
-                    matching_metrics[label_name].setdefault("aph", {})
-                    for aph in aphs:
-                        threshold_str = str(aph.matching_threshold)
-                        matching_metrics[label_name]["aph"][threshold_str] = aph.ap
+                    for label, aphs in map_instance.label_to_aphs.items():
+                        label_name = label.value
+                        matching_metrics.setdefault(label_name, {})
+                        matching_metrics[label_name].setdefault("aph", {})
+                        for aph in aphs:
+                            threshold_str = str(aph.matching_threshold)
+                            matching_metrics[label_name]["aph"][threshold_str] = aph.ap
 
-        # Write the nested metrics to JSON
-        with open("scene_metrics.json", "w") as scene_file:
-            json.dump(scene_metrics, scene_file, indent=4)
+            # Write the nested metrics to JSON
+            output_path = self.output_dir / "scene_metrics.json"
+            with open(output_path, "w") as scene_file:
+                json.dump(scene_metrics, scene_file, indent=4)
 
-    def convert_index_to_label(self, bbox_label_index: int) -> Label:
+            self.logger.info(f"Scene metrics written to: {output_path}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to write scene metrics: {e}")
+            raise
+
+    def _convert_index_to_label(self, bbox_label_index: int) -> Label:
         """
         Convert a bounding box label index into a Label object containing the corresponding AutowareLabel.
 
@@ -353,8 +442,8 @@ class T4MetricV2(BaseMetric):
         autoware_label = AutowareLabel.__members__.get(class_name.upper(), AutowareLabel.UNKNOWN)
         return Label(label=autoware_label, name=class_name)
 
-    def parse_scene_id(self, lidar_path: str) -> str:
-        """parse scene ID from the LiDAR file path.
+    def _parse_scene_id(self, lidar_path: str) -> str:
+        """Parse scene ID from the LiDAR file path.
 
         Removes the `data_root` prefix and the trailing `/data` section.
 
@@ -382,12 +471,13 @@ class T4MetricV2(BaseMetric):
         except ValueError:
             return _UNKNOWN
 
-    def parse_ground_truth_from_sample(self, time: float, data_sample: Dict[str, Any]) -> FrameGroundTruth:
+    def _parse_ground_truth_from_sample(self, time: float, data_sample: Dict[str, Any]) -> FrameGroundTruth:
         """Parses ground truth objects from the given data sample.
 
         Args:
             time (float): The timestamp in seconds of the frame (sample).
-            A dictionary containing the predicted instances, including 3D bounding boxes, scores, and labels.
+            data_sample (Dict[str, Any]): A dictionary containing the ground truth data,
+                                        including 3D bounding boxes, labels, and point counts.
 
         Returns:
             FrameGroundTruth: A structured representation of the ground truth objects,
@@ -412,13 +502,13 @@ class T4MetricV2(BaseMetric):
         dynamic_objects = [
             DynamicObject(
                 unix_time=time,
-                frame_id=self.pprocess_metrics_for_aggregationerception_evaluator_configs.frame_id,
+                frame_id=self.perception_evaluator_configs.frame_id,
                 position=tuple(bbox[:3]),
                 orientation=Quaternion(np.cos(bbox[6] / 2), 0, 0, np.sin(bbox[6] / 2)),
                 shape=Shape(shape_type=ShapeType.BOUNDING_BOX, size=tuple(bbox[3:6])),
                 velocity=(bbox[7], bbox[8], 0.0),
                 semantic_score=1.0,
-                semantic_label=self.convert_index_to_label(int(label)),
+                semantic_label=self._convert_index_to_label(int(label)),
                 pointcloud_num=int(num_pts),
             )
             for bbox, label, num_pts in zip(bboxes, gt_labels_3d, num_lidar_pts)
@@ -433,7 +523,7 @@ class T4MetricV2(BaseMetric):
             raw_data=None,
         )
 
-    def parse_predictions_from_sample(
+    def _parse_predictions_from_sample(
         self, time: float, data_sample: Dict[str, Any], ground_truth_objects: FrameGroundTruth
     ) -> PerceptionFrame:
         """
@@ -467,7 +557,7 @@ class T4MetricV2(BaseMetric):
                 shape=Shape(shape_type=ShapeType.BOUNDING_BOX, size=tuple(bbox[3:6])),
                 velocity=(bbox[7], bbox[8], 0.0),
                 semantic_score=float(score),
-                semantic_label=self.convert_index_to_label(int(label)),
+                semantic_label=self._convert_index_to_label(int(label)),
             )
             for bbox, score, label in zip(bboxes, scores, labels)
             if not (np.isnan(score) or np.isnan(label) or np.any(np.isnan(bbox)))
@@ -479,21 +569,19 @@ class T4MetricV2(BaseMetric):
             ground_truth_objects=ground_truth_objects,
         )
 
-    def save_perception_frame(self, scene_id: str, sample_idx: int, perception_frame: PerceptionFrame) -> None:
+    def _save_perception_frame(self, scene_id: str, sample_idx: int, perception_frame: PerceptionFrame) -> None:
         """
-        Stores the processed perceptoin result in self.results following the format.
+        Stores the processed perception result in self.results following the format:
         [
             {
-                <scence_id>:
+                <scene_id>:
                     {<sample_idx>: <PerceptionFrame>},
                     {<sample_idx>: <PerceptionFrame>},
-
             },
             {
-                <scence_id>:
+                <scene_id>:
                     {<sample_idx>: <PerceptionFrame>},
                     {<sample_idx>: <PerceptionFrame>},
-
             },
         ]
 
@@ -511,7 +599,7 @@ class T4MetricV2(BaseMetric):
             self.results.append({scene_id: {sample_idx: perception_frame}})
             self.scene_id_to_index_map[scene_id] = len(self.results) - 1
 
-    def save_results_to_pickle(self, path: Path) -> None:
+    def _save_results_to_pickle(self, path: Path) -> None:
         """Save self.results to the given pickle file path.
 
         Args:
@@ -525,7 +613,7 @@ class T4MetricV2(BaseMetric):
         with open(path, "wb") as f:
             pickle.dump(self.results, f)
 
-    def load_results_from_pickle(self, path: Path) -> List[Dict]:
+    def _load_results_from_pickle(self, path: Path) -> List[Dict]:
         """Load results from a pickle file.
 
         Args:
@@ -543,78 +631,15 @@ class T4MetricV2(BaseMetric):
 
         return results
 
-    def process_map_instance(self, map_instance, metrics_store):
-        """Processes a single map instance object and stores the AP (Average Precision)
-        metrics into the provided metrics store dictionary.
-
-        Each map instance represents evaluation results for a particular matching mode
-        (e.g., Center Distance, Plane Distance), containing AP values for different
-        classes and matching thresholds.
-
-        This method converts these AP values into metric names following the pattern:
-            T4MetricV2/{label_name}_AP_{matching_mode}_{threshold}
-        For example:
-            T4MetricV2/car_AP_center_distance_0.5
-
-        Args:
-            map_instance: An object containing the evaluation results for one metric,
-                with attributes:
-                  - matching_mode (Enum): The matching mode used for AP calculation.
-                  - label_to_aps (Dict[Label, List[Ap]]): A mapping from label
-                        to a list of AP results under different thresholds.
-            metrics_store (dict): A dictionary into which the processed metric key-value
-                pairs will be stored. Keys are metric names as strings, and values are
-                the corresponding AP scores as floats.
-
-        Example:
-            Given:
-                map_instance.matching_mode.value = "Center Distance"
-                map_instance.label_to_aps = {
-                    AutowareLabel.CAR: [Ap]
-                }
-            The resulting metric inserted into metrics_store will be:
-                {
-                    'T4MetricV2/car_AP_center_distance_0.5': 0.7
-                }
+    def _init_scene_from_results(self, results: list[Dict[str, Dict[str, Any]]]) -> dict:
         """
-        matching_mode = map_instance.matching_mode.value  # e.g., "Center Distance" or "Plane Distance"
-
-        for label, aps in map_instance.label_to_aps.items():
-            for ap in aps:
-                threshold = ap.matching_threshold
-                ap_value = ap.ap
-                key = f"T4MetricV2/{label.value}_AP_{matching_mode.lower().replace(' ', '_')}_{threshold}"
-                metrics_store[key] = ap_value
-
-    def init_scene_metrics_from_results(self, results: list[Dict[str, Dict[str, Any]]]) -> tuple[dict, dict]:
-        """
-        Flattens scene dictionaries from the results and initializes scene_metrics structure.
+        Flattens scene dictionaries from the results (self.results).
 
         Args:
             results (list): List of dictionaries mapping scene_id to sample_id-perception_frame pairs.
 
         Returns:
-            tuple:
-                - scenes (dict): Flattened dict of {scene_id: {sample_id: perception_frame}}.
-                - scene_metrics (dict): Initialized dict of {scene_id: {sample_id: dict}} for metric storage.
-        """
-        scenes = {scene_id: samples for scene in results for scene_id, samples in scene.items()}
-
-        scene_metrics = {
-            scene_id: {sample_id: {} for sample_id in samples.keys()} for scene_id, samples in scenes.items()
-        }
-
-        return scenes, scene_metrics
-
-    def init_scene_from_results(self, results: list[Dict[str, Dict[str, Any]]]) -> dict:
-        """
-        Flattens scene dictionaries from the results (self.results)
-
-        Args:
-            results (list): List of dictionaries mapping scene_id to sample_id-perception_frame pairs.
-
-        Returns:
-            - scenes (dict): Flattened dict of {scene_id: {sample_id: perception_frame}}.
+            dict: Flattened dict of {scene_id: {sample_id: perception_frame}}.
         """
         scenes = {scene_id: samples for scene in results for scene_id, samples in scene.items()}
         return scenes
