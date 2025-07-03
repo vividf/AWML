@@ -229,7 +229,7 @@ class T4MetricV2(BaseMetric):
             if not result:
                 raise ValueError(f"Result at index {i} is empty")
 
-        self.logger.info(f"Validated {len(results)} result entries")
+        self.logger.info(f"Validated {len(results)} scenes")
 
     def _handle_results_persistence(self, results: List[dict]) -> List[dict]:
         """Handle loading or saving results based on pickle configuration.
