@@ -76,8 +76,15 @@ Make sure the dataset structure is as follows:
 ```
 
 Run training:
+
+- Single GPU:
 ```sh
 python tools/classification2d/train.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_t4base.py
+```
+
+- Multi GPU (example with 2 GPUs):
+```sh
+./tools/classification2d/dist_train.sh projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_t4base.py 2
 ```
 
 ### 5. Deploy
