@@ -11,11 +11,12 @@ from mmdet3d.structures import LiDARInstance3DBoxes
 from mmengine.evaluator import BaseMetric
 from mmengine.logging import MMLogger
 from perception_eval.common.dataset import FrameGroundTruth
-from perception_eval.common.label import AutowareLabel, Label
+from perception_eval.common.label import AutowareLabel, Label, LabelType
 from perception_eval.common.object import DynamicObject
 from perception_eval.common.shape import Shape, ShapeType
 from perception_eval.config.perception_evaluation_config import PerceptionEvaluationConfig
 from perception_eval.evaluation.metrics import MetricsScore, MetricsScoreConfig
+from perception_eval.evaluation.metrics.detection.ap import Ap
 from perception_eval.evaluation.result.perception_frame import PerceptionFrame
 from perception_eval.evaluation.result.perception_frame_config import (
     CriticalObjectFilterConfig,
@@ -200,8 +201,7 @@ class T4MetricV2(BaseMetric):
             return final_metric_dict
 
         except Exception as e:
-            self.logger.error(f"Error in compute_metrics: {e}")
-            raise
+            raise RuntimeError(f"Error in compute_metrics: {e}")
         finally:
             self._clean_up()
 
@@ -214,11 +214,9 @@ class T4MetricV2(BaseMetric):
         Raises:
             ValueError: If results are invalid.
         """
-        if not results:
-            raise ValueError("Results list is empty")
+        assert results, "Results list is empty"
 
-        if not isinstance(results, list):
-            raise ValueError(f"Results must be a list, got {type(results)}")
+        assert isinstance(results, list), f"Results must be a list, got {type(results)}"
 
         # Check that each result is a dictionary
         for i, result in enumerate(results):
@@ -462,12 +460,24 @@ class T4MetricV2(BaseMetric):
             # Process APH values
             self._process_aph_values(matching_metrics, map_instance.label_to_aphs)
 
-    def _process_ap_values(self, matching_metrics: dict, label_to_aps: dict) -> None:
-        """Process AP values for all labels.
+    def _process_ap_values(
+        self, matching_metrics: Dict[str, Dict[str, Dict[str, float]]], label_to_aps: Dict[LabelType, List[Ap]]
+    ) -> None:
+        """
+        Process AP values for all labels.
 
         Args:
-            matching_metrics (dict): The matching metrics structure to populate.
-            label_to_aps (dict): Dictionary mapping labels to AP values.
+            matching_metrics (Dict[str, Dict[str, Dict[str, float]]]): Nested dictionary to accumulate metrics.
+                The structure is:
+                    {
+                        "<label_name>": {
+                            "ap": {"<threshold>": <ap_value>, ...},
+                            "aph": {"<threshold>": <aph_value>, ...}
+                        },
+                        ...
+                    }
+            label_to_aps (Dict[LabelType, List[Ap]]): Dictionary mapping each label
+                to a list of Ap objects, each representing the AP value for a specific matching threshold.
         """
         for label, aps in label_to_aps.items():
             label_name = label.value
@@ -479,12 +489,24 @@ class T4MetricV2(BaseMetric):
                 threshold_str = str(ap.matching_threshold)
                 ap_metrics[threshold_str] = ap.ap
 
-    def _process_aph_values(self, matching_metrics: dict, label_to_aphs: dict) -> None:
-        """Process APH values for all labels.
+    def _process_aph_values(
+        self, matching_metrics: Dict[str, Dict[str, Dict[str, float]]], label_to_aphs: Dict[LabelType, List[Ap]]
+    ) -> None:
+        """
+        Process APH values for all labels.
 
         Args:
-            matching_metrics (dict): The matching metrics structure to populate.
-            label_to_aphs (dict): Dictionary mapping labels to APH values.
+            matching_metrics (Dict[str, Dict[str, Dict[str, float]]]): Nested dictionary to accumulate metrics.
+                The structure is:
+                    {
+                        "<label_name>": {
+                            "ap": {"<threshold>": <ap_value>, ...},
+                            "aph": {"<threshold>": <aph_value>, ...}
+                        },
+                        ...
+                    }
+            label_to_aphs (Dict[LabelType, List[Ap]]): Dictionary mapping each label
+                to a list of Ap objects, each representing the APH value for a specific matching threshold.
         """
         for label, aphs in label_to_aphs.items():
             label_name = label.value
