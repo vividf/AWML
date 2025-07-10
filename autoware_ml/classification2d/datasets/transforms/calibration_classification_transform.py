@@ -26,14 +26,14 @@ class CalibrationClassificationTransform(BaseTransform):
     def transform(self, results, force_generate_miscalibration=False):
         # Set random seeds for reproducibility during validation
         if self.validation:
-            random.seed(results["sample_idx"])
-            np.random.seed(results["sample_idx"])
+            random.seed(results.get("sample_idx", 0))
+            np.random.seed(results.get("sample_idx", 0))
         else:
             random.seed(None)
             np.random.seed(None)
 
         # Loading and preparing data
-        camera_data, lidar_data, calibration_data = self.load_data(results["img_path"])
+        camera_data, lidar_data, calibration_data = self.load_data(results)
 
         # Image undistortion if necessary
         if self.undistort:
@@ -85,20 +85,46 @@ class CalibrationClassificationTransform(BaseTransform):
         results["data_samples"] = DataSample().set_gt_label(label)
         return results
 
-    def load_data(self, path):
-        """Loads camera, LiDAR, and calibration data."""
-        data_dir = os.path.dirname(path)
-        base_name = os.path.splitext(os.path.basename(path))[0].split("_")[0]
+    def load_data(self, results):
+        """Loads camera, LiDAR, and calibration data from t4dataset sample dict."""
+        img_path = results["img_path"]
+        pointcloud_path = results["pointcloud_path"]
+        calibration = results["calibration"]
 
-        camera_data = cv2.imread(path)
+        # 讀取影像
+        camera_data = cv2.imread(img_path)
 
-        lidar_data = np.load(os.path.join(data_dir, f"{base_name}_pointcloud.npz"))
-        lidar_data = {key: lidar_data[key] for key in lidar_data}
-        lidar_data["intensities"] = self.normalize_intensity(lidar_data["intensities"])
+        # 讀取 bin 格式點雲（float32, [x, y, z, intensity, ...]）
+        pc_raw = np.fromfile(pointcloud_path, dtype=np.float32)
+        if pc_raw.size % 4 == 0:
+            pc = pc_raw.reshape(-1, 4)
+        elif pc_raw.size % 5 == 0:
+            pc = pc_raw.reshape(-1, 5)[:, :4]
+        elif pc_raw.size % 6 == 0:
+            pc = pc_raw.reshape(-1, 6)[:, :4]
+        else:
+            raise ValueError(f"Unexpected pointcloud shape for {pointcloud_path}, size={pc_raw.size}")
+        lidar_data = {
+            "pointcloud": pc[:, :3],
+            "intensities": self.normalize_intensity(pc[:, 3]),
+        }
 
-        calibration_data_npz = np.load(os.path.join(data_dir, f"{base_name}_calibration.npz"))
-        calibration_data = {key: calibration_data_npz[key] for key in calibration_data_npz}
+        # calibration dict 需組成 camera_to_lidar_pose
+        calibration_data = {
+            "camera_matrix": calibration["camera_matrix"],
+            "distortion_coefficients": calibration["distortion_coefficients"],
+        }
+        # 四元數轉 3x3 rotation
+        from transforms3d.quaternions import quat2mat
 
+        q = calibration["rotation"]  # [w, x, y, z]
+        R = quat2mat(q)
+        t = calibration["translation"]
+        camera_to_lidar_pose = np.eye(4)
+        camera_to_lidar_pose[:3, :3] = R
+        camera_to_lidar_pose[:3, 3] = t
+        calibration_data["camera_to_lidar_pose"] = camera_to_lidar_pose
+        calibration_data["new_camera_matrix"] = calibration["camera_matrix"]
         return camera_data, lidar_data, calibration_data
 
     def normalize_intensity(self, intensities):

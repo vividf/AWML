@@ -1,4 +1,5 @@
 # autoware-ml
+/calibration_data
 /data
 /work_dirs
 tests/samplefiles/data

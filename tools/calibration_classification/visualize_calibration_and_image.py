@@ -44,15 +44,12 @@ def find_sensor_calibration(annotation_dir, channel_name):
 
 def load_pointcloud_bin(bin_path):
     pc_raw = np.fromfile(bin_path, dtype=np.float32)
-    if pc_raw.size % 4 == 0:
-        pc = pc_raw.reshape(-1, 4)
-    elif pc_raw.size % 5 == 0:
-        pc = pc_raw.reshape(-1, 5)[:, :4]
-    elif pc_raw.size % 6 == 0:
-        pc = pc_raw.reshape(-1, 6)[:, :4]
-    else:
-        raise ValueError(f"Unexpected pointcloud shape for {bin_path}, size={pc_raw.size}")
-    return pc[:, :3], pc[:, 3]
+    for n in [4, 5, 6, 7, 8]:
+        if pc_raw.size % n == 0:
+            print(f"[INFO] {bin_path} has {n} fields per point, total points: {pc_raw.size // n}")
+            pc = pc_raw.reshape(-1, n)
+            return pc[:, :3], pc[:, 3], n  # 回傳 n 讓你知道 field 數
+    raise ValueError(f"Unexpected pointcloud shape for {bin_path}, size={pc_raw.size}")
 
 
 def visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path):
@@ -73,7 +70,8 @@ def visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path)
     t_lidar = lidar_calib["translation"]
 
     # 讀取點雲
-    pointcloud, intensities = load_pointcloud_bin(pointcloud_path)
+    pointcloud, intensities, num_fields = load_pointcloud_bin(pointcloud_path)
+    print(f"[INFO] Detected {num_fields} fields per point in {pointcloud_path}")
     min_intensity = intensities.min()
     max_intensity = intensities.max()
     if min_intensity == max_intensity:

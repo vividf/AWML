@@ -4,8 +4,13 @@ _base_ = [
     "mmpretrain::_base_/schedules/imagenet_bs256.py",
 ]
 
+import autoware_ml.classification2d.datasets.t4_calibration_classification_dataset
+
 custom_imports = dict(
-    imports=["autoware_ml.classification2d.datasets.transforms.calibration_classification_transform"],
+    imports=[
+        "autoware_ml.classification2d.datasets.t4_calibration_classification_dataset",
+        "autoware_ml.classification2d.datasets.transforms.calibration_classification_transform",
+    ],
     allow_failed_imports=False,
 )
 
@@ -46,9 +51,8 @@ train_dataloader = dict(
     num_workers=batch_size,
     shuffle=True,
     dataset=dict(
-        type="mmpretrain.CustomDataset",
-        data_prefix="data/calibrated_data/training_set",
-        with_label=True,
+        type="T4CalibrationClassificationDataset",
+        data_root="/workspace/data/t4dataset/db_j6_v1",
         pipeline=train_pipeline,
     ),
 )
@@ -66,9 +70,8 @@ val_dataloader = dict(
     persistent_workers=False,
     shuffle=False,
     dataset=dict(
-        type="mmpretrain.CustomDataset",
-        data_prefix="data/calibrated_data/validation_set",
-        with_label=True,
+        type="T4CalibrationClassificationDataset",
+        data_root="/workspace/data/t4dataset/db_j6_v1",
         pipeline=val_pipeline,
     ),
 )
