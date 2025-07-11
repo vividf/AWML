@@ -64,17 +64,37 @@ def find_sensor_calibration(annotation_dir, channel_name):
     }
 
 
-def load_pointcloud_bin(bin_path):
+def load_pointcloud_bin(bin_path, show_details=False):
     pc_raw = np.fromfile(bin_path, dtype=np.float32)
-    for n in [4, 5, 6, 7, 8]:
-        if pc_raw.size % n == 0:
-            print(f"[INFO] {bin_path} has {n} fields per point, total points: {pc_raw.size // n}")
-            pc = pc_raw.reshape(-1, n)
-            return pc[:, :3], pc[:, 3], n  # 回傳 n 讓你知道 field 數
-    raise ValueError(f"Unexpected pointcloud shape for {bin_path}, size={pc_raw.size}")
+
+    # 直接使用5個fields
+    n = 5
+    if pc_raw.size % n != 0:
+        raise ValueError(f"Pointcloud size {pc_raw.size} is not divisible by {n}")
+
+    print(f"[INFO] {bin_path} has {n} fields per point, total points: {pc_raw.size // n}")
+    pc = pc_raw.reshape(-1, n)
+
+    if show_details:
+        # 顯示前幾個點的詳細信息
+        print(f"[DEBUG] First 5 points with {n} fields each:")
+        for i in range(min(5, len(pc))):
+            print(
+                f"  Point {i}: x={pc[i,0]:.3f}, y={pc[i,1]:.3f}, z={pc[i,2]:.3f}, intensity={pc[i,3]:.3f}, ring={pc[i,4]:.0f}"
+            )
+
+        # 顯示統計信息
+        print(f"[DEBUG] Point cloud statistics:")
+        print(f"  X range: {pc[:,0].min():.3f} ~ {pc[:,0].max():.3f}")
+        print(f"  Y range: {pc[:,1].min():.3f} ~ {pc[:,1].max():.3f}")
+        print(f"  Z range: {pc[:,2].min():.3f} ~ {pc[:,2].max():.3f}")
+        print(f"  Intensity range: {pc[:,3].min():.3f} ~ {pc[:,3].max():.3f}")
+        print(f"  Ring range: {pc[:,4].min():.0f} ~ {pc[:,4].max():.0f}")
+
+    return pc[:, :3], pc[:, 3], n  # 回傳 n 讓你知道 field 數
 
 
-def visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path, output_path=None):
+def visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path, output_path=None, show_details=False):
     # 讀取圖片
     image = cv2.imread(image_path)
     if image is None:
@@ -92,7 +112,7 @@ def visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path,
     t_lidar = lidar_calib["translation"]
 
     # 讀取點雲
-    pointcloud, intensities, num_fields = load_pointcloud_bin(pointcloud_path)
+    pointcloud, intensities, num_fields = load_pointcloud_bin(pointcloud_path, show_details)
     print(f"[INFO] Detected {num_fields} fields per point in {pointcloud_path}")
     min_intensity = intensities.min()
     max_intensity = intensities.max()
@@ -133,11 +153,34 @@ def visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path,
     # 畫在影像上
     vis_img = image_rgb.copy()
     intensities = np.asarray(intensities).astype(float).flatten()
-    for pt, inten in zip(img_points, intensities):
-        inten = float(inten)
-        color = plt.cm.jet(inten)[:3]  # RGB, 0~1
-        color = tuple(int(255 * float(c)) for c in color)
-        cv2.circle(vis_img, (int(pt[0]), int(pt[1])), 2, color, -1)
+
+    # 使用距離來決定顏色，讓近處為紅色，遠處為藍色
+    if len(intensities) > 0:
+        # 計算每個點到相機的距離
+        distances = np.sqrt(pointcloud[mask, 0] ** 2 + pointcloud[mask, 1] ** 2 + pointcloud[mask, 2] ** 2)
+
+        # 設定距離範圍 (可以根據需要調整)
+        min_dist = distances.min()
+        max_dist = distances.max()
+
+        # 反轉顏色映射：近處為紅色，遠處為藍色
+        dist_normalized = (distances - min_dist) / (max_dist - min_dist + 1e-8)
+        colors = plt.cm.jet(1.0 - dist_normalized)  # 反轉 colormap
+
+        print(f"[DEBUG] Distance range: {min_dist:.2f} ~ {max_dist:.2f} meters")
+
+        for i, (pt, inten) in enumerate(zip(img_points, intensities)):
+            # 獲取顏色
+            color = colors[i][:3]  # RGB, 0~1
+
+            # 確保顏色值在有效範圍內
+            color = np.clip(color, 0, 1)
+            color = tuple(int(255 * float(c)) for c in color)
+
+            # 根據強度調整點的大小
+            point_size = max(1, int(2 * inten + 1))
+
+            cv2.circle(vis_img, (int(pt[0]), int(pt[1])), point_size, color, -1)
 
     # 顯示或保存
     if output_path:
@@ -154,7 +197,7 @@ def visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path,
         plt.show()
 
 
-def visualize_scene_scene_id(root_path, dataset_version, scene_id, output_dir=None):
+def visualize_scene_scene_id(root_path, dataset_version, scene_id, output_dir=None, show_details=False):
     """Visualize all images in a scene given scene ID."""
     # Get scene root directory
     scene_root_dir_path = get_scene_root_dir_path(root_path, dataset_version, scene_id)
@@ -165,37 +208,51 @@ def visualize_scene_scene_id(root_path, dataset_version, scene_id, output_dir=No
     print(f"[INFO] Processing scene: {scene_id}")
     print(f"[INFO] Scene directory: {scene_root_dir_path}")
 
-    # Initialize Tier4 interface
-    t4 = Tier4(data_root=scene_root_dir_path, verbose=False)
-
     # Create output directory if specified
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
         print(f"[INFO] Output directory: {output_dir}")
 
-    # Process all samples in the scene
-    for i, sample in enumerate(t4.sample):
-        print(f"[INFO] Processing sample {i+1}/{len(t4.sample)}: {sample.token}")
+    # Get data directory paths
+    data_path = os.path.join(scene_root_dir_path, "data")
+    annotation_dir = os.path.join(scene_root_dir_path, "annotation")
 
-        # Get camera and lidar data for this sample
-        if "CAM_FRONT" not in sample.data:
-            print(f"[WARNING] Sample {sample.token} has no CAM_FRONT data, skipping...")
-            continue
+    if not os.path.exists(data_path):
+        raise ValueError(f"Data directory does not exist: {data_path}")
 
-        if "LIDAR_CONCAT" not in sample.data:
-            print(f"[WARNING] Sample {sample.token} has no LIDAR_CONCAT data, skipping...")
-            continue
+    if not os.path.exists(annotation_dir):
+        raise ValueError(f"Annotation directory does not exist: {annotation_dir}")
 
-        # Get file paths
-        cam_token = sample.data["CAM_FRONT"]
-        lidar_token = sample.data["LIDAR_CONCAT"]
+    # Get camera and lidar directories
+    cam_dir = os.path.join(data_path, "CAM_FRONT")
+    lidar_dir = os.path.join(data_path, "LIDAR_CONCAT")
 
-        cam_data = t4.get("sample_data", cam_token)
-        lidar_data = t4.get("sample_data", lidar_token)
+    if not os.path.exists(cam_dir):
+        raise ValueError(f"Camera directory does not exist: {cam_dir}")
 
-        image_path = os.path.join(t4.data_root, cam_data.filename)
-        pointcloud_path = os.path.join(t4.data_root, lidar_data.filename)
-        annotation_dir = os.path.join(t4.data_root, "annotation")
+    if not os.path.exists(lidar_dir):
+        raise ValueError(f"Lidar directory does not exist: {lidar_dir}")
+
+    # Get all image files
+    image_files = []
+    for fname in os.listdir(cam_dir):
+        if fname.endswith(".jpg"):
+            frame_id = os.path.splitext(fname)[0]
+            img_path = os.path.join(cam_dir, fname)
+            pc_path = os.path.join(lidar_dir, f"{frame_id}.pcd.bin")
+
+            # Check if corresponding pointcloud exists
+            if os.path.exists(pc_path):
+                image_files.append((frame_id, img_path, pc_path))
+
+    # Sort by frame_id to maintain order
+    image_files.sort(key=lambda x: int(x[0]))
+
+    print(f"[INFO] Found {len(image_files)} image-pointcloud pairs")
+
+    # Process all images
+    for i, (frame_id, image_path, pointcloud_path) in enumerate(image_files):
+        print(f"[INFO] Processing frame {i+1}/{len(image_files)}: {frame_id}")
 
         # Check if files exist
         if not os.path.exists(image_path):
@@ -209,13 +266,13 @@ def visualize_scene_scene_id(root_path, dataset_version, scene_id, output_dir=No
         # Generate output path if saving
         output_path = None
         if output_dir:
-            output_filename = f"sample_{i:06d}_{sample.token}.jpg"
+            output_filename = f"frame_{i:06d}_{frame_id}.jpg"
             output_path = os.path.join(output_dir, output_filename)
 
         try:
-            visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path, output_path)
+            visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path, output_path, show_details)
         except Exception as e:
-            print(f"[ERROR] Failed to process sample {sample.token}: {e}")
+            print(f"[ERROR] Failed to process frame {frame_id}: {e}")
             continue
 
     print(f"[INFO] Finished processing scene {scene_id}")
@@ -235,6 +292,9 @@ def main():
     parser.add_argument("--root_path", default="./data/t4dataset", help="Root path to T4Dataset")
     parser.add_argument("--dataset_version", help="Dataset version (e.g., db_jpntaxi_v2)")
     parser.add_argument("--output_dir", help="Output directory for saving visualizations")
+    parser.add_argument(
+        "--show_point_details", action="store_true", help="Show detailed point cloud field information"
+    )
 
     args = parser.parse_args()
 
@@ -248,13 +308,16 @@ def main():
             dataset_version=args.dataset_version,
             scene_id=args.scene_id,
             output_dir=args.output_dir,
+            show_details=args.show_point_details,
         )
     else:
         # Original single file processing
         if not all([args.image, args.annotation_dir, args.pointcloud]):
             raise ValueError("--image, --annotation_dir, and --pointcloud are required for single file processing")
 
-        visualize_calibration_and_image(args.image, args.annotation_dir, args.pointcloud)
+        visualize_calibration_and_image(
+            args.image, args.annotation_dir, args.pointcloud, show_details=args.show_point_details
+        )
 
 
 if __name__ == "__main__":
