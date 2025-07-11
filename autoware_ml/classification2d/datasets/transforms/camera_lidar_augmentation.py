@@ -1,9 +1,19 @@
+from typing import Tuple
+
 import numpy as np
 import transforms3d
 from scipy.stats import truncnorm
 
 
-def intensity_to_rainbow_color(value):
+def intensity_to_rainbow_color(value: float) -> Tuple[int, int, int]:
+    """Converts an intensity value to a rainbow color representation.
+
+    Args:
+        value (float): Intensity value to convert to color.
+
+    Returns:
+        Tuple[int, int, int]: RGB color values (0-255) representing the intensity.
+    """
     h = value * 5.0 + 1.0
     i = h // 1  # floor(h)
     f = h - i
@@ -26,7 +36,7 @@ def intensity_to_rainbow_color(value):
     return int(255 * r), int(255 * g), int(255 * b)
 
 
-def bounded_gaussian(center, min_value, max_value, scale):
+def bounded_gaussian(center: float, min_value: float, max_value: float, scale: float) -> float:
     """Generates a value from a truncated normal distribution centered at `center`,
     bounded by `min_value` and `max_value`.
 
@@ -47,8 +57,12 @@ def bounded_gaussian(center, min_value, max_value, scale):
     return truncnorm.rvs(a, b, loc=center, scale=scale)
 
 
-def random_unit_sphere():
-    """This method generates a single random point in the unit sphere"""
+def random_unit_sphere() -> np.ndarray:
+    """Generates a single random point in the unit sphere.
+
+    Returns:
+        np.ndarray: A 3D point [x, y, z] on the unit sphere.
+    """
 
     u1 = np.random.rand()
     u2 = np.random.rand()
@@ -60,11 +74,15 @@ def random_unit_sphere():
     return np.array([x, y, z])
 
 
-def random_rotation_matrix(angle):
-    """This method generates a rotion matrix to a coordinate system that is the result of rotating the original system by angle radians.
-    The rotation axis is also random an non contrained
+def random_rotation_matrix(angle: float) -> np.ndarray:
+    """Generates a rotation matrix to a coordinate system that is the result of rotating
+    the original system by angle radians. The rotation axis is also random and unconstrained.
 
-    angle: the angle in radians to rotate the coordinate system
+    Args:
+        angle (float): The angle in radians to rotate the coordinate system.
+
+    Returns:
+        np.ndarray: A 3x3 rotation matrix.
     """
     x, y, z = random_unit_sphere()
     w = np.sqrt(0.5 * (1.0 + np.cos(angle)))
@@ -72,17 +90,37 @@ def random_rotation_matrix(angle):
     return transforms3d.quaternions.quat2mat((w, factor * x, factor * y, factor * z))
 
 
-def random_translation(radius):
+def random_translation(radius: float) -> np.ndarray:
+    """Generates a random translation vector within a sphere of given radius.
+
+    Args:
+        radius (float): The radius of the sphere within which to generate the translation.
+
+    Returns:
+        np.ndarray: A 3D translation vector [x, y, z].
+    """
     return radius * random_unit_sphere()
 
 
 def alter_calibration(
-    camera_to_lidar_pose,
-    min_augmentation_angle,
-    max_augmentation_angle,
-    min_augmentation_radius,
-    max_augmentation_radius,
-):
+    camera_to_lidar_pose: np.ndarray,
+    min_augmentation_angle: float,
+    max_augmentation_angle: float,
+    min_augmentation_radius: float,
+    max_augmentation_radius: float,
+) -> np.ndarray:
+    """Alters the camera-to-LiDAR calibration by adding random rotation and translation noise.
+
+    Args:
+        camera_to_lidar_pose (np.ndarray): 4x4 transformation matrix from camera to LiDAR coordinates.
+        min_augmentation_angle (float): Minimum rotation angle in degrees.
+        max_augmentation_angle (float): Maximum rotation angle in degrees.
+        min_augmentation_radius (float): Minimum translation radius.
+        max_augmentation_radius (float): Maximum translation radius.
+
+    Returns:
+        np.ndarray: Modified 4x4 transformation matrix with added noise.
+    """
     # Generate random rotation and translation using bounded Gaussian distribution
     noise_angle = bounded_gaussian(
         center=min_augmentation_angle,

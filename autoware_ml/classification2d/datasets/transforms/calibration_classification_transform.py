@@ -1,5 +1,6 @@
 import os
 import random
+from typing import Any, Dict, Optional, Tuple, Union
 
 import cv2
 import matplotlib.pyplot as plt
@@ -15,7 +16,23 @@ from autoware_ml.classification2d.datasets.transforms.camera_lidar_augmentation 
 class CalibrationClassificationTransform(BaseTransform):
     """Transforms image, pointcloud, and calibration data into inputs for a calibration classifier."""
 
-    def __init__(self, validation=False, test=False, debug=False, undistort=True, enable_augmentation=False):
+    def __init__(
+        self,
+        validation: bool = False,
+        test: bool = False,
+        debug: bool = False,
+        undistort: bool = True,
+        enable_augmentation: bool = False,
+    ):
+        """Initialize the CalibrationClassificationTransform.
+
+        Args:
+            validation (bool): Whether this is for validation mode. Defaults to False.
+            test (bool): Whether this is for test mode. Defaults to False.
+            debug (bool): Whether to enable debug visualization. Defaults to False.
+            undistort (bool): Whether to undistort images. Defaults to True.
+            enable_augmentation (bool): Whether to enable data augmentation. Defaults to False.
+        """
         super().__init__()
         self.validation = validation
         self.test = test
@@ -23,7 +40,16 @@ class CalibrationClassificationTransform(BaseTransform):
         self.undistort = undistort
         self.enable_augmentation = enable_augmentation
 
-    def transform(self, results, force_generate_miscalibration=False):
+    def transform(self, results: Dict[str, Any], force_generate_miscalibration: bool = False) -> Dict[str, Any]:
+        """Transform input data for calibration classification.
+
+        Args:
+            results (Dict[str, Any]): Input data dictionary containing image path and other metadata.
+            force_generate_miscalibration (bool): Whether to force generation of miscalibration. Defaults to False.
+
+        Returns:
+            Dict[str, Any]: Transformed data dictionary with processed images and labels.
+        """
         # Set random seeds for reproducibility during validation
         if self.validation:
             random.seed(results["sample_idx"])
@@ -85,8 +111,16 @@ class CalibrationClassificationTransform(BaseTransform):
         results["data_samples"] = DataSample().set_gt_label(label)
         return results
 
-    def load_data(self, path):
-        """Loads camera, LiDAR, and calibration data."""
+    def load_data(self, path: str) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+        """Loads camera, LiDAR, and calibration data.
+
+        Args:
+            path (str): Path to the image file.
+
+        Returns:
+            Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+                Camera image, LiDAR data dictionary, and calibration data dictionary.
+        """
         data_dir = os.path.dirname(path)
         base_name = os.path.splitext(os.path.basename(path))[0].split("_")[0]
 
@@ -101,16 +135,34 @@ class CalibrationClassificationTransform(BaseTransform):
 
         return camera_data, lidar_data, calibration_data
 
-    def normalize_intensity(self, intensities):
-        """Normalizes LiDAR intensity values to [0, 1]."""
+    def normalize_intensity(self, intensities: np.ndarray) -> np.ndarray:
+        """Normalizes LiDAR intensity values to [0, 1].
+
+        Args:
+            intensities (np.ndarray): Raw intensity values.
+
+        Returns:
+            np.ndarray: Normalized intensity values in range [0, 1].
+        """
         min_intensity = intensities.min()
         max_intensity = intensities.max()
         if min_intensity == max_intensity:
             return np.zeros_like(intensities)
         return (intensities - min_intensity) / (max_intensity - min_intensity)
 
-    def undistort_image(self, image, calibration_data, alpha=0.0):
-        """Undistorts the image and updates the calibration data."""
+    def undistort_image(
+        self, image: np.ndarray, calibration_data: Dict[str, np.ndarray], alpha: float = 0.0
+    ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+        """Undistorts the image and updates the calibration data.
+
+        Args:
+            image (np.ndarray): Input image to undistort.
+            calibration_data (Dict[str, np.ndarray]): Camera calibration parameters.
+            alpha (float): Free scaling parameter. Defaults to 0.0.
+
+        Returns:
+            Tuple[np.ndarray, Dict[str, np.ndarray]]: Undistorted image and updated calibration data.
+        """
         if np.any(calibration_data["distortion_coefficients"]):
             distortion_coefficients = calibration_data["distortion_coefficients"]
             h, w = image.shape[:2]
@@ -126,12 +178,32 @@ class CalibrationClassificationTransform(BaseTransform):
             calibration_data["distortion_coefficients"] = np.zeros_like(calibration_data["distortion_coefficients"])
         return image, calibration_data
 
-    def signed_random(self, min_value, max_value):
+    def signed_random(self, min_value: float, max_value: float) -> float:
+        """Generates a random value with random sign.
+
+        Args:
+            min_value (float): Minimum absolute value.
+            max_value (float): Maximum absolute value.
+
+        Returns:
+            float: Random value with random sign.
+        """
         sg = 1 if random.random() < 0.5 else -1
         return sg * random.uniform(min_value, max_value)
 
-    def scale_and_crop_image(self, image, calibration_data, crop_ratio=0.6):
-        """Scales and crops the image, updating the camera matrix accordingly"""
+    def scale_and_crop_image(
+        self, image: np.ndarray, calibration_data: Dict[str, np.ndarray], crop_ratio: float = 0.6
+    ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+        """Scales and crops the image, updating the camera matrix accordingly.
+
+        Args:
+            image (np.ndarray): Input image to scale and crop.
+            calibration_data (Dict[str, np.ndarray]): Camera calibration parameters.
+            crop_ratio (float): Ratio for cropping. Defaults to 0.6.
+
+        Returns:
+            Tuple[np.ndarray, Dict[str, np.ndarray]]: Scaled and cropped image with updated calibration data.
+        """
         h, w = image.shape[:2]
 
         # Random noise for crop center offsets
@@ -169,17 +241,20 @@ class CalibrationClassificationTransform(BaseTransform):
 
         return resized_image, calibration_data
 
-    def apply_affine_transformation(self, image, calibration_data, max_distortion=0.001):
+    def apply_affine_transformation(
+        self, image: np.ndarray, calibration_data: Dict[str, np.ndarray], max_distortion: float = 0.001
+    ) -> Tuple[np.ndarray, Dict[str, np.ndarray], np.ndarray]:
         """
         Applies a controlled affine transformation to the image and updates the calibration matrix.
 
         Args:
             image (np.ndarray): Input image.
-            calibration_data (dict): Camera calibration data.
-            max_distortion (float): Maximum allowable distortion as a fraction of image dimensions.
+            calibration_data (Dict[str, np.ndarray]): Camera calibration data.
+            max_distortion (float): Maximum allowable distortion as a fraction of image dimensions. Defaults to 0.001.
 
         Returns:
-            tuple: Transformed image, updated calibration data, and the 3x3 affine transformation matrix.
+            Tuple[np.ndarray, Dict[str, np.ndarray], np.ndarray]:
+                Transformed image, updated calibration data, and the 3x3 affine transformation matrix.
         """
         h, w = image.shape[:2]
 
@@ -208,8 +283,19 @@ class CalibrationClassificationTransform(BaseTransform):
 
         return transformed_image, calibration_data, affine_transform_3x3
 
-    def apply_augmentations(self, image, calibration_data):
-        """Applies cropping, scaling, and affine transformations."""
+    def apply_augmentations(
+        self, image: np.ndarray, calibration_data: Dict[str, np.ndarray]
+    ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Optional[np.ndarray]]:
+        """Applies cropping, scaling, and affine transformations.
+
+        Args:
+            image (np.ndarray): Input image to augment.
+            calibration_data (Dict[str, np.ndarray]): Camera calibration parameters.
+
+        Returns:
+            Tuple[np.ndarray, Dict[str, np.ndarray], Optional[np.ndarray]]:
+                Augmented image, updated calibration data, and optional affine transformation matrix.
+        """
         # Scaling and cropping
         if random.random() > 0.5:
             image, calibration_data = self.scale_and_crop_image(image, calibration_data, crop_ratio=0.6)
@@ -223,8 +309,24 @@ class CalibrationClassificationTransform(BaseTransform):
 
         return image, calibration_data, affine_matrix
 
-    def generate_input_data(self, image, lidar_data, calibration_data, augmentation_tf=None):
-        """Generates depth and intensity images using augmented calibration."""
+    def generate_input_data(
+        self,
+        image: np.ndarray,
+        lidar_data: Dict[str, np.ndarray],
+        calibration_data: Dict[str, np.ndarray],
+        augmentation_tf: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """Generates depth and intensity images using augmented calibration.
+
+        Args:
+            image (np.ndarray): Input camera image.
+            lidar_data (Dict[str, np.ndarray]): LiDAR point cloud and intensity data.
+            calibration_data (Dict[str, np.ndarray]): Camera calibration parameters.
+            augmentation_tf (Optional[np.ndarray]): Optional augmentation transformation matrix. Defaults to None.
+
+        Returns:
+            np.ndarray: Combined image with RGB, depth, and intensity channels.
+        """
         # Extract calibration parameters
         rotation_matrix = calibration_data["camera_to_lidar_pose"][:3, :3]
         translation_vector = calibration_data["camera_to_lidar_pose"][:3, 3]
@@ -255,8 +357,20 @@ class CalibrationClassificationTransform(BaseTransform):
         # Generate depth and intensity images
         return self.create_lidar_images(image, transformed_ics, pointcloud_ccs, lidar_data["intensities"])
 
-    def create_lidar_images(self, image, pointcloud_ics, pointcloud_ccs, intensities):
-        """Creates depth and intensity images."""
+    def create_lidar_images(
+        self, image: np.ndarray, pointcloud_ics: np.ndarray, pointcloud_ccs: np.ndarray, intensities: np.ndarray
+    ) -> np.ndarray:
+        """Creates depth and intensity images.
+
+        Args:
+            image (np.ndarray): Base camera image.
+            pointcloud_ics (np.ndarray): Point cloud in image coordinate system.
+            pointcloud_ccs (np.ndarray): Point cloud in camera coordinate system.
+            intensities (np.ndarray): LiDAR intensity values.
+
+        Returns:
+            np.ndarray: Combined image with RGB, depth, and intensity channels.
+        """
         h, w = image.shape[:2]
         depth_image = np.zeros((h, w), dtype=np.uint8)
         intensity_image = np.zeros((h, w), dtype=np.uint8)
@@ -272,8 +386,19 @@ class CalibrationClassificationTransform(BaseTransform):
         intensity_image = np.expand_dims(intensity_image, axis=2)
         return np.concatenate([image, depth_image, intensity_image], axis=2)
 
-    def create_overlay_image(self, rgb_image, feature_image, rgb_weight=0.3):
-        """Created colored overlay image"""
+    def create_overlay_image(
+        self, rgb_image: np.ndarray, feature_image: np.ndarray, rgb_weight: float = 0.3
+    ) -> np.ndarray:
+        """Creates colored overlay image.
+
+        Args:
+            rgb_image (np.ndarray): Base RGB image.
+            feature_image (np.ndarray): Feature image to overlay.
+            rgb_weight (float): Weight for RGB component in overlay. Defaults to 0.3.
+
+        Returns:
+            np.ndarray: Overlaid image with features visualized.
+        """
         overlay_image = rgb_image.copy()
         intensity_colormap = cv2.applyColorMap((feature_image * 255).astype(np.uint8), cv2.COLORMAP_JET)
         intensity_mask = (feature_image > 0).astype(np.uint8).squeeze(-1)  # Remove singleton dimension
@@ -283,7 +408,17 @@ class CalibrationClassificationTransform(BaseTransform):
         )
         return overlay_image
 
-    def visualize_projection(self, input_data, label, original_image, undistorted_image):
+    def visualize_projection(
+        self, input_data: np.ndarray, label: int, original_image: np.ndarray, undistorted_image: np.ndarray
+    ) -> None:
+        """Visualizes LiDAR projection results.
+
+        Args:
+            input_data (np.ndarray): Combined input data with RGB, depth, and intensity channels.
+            label (int): Classification label (0 for miscalibrated, 1 for correct).
+            original_image (np.ndarray): Original camera image.
+            undistorted_image (np.ndarray): Undistorted camera image.
+        """
         camera_data = input_data[:, :, :3]
         intensity_image = input_data[:, :, 4:5]
         overlay_image = self.create_overlay_image(camera_data, intensity_image)
@@ -321,7 +456,17 @@ class CalibrationClassificationTransform(BaseTransform):
         plt.tight_layout()
         plt.show()
 
-    def visualize_results(self, input_data, label, original_image, undistorted_image):
+    def visualize_results(
+        self, input_data: np.ndarray, label: int, original_image: np.ndarray, undistorted_image: np.ndarray
+    ) -> None:
+        """Visualizes comprehensive results including all image types.
+
+        Args:
+            input_data (np.ndarray): Combined input data with RGB, depth, and intensity channels.
+            label (int): Classification label (0 for miscalibrated, 1 for correct).
+            original_image (np.ndarray): Original camera image.
+            undistorted_image (np.ndarray): Undistorted camera image.
+        """
         camera_data = input_data[:, :, :3]
         depth_image = input_data[:, :, 3:4]
         intensity_image = input_data[:, :, 4:5]
