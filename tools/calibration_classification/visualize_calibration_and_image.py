@@ -2,11 +2,33 @@
 import argparse
 import json
 import os
+import re
+import warnings
+from pathlib import Path
 
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+from t4_devkit import Tier4
 from transforms3d.quaternions import quat2mat
+
+
+def get_scene_root_dir_path(root_path: str, dataset_version: str, scene_id: str) -> str:
+    """Get the scene root directory path, handling version directories."""
+    version_pattern = re.compile(r"^\d+$")
+    scene_root_dir_path = os.path.join(root_path, dataset_version, scene_id)
+
+    version_dirs = [d for d in os.listdir(scene_root_dir_path) if version_pattern.match(d)]
+
+    if version_dirs:
+        version_id = sorted(version_dirs, key=int)[-1]
+        return os.path.join(scene_root_dir_path, version_id)
+    else:
+        warnings.warn(
+            f"The directory structure of T4 Dataset is deprecated. Please update to the latest version.",
+            DeprecationWarning,
+        )
+        return scene_root_dir_path
 
 
 def find_sensor_calibration(annotation_dir, channel_name):
@@ -52,7 +74,7 @@ def load_pointcloud_bin(bin_path):
     raise ValueError(f"Unexpected pointcloud shape for {bin_path}, size={pc_raw.size}")
 
 
-def visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path):
+def visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path, output_path=None):
     # 讀取圖片
     image = cv2.imread(image_path)
     if image is None:
@@ -117,25 +139,122 @@ def visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path)
         color = tuple(int(255 * float(c)) for c in color)
         cv2.circle(vis_img, (int(pt[0]), int(pt[1])), 2, color, -1)
 
-    # 顯示
-    plt.figure(figsize=(10, 8))
-    plt.imshow(vis_img)
-    plt.title("LiDAR points projected on image (intensity as color)")
-    plt.axis("off")
-    plt.show()
+    # 顯示或保存
+    if output_path:
+        # Save the image
+        vis_img_bgr = cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(output_path, vis_img_bgr)
+        print(f"[INFO] Saved visualization to: {output_path}")
+    else:
+        # Display the image
+        plt.figure(figsize=(10, 8))
+        plt.imshow(vis_img)
+        plt.title("LiDAR points projected on image (intensity as color)")
+        plt.axis("off")
+        plt.show()
+
+
+def visualize_scene_scene_id(root_path, dataset_version, scene_id, output_dir=None):
+    """Visualize all images in a scene given scene ID."""
+    # Get scene root directory
+    scene_root_dir_path = get_scene_root_dir_path(root_path, dataset_version, scene_id)
+
+    if not os.path.isdir(scene_root_dir_path):
+        raise ValueError(f"Scene directory does not exist: {scene_root_dir_path}")
+
+    print(f"[INFO] Processing scene: {scene_id}")
+    print(f"[INFO] Scene directory: {scene_root_dir_path}")
+
+    # Initialize Tier4 interface
+    t4 = Tier4(data_root=scene_root_dir_path, verbose=False)
+
+    # Create output directory if specified
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"[INFO] Output directory: {output_dir}")
+
+    # Process all samples in the scene
+    for i, sample in enumerate(t4.sample):
+        print(f"[INFO] Processing sample {i+1}/{len(t4.sample)}: {sample.token}")
+
+        # Get camera and lidar data for this sample
+        if "CAM_FRONT" not in sample.data:
+            print(f"[WARNING] Sample {sample.token} has no CAM_FRONT data, skipping...")
+            continue
+
+        if "LIDAR_CONCAT" not in sample.data:
+            print(f"[WARNING] Sample {sample.token} has no LIDAR_CONCAT data, skipping...")
+            continue
+
+        # Get file paths
+        cam_token = sample.data["CAM_FRONT"]
+        lidar_token = sample.data["LIDAR_CONCAT"]
+
+        cam_data = t4.get("sample_data", cam_token)
+        lidar_data = t4.get("sample_data", lidar_token)
+
+        image_path = os.path.join(t4.data_root, cam_data.filename)
+        pointcloud_path = os.path.join(t4.data_root, lidar_data.filename)
+        annotation_dir = os.path.join(t4.data_root, "annotation")
+
+        # Check if files exist
+        if not os.path.exists(image_path):
+            print(f"[WARNING] Image file not found: {image_path}")
+            continue
+
+        if not os.path.exists(pointcloud_path):
+            print(f"[WARNING] Pointcloud file not found: {pointcloud_path}")
+            continue
+
+        # Generate output path if saving
+        output_path = None
+        if output_dir:
+            output_filename = f"sample_{i:06d}_{sample.token}.jpg"
+            output_path = os.path.join(output_dir, output_filename)
+
+        try:
+            visualize_calibration_and_image(image_path, annotation_dir, pointcloud_path, output_path)
+        except Exception as e:
+            print(f"[ERROR] Failed to process sample {sample.token}: {e}")
+            continue
+
+    print(f"[INFO] Finished processing scene {scene_id}")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--image", required=True, help="Path to image file (jpg)")
+    parser.add_argument("--image", help="Path to image file (jpg)")
     parser.add_argument(
         "--annotation_dir",
-        required=True,
         help="Path to annotation directory (should contain calibrated_sensor.json and sensor.json)",
     )
-    parser.add_argument("--pointcloud", required=True, help="Path to pointcloud bin file")
+    parser.add_argument("--pointcloud", help="Path to pointcloud bin file")
+
+    # New arguments for scene-based processing
+    parser.add_argument("--scene_id", help="Scene ID to process (e.g., e6d0237c-274c-4872-acc9-dc7ea2b77943)")
+    parser.add_argument("--root_path", default="./data/t4dataset", help="Root path to T4Dataset")
+    parser.add_argument("--dataset_version", help="Dataset version (e.g., db_jpntaxi_v2)")
+    parser.add_argument("--output_dir", help="Output directory for saving visualizations")
+
     args = parser.parse_args()
-    visualize_calibration_and_image(args.image, args.annotation_dir, args.pointcloud)
+
+    # Check if we're doing scene-based processing or single file processing
+    if args.scene_id:
+        if not args.dataset_version:
+            raise ValueError("--dataset_version is required when using --scene_id")
+
+        visualize_scene_scene_id(
+            root_path=args.root_path,
+            dataset_version=args.dataset_version,
+            scene_id=args.scene_id,
+            output_dir=args.output_dir,
+        )
+    else:
+        # Original single file processing
+        if not all([args.image, args.annotation_dir, args.pointcloud]):
+            raise ValueError("--image, --annotation_dir, and --pointcloud are required for single file processing")
+
+        visualize_calibration_and_image(args.image, args.annotation_dir, args.pointcloud)
 
 
 if __name__ == "__main__":
