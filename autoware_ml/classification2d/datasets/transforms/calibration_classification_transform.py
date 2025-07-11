@@ -103,7 +103,6 @@ class CalibrationClassificationTransform(BaseTransform):
         # Visualize the results
         if self.debug:
             self.visualize_projection(input_data, label, camera_data, undistorted_data)
-            # self.visualize_results(input_data, label, camera_data, undistorted_data)
 
         # Final results
         results["img"] = input_data
@@ -433,25 +432,10 @@ class CalibrationClassificationTransform(BaseTransform):
         plt.figure(figsize=(10, 8))
         plt.suptitle(title)
 
-        # plt.subplot(2, 2, 1)
-        # plt.imshow(cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB))
-        # plt.title("Original RGB Image")
-        # plt.axis("off")
-
-        # plt.subplot(2, 2, 2)
-        # plt.imshow(cv2.cvtColor(undistorted_image, cv2.COLOR_BGR2RGB))
-        # plt.title("Undistorted RGB Image (If Applicable)")
-        # plt.axis("off")
-
         plt.subplot(1, 1, 1)
         plt.imshow(cv2.cvtColor(overlay_image, cv2.COLOR_BGR2RGB))
         plt.title("LiDAR Overlay on Image")
         plt.axis("off")
-
-        # plt.subplot(2, 2, 4)
-        # plt.imshow(intensity_image[:, :, 0], cmap='jet')
-        # plt.title("Intensity Image")
-        # plt.axis("off")
 
         plt.tight_layout()
         plt.show()
