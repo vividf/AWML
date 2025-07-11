@@ -1,6 +1,6 @@
-import cv2
 import numpy as np
 import transforms3d
+from scipy.stats import truncnorm
 
 
 def intensity_to_rainbow_color(value):
@@ -27,7 +27,7 @@ def intensity_to_rainbow_color(value):
 
 
 def bounded_gaussian(center, min_value, max_value, scale):
-    """Generates a value from a Gaussian distribution centered at `center`,
+    """Generates a value from a truncated normal distribution centered at `center`,
     bounded by `min_value` and `max_value`.
 
     Args:
@@ -39,10 +39,12 @@ def bounded_gaussian(center, min_value, max_value, scale):
     Returns:
         float: Bounded random value.
     """
-    while True:
-        value = np.random.normal(loc=center, scale=scale)
-        if min_value <= value <= max_value:
-            return value
+    # Convert bounds to standard normal distribution
+    a = (min_value - center) / scale
+    b = (max_value - center) / scale
+
+    # Generate from truncated normal distribution
+    return truncnorm.rvs(a, b, loc=center, scale=scale)
 
 
 def random_unit_sphere():
