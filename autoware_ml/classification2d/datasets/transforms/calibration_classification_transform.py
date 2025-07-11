@@ -1,5 +1,6 @@
 import os
 import random
+from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 import cv2
@@ -10,6 +11,21 @@ from mmpretrain.registry import TRANSFORMS
 from mmpretrain.structures import DataSample
 
 from autoware_ml.classification2d.datasets.transforms.camera_lidar_augmentation import alter_calibration
+
+
+@dataclass
+class CalibrationData:
+    """Structured representation of camera calibration data."""
+
+    camera_matrix: np.ndarray
+    distortion_coefficients: np.ndarray
+    camera_to_lidar_pose: np.ndarray
+    new_camera_matrix: Optional[np.ndarray] = None
+
+    def __post_init__(self):
+        """Initialize new_camera_matrix if not provided."""
+        if self.new_camera_matrix is None:
+            self.new_camera_matrix = self.camera_matrix.copy()
 
 
 @TRANSFORMS.register_module()
@@ -65,7 +81,7 @@ class CalibrationClassificationTransform(BaseTransform):
         if self.undistort:
             undistorted_data, calibration_data = self.undistort_image(camera_data, calibration_data, alpha=0.0)
         else:
-            undistorted_data, calibration_data["new_camera_matrix"] = camera_data, calibration_data["camera_matrix"]
+            undistorted_data, calibration_data.new_camera_matrix = camera_data, calibration_data.camera_matrix
 
         # Label generation
         if self.test and force_generate_miscalibration:
@@ -76,8 +92,8 @@ class CalibrationClassificationTransform(BaseTransform):
             generate_miscalibration = force_generate_miscalibration or random.choice([True, False])  # 50/50 split
 
         if generate_miscalibration:
-            calibration_data["camera_to_lidar_pose"] = alter_calibration(
-                calibration_data["camera_to_lidar_pose"],
+            calibration_data.camera_to_lidar_pose = alter_calibration(
+                calibration_data.camera_to_lidar_pose,
                 min_augmentation_angle=1.0,
                 max_augmentation_angle=10.0,
                 min_augmentation_radius=0.05,
@@ -102,7 +118,7 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Visualize the results
         if self.debug:
-            self.visualize_projection(input_data, label, camera_data, undistorted_data)
+            self.visualize_projection(input_data, label)
 
         # Final results
         results["img"] = input_data
@@ -110,15 +126,15 @@ class CalibrationClassificationTransform(BaseTransform):
         results["data_samples"] = DataSample().set_gt_label(label)
         return results
 
-    def load_data(self, path: str) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+    def load_data(self, path: str) -> Tuple[np.ndarray, Dict[str, np.ndarray], CalibrationData]:
         """Loads camera, LiDAR, and calibration data.
 
         Args:
             path (str): Path to the image file.
 
         Returns:
-            Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray]]:
-                Camera image, LiDAR data dictionary, and calibration data dictionary.
+            Tuple[np.ndarray, Dict[str, np.ndarray], CalibrationData]:
+                Camera image, LiDAR data dictionary, and calibration data.
         """
         data_dir = os.path.dirname(path)
         base_name = os.path.splitext(os.path.basename(path))[0].split("_")[0]
@@ -130,7 +146,11 @@ class CalibrationClassificationTransform(BaseTransform):
         lidar_data["intensities"] = self.normalize_intensity(lidar_data["intensities"])
 
         calibration_data_npz = np.load(os.path.join(data_dir, f"{base_name}_calibration.npz"))
-        calibration_data = {key: calibration_data_npz[key] for key in calibration_data_npz}
+        calibration_data = CalibrationData(
+            camera_matrix=calibration_data_npz["camera_matrix"],
+            distortion_coefficients=calibration_data_npz["distortion_coefficients"],
+            camera_to_lidar_pose=calibration_data_npz["camera_to_lidar_pose"],
+        )
 
         return camera_data, lidar_data, calibration_data
 
@@ -150,31 +170,31 @@ class CalibrationClassificationTransform(BaseTransform):
         return (intensities - min_intensity) / (max_intensity - min_intensity)
 
     def undistort_image(
-        self, image: np.ndarray, calibration_data: Dict[str, np.ndarray], alpha: float = 0.0
-    ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+        self, image: np.ndarray, calibration_data: CalibrationData, alpha: float = 0.0
+    ) -> Tuple[np.ndarray, CalibrationData]:
         """Undistorts the image and updates the calibration data.
 
         Args:
             image (np.ndarray): Input image to undistort.
-            calibration_data (Dict[str, np.ndarray]): Camera calibration parameters.
+            calibration_data (CalibrationData): Camera calibration parameters.
             alpha (float): Free scaling parameter. Defaults to 0.0.
 
         Returns:
-            Tuple[np.ndarray, Dict[str, np.ndarray]]: Undistorted image and updated calibration data.
+            Tuple[np.ndarray, CalibrationData]: Undistorted image and updated calibration data.
         """
-        if np.any(calibration_data["distortion_coefficients"]):
-            distortion_coefficients = calibration_data["distortion_coefficients"]
+        if np.any(calibration_data.distortion_coefficients):
+            distortion_coefficients = calibration_data.distortion_coefficients
             h, w = image.shape[:2]
-            calibration_data["new_camera_matrix"], _ = cv2.getOptimalNewCameraMatrix(
-                calibration_data["camera_matrix"], distortion_coefficients, (w, h), alpha, (w, h)
+            calibration_data.new_camera_matrix, _ = cv2.getOptimalNewCameraMatrix(
+                calibration_data.camera_matrix, distortion_coefficients, (w, h), alpha, (w, h)
             )
             image = cv2.undistort(
                 image,
-                calibration_data["camera_matrix"],
+                calibration_data.camera_matrix,
                 distortion_coefficients,
-                newCameraMatrix=calibration_data["new_camera_matrix"],
+                newCameraMatrix=calibration_data.new_camera_matrix,
             )
-            calibration_data["distortion_coefficients"] = np.zeros_like(calibration_data["distortion_coefficients"])
+            calibration_data.distortion_coefficients = np.zeros_like(calibration_data.distortion_coefficients)
         return image, calibration_data
 
     def signed_random(self, min_value: float, max_value: float) -> float:
@@ -191,17 +211,17 @@ class CalibrationClassificationTransform(BaseTransform):
         return sg * random.uniform(min_value, max_value)
 
     def scale_and_crop_image(
-        self, image: np.ndarray, calibration_data: Dict[str, np.ndarray], crop_ratio: float = 0.6
-    ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+        self, image: np.ndarray, calibration_data: CalibrationData, crop_ratio: float = 0.6
+    ) -> Tuple[np.ndarray, CalibrationData]:
         """Scales and crops the image, updating the camera matrix accordingly.
 
         Args:
             image (np.ndarray): Input image to scale and crop.
-            calibration_data (Dict[str, np.ndarray]): Camera calibration parameters.
+            calibration_data (CalibrationData): Camera calibration parameters.
             crop_ratio (float): Ratio for cropping. Defaults to 0.6.
 
         Returns:
-            Tuple[np.ndarray, Dict[str, np.ndarray]]: Scaled and cropped image with updated calibration data.
+            Tuple[np.ndarray, CalibrationData]: Scaled and cropped image with updated calibration data.
         """
         h, w = image.shape[:2]
 
@@ -227,22 +247,22 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Update the undistorted calibration matrix
         scale_factor = w / (end_w - start_w)
-        calibration_data["new_camera_matrix"][0, 0] *= scale_factor  # fx
-        calibration_data["new_camera_matrix"][1, 1] *= scale_factor  # fy
+        calibration_data.new_camera_matrix[0, 0] *= scale_factor  # fx
+        calibration_data.new_camera_matrix[1, 1] *= scale_factor  # fy
         crop_offset_w = start_w
         crop_offset_h = start_h
-        calibration_data["new_camera_matrix"][0, 2] = (
-            calibration_data["new_camera_matrix"][0, 2] - crop_offset_w
+        calibration_data.new_camera_matrix[0, 2] = (
+            calibration_data.new_camera_matrix[0, 2] - crop_offset_w
         ) * scale_factor
-        calibration_data["new_camera_matrix"][1, 2] = (
-            calibration_data["new_camera_matrix"][1, 2] - crop_offset_h
+        calibration_data.new_camera_matrix[1, 2] = (
+            calibration_data.new_camera_matrix[1, 2] - crop_offset_h
         ) * scale_factor
 
         return resized_image, calibration_data
 
     def apply_affine_transformation(
         self, image: np.ndarray, max_distortion: float = 0.001
-    ) -> Tuple[np.ndarray, Dict[str, np.ndarray], np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Applies a controlled affine transformation to the image and updates the calibration matrix.
 
@@ -251,8 +271,8 @@ class CalibrationClassificationTransform(BaseTransform):
             max_distortion (float): Maximum allowable distortion as a fraction of image dimensions. Defaults to 0.001.
 
         Returns:
-            Tuple[np.ndarray, Dict[str, np.ndarray], np.ndarray]:
-                Transformed image, updated calibration data, and the 3x3 affine transformation matrix.
+            Tuple[np.ndarray, np.ndarray]:
+                Transformed image and the 3x3 affine transformation matrix.
         """
         h, w = image.shape[:2]
 
@@ -282,16 +302,16 @@ class CalibrationClassificationTransform(BaseTransform):
         return transformed_image, affine_transform_3x3
 
     def apply_augmentations(
-        self, image: np.ndarray, calibration_data: Dict[str, np.ndarray]
-    ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Optional[np.ndarray]]:
+        self, image: np.ndarray, calibration_data: CalibrationData
+    ) -> Tuple[np.ndarray, CalibrationData, Optional[np.ndarray]]:
         """Applies cropping, scaling, and affine transformations.
 
         Args:
             image (np.ndarray): Input image to augment.
-            calibration_data (Dict[str, np.ndarray]): Camera calibration parameters.
+            calibration_data (CalibrationData): Camera calibration parameters.
 
         Returns:
-            Tuple[np.ndarray, Dict[str, np.ndarray], Optional[np.ndarray]]:
+            Tuple[np.ndarray, CalibrationData, Optional[np.ndarray]]:
                 Augmented image, updated calibration data, and optional affine transformation matrix.
         """
         # Scaling and cropping
@@ -301,7 +321,7 @@ class CalibrationClassificationTransform(BaseTransform):
         # Affine transformation
         affine_matrix = None
         if random.random() > 0.5:
-            image, calibration_data, affine_matrix = self.apply_affine_transformation(image, max_distortion=0.02)
+            image, affine_matrix = self.apply_affine_transformation(image, max_distortion=0.02)
 
         return image, calibration_data, affine_matrix
 
@@ -309,7 +329,7 @@ class CalibrationClassificationTransform(BaseTransform):
         self,
         image: np.ndarray,
         lidar_data: Dict[str, np.ndarray],
-        calibration_data: Dict[str, np.ndarray],
+        calibration_data: CalibrationData,
         augmentation_tf: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Generates depth and intensity images using augmented calibration.
@@ -317,17 +337,17 @@ class CalibrationClassificationTransform(BaseTransform):
         Args:
             image (np.ndarray): Input camera image.
             lidar_data (Dict[str, np.ndarray]): LiDAR point cloud and intensity data.
-            calibration_data (Dict[str, np.ndarray]): Camera calibration parameters.
+            calibration_data (CalibrationData): Camera calibration parameters.
             augmentation_tf (Optional[np.ndarray]): Optional augmentation transformation matrix. Defaults to None.
 
         Returns:
             np.ndarray: Combined image with RGB, depth, and intensity channels.
         """
         # Extract calibration parameters
-        rotation_matrix = calibration_data["camera_to_lidar_pose"][:3, :3]
-        translation_vector = calibration_data["camera_to_lidar_pose"][:3, 3]
-        camera_matrix = calibration_data["new_camera_matrix"]
-        distortion_coefficients = calibration_data["distortion_coefficients"][:8]
+        rotation_matrix = calibration_data.camera_to_lidar_pose[:3, :3]
+        translation_vector = calibration_data.camera_to_lidar_pose[:3, 3]
+        camera_matrix = calibration_data.new_camera_matrix
+        distortion_coefficients = calibration_data.distortion_coefficients[:8]
 
         # Transform LiDAR points to the camera coordinate system
         pointcloud = lidar_data["pointcloud"]
