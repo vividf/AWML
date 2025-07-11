@@ -52,7 +52,7 @@ train_dataloader = dict(
     shuffle=True,
     dataset=dict(
         type="T4CalibrationClassificationDataset",
-        data_root="/workspace/data/t4dataset/db_j6_v1",
+        data_root="/workspace/data/t4dataset/db_j6gen2_v3",
         pipeline=train_pipeline,
     ),
 )
@@ -60,7 +60,7 @@ train_dataloader = dict(
 val_cfg = dict()
 
 val_pipeline = [
-    dict(type="CalibrationClassificationTransform", validation=True),
+    dict(type="CalibrationClassificationTransform", validation=True, debug=True),
     dict(type="PackInputs", input_key="img"),
 ]
 
@@ -71,7 +71,7 @@ val_dataloader = dict(
     shuffle=False,
     dataset=dict(
         type="T4CalibrationClassificationDataset",
-        data_root="/workspace/data/t4dataset/db_j6_v1",
+        data_root="/workspace/data/t4dataset/db_j6gen2_v3",
         pipeline=val_pipeline,
     ),
 )
@@ -79,7 +79,7 @@ val_dataloader = dict(
 val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 
 test_pipeline = [
-    dict(type="CalibrationClassificationTransform", test=True),
+    dict(type="CalibrationClassificationTransform", test=True, debug=True),
     dict(type="PackInputs", input_key="img"),
 ]
 
