@@ -1,6 +1,6 @@
 import os
 import random
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 
 import cv2
 import matplotlib.pyplot as plt
@@ -241,14 +241,13 @@ class CalibrationClassificationTransform(BaseTransform):
         return resized_image, calibration_data
 
     def apply_affine_transformation(
-        self, image: np.ndarray, calibration_data: Dict[str, np.ndarray], max_distortion: float = 0.001
+        self, image: np.ndarray, max_distortion: float = 0.001
     ) -> Tuple[np.ndarray, Dict[str, np.ndarray], np.ndarray]:
         """
         Applies a controlled affine transformation to the image and updates the calibration matrix.
 
         Args:
             image (np.ndarray): Input image.
-            calibration_data (Dict[str, np.ndarray]): Camera calibration data.
             max_distortion (float): Maximum allowable distortion as a fraction of image dimensions. Defaults to 0.001.
 
         Returns:
@@ -280,7 +279,7 @@ class CalibrationClassificationTransform(BaseTransform):
         affine_transform_3x3 = np.eye(3)
         affine_transform_3x3[:2, :3] = affine_matrix
 
-        return transformed_image, calibration_data, affine_transform_3x3
+        return transformed_image, affine_transform_3x3
 
     def apply_augmentations(
         self, image: np.ndarray, calibration_data: Dict[str, np.ndarray]
@@ -302,9 +301,7 @@ class CalibrationClassificationTransform(BaseTransform):
         # Affine transformation
         affine_matrix = None
         if random.random() > 0.5:
-            image, calibration_data, affine_matrix = self.apply_affine_transformation(
-                image, calibration_data, max_distortion=0.02
-            )
+            image, calibration_data, affine_matrix = self.apply_affine_transformation(image, max_distortion=0.02)
 
         return image, calibration_data, affine_matrix
 
@@ -407,16 +404,12 @@ class CalibrationClassificationTransform(BaseTransform):
         )
         return overlay_image
 
-    def visualize_projection(
-        self, input_data: np.ndarray, label: int, original_image: np.ndarray, undistorted_image: np.ndarray
-    ) -> None:
+    def visualize_projection(self, input_data: np.ndarray, label: int) -> None:
         """Visualizes LiDAR projection results.
 
         Args:
             input_data (np.ndarray): Combined input data with RGB, depth, and intensity channels.
             label (int): Classification label (0 for miscalibrated, 1 for correct).
-            original_image (np.ndarray): Original camera image.
-            undistorted_image (np.ndarray): Undistorted camera image.
         """
         camera_data = input_data[:, :, :3]
         intensity_image = input_data[:, :, 4:5]
