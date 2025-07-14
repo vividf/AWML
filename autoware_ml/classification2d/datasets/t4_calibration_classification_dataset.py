@@ -1,6 +1,7 @@
 import json
 import os
 
+import mmengine
 import numpy as np
 from mmcv.transforms import Compose
 from mmpretrain.registry import DATASETS
@@ -10,9 +11,16 @@ from torch.utils.data import Dataset
 @DATASETS.register_module()
 class T4CalibrationClassificationDataset(Dataset):
     def __init__(
-        self, data_root, split="train", camera_name="CAM_FRONT", pointcloud_folder="LIDAR_CONCAT", pipeline=None
+        self,
+        data_root=None,
+        ann_file=None,
+        split="train",
+        camera_name="CAM_FRONT",
+        pointcloud_folder="LIDAR_CONCAT",
+        pipeline=None,
     ):
         self.data_root = data_root
+        self.ann_file = ann_file
         self.split = split
         self.camera_name = camera_name
         self.pointcloud_folder = pointcloud_folder
@@ -21,7 +29,10 @@ class T4CalibrationClassificationDataset(Dataset):
         else:
             self.pipeline = pipeline
         self.samples = []
-        self._collect_samples()
+        if self.ann_file is not None:
+            self.samples = mmengine.load(self.ann_file)
+        else:
+            self._collect_samples()
 
     def _collect_samples(self):
         # 遍歷所有 scene
