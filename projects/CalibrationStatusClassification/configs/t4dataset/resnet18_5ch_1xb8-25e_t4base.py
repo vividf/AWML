@@ -14,7 +14,7 @@ custom_imports = dict(
     allow_failed_imports=False,
 )
 
-batch_size = 8
+batch_size = 4
 max_epochs = 25
 
 data_preprocessor = dict()
@@ -46,13 +46,21 @@ train_pipeline = [
     dict(type="PackInputs", input_key="img"),
 ]
 
+info_directory_path = "/workspace/data/t4dataset/calibration_info/"
+train_info_file = f"t4dataset_x2_calib_infos_train.pkl"
+val_info_file = f"t4dataset_x2_calib_infos_val.pkl"
+test_info_file = f"t4dataset_x2_calib_infos_test.pkl"
+
+data_root = None  # 不用 data_root，直接用 info file 裡的路徑
+
 train_dataloader = dict(
     batch_size=batch_size,
     num_workers=batch_size,
+    persistent_workers=True,
     shuffle=True,
     dataset=dict(
         type="T4CalibrationClassificationDataset",
-        data_root="/workspace/data/t4dataset/db_j6gen2_v3",
+        ann_file=info_directory_path + train_info_file,
         pipeline=train_pipeline,
     ),
 )
@@ -71,7 +79,7 @@ val_dataloader = dict(
     shuffle=False,
     dataset=dict(
         type="T4CalibrationClassificationDataset",
-        data_root="/workspace/data/t4dataset/db_j6gen2_v3",
+        ann_file=info_directory_path + val_info_file,
         pipeline=val_pipeline,
     ),
 )
@@ -80,10 +88,21 @@ val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 
 test_pipeline = [
     dict(type="CalibrationClassificationTransform", test=True, debug=True),
+    # dict(type="CalibrationClassificationTransform", test=True, debug=True, save_vis_dir="work_dirs/vis_inputs"),
     dict(type="PackInputs", input_key="img"),
 ]
 
-test_dataloader = val_dataloader
+test_dataloader = dict(
+    batch_size=batch_size,
+    num_workers=batch_size,
+    persistent_workers=False,
+    shuffle=False,
+    dataset=dict(
+        type="T4CalibrationClassificationDataset",
+        ann_file=info_directory_path + test_info_file,
+        pipeline=test_pipeline,
+    ),
+)
 
 test_evaluator = val_evaluator
 

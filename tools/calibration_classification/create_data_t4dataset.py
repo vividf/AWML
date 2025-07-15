@@ -29,7 +29,7 @@ def collect_samples(scene_root, camera_name, lidar_folder):
         calib_data = json.load(f)
     with open(sensor_json, "r") as f:
         sensor_data = json.load(f)
-    # 找到 camera_name 的 sensor_token
+    # Find camera sensor_token
     cam_token = None
     for s in sensor_data:
         if s.get("modality", "").lower() == "camera" and s.get("channel", "") == camera_name:
@@ -37,7 +37,21 @@ def collect_samples(scene_root, camera_name, lidar_folder):
             break
     if cam_token is None:
         return []
-    # 找到 calibration 參數
+    # Find lidar sensor_token
+    lidar_token = None
+    for s in sensor_data:
+        if s.get("modality", "").lower() == "lidar" and s.get("channel", "") == lidar_folder:
+            lidar_token = s["token"]
+            break
+    if lidar_token is None:
+        # fallback: just use the first lidar
+        for s in sensor_data:
+            if s.get("modality", "").lower() == "lidar":
+                lidar_token = s["token"]
+                break
+    if lidar_token is None:
+        return []
+    # Find camera calibration
     cam_calib = None
     for c in calib_data:
         if c["sensor_token"] == cam_token:
@@ -45,18 +59,32 @@ def collect_samples(scene_root, camera_name, lidar_folder):
             break
     if cam_calib is None:
         return []
+    # Find lidar calibration
+    lidar_calib = None
+    for c in calib_data:
+        if c["sensor_token"] == lidar_token:
+            lidar_calib = c
+            break
+    if lidar_calib is None:
+        return []
     calibration_dict = {
         "camera_matrix": np.array(cam_calib["camera_intrinsic"], dtype=np.float32),
         "distortion_coefficients": np.array(cam_calib["camera_distortion"], dtype=np.float32),
-        "translation": np.array(cam_calib["translation"], dtype=np.float32),
-        "rotation": np.array(cam_calib["rotation"], dtype=np.float32),
+        "camera": {
+            "rotation": np.array(cam_calib["rotation"], dtype=np.float32),
+            "translation": np.array(cam_calib["translation"], dtype=np.float32),
+        },
+        "lidar": {
+            "rotation": np.array(lidar_calib["rotation"], dtype=np.float32),
+            "translation": np.array(lidar_calib["translation"], dtype=np.float32),
+        },
     }
     cam_dir = osp.join(data_path, camera_name)
     pc_dir = osp.join(data_path, lidar_folder)
     if not (osp.exists(cam_dir) and osp.exists(pc_dir)):
         return []
     samples = []
-    for fname in os.listdir(cam_dir):
+    for fname in sorted(os.listdir(cam_dir)):
         if not fname.endswith(".jpg"):
             continue
         frame_id = os.path.splitext(fname)[0]

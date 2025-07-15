@@ -15,13 +15,16 @@ from autoware_ml.classification2d.datasets.transforms.camera_lidar_augmentation 
 class CalibrationClassificationTransform(BaseTransform):
     """Transforms image, pointcloud, and calibration data into inputs for a calibration classifier."""
 
-    def __init__(self, validation=False, test=False, debug=False, undistort=True, enable_augmentation=False):
+    def __init__(
+        self, validation=False, test=False, debug=False, undistort=True, enable_augmentation=False, save_vis_dir=None
+    ):
         super().__init__()
         self.validation = validation
         self.test = test
         self.debug = debug
         self.undistort = undistort
         self.enable_augmentation = enable_augmentation
+        self.save_vis_dir = save_vis_dir
 
     def transform(self, results, force_generate_miscalibration=False):
         # Set random seeds for reproducibility during validation
@@ -31,6 +34,8 @@ class CalibrationClassificationTransform(BaseTransform):
         else:
             random.seed(None)
             np.random.seed(None)
+
+        # print("in transform, results:", results)
 
         # Loading and preparing data
         camera_data, lidar_data, calibration_data = self.load_data(results)
@@ -75,13 +80,24 @@ class CalibrationClassificationTransform(BaseTransform):
         )
 
         # Visualize the results
-        if self.debug:
-            self.visualize_projection(input_data, label, camera_data, undistorted_data)
-            # self.visualize_results(input_data, label, camera_data, undistorted_data)
+        if self.save_vis_dir is not None:
+            # Create overlay image
+            camera_data_vis = input_data[:, :, :3]
+            intensity_image = input_data[:, :, 4:5]
+            overlay_image = self.create_overlay_image(camera_data_vis, intensity_image)
+
+            os.makedirs(self.save_vis_dir, exist_ok=True)
+            img_path = results.get("img_path", None)
+            if img_path is not None:
+                base_name = os.path.splitext(os.path.basename(img_path))[0]
+                out_path = os.path.join(self.save_vis_dir, f"{base_name}_overlay.jpg")
+                cv2.imwrite(out_path, overlay_image)
 
         # Final results
         results["img"] = input_data
         results["gt_label"] = label
+
+        print("label: ", label)
         results["data_samples"] = DataSample().set_gt_label(label)
         return results
 
@@ -94,37 +110,26 @@ class CalibrationClassificationTransform(BaseTransform):
         # 讀取影像
         camera_data = cv2.imread(img_path)
 
-        # 讀取 bin 格式點雲（float32, [x, y, z, intensity, ...]）
         pc_raw = np.fromfile(pointcloud_path, dtype=np.float32)
-        if pc_raw.size % 4 == 0:
-            pc = pc_raw.reshape(-1, 4)
-        elif pc_raw.size % 5 == 0:
-            pc = pc_raw.reshape(-1, 5)[:, :4]
-        elif pc_raw.size % 6 == 0:
-            pc = pc_raw.reshape(-1, 6)[:, :4]
-        else:
-            raise ValueError(f"Unexpected pointcloud shape for {pointcloud_path}, size={pc_raw.size}")
+        n = 5
+        if pc_raw.size % n != 0:
+            raise ValueError(f"Pointcloud size {pc_raw.size} is not divisible by {n}")
+        print(f"[INFO] {pointcloud_path} has {n} fields per point, total points: {pc_raw.size // n}")
+        pc = pc_raw.reshape(-1, n)
+
         lidar_data = {
             "pointcloud": pc[:, :3],
             "intensities": self.normalize_intensity(pc[:, 3]),
         }
 
-        # calibration dict 需組成 camera_to_lidar_pose
+        # Use new calibration structure
         calibration_data = {
             "camera_matrix": calibration["camera_matrix"],
             "distortion_coefficients": calibration["distortion_coefficients"],
+            "camera": calibration["camera"],
+            "lidar": calibration["lidar"],
+            "new_camera_matrix": calibration["camera_matrix"],
         }
-        # 四元數轉 3x3 rotation
-        from transforms3d.quaternions import quat2mat
-
-        q = calibration["rotation"]  # [w, x, y, z]
-        R = quat2mat(q)
-        t = calibration["translation"]
-        camera_to_lidar_pose = np.eye(4)
-        camera_to_lidar_pose[:3, :3] = R
-        camera_to_lidar_pose[:3, 3] = t
-        calibration_data["camera_to_lidar_pose"] = camera_to_lidar_pose
-        calibration_data["new_camera_matrix"] = calibration["camera_matrix"]
         return camera_data, lidar_data, calibration_data
 
     def normalize_intensity(self, intensities):
@@ -251,15 +256,26 @@ class CalibrationClassificationTransform(BaseTransform):
 
     def generate_input_data(self, image, lidar_data, calibration_data, augmentation_tf=None):
         """Generates depth and intensity images using augmented calibration."""
-        # Extract calibration parameters
-        rotation_matrix = calibration_data["camera_to_lidar_pose"][:3, :3]
-        translation_vector = calibration_data["camera_to_lidar_pose"][:3, 3]
+        from pyquaternion import Quaternion
+
+        # Get calibration dicts
+        lidar_calib = calibration_data["lidar"]
+        cam_calib = calibration_data["camera"]
         camera_matrix = calibration_data["new_camera_matrix"]
         distortion_coefficients = calibration_data["distortion_coefficients"][:8]
 
-        # Transform LiDAR points to the camera coordinate system
+        # Transform LiDAR points to the camera coordinate system (direct)
         pointcloud = lidar_data["pointcloud"]
-        pointcloud_ccs = pointcloud @ rotation_matrix.T + translation_vector
+        lidar_R = Quaternion(lidar_calib["rotation"]).rotation_matrix
+        lidar_t = np.array(lidar_calib["translation"])
+        cam_R = Quaternion(cam_calib["rotation"]).rotation_matrix
+        cam_t = np.array(cam_calib["translation"])
+
+        # Match the direct_lidar_to_camera logic from visualization script
+        points = pointcloud @ lidar_R.T + lidar_t
+        points = points - cam_t
+        points = points @ cam_R
+        pointcloud_ccs = points
         valid_points = pointcloud_ccs[:, 2] > 0.0
         pointcloud_ccs = pointcloud_ccs[valid_points]
         lidar_data["intensities"] = lidar_data["intensities"][valid_points]
