@@ -123,7 +123,11 @@ class CalibrationClassificationTransform(BaseTransform):
         # Final results
         results["img"] = input_data
         results["gt_label"] = label
-        results["data_samples"] = DataSample().set_gt_label(label)
+        results["input_data"] = input_data  # Ensure this is available for PackInputs
+        # Attach input_data to DataSample metainfo for visualization hook
+        sample = DataSample().set_gt_label(label)
+        sample.set_metainfo({"input_data": input_data})
+        results["data_samples"] = sample
         return results
 
     def load_data(self, path: str) -> Tuple[np.ndarray, Dict[str, np.ndarray], CalibrationData]:
@@ -431,6 +435,8 @@ class CalibrationClassificationTransform(BaseTransform):
             input_data (np.ndarray): Combined input data with RGB, depth, and intensity channels.
             label (int): Classification label (0 for miscalibrated, 1 for correct).
         """
+        import os
+
         camera_data = input_data[:, :, :3]
         intensity_image = input_data[:, :, 4:5]
         overlay_image = self.create_overlay_image(camera_data, intensity_image)
@@ -440,18 +446,27 @@ class CalibrationClassificationTransform(BaseTransform):
             title = "Calibration Params = Correct"
         elif label == 0:
             title = "Calibration Params = Wrong"
+        else:
+            title = f"Calibration Params = {label}"
 
-        # Visualize results
-        plt.figure(figsize=(10, 8))
-        plt.suptitle(title)
+        # Save the overlay image to a directory
+        save_dir = "./projection_vis/"
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f"projection_label_{label}.png")
+        # Convert BGR to RGB for saving with cv2
+        overlay_bgr = cv2.cvtColor(overlay_image, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(save_path, overlay_bgr)
+        print(f"Saved projection visualization to {save_path}")
 
-        plt.subplot(1, 1, 1)
-        plt.imshow(cv2.cvtColor(overlay_image, cv2.COLOR_BGR2RGB))
-        plt.title("LiDAR Overlay on Image")
-        plt.axis("off")
-
-        plt.tight_layout()
-        plt.show()
+        # Optionally, you can still plot if needed (commented out)
+        # plt.figure(figsize=(10, 8))
+        # plt.suptitle(title)
+        # plt.subplot(1, 1, 1)
+        # plt.imshow(cv2.cvtColor(overlay_image, cv2.COLOR_BGR2RGB))
+        # plt.title("LiDAR Overlay on Image")
+        # plt.axis("off")
+        # plt.tight_layout()
+        # plt.show()
 
     def visualize_results(
         self, input_data: np.ndarray, label: int, original_image: np.ndarray, undistorted_image: np.ndarray
@@ -464,6 +479,8 @@ class CalibrationClassificationTransform(BaseTransform):
             original_image (np.ndarray): Original camera image.
             undistorted_image (np.ndarray): Undistorted camera image.
         """
+        import os
+
         camera_data = input_data[:, :, :3]
         depth_image = input_data[:, :, 3:4]
         intensity_image = input_data[:, :, 4:5]
@@ -474,6 +491,8 @@ class CalibrationClassificationTransform(BaseTransform):
             title = "Calibration Correct"
         elif label == 0:
             title = "Calibration Error"
+        else:
+            title = f"Calibration Label {label}"
 
         # Visualize results
         plt.figure(figsize=(10, 8))
@@ -510,11 +529,40 @@ class CalibrationClassificationTransform(BaseTransform):
         plt.axis("off")
 
         plt.tight_layout()
-        plt.show()
+
+        # Save the figure to a directory
+        save_dir = "./projection_vis/"
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f"results_label_{label}.png")
+        plt.savefig(save_path)
+        print(f"Saved results visualization to {save_path}")
+        plt.close()
 
 
 if __name__ == "__main__":
+    print("hiiiii")
     results = dict()
     results["img_path"] = "data/calibrated_data/training_set/data/250_image.jpg"
     tf = CalibrationClassificationTransform(debug=True, enable_augmentation=False)
     results = tf(results)
+
+    # Load the images for visualization
+    # These are loaded the same way as in load_data
+
+    print("hiiiii")
+    img_path = results["img_path"]
+    data_dir = os.path.dirname(img_path)
+    base_name = os.path.splitext(os.path.basename(img_path))[0].split("_")[0]
+    original_image = cv2.imread(img_path)
+    calibration_data_npz = np.load(os.path.join(data_dir, f"{base_name}_calibration.npz"))
+    camera_matrix = calibration_data_npz["camera_matrix"]
+    distortion_coefficients = calibration_data_npz["distortion_coefficients"]
+    undistorted_image = cv2.undistort(
+        original_image,
+        camera_matrix,
+        distortion_coefficients,
+        newCameraMatrix=camera_matrix,
+    )
+
+    # Call visualize_results
+    tf.visualize_results(results["img"], results["gt_label"], original_image, undistorted_image)

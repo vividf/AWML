@@ -5,7 +5,10 @@ _base_ = [
 ]
 
 custom_imports = dict(
-    imports=["autoware_ml.classification2d.datasets.transforms.calibration_classification_transform"],
+    imports=[
+        "autoware_ml.classification2d.datasets.transforms.calibration_classification_transform",
+        "autoware_ml.classification2d.hooks.result_visualization_hook",
+    ],
     allow_failed_imports=False,
 )
 
@@ -76,13 +79,31 @@ val_dataloader = dict(
 val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 
 test_pipeline = [
-    dict(type="CalibrationClassificationTransform", test=True),
-    dict(type="PackInputs", input_key="img"),
+    dict(type="CalibrationClassificationTransform", test=True, debug=True),
+    dict(type="PackInputs", input_key="img", meta_keys=["img_path", "input_data"]),
 ]
 
-test_dataloader = val_dataloader
+test_dataloader = dict(
+    batch_size=batch_size,
+    num_workers=batch_size,
+    persistent_workers=False,
+    shuffle=False,
+    dataset=dict(
+        type="mmpretrain.CustomDataset",
+        data_prefix="data/calibrated_data/validation_set",
+        with_label=True,
+        pipeline=test_pipeline,
+    ),
+)
 
 test_evaluator = val_evaluator
+
+# Register the custom hook
+debug = True
+
+custom_hooks = []
+if debug:
+    custom_hooks.append(dict(type="ResultVisualizationHook", save_dir="./projection_vis/"))
 
 vis_backends = [
     dict(type="LocalVisBackend"),
