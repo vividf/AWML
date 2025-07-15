@@ -2,7 +2,7 @@ import numpy as np
 
 # Path to your .npz file
 # npz_path = "data/calibrated_data/validation_set/data/0_calibration.npz"
-npz_path = "00000.npz"
+npz_path = "data/calibrated_data/validation_set/data/00000_calibration.npz"
 
 # Load the .npz file
 data = np.load(npz_path)
