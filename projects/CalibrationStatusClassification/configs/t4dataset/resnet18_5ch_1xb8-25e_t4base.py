@@ -1,10 +1,11 @@
-import autoware_ml.classification2d.datasets.t4_calibration_classification_dataset
-
 _base_ = [
     "mmpretrain::_base_/default_runtime.py",
     "mmpretrain::_base_/models/resnet18.py",
     "mmpretrain::_base_/schedules/imagenet_bs256.py",
 ]
+
+
+import autoware_ml.calibration_classification.datasets.t4_calibration_classification_dataset
 
 custom_imports = dict(
     imports=[
