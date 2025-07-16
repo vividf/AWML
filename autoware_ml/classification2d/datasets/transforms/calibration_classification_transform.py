@@ -52,6 +52,7 @@ class CalibrationClassificationTransform(BaseTransform):
         undistort: bool = True,
         enable_augmentation: bool = False,
         use_separate_extrinsics: bool = True,  # New option
+        use_scipy_quat: bool = False,  # Added option for scipy quaternion conversion
     ):
         """Initialize the CalibrationClassificationTransform.
 
@@ -62,6 +63,7 @@ class CalibrationClassificationTransform(BaseTransform):
             undistort (bool): Whether to undistort images. Defaults to True.
             enable_augmentation (bool): Whether to enable data augmentation. Defaults to False.
             use_separate_extrinsics (bool): Whether to use quaternion+translation extrinsics for projection. Defaults to False.
+            use_scipy_quat (bool): Whether to use scipy for quaternion to rotation matrix conversion. Defaults to False.
         """
         super().__init__()
         self.validation = validation
@@ -70,6 +72,7 @@ class CalibrationClassificationTransform(BaseTransform):
         self.undistort = undistort
         self.enable_augmentation = enable_augmentation
         self.use_separate_extrinsics = use_separate_extrinsics
+        self.use_scipy_quat = use_scipy_quat
 
     def transform(self, results: Dict[str, Any], force_generate_miscalibration: bool = False) -> Dict[str, Any]:
         """Transform input data for calibration classification.
@@ -448,8 +451,15 @@ class CalibrationClassificationTransform(BaseTransform):
             }
 
             def rotmat_from_quat(q):
-                return Quaternion(q).rotation_matrix
+                if self.use_scipy_quat:
+                    # q is [w, x, y, z], scipy expects [x, y, z, w]
+                    q = np.asarray(q)
+                    q_scipy = np.array([q[1], q[2], q[3], q[0]])
+                    return R.from_quat(q_scipy).as_matrix()
+                else:
+                    return Quaternion(q).rotation_matrix
 
+            print("self.use_scipy_quat:", self.use_scipy_quat)
             # Step 1: LiDAR to baselink
             print("Before LiDAR extrinsic:", lidar_points[:5])
             points = lidar_points @ rotmat_from_quat(lidar_calib["rotation"]).T + np.array(lidar_calib["translation"])
