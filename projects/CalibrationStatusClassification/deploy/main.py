@@ -30,7 +30,7 @@ import torch
 from mmengine.config import Config
 from mmpretrain.apis import get_model
 
-from autoware_ml.classification2d.datasets.transforms.calibration_classification_transform import (
+from autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform import (
     CalibrationClassificationTransform,
 )
 

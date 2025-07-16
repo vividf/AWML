@@ -5,7 +5,7 @@ import numpy as np
 from mmengine.hooks import Hook
 from mmengine.registry import HOOKS
 
-from autoware_ml.classification2d.datasets.transforms.calibration_classification_transform import (
+from autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform import (
     CalibrationClassificationTransform,
 )
 

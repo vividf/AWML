@@ -6,8 +6,8 @@ _base_ = [
 
 custom_imports = dict(
     imports=[
-        "autoware_ml.classification2d.datasets.transforms.calibration_classification_transform",
-        "autoware_ml.classification2d.hooks.result_visualization_hook",
+        "autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform",
+        "autoware_ml.calibration_classification.hooks.result_visualization_hook",
     ],
     allow_failed_imports=False,
 )

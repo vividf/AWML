@@ -12,7 +12,7 @@ from mmpretrain.structures import DataSample
 from pyquaternion import Quaternion
 from scipy.spatial.transform import Rotation as R
 
-from autoware_ml.classification2d.datasets.transforms.camera_lidar_augmentation import alter_calibration
+from autoware_ml.calibration_classification.datasets.transforms.camera_lidar_augmentation import alter_calibration
 
 
 @dataclass
