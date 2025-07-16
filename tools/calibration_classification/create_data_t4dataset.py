@@ -2,186 +2,173 @@ import argparse
 import json
 import os
 import os.path as osp
+import sys
+from typing import Any, Dict
 
+import mmengine
 import numpy as np
 import yaml
-from mmengine import dump
 from mmengine.config import Config
 
 
-def parse_args():
-    """
-    Parses command line arguments for the script.
+def load_json(path):
+    """Load a JSON file from the given path."""
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def convert_quaternion_to_matrix(rotation, translation):
+    """Convert quaternion rotation and translation to a 4x4 transformation matrix.
+    Args:
+        rotation (list): Quaternion [w, x, y, z].
+        translation (list): Translation [x, y, z].
     Returns:
-        argparse.Namespace: Parsed arguments.
+        list: 4x4 transformation matrix as nested lists.
     """
-    parser = argparse.ArgumentParser(description="Create data info for Calibration Classification T4dataset")
+    from pyquaternion import Quaternion
+
+    rot = Quaternion(rotation).rotation_matrix
+    trans = np.array(translation).reshape(3, 1)
+    mat = np.eye(4)
+    mat[:3, :3] = rot
+    mat[:3, 3:4] = trans
+    return mat.tolist()
+
+
+def get_pose_dict(ego_pose_json):
+    """Create a dict mapping pose token to pose entry from ego_pose_json."""
+    return {e["token"]: e for e in ego_pose_json}
+
+
+def get_calib_dict(calib_json):
+    """Create a dict mapping calibration token to calibration entry from calib_json."""
+    return {c["token"]: c for c in calib_json}
+
+
+def get_all_channels(sample_data_json):
+    """Return all unique camera channels by parsing filename in sample_data_json."""
+    return sorted(set(s["filename"].split("/")[1] for s in sample_data_json if s["filename"].startswith("data/CAM_")))
+
+
+def build_sample_info(idx, sample_data_token, sample_data, ego_pose_dict, calib_dict, cam_channels, lidar_channel):
+    """Build a dictionary containing sample information for a given sample_data_token.
+    Args:
+        idx (int): Index of the sample.
+        sample_data_token (str): Token for the sample data.
+        sample_data (dict): Mapping from token to sample data entry.
+        ego_pose_dict (dict): Mapping from token to ego pose entry.
+        calib_dict (dict): Mapping from token to calibration entry.
+        cam_channels (list): List of camera channel names.
+        lidar_channel (str): Lidar channel name.
+    Returns:
+        dict: Sample information dictionary.
+    """
+    s = sample_data[sample_data_token]
+    pose = ego_pose_dict[s["ego_pose_token"]]
+    calib = calib_dict[s["calibrated_sensor_token"]]
+    info = {
+        "sample_idx": idx,
+        "token": s["sample_token"],
+        "timestamp": s["timestamp"],
+        "ego2global": convert_quaternion_to_matrix(pose["rotation"], pose["translation"]),
+        "images": {},
+        "lidar_points": None,
+    }
+    # Images
+    for cam in cam_channels:
+        cam_sample = next((x for x in sample_data.values() if f"data/{cam}/" in x.get("filename", "")), None)
+        if cam_sample:
+            cam_calib = calib_dict[cam_sample["calibrated_sensor_token"]]
+            cam_pose = ego_pose_dict[cam_sample["ego_pose_token"]]
+            info["images"][cam] = {
+                "img_path": cam_sample["filename"],
+                "cam2img": cam_calib.get("camera_intrinsic"),
+                "cam2ego": convert_quaternion_to_matrix(cam_pose["rotation"], cam_pose["translation"]),
+                "sample_data_token": cam_sample["token"],
+                "timestamp": cam_sample["timestamp"],
+                "lidar2cam": None,  # Optional: can be filled if needed
+                "height": None,
+                "width": None,
+                "depth_map": None,
+            }
+        else:
+            info["images"][cam] = {
+                "img_path": None,
+                "cam2img": None,
+                "cam2ego": None,
+                "sample_data_token": None,
+                "timestamp": None,
+                "lidar2cam": None,
+                "height": None,
+                "width": None,
+                "depth_map": None,
+            }
+    # Lidar
+    lidar_sample = next(
+        (x for x in sample_data.values() if x.get("filename", "").startswith(f"data/{lidar_channel}/")), None
+    )
+    if lidar_sample:
+        lidar_calib = calib_dict[lidar_sample["calibrated_sensor_token"]]
+        info["lidar_points"] = {
+            "num_pts_feats": 5,
+            "lidar_path": lidar_sample["filename"],
+            "lidar2ego": convert_quaternion_to_matrix(lidar_calib["rotation"], lidar_calib["translation"]),
+        }
+    return info
+
+
+def generate_calib_info(annotation_dir, cam_channels=None, lidar_channel="LIDAR_CONCAT"):
+    """Generate calibration info for a single scene annotation directory.
+    Args:
+        annotation_dir (str): Directory containing annotation JSON files.
+        cam_channels (list, optional): List of camera channels to include. If None, all channels are used.
+        lidar_channel (str, optional): Lidar channel name. Default is 'LIDAR_CONCAT'.
+    Returns:
+        list: List of sample info dicts for this scene.
+    """
+    sample_data_json = load_json(osp.join(annotation_dir, "sample_data.json"))
+    ego_pose_json = load_json(osp.join(annotation_dir, "ego_pose.json"))
+    calib_json = load_json(osp.join(annotation_dir, "calibrated_sensor.json"))
+    sample_data = {s["token"]: s for s in sample_data_json}
+    ego_pose_dict = get_pose_dict(ego_pose_json)
+    calib_dict = get_calib_dict(calib_json)
+    if cam_channels is None:
+        cam_channels = get_all_channels(sample_data_json)
+    lidar_tokens = [s["token"] for s in sample_data_json if s.get("filename", "").startswith(f"data/{lidar_channel}/")]
+    infos = []
+    for idx, token in enumerate(lidar_tokens):
+        info = build_sample_info(idx, token, sample_data, ego_pose_dict, calib_dict, cam_channels, lidar_channel)
+        infos.append(info)
+    return infos
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Create calibration info for T4dataset (classification version)")
     parser.add_argument("--config", type=str, required=True, help="config for T4dataset")
     parser.add_argument("--root_path", type=str, required=True, help="specify the root path of dataset")
     parser.add_argument("--version", type=str, required=True, help="product version")
     parser.add_argument("-o", "--out_dir", type=str, required=True, help="output directory of info file")
+    parser.add_argument("--lidar_channel", default="LIDAR_CONCAT", help="Lidar channel name (default: LIDAR_CONCAT)")
+    parser.add_argument("--cam_channels", nargs="*", default=None, help="Camera channel names (default: all CAM_*)")
     return parser.parse_args()
 
 
-def collect_samples(scene_root, camera_name, lidar_folder):
-    """
-    Collects samples from a scene directory, extracting calibration and file paths for images and point clouds.
-    Args:
-        scene_root (str): Path to the scene root directory.
-        camera_name (str): Name of the camera channel to use.
-        lidar_folder (str): Name of the lidar folder to use.
-    Returns:
-        list: List of sample dictionaries with image path, pointcloud path, and calibration info.
-    """
-    annotation_path = osp.join(scene_root, "annotation")
-    data_path = osp.join(scene_root, "data")
-    calib_json = osp.join(annotation_path, "calibrated_sensor.json")
-    sensor_json = osp.join(annotation_path, "sensor.json")
-    sample_data_json = osp.join(annotation_path, "sample_data.json")
-    ego_pose_json = osp.join(annotation_path, "ego_pose.json")
-    if not (
-        osp.exists(calib_json)
-        and osp.exists(sensor_json)
-        and osp.exists(sample_data_json)
-        and osp.exists(ego_pose_json)
-    ):
-        # write error here
-        raise FileNotFoundError(
-            f"Missing required annotation files in {annotation_path}: "
-            f"{'calibrated_sensor.json' if not osp.exists(calib_json) else ''} "
-            f"{'sensor.json' if not osp.exists(sensor_json) else ''} "
-            f"{'sample_data.json' if not osp.exists(sample_data_json) else ''} "
-            f"{'ego_pose.json' if not osp.exists(ego_pose_json) else ''}"
-        )
-    with open(calib_json, "r") as f:
-        calib_data = json.load(f)
-    with open(sensor_json, "r") as f:
-        sensor_data = json.load(f)
-    with open(sample_data_json, "r") as f:
-        sample_data = json.load(f)
-    with open(ego_pose_json, "r") as f:
-        ego_pose_data = json.load(f)
-    # Build a lookup table from token to pose
-    ego_pose_dict = {e["token"]: e for e in ego_pose_data}
-    # Find camera sensor_token
-    cam_token = None
-    for s in sensor_data:
-        if s.get("modality", "").lower() == "camera" and s.get("channel", "") == camera_name:
-            cam_token = s["token"]
-            break
-    if cam_token is None:
-        return []
-    # Find lidar sensor_token
-    lidar_token = None
-    for s in sensor_data:
-        if s.get("modality", "").lower() == "lidar" and s.get("channel", "") == lidar_folder:
-            lidar_token = s["token"]
-            break
-    if lidar_token is None:
-        # fallback: just use the first lidar
-        for s in sensor_data:
-            if s.get("modality", "").lower() == "lidar":
-                lidar_token = s["token"]
-                break
-    if lidar_token is None:
-        return []
-    # Find camera calibration
-    cam_calib = None
-    for c in calib_data:
-        if c["sensor_token"] == cam_token:
-            cam_calib = c
-            break
-    if cam_calib is None:
-        return []
-    # Find lidar calibration
-    lidar_calib = None
-    for c in calib_data:
-        if c["sensor_token"] == lidar_token:
-            lidar_calib = c
-            break
-    if lidar_calib is None:
-        return []
-    calibration_dict = {
-        "camera_matrix": np.array(cam_calib["camera_intrinsic"], dtype=np.float32),
-        "distortion_coefficients": np.array(cam_calib["camera_distortion"], dtype=np.float32),
-        "camera": {
-            "rotation": np.array(cam_calib["rotation"], dtype=np.float32),
-            "translation": np.array(cam_calib["translation"], dtype=np.float32),
-        },
-        "lidar": {
-            "rotation": np.array(lidar_calib["rotation"], dtype=np.float32),
-            "translation": np.array(lidar_calib["translation"], dtype=np.float32),
-        },
-    }
-    cam_dir = osp.join(data_path, camera_name)
-    pc_dir = osp.join(data_path, lidar_folder)
-    if not (osp.exists(cam_dir) and osp.exists(pc_dir)):
-        return []
-    samples = []
-    for fname in sorted(os.listdir(cam_dir)):
-        if not fname.endswith(".jpg"):
-            continue
-        frame_id = os.path.splitext(fname)[0]
-        img_path = osp.join(cam_dir, fname)
-        pc_path = osp.join(pc_dir, f"{frame_id}.pcd.bin")
-        if not osp.exists(pc_path):
-            continue
-        # Get camera sample_data
-        cam_sample = next(
-            (
-                s
-                for s in sample_data
-                if s.get("channel", "") == camera_name and s.get("filename", "").endswith(f"{frame_id}.jpg")
-            ),
-            None,
-        )
-        # Get lidar sample_data
-        lidar_sample = next(
-            (
-                s
-                for s in sample_data
-                if s.get("channel", "") == lidar_folder and s.get("filename", "").endswith(f"{frame_id}.pcd.bin")
-            ),
-            None,
-        )
-        # Get pose
-        camera_pose = ego_pose_dict.get(cam_sample["ego_pose_token"]) if cam_sample else None
-        lidar_pose = ego_pose_dict.get(lidar_sample["ego_pose_token"]) if lidar_sample else None
-        samples.append(
-            {
-                "img_path": img_path,
-                "pointcloud_path": pc_path,
-                "calibration": calibration_dict,
-                "camera_pose": camera_pose,
-                "lidar_pose": lidar_pose,
-            }
-        )
-    return samples
-
-
-def find_scene_root(scene_root):
-    """
-    If there are subdirectories under scene_root with pure numbers (e.g., 0, 1, 2...), return the one with the largest number. Otherwise, return scene_root.
-    Args:
-        scene_root (str): Path to the scene root directory.
-    Returns:
-        str: Path to the selected scene root.
-    """
-    # If there are subdirectories under scene_root with pure numbers (e.g., 0, 1, 2...), take the largest one
-    version_dirs = [d for d in os.listdir(scene_root) if d.isdigit() and os.path.isdir(os.path.join(scene_root, d))]
+def get_scene_root_dir_path(root_path, dataset_version, scene_id):
+    scene_root_dir_path = osp.join(root_path, dataset_version, scene_id)
+    version_dirs = [
+        d for d in os.listdir(scene_root_dir_path) if d.isdigit() and osp.isdir(osp.join(scene_root_dir_path, d))
+    ]
     if version_dirs:
         version_id = sorted(version_dirs, key=int)[-1]
-        return os.path.join(scene_root, version_id)
-    return scene_root
+        return osp.join(scene_root_dir_path, version_id)
+    return scene_root_dir_path
 
 
 def main():
-    """
-    Main function to parse arguments, process dataset splits, collect samples, and save info files for calibration classification.
-    """
     args = parse_args()
     cfg = Config.fromfile(args.config)
     os.makedirs(args.out_dir, exist_ok=True)
+
     split_infos = {"train": [], "val": [], "test": []}
     for dataset_version in cfg.dataset_version_list:
         dataset_list = osp.join(cfg.dataset_version_config_root, dataset_version + ".yaml")
@@ -189,16 +176,23 @@ def main():
             dataset_list_dict = yaml.safe_load(f)
         for split in ["train", "val", "test"]:
             for scene_id in dataset_list_dict.get(split, []):
-                scene_root = osp.join(args.root_path, dataset_version, scene_id)
-                if not osp.isdir(scene_root):
+                scene_root = get_scene_root_dir_path(args.root_path, dataset_version, scene_id)
+                annotation_dir = osp.join(scene_root, "annotation")
+                print(
+                    f"[DEBUG] split={split}, scene_id={scene_id}, annotation_dir={annotation_dir}, exists={osp.isdir(annotation_dir)}"
+                )
+                if not osp.isdir(annotation_dir):
+                    print(f"[WARN] Annotation dir not found: {annotation_dir}, skip.")
                     continue
-                real_scene_root = find_scene_root(scene_root)
-                samples = collect_samples(real_scene_root, cfg.camera_types[0], cfg.lidar_folder)
-                split_infos[split].extend(samples)
+                print(f"[INFO] Generating calibration info for {scene_id} ({split}) ...")
+                scene_infos = generate_calib_info(annotation_dir, args.cam_channels, args.lidar_channel)
+                split_infos[split].extend(scene_infos)
+    # Save per split
+    metainfo = dict(version=args.version)
     for split in ["train", "val", "test"]:
         out_path = osp.join(args.out_dir, f"t4dataset_{args.version}_calib_infos_{split}.pkl")
-        dump(split_infos[split], out_path)
-        print(f"Saved {len(split_infos[split])} samples to {out_path}")
+        mmengine.dump(dict(data_list=split_infos[split], metainfo=metainfo), out_path)
+        print(f"[INFO] Saved {len(split_infos[split])} samples to {out_path}")
 
 
 if __name__ == "__main__":
