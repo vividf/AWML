@@ -663,7 +663,7 @@ class CalibrationClassificationTransform(BaseTransform):
             img_index = getattr(self, "_current_img_index", None)
         if img_index is None:
             img_index = "unknown"
-        save_path = os.path.join(save_dir, f"projection_label_{label}_{img_index}.png")
+        save_path = os.path.join(save_dir, f"projection_{img_index}_label_{label}.png")
         # Convert BGR to RGB for saving with cv2
         overlay_bgr = cv2.cvtColor(overlay_image, cv2.COLOR_RGB2BGR)
         cv2.imwrite(save_path, overlay_bgr)
@@ -754,7 +754,7 @@ class CalibrationClassificationTransform(BaseTransform):
             img_index = getattr(self, "_current_img_index", None)
         if img_index is None:
             img_index = "unknown"
-        save_path = os.path.join(save_dir, f"results_label_{label}_{img_index}.png")
+        save_path = os.path.join(save_dir, f"results_{img_index}_label_{label}.png")
         plt.savefig(save_path)
         print(f"Saved results visualization to {save_path}")
         plt.close()
