@@ -9,6 +9,8 @@ import numpy as np
 from mmcv.transforms import BaseTransform
 from mmpretrain.registry import TRANSFORMS
 from mmpretrain.structures import DataSample
+from pyquaternion import Quaternion
+from scipy.spatial.transform import Rotation as R
 
 from autoware_ml.classification2d.datasets.transforms.camera_lidar_augmentation import alter_calibration
 
@@ -19,8 +21,18 @@ class CalibrationData:
 
     camera_matrix: np.ndarray
     distortion_coefficients: np.ndarray
-    camera_to_lidar_pose: np.ndarray
+    lidar_to_camera_pose: np.ndarray
     new_camera_matrix: Optional[np.ndarray] = None
+    # New fields for extended calibration
+    lidar_to_baselink_rotation_quat: Optional[np.ndarray] = None
+    lidar_to_baselink_translation: Optional[np.ndarray] = None
+    camera_to_baselink_rotation_quat: Optional[np.ndarray] = None
+    camera_to_baselink_translation: Optional[np.ndarray] = None
+
+    lidar_ego_quat: Optional[np.ndarray] = None
+    lidar_ego_translation: Optional[np.ndarray] = None
+    camera_ego_quat: Optional[np.ndarray] = None
+    camera_ego_translation: Optional[np.ndarray] = None
 
     def __post_init__(self):
         """Initialize new_camera_matrix if not provided."""
@@ -39,6 +51,7 @@ class CalibrationClassificationTransform(BaseTransform):
         debug: bool = False,
         undistort: bool = True,
         enable_augmentation: bool = False,
+        use_separate_extrinsics: bool = True,  # New option
     ):
         """Initialize the CalibrationClassificationTransform.
 
@@ -48,6 +61,7 @@ class CalibrationClassificationTransform(BaseTransform):
             debug (bool): Whether to enable debug visualization. Defaults to False.
             undistort (bool): Whether to undistort images. Defaults to True.
             enable_augmentation (bool): Whether to enable data augmentation. Defaults to False.
+            use_separate_extrinsics (bool): Whether to use quaternion+translation extrinsics for projection. Defaults to False.
         """
         super().__init__()
         self.validation = validation
@@ -55,6 +69,7 @@ class CalibrationClassificationTransform(BaseTransform):
         self.debug = debug
         self.undistort = undistort
         self.enable_augmentation = enable_augmentation
+        self.use_separate_extrinsics = use_separate_extrinsics
 
     def transform(self, results: Dict[str, Any], force_generate_miscalibration: bool = False) -> Dict[str, Any]:
         """Transform input data for calibration classification.
@@ -92,8 +107,8 @@ class CalibrationClassificationTransform(BaseTransform):
             generate_miscalibration = force_generate_miscalibration or random.choice([True, False])  # 50/50 split
 
         if generate_miscalibration:
-            calibration_data.camera_to_lidar_pose = alter_calibration(
-                calibration_data.camera_to_lidar_pose,
+            calibration_data.lidar_to_camera_pose = alter_calibration(
+                calibration_data.lidar_to_camera_pose,
                 min_augmentation_angle=1.0,
                 max_augmentation_angle=10.0,
                 min_augmentation_radius=0.05,
@@ -150,10 +165,58 @@ class CalibrationClassificationTransform(BaseTransform):
         lidar_data["intensities"] = self.normalize_intensity(lidar_data["intensities"])
 
         calibration_data_npz = np.load(os.path.join(data_dir, f"{base_name}_calibration.npz"))
+        # Load required fields
+        camera_matrix = calibration_data_npz["camera_matrix"]
+        distortion_coefficients = calibration_data_npz["distortion_coefficients"]
+        lidar_to_camera_pose = calibration_data_npz["lidar_to_camera_pose"]
+        # Load optional fields if present
+        lidar_to_baselink_rotation_quat = (
+            calibration_data_npz["lidar_to_baselink_rotation_quat"]
+            if "lidar_to_baselink_rotation_quat" in calibration_data_npz
+            else None
+        )
+        lidar_to_baselink_translation = (
+            calibration_data_npz["lidar_to_baselink_translation"]
+            if "lidar_to_baselink_translation" in calibration_data_npz
+            else None
+        )
+        camera_to_baselink_rotation_quat = (
+            calibration_data_npz["camera_to_baselink_rotation_quat"]
+            if "camera_to_baselink_rotation_quat" in calibration_data_npz
+            else None
+        )
+        camera_to_baselink_translation = (
+            calibration_data_npz["camera_to_baselink_translation"]
+            if "camera_to_baselink_translation" in calibration_data_npz
+            else None
+        )
+
+        # Load ego pose fields if present
+        lidar_ego_quat = calibration_data_npz["lidar_ego_quat"] if "lidar_ego_quat" in calibration_data_npz else None
+        lidar_ego_translation = (
+            calibration_data_npz["lidar_ego_translation"] if "lidar_ego_translation" in calibration_data_npz else None
+        )
+        camera_ego_quat = (
+            calibration_data_npz["camera_ego_quat"] if "camera_ego_quat" in calibration_data_npz else None
+        )
+        camera_ego_translation = (
+            calibration_data_npz["camera_ego_translation"]
+            if "camera_ego_translation" in calibration_data_npz
+            else None
+        )
+
         calibration_data = CalibrationData(
-            camera_matrix=calibration_data_npz["camera_matrix"],
-            distortion_coefficients=calibration_data_npz["distortion_coefficients"],
-            camera_to_lidar_pose=calibration_data_npz["camera_to_lidar_pose"],
+            camera_matrix=camera_matrix,
+            distortion_coefficients=distortion_coefficients,
+            lidar_to_camera_pose=lidar_to_camera_pose,
+            lidar_to_baselink_rotation_quat=lidar_to_baselink_rotation_quat,
+            lidar_to_baselink_translation=lidar_to_baselink_translation,
+            camera_to_baselink_rotation_quat=camera_to_baselink_rotation_quat,
+            camera_to_baselink_translation=camera_to_baselink_translation,
+            lidar_ego_quat=lidar_ego_quat,
+            lidar_ego_translation=lidar_ego_translation,
+            camera_ego_quat=camera_ego_quat,
+            camera_ego_translation=camera_ego_translation,
         )
 
         return camera_data, lidar_data, calibration_data
@@ -348,24 +411,100 @@ class CalibrationClassificationTransform(BaseTransform):
             np.ndarray: Combined image with RGB, depth, and intensity channels.
         """
         # Extract calibration parameters
-        rotation_matrix = calibration_data.camera_to_lidar_pose[:3, :3]
-        translation_vector = calibration_data.camera_to_lidar_pose[:3, 3]
-        camera_matrix = calibration_data.new_camera_matrix
-        distortion_coefficients = calibration_data.distortion_coefficients[:8]
+        use_se = self.use_separate_extrinsics
+        has_all = (
+            calibration_data.lidar_to_baselink_rotation_quat is not None
+            and calibration_data.lidar_to_baselink_translation is not None
+            and calibration_data.camera_to_baselink_rotation_quat is not None
+            and calibration_data.camera_to_baselink_translation is not None
+        )
+        if (
+            use_se
+            and has_all
+            and calibration_data.lidar_ego_quat is not None
+            and calibration_data.lidar_ego_translation is not None
+            and calibration_data.camera_ego_quat is not None
+            and calibration_data.camera_ego_translation is not None
+        ):
 
-        # Transform LiDAR points to the camera coordinate system
-        pointcloud = lidar_data["pointcloud"]
-        pointcloud_ccs = pointcloud @ rotation_matrix.T + translation_vector
+            print("using use_separate_extrinsics (full chain)")
+
+            lidar_points = lidar_data["pointcloud"]
+            lidar_calib = {
+                "rotation": calibration_data.lidar_to_baselink_rotation_quat,
+                "translation": calibration_data.lidar_to_baselink_translation,
+            }
+            cam_calib = {
+                "rotation": calibration_data.camera_to_baselink_rotation_quat,
+                "translation": calibration_data.camera_to_baselink_translation,
+            }
+            lidar_pose = {
+                "rotation": calibration_data.lidar_ego_quat,
+                "translation": calibration_data.lidar_ego_translation,
+            }
+            cam_pose = {
+                "rotation": calibration_data.camera_ego_quat,
+                "translation": calibration_data.camera_ego_translation,
+            }
+
+            def rotmat_from_quat(q):
+                return Quaternion(q).rotation_matrix
+
+            # Step 1: LiDAR to baselink
+            print("Before LiDAR extrinsic:", lidar_points[:5])
+            points = lidar_points @ rotmat_from_quat(lidar_calib["rotation"]).T + np.array(lidar_calib["translation"])
+            print("After LiDAR extrinsic:", points[:5])
+
+            # Step 2: baselink (LiDAR time) to global
+            points = points @ rotmat_from_quat(lidar_pose["rotation"]).T + np.array(lidar_pose["translation"])
+            print("After LiDAR ego pose:", points[:5])
+
+            # Step 3: global to baselink (Camera time)
+            points = points - np.array(cam_pose["translation"])
+            print("After subtracting camera ego translation:", points[:5])
+            points = points @ rotmat_from_quat(cam_pose["rotation"])
+            print("After camera ego rotation:", points[:5])
+
+            # Step 4: baselink to camera
+            points = points - np.array(cam_calib["translation"])
+            print("After subtracting camera extrinsic translation:", points[:5])
+            points = points @ rotmat_from_quat(cam_calib["rotation"])
+            print("After camera extrinsic rotation:", points[:5])
+
+            pointcloud_ccs = points
+
+            # Debug print
+            print('lidar_calib["rotation"]:', lidar_calib["rotation"])
+            print('lidar_calib["translation"]:', lidar_calib["translation"])
+            print('lidar_pose["rotation"]:', lidar_pose["rotation"])
+            print('lidar_pose["translation"]:', lidar_pose["translation"])
+            print('cam_pose["rotation"]:', cam_pose["rotation"])
+            print('cam_pose["translation"]:', cam_pose["translation"])
+            print('cam_calib["rotation"]:', cam_calib["rotation"])
+            print('cam_calib["translation"]:', cam_calib["translation"])
+
+            # Print rotation matrices for each step
+            print("pyquaternion rotmat lidar_calib:", rotmat_from_quat(lidar_calib["rotation"]))
+            print("pyquaternion rotmat lidar_pose:", rotmat_from_quat(lidar_pose["rotation"]))
+            print("pyquaternion rotmat cam_pose:", rotmat_from_quat(cam_pose["rotation"]))
+            print("pyquaternion rotmat cam_calib:", rotmat_from_quat(cam_calib["rotation"]))
+        else:
+            # Default: use lidar_to_camera_pose
+            rotation_matrix = calibration_data.lidar_to_camera_pose[:3, :3]
+            translation_vector = calibration_data.lidar_to_camera_pose[:3, 3]
+            pointcloud = lidar_data["pointcloud"]
+            pointcloud_ccs = pointcloud @ rotation_matrix.T + translation_vector
+        # Filter points in front of camera
         valid_points = pointcloud_ccs[:, 2] > 0.0
         pointcloud_ccs = pointcloud_ccs[valid_points]
         lidar_data["intensities"] = lidar_data["intensities"][valid_points]
-
         # Project 3D points into the image plane
+        camera_matrix = calibration_data.new_camera_matrix
+        distortion_coefficients = calibration_data.distortion_coefficients[:8]
         pointcloud_ics, _ = cv2.projectPoints(
             pointcloud_ccs, np.zeros(3), np.zeros(3), camera_matrix, distortion_coefficients
         )
         pointcloud_ics = pointcloud_ics.reshape(-1, 2)
-
         # Apply the affine transformation to the 2D lidar image points
         if augmentation_tf is not None:
             num_points = pointcloud_ics.shape[0]
@@ -373,7 +512,6 @@ class CalibrationClassificationTransform(BaseTransform):
             transformed_ics = (augmentation_tf @ homogeneous_ics.T).T[:, :2]
         else:
             transformed_ics = pointcloud_ics
-
         # Generate depth and intensity images
         return self.create_lidar_images(image, transformed_ics, pointcloud_ccs, lidar_data["intensities"])
 
