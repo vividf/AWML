@@ -1,3 +1,5 @@
+import autoware_ml.classification2d.datasets.t4_calibration_classification_dataset
+
 _base_ = [
     "mmpretrain::_base_/default_runtime.py",
     "mmpretrain::_base_/models/resnet18.py",
@@ -44,14 +46,19 @@ train_pipeline = [
     dict(type="PackInputs", input_key="img"),
 ]
 
+
+info_directory_path = "/workspace/data/t4dataset/calibration_info/"
+train_info_file = f"t4dataset_x2_calib_infos_train.pkl"
+val_info_file = f"t4dataset_x2_calib_infos_val.pkl"
+test_info_file = f"t4dataset_x2_calib_infos_test.pkl"
 train_dataloader = dict(
     batch_size=batch_size,
     num_workers=batch_size,
+    persistent_workers=True,
     shuffle=True,
     dataset=dict(
-        type="mmpretrain.CustomDataset",
-        data_prefix="data/calibrated_data/training_set",
-        with_label=True,
+        type="T4CalibrationClassificationDataset",
+        ann_file=info_directory_path + train_info_file,
         pipeline=train_pipeline,
     ),
 )
@@ -59,7 +66,7 @@ train_dataloader = dict(
 val_cfg = dict()
 
 val_pipeline = [
-    dict(type="CalibrationClassificationTransform", validation=True),
+    dict(type="CalibrationClassificationTransform", validation=True, debug=True),
     dict(type="PackInputs", input_key="img"),
 ]
 
@@ -69,9 +76,8 @@ val_dataloader = dict(
     persistent_workers=False,
     shuffle=False,
     dataset=dict(
-        type="mmpretrain.CustomDataset",
-        data_prefix="data/calibrated_data/validation_set",
-        with_label=True,
+        type="T4CalibrationClassificationDataset",
+        ann_file=info_directory_path + val_info_file,
         pipeline=val_pipeline,
     ),
 )
@@ -89,9 +95,8 @@ test_dataloader = dict(
     persistent_workers=False,
     shuffle=False,
     dataset=dict(
-        type="mmpretrain.CustomDataset",
-        data_prefix="data/calibrated_data/validation_set",
-        with_label=True,
+        type="T4CalibrationClassificationDataset",
+        ann_file=info_directory_path + test_info_file,
         pipeline=test_pipeline,
     ),
 )
