@@ -12,7 +12,7 @@ from autoware_ml.classification2d.datasets.transforms.calibration_classification
 
 @HOOKS.register_module()
 class ResultVisualizationHook(Hook):
-    def __init__(self, save_dir="./projection_vis/"):
+    def __init__(self, save_dir="./projection_vis_origin/"):
         self.save_dir = save_dir
         os.makedirs(self.save_dir, exist_ok=True)
         self.transform = CalibrationClassificationTransform(debug=False)
@@ -40,6 +40,9 @@ class ResultVisualizationHook(Hook):
             # If not available, skip visualization for this sample
             input_data = output.metainfo.get("input_data", None)
             if input_data is not None:
-                self.transform.visualize_results(input_data, pred_label, original_image, undistorted_image)
+                img_index = os.path.splitext(os.path.basename(img_path))[0]
+                self.transform.visualize_results(
+                    input_data, pred_label, original_image, undistorted_image, img_index=img_index
+                )
             else:
                 print(f"[ResultVisualizationHook] input_data not found for {img_path}, skipping visualization.")
