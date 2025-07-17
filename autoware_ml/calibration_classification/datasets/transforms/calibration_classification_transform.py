@@ -22,11 +22,11 @@ class CalibrationData:
     camera_matrix: np.ndarray
     distortion_coefficients: np.ndarray
     new_camera_matrix: Optional[np.ndarray] = None
-    lidar_to_camera_transformation: Optional[np.ndarray] = None
-    lidar_to_ego_transformation: Optional[np.ndarray] = None
-    camera_to_ego_transformation: Optional[np.ndarray] = None
-    lidar_pose: Optional[np.ndarray] = None
-    camera_pose: Optional[np.ndarray] = None
+    lidar_to_camera_transformation: np.ndarray = None
+    lidar_to_ego_transformation: np.ndarray = None
+    camera_to_ego_transformation: np.ndarray = None
+    lidar_pose: np.ndarray = None
+    camera_pose: np.ndarray = None
 
     def __post_init__(self):
         """Initialize new_camera_matrix if not provided."""
@@ -103,8 +103,9 @@ class CalibrationClassificationTransform(BaseTransform):
             generate_miscalibration = force_generate_miscalibration or random.choice([True, False])  # 50/50 split
 
         if generate_miscalibration:
-            calibration_data.lidar_to_camera_pose = alter_calibration(
-                calibration_data.lidar_to_camera_pose,
+            # TODO(vividf): probably we don't want to put this back?
+            alter_lidar_to_camera_transformation = alter_calibration(
+                np.array(calibration_data.lidar_to_camera_transformation),
                 min_augmentation_angle=1.0,
                 max_augmentation_angle=10.0,
                 min_augmentation_radius=0.05,
@@ -140,11 +141,16 @@ class CalibrationClassificationTransform(BaseTransform):
                 self._current_img_index = base_name
             else:
                 self._current_img_index = "unknown"
-            self.visualize_projection(input_data, label, img_index=self._current_img_index)
+            self.visualize_projection(
+                input_data, label, img_index=self._current_img_index, sample_idx=results["sample_idx"]
+            )
 
         # Final results
+
         results["img"] = input_data
         results["gt_label"] = label
+
+        # TODO(vividf): remove this
         results["input_data"] = input_data  # Ensure this is available for PackInputs
         # Attach input_data, images, and img_path to DataSample metainfo for visualization hook
         meta = {"input_data": input_data}
@@ -152,6 +158,8 @@ class CalibrationClassificationTransform(BaseTransform):
             meta["images"] = results["images"]
         if "img_path" in results:
             meta["img_path"] = results["img_path"]
+        if "img_path" in results:
+            meta["sample_idx"] = results["sample_idx"]
         sample = DataSample().set_gt_label(label)
         sample.set_metainfo(meta)
         results["data_samples"] = sample
@@ -190,7 +198,10 @@ class CalibrationClassificationTransform(BaseTransform):
         num_pts_feats = sample["lidar_points"].get("num_pts_feats", 5)
         pointcloud = np.fromfile(lidar_path, dtype=np.float32).reshape(-1, num_pts_feats)
         # x, y, z, intensity, ring
-        lidar_data = {"pointcloud": pointcloud[:, :3], "intensities": pointcloud[:, 3]}  # xyz
+        lidar_data = {
+            "pointcloud": pointcloud[:, :3],
+            "intensities": self.normalize_intensity(pointcloud[:, 3]),
+        }  # xyz
 
         # Calibration info extraction from info.pkl
         cam_info = sample["images"][camera_channel]
@@ -199,8 +210,9 @@ class CalibrationClassificationTransform(BaseTransform):
         camera_matrix = np.array(cam_info["cam2img"]) if cam_info["cam2img"] is not None else None
         distortion_coefficients = np.zeros(5, dtype=np.float32)  # Placeholder, update if available in info.pkl
 
-        # TODO(vividf): compute this when we gerenate info? to reduce the computation cost
-        lidar_to_camera_transformation = None  # Not directly in info.pkl, can be computed if needed
+        lidar_to_camera_transformation = cam_info.get(
+            "lidar2cam"
+        )  # Not directly in info.pkl, can be computed if needed
         lidar_to_ego_transformation = lidar_info.get("lidar2ego")
         camera_to_ego_transformation = cam_info.get("cam2ego")
         camera_pose = cam_info.get("cam_pose")
@@ -407,6 +419,7 @@ class CalibrationClassificationTransform(BaseTransform):
         lidar_data: Dict[str, np.ndarray],
         calibration_data: CalibrationData,
         augmentation_tf: Optional[np.ndarray] = None,
+        use_lidar2cam: bool = True,
     ) -> np.ndarray:
         """Generates depth and intensity images using augmented calibration.
 
@@ -425,21 +438,26 @@ class CalibrationClassificationTransform(BaseTransform):
 
         points_hom = np.concatenate([points, np.ones((N, 1), dtype=points.dtype)], axis=1)  # (N, 4)
 
-        # Step 1: LiDAR to baselink
-        lidar_to_ego = np.array(calibration_data.lidar_to_ego_transformation)
-        points_hom = (lidar_to_ego @ points_hom.T).T  # (N, 4)
+        if use_lidar2cam and calibration_data.lidar_to_camera_transformation is not None:
+            # USe lidar2cam directly
+            lidar2cam = np.array(calibration_data.lidar_to_camera_transformation)
+            points_hom = (lidar2cam @ points_hom.T).T
+        else:
+            # Step 1: LiDAR to baselink
+            lidar_to_ego = np.array(calibration_data.lidar_to_ego_transformation)
+            points_hom = (lidar_to_ego @ points_hom.T).T  # (N, 4)
 
-        # Step 2: baselink (LiDAR time) to global
-        lidar_pose = np.array(calibration_data.lidar_pose)
-        points_hom = (lidar_pose @ points_hom.T).T
+            # Step 2: baselink (LiDAR time) to global
+            lidar_pose = np.array(calibration_data.lidar_pose)
+            points_hom = (lidar_pose @ points_hom.T).T
 
-        # Step 3: global to baselink (Camera time)
-        camera_pose_inv = np.linalg.inv(np.array(calibration_data.camera_pose))
-        points_hom = (camera_pose_inv @ points_hom.T).T
+            # Step 3: global to baselink (Camera time)
+            camera_pose_inv = np.linalg.inv(np.array(calibration_data.camera_pose))
+            points_hom = (camera_pose_inv @ points_hom.T).T
 
-        # Step 4: baselink to camera
-        camera_to_ego_inv = np.linalg.inv(np.array(calibration_data.camera_to_ego_transformation))
-        points_hom = (camera_to_ego_inv @ points_hom.T).T
+            # Step 4: baselink to camera
+            camera_to_ego_inv = np.linalg.inv(np.array(calibration_data.camera_to_ego_transformation))
+            points_hom = (camera_to_ego_inv @ points_hom.T).T
 
         pointcloud_ccs = points_hom[:, :3]
 
@@ -515,13 +533,16 @@ class CalibrationClassificationTransform(BaseTransform):
         )
         return overlay_image
 
-    def visualize_projection(self, input_data: np.ndarray, label: int, img_index: str = None) -> None:
+    def visualize_projection(
+        self, input_data: np.ndarray, label: int, img_index: str = None, sample_idx: int = None
+    ) -> None:
         """Visualizes LiDAR projection results.
 
         Args:
             input_data (np.ndarray): Combined input data with RGB, depth, and intensity channels.
             label (int): Classification label (0 for miscalibrated, 1 for correct).
             img_index (str, optional): Unique index for filename. Defaults to None.
+            sample_idx (int, optional): Sample id to include in filename. Defaults to None.
         """
         import os
 
@@ -532,14 +553,11 @@ class CalibrationClassificationTransform(BaseTransform):
         # Save the overlay image to a directory
         save_dir = "./projection_vis_origin/"
         os.makedirs(save_dir, exist_ok=True)
-        if img_index is None:
-            img_index = getattr(self, "_current_img_index", None)
-        if img_index is None:
-            img_index = "unknown"
-        save_path = os.path.join(save_dir, f"projection_{img_index}_label_{label}.png")
+        save_path = os.path.join(save_dir, f"projection_sample_{sample_idx}_{img_index}_label_{label}.png")
         # Convert BGR to RGB for saving with cv2
         overlay_bgr = cv2.cvtColor(overlay_image, cv2.COLOR_RGB2BGR)
         cv2.imwrite(save_path, overlay_bgr)
+        print(f"Saved projection visualization to {save_path}")
 
     def visualize_results(
         self,
@@ -548,6 +566,7 @@ class CalibrationClassificationTransform(BaseTransform):
         original_image: np.ndarray,
         undistorted_image: np.ndarray,
         img_index: str = None,
+        sample_idx: int = None,
     ) -> None:
         """Visualizes comprehensive results including all image types.
 
@@ -557,6 +576,7 @@ class CalibrationClassificationTransform(BaseTransform):
             original_image (np.ndarray): Original camera image.
             undistorted_image (np.ndarray): Undistorted camera image.
             img_index (str, optional): Unique index for filename. Defaults to None.
+            sample_idx (int, optional): Sample id to include in filename. Defaults to None.
         """
         import os
 
@@ -612,42 +632,15 @@ class CalibrationClassificationTransform(BaseTransform):
         # Save the figure to a directory
         save_dir = "./projection_vis_origin/"
         os.makedirs(save_dir, exist_ok=True)
-        if img_index is None:
-            img_index = getattr(self, "_current_img_index", None)
-        if img_index is None:
-            img_index = "unknown"
-        save_path = os.path.join(save_dir, f"results_{img_index}_label_{label}.png")
+        save_path = os.path.join(save_dir, f"results_sample_{sample_idx}_{img_index}_label_{label}.png")
         plt.savefig(save_path)
         print(f"Saved results visualization to {save_path}")
         plt.close()
 
 
 if __name__ == "__main__":
-    print("hiiiii")
     results = dict()
+    # TODO(vividf): change this
     results["img_path"] = "data/calibrated_data/training_set/data/250_image.jpg"
     tf = CalibrationClassificationTransform(debug=True, enable_augmentation=False)
     results = tf(results)
-
-    # Load the images for visualization
-    # These are loaded the same way as in load_data
-
-    print("hiiiii")
-    img_path = results["img_path"]
-    data_dir = os.path.dirname(img_path)
-    base_name = os.path.splitext(os.path.basename(img_path))[0].split("_")[0]
-    original_image = cv2.imread(img_path)
-    calibration_data_npz = np.load(os.path.join(data_dir, f"{base_name}_calibration.npz"))
-    camera_matrix = calibration_data_npz["camera_matrix"]
-    distortion_coefficients = calibration_data_npz["distortion_coefficients"]
-    undistorted_image = cv2.undistort(
-        original_image,
-        camera_matrix,
-        distortion_coefficients,
-        newCameraMatrix=camera_matrix,
-    )
-
-    # Call visualize_results
-    tf.visualize_results(
-        results["img"], results["gt_label"], original_image, undistorted_image, img_index=tf._current_img_index
-    )

@@ -68,6 +68,7 @@ class ResultVisualizationHook(Hook):
                 print(f"[ResultVisualizationHook] cv2.imread failed to load image: {img_path_full}")
                 continue
             cam_info = output.metainfo["images"]["CAM_FRONT"]
+            sample_idx = output.metainfo["sample_idx"]
             camera_matrix = np.array(cam_info["cam2img"])
             distortion_coefficients = np.zeros(5, dtype=np.float32)  # Use zeros if not available
             undistorted_image = cv2.undistort(
@@ -80,7 +81,12 @@ class ResultVisualizationHook(Hook):
             if input_data is not None:
                 img_index = os.path.splitext(os.path.basename(img_path_full))[0]
                 self.transform.visualize_results(
-                    input_data, pred_label, original_image, undistorted_image, img_index=img_index
+                    input_data,
+                    pred_label,
+                    original_image,
+                    undistorted_image,
+                    img_index=img_index,
+                    sample_idx=sample_idx,
                 )
             else:
                 print(f"[ResultVisualizationHook] input_data not found for {img_path_full}, skipping visualization.")

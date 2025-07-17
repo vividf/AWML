@@ -91,7 +91,7 @@ val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 
 test_pipeline = [
     dict(type="CalibrationClassificationTransform", test=True, debug=True, data_root=data_root),
-    dict(type="PackInputs", input_key="img", meta_keys=["img_path", "input_data", "images"]),
+    dict(type="PackInputs", input_key="img", meta_keys=["img_path", "input_data", "images", "sample_idx"]),
 ]
 
 test_dataloader = dict(

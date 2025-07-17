@@ -171,7 +171,29 @@ def build_frame_info(
                 "timestamp": None,
                 "height": None,
                 "width": None,
+                "lidar2cam": None,
             }
+        else:
+            # Calculate lidar2cam if all required matrices are present
+            lidar2ego = info["lidar_points"]["lidar2ego"] if info["lidar_points"] else None
+            lidar_pose = info["lidar_points"]["lidar_pose"] if info["lidar_points"] else None
+            cam_pose = info["images"][cam]["cam_pose"]
+            cam2ego = info["images"][cam]["cam2ego"]
+            if None not in (lidar2ego, lidar_pose, cam_pose, cam2ego):
+                try:
+                    lidar2ego_mat = np.array(lidar2ego)
+                    lidar_pose_mat = np.array(lidar_pose)
+                    cam_pose_mat = np.array(cam_pose)
+                    cam2ego_mat = np.array(cam2ego)
+                    cam_pose_inv = np.linalg.inv(cam_pose_mat)
+                    cam2ego_inv = np.linalg.inv(cam2ego_mat)
+
+                    lidar2cam = cam2ego_inv @ cam_pose_inv @ lidar_pose_mat @ lidar2ego_mat
+                    info["images"][cam]["lidar2cam"] = lidar2cam.tolist()
+                except Exception as e:
+                    info["images"][cam]["lidar2cam"] = None
+            else:
+                info["images"][cam]["lidar2cam"] = None
     return info
 
 
