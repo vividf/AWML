@@ -17,7 +17,7 @@ samples = mmengine.load(info_path)
 
 data_list = samples["data_list"] if isinstance(samples, dict) and "data_list" in samples else samples
 print(f"Total samples: {len(data_list)}")
-for i, sample in enumerate(data_list[:5]):  # Show first 5 samples
+for i, sample in enumerate(data_list):  # Show first 5 samples
     print(f"\nSample {i}:")
     pprint.pprint(sample)
     calib = sample.get("calibration", {})

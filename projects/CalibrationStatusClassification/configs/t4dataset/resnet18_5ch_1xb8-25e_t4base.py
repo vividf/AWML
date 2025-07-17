@@ -42,13 +42,15 @@ model = dict(
 
 train_cfg = dict(by_epoch=True, max_epochs=max_epochs, val_interval=1)
 
+data_root = "/workspace/data/t4dataset"
+
 train_pipeline = [
-    dict(type="CalibrationClassificationTransform"),
+    dict(type="CalibrationClassificationTransform", data_root=data_root),
     dict(type="PackInputs", input_key="img"),
 ]
 
 
-info_directory_path = "/workspace/data/t4dataset/calibration_info/"
+info_directory_path = "/workspace/data/t4dataset/calibration_info_new/"
 train_info_file = f"t4dataset_x2_calib_infos_train.pkl"
 val_info_file = f"t4dataset_x2_calib_infos_val.pkl"
 test_info_file = f"t4dataset_x2_calib_infos_test.pkl"
@@ -61,13 +63,14 @@ train_dataloader = dict(
         type="T4CalibrationClassificationDataset",
         ann_file=info_directory_path + train_info_file,
         pipeline=train_pipeline,
+        data_root=data_root,
     ),
 )
 
 val_cfg = dict()
 
 val_pipeline = [
-    dict(type="CalibrationClassificationTransform", validation=True, debug=True),
+    dict(type="CalibrationClassificationTransform", validation=True, debug=True, data_root=data_root),
     dict(type="PackInputs", input_key="img"),
 ]
 
@@ -80,13 +83,14 @@ val_dataloader = dict(
         type="T4CalibrationClassificationDataset",
         ann_file=info_directory_path + val_info_file,
         pipeline=val_pipeline,
+        data_root=data_root,
     ),
 )
 
 val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 
 test_pipeline = [
-    dict(type="CalibrationClassificationTransform", test=True, debug=True),
+    dict(type="CalibrationClassificationTransform", test=True, debug=True, data_root=data_root),
     dict(type="PackInputs", input_key="img", meta_keys=["img_path", "input_data"]),
 ]
 
@@ -99,6 +103,7 @@ test_dataloader = dict(
         type="T4CalibrationClassificationDataset",
         ann_file=info_directory_path + test_info_file,
         pipeline=test_pipeline,
+        data_root=data_root,
     ),
 )
 

@@ -23,7 +23,15 @@ class ResultVisualizationHook(Hook):
         # Adjust keys as needed for your pipeline
         for i, output in enumerate(outputs):
             pred_label = int(output.pred_label.item())
-            img_path = output.metainfo["img_path"]
+            img_path = None
+            if "images" in output.metainfo:
+                for cam_info in output.metainfo["images"].values():
+                    if cam_info.get("img_path"):
+                        img_path = cam_info["img_path"]
+                        break
+            if not img_path:
+                print("[ResultVisualizationHook] img_path not found in any channel, skipping visualization.")
+                continue
             original_image = cv2.imread(img_path)
             data_dir = os.path.dirname(img_path)
             base_name = os.path.splitext(os.path.basename(img_path))[0].split("_")[0]

@@ -1,4 +1,5 @@
 import mmengine
+from mmcv.transforms import Compose
 from mmpretrain.registry import DATASETS
 from torch.utils.data import Dataset
 
@@ -32,15 +33,32 @@ class T4CalibrationClassificationDataset(Dataset):
     geometric relationships for classification or projection-based tasks.
     """
 
-    def __init__(self, ann_file, pipeline=None):
+    def __init__(self, ann_file, pipeline=None, data_root=None):
         """
         Args:
-            ann_file (str): Path to the annotation file (info.pkl) containing a list of sample dicts.
+            ann_file (str): Path to the annotation file (info.pkl) containing a list of sample dicts or a dict with 'data_list'.
             pipeline (callable or list, optional): Data processing pipeline to apply to each sample.
         """
         self.ann_file = ann_file
-        self.pipeline = pipeline
+        self.data_root = data_root
+        if isinstance(pipeline, list):
+            pipeline = [
+                (
+                    dict(x)
+                    if not (isinstance(x, dict) and x.get("type") == "CalibrationClassificationTransform")
+                    else {**x, "data_root": data_root}
+                )
+                for x in pipeline
+            ]
+            from mmcv.transforms import Compose
+
+            self.pipeline = Compose(pipeline)
+        else:
+            self.pipeline = pipeline
         self.samples = mmengine.load(self.ann_file)
+        # If info.pkl is a dict with 'data_list', use that as the sample list
+        if isinstance(self.samples, dict) and "data_list" in self.samples:
+            self.samples = self.samples["data_list"]
 
     def __len__(self):
         """Return the number of samples in the dataset."""
