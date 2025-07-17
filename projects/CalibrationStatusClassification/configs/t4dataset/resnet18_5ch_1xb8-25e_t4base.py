@@ -91,7 +91,7 @@ val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 
 test_pipeline = [
     dict(type="CalibrationClassificationTransform", test=True, debug=True, data_root=data_root),
-    dict(type="PackInputs", input_key="img", meta_keys=["img_path", "input_data"]),
+    dict(type="PackInputs", input_key="img", meta_keys=["img_path", "input_data", "images"]),
 ]
 
 test_dataloader = dict(
@@ -115,7 +115,7 @@ debug = True
 
 custom_hooks = []
 if debug:
-    custom_hooks.append(dict(type="ResultVisualizationHook", save_dir="./projection_vis_origin/"))
+    custom_hooks.append(dict(type="ResultVisualizationHook", save_dir="./projection_vis_origin/", data_root=data_root))
 
 vis_backends = [
     dict(type="LocalVisBackend"),

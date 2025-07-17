@@ -146,9 +146,14 @@ class CalibrationClassificationTransform(BaseTransform):
         results["img"] = input_data
         results["gt_label"] = label
         results["input_data"] = input_data  # Ensure this is available for PackInputs
-        # Attach input_data to DataSample metainfo for visualization hook
+        # Attach input_data, images, and img_path to DataSample metainfo for visualization hook
+        meta = {"input_data": input_data}
+        if "images" in results:
+            meta["images"] = results["images"]
+        if "img_path" in results:
+            meta["img_path"] = results["img_path"]
         sample = DataSample().set_gt_label(label)
-        sample.set_metainfo({"input_data": input_data})
+        sample.set_metainfo(meta)
         results["data_samples"] = sample
         return results
 
@@ -199,7 +204,7 @@ class CalibrationClassificationTransform(BaseTransform):
         lidar_to_ego_transformation = lidar_info.get("lidar2ego")
         camera_to_ego_transformation = cam_info.get("cam2ego")
         camera_pose = cam_info.get("cam_pose")
-        lidar_pose = lidar_info.get("lidar_pose")  # 修正拼字錯誤 'lidar_ose'
+        lidar_pose = lidar_info.get("lidar_pose")
 
         required_fields = {
             "lidar_to_ego_transformation": lidar_to_ego_transformation,
@@ -266,8 +271,6 @@ class CalibrationClassificationTransform(BaseTransform):
                 newCameraMatrix=calibration_data.new_camera_matrix,
             )
             calibration_data.distortion_coefficients = np.zeros_like(calibration_data.distortion_coefficients)
-        if self.debug:
-            print(f"[DEBUG] Undistorted image shape: {image.shape}")
         return image, calibration_data
 
     def signed_random(self, min_value: float, max_value: float) -> float:
@@ -316,13 +319,7 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Crop and resize
         cropped_image = image[start_h:end_h, start_w:end_w]
-        if self.debug:
-            print(
-                f"[DEBUG] Cropped image shape: {cropped_image.shape}, crop region: h({start_h}:{end_h}), w({start_w}:{end_w})"
-            )
         resized_image = cv2.resize(cropped_image, (w, h))
-        if self.debug:
-            print(f"[DEBUG] Resized image to: {resized_image.shape} (target: {(h, w)})")
 
         # Update the undistorted calibration matrix
         scale_factor = w / (end_w - start_w)
@@ -373,8 +370,6 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Apply affine transformation to the image
         transformed_image = cv2.warpAffine(image, affine_matrix, (w, h), borderMode=cv2.BORDER_CONSTANT)
-        if self.debug:
-            print(f"[DEBUG] Affine transformed image shape: {transformed_image.shape}")
 
         # Update the calibration matrix
         affine_transform_3x3 = np.eye(3)
@@ -447,78 +442,10 @@ class CalibrationClassificationTransform(BaseTransform):
         points_hom = (camera_to_ego_inv @ points_hom.T).T
 
         pointcloud_ccs = points_hom[:, :3]
-        # lidar_points = lidar_data["pointcloud"]
-        # lidar_calib = {
-        #     "rotation": calibration_data.lidar_to_baselink_rotation_quat,
-        #     "translation": calibration_data.lidar_to_baselink_translation,
-        # }
-        # cam_calib = {
-        #     "rotation": calibration_data.camera_to_baselink_rotation_quat,
-        #     "translation": calibration_data.camera_to_baselink_translation,
-        # }
-        # lidar_pose = {
-        #     "rotation": calibration_data.lidar_ego_quat,
-        #     "translation": calibration_data.lidar_ego_translation,
-        # }
-        # cam_pose = {
-        #     "rotation": calibration_data.camera_ego_quat,
-        #     "translation": calibration_data.camera_ego_translation,
-        # }
 
-        # def rotmat_from_quat(q):
-        #     if self.use_scipy_quat:
-        #         # q is [w, x, y, z], scipy expects [x, y, z, w]
-        #         q = np.asarray(q)
-        #         q_scipy = np.array([q[1], q[2], q[3], q[0]])
-        #         return R.from_quat(q_scipy).as_matrix()
-        #     else:
-        #         return Quaternion(q).rotation_matrix
-
-        # print("self.use_scipy_quat:", self.use_scipy_quat)
-        # # Step 1: LiDAR to baselink
-        # # print("Before LiDAR extrinsic:", lidar_points[:5])
-        # points = lidar_points @ rotmat_from_quat(lidar_calib["rotation"]).T + np.array(lidar_calib["translation"])
-        # # print("After LiDAR extrinsic:", points[:5])
-
-        # # Step 2: baselink (LiDAR time) to global
-        # points = points @ rotmat_from_quat(lidar_pose["rotation"]).T + np.array(lidar_pose["translation"])
-        # # print("After LiDAR ego pose:", points[:5])
-
-        # # Step 3: global to baselink (Camera time)
-        # points = points - np.array(cam_pose["translation"])
-        # # print("After subtracting camera ego translation:", points[:5])
-        # points = points @ rotmat_from_quat(cam_pose["rotation"])
-        # # print("After camera ego rotation:", points[:5])
-
-        # # Step 4: baselink to camera
-        # points = points - np.array(cam_calib["translation"])
-        # # print("After subtracting camera extrinsic translation:", points[:5])
-        # points = points @ rotmat_from_quat(cam_calib["rotation"])
-        # # print("After camera extrinsic rotation:", points[:5])
-
-        # pointcloud_ccs = points
-
-        # else:
-        #     # Default: use lidar_to_camera_pose
-        #     rotation_matrix = calibration_data.lidar_to_camera_pose[:3, :3]
-        #     translation_vector = calibration_data.lidar_to_camera_pose[:3, 3]
-        #     pointcloud = lidar_data["pointcloud"]
-        #     if self.debug:
-        #         print(
-        #             f"[DEBUG] (default) pointcloud shape: {pointcloud.shape}, min: {pointcloud.min()}, max: {pointcloud.max()}"
-        #         )
-        #     pointcloud_ccs = pointcloud @ rotation_matrix.T + translation_vector
-        # Filter points in front of camera
         valid_points = pointcloud_ccs[:, 2] > 0.0
         pointcloud_ccs = pointcloud_ccs[valid_points]
         lidar_data["intensities"] = lidar_data["intensities"][valid_points]
-        if self.debug:
-            print(
-                f"[DEBUG] After filtering: pointcloud_ccs shape: {pointcloud_ccs.shape}, min: {pointcloud_ccs.min()}, max: {pointcloud_ccs.max()}"
-            )
-            print(
-                f"[DEBUG] After filtering: intensities min={lidar_data['intensities'].min()}, max={lidar_data['intensities'].max()}, mean={lidar_data['intensities'].mean()}, shape={lidar_data['intensities'].shape}"
-            )
         # Project 3D points into the image plane
         camera_matrix = calibration_data.new_camera_matrix
         distortion_coefficients = calibration_data.distortion_coefficients[:8]
@@ -526,10 +453,7 @@ class CalibrationClassificationTransform(BaseTransform):
             pointcloud_ccs, np.zeros(3), np.zeros(3), camera_matrix, distortion_coefficients
         )
         pointcloud_ics = pointcloud_ics.reshape(-1, 2)
-        if self.debug:
-            print(
-                f"[DEBUG] Projected 2D points shape: {pointcloud_ics.shape}, min: {pointcloud_ics.min()}, max: {pointcloud_ics.max()}"
-            )
+
         # Apply the affine transformation to the 2D lidar image points
         if augmentation_tf is not None:
             num_points = pointcloud_ics.shape[0]
@@ -569,13 +493,6 @@ class CalibrationClassificationTransform(BaseTransform):
 
         depth_image = np.expand_dims(depth_image, axis=2)
         intensity_image = np.expand_dims(intensity_image, axis=2)
-        if self.debug:
-            print(
-                f"[DEBUG] Depth image: min={depth_image.min()}, max={depth_image.max()}, mean={depth_image.mean()}, shape={depth_image.shape}"
-            )
-            print(
-                f"[DEBUG] Intensity image: min={intensity_image.min()}, max={intensity_image.max()}, mean={intensity_image.mean()}, shape={intensity_image.shape}"
-            )
         return np.concatenate([image, depth_image, intensity_image], axis=2)
 
     def create_overlay_image(
@@ -614,14 +531,6 @@ class CalibrationClassificationTransform(BaseTransform):
         intensity_image = input_data[:, :, 4:5]
         overlay_image = self.create_overlay_image(camera_data, intensity_image)
 
-        # Title
-        if label == 1:
-            title = "Calibration Params = Correct"
-        elif label == 0:
-            title = "Calibration Params = Wrong"
-        else:
-            title = f"Calibration Params = {label}"
-
         # Save the overlay image to a directory
         save_dir = "./projection_vis_origin/"
         os.makedirs(save_dir, exist_ok=True)
@@ -633,17 +542,6 @@ class CalibrationClassificationTransform(BaseTransform):
         # Convert BGR to RGB for saving with cv2
         overlay_bgr = cv2.cvtColor(overlay_image, cv2.COLOR_RGB2BGR)
         cv2.imwrite(save_path, overlay_bgr)
-        print(f"Saved projection visualization to {save_path}")
-
-        # Optionally, you can still plot if needed (commented out)
-        # plt.figure(figsize=(10, 8))
-        # plt.suptitle(title)
-        # plt.subplot(1, 1, 1)
-        # plt.imshow(cv2.cvtColor(overlay_image, cv2.COLOR_BGR2RGB))
-        # plt.title("LiDAR Overlay on Image")
-        # plt.axis("off")
-        # plt.tight_layout()
-        # plt.show()
 
     def visualize_results(
         self,
