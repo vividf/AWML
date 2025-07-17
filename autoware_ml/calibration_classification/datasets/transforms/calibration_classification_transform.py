@@ -481,8 +481,6 @@ class CalibrationClassificationTransform(BaseTransform):
         h, w = image.shape[:2]
         depth_image = np.zeros((h, w), dtype=np.uint8)
         intensity_image = np.zeros((h, w), dtype=np.uint8)
-        if self.debug:
-            print(f"[DEBUG] Creating lidar images for image size: {h}x{w}")
 
         for point3d, intensity, point2d in zip(pointcloud_ccs, intensities, pointcloud_ics):
             if np.any(np.abs(point2d) > (2**31 - 1)):

@@ -69,10 +69,13 @@ def extract_frame_index(filename):
     return before_dot  # fallback: just return the part before the first dot
 
 
-def generate_calib_info(annotation_dir, cam_channels=None, lidar_channel="LIDAR_CONCAT", scene_root=None):
+def generate_calib_info(
+    annotation_dir, cam_channels=None, lidar_channel="LIDAR_CONCAT", scene_root=None, scene_id=None, start_sample_idx=0
+):
     """
     Generate calibration info for each frame (grouped by filename index).
     Each info contains all sensor sample_data (lidar, cameras, etc) belonging to the same frame.
+    Returns: (infos, next_sample_idx)
     """
     sample_data_json = load_json(osp.join(annotation_dir, "sample_data.json"))
     ego_pose_json = load_json(osp.join(annotation_dir, "ego_pose.json"))
@@ -91,20 +94,42 @@ def generate_calib_info(annotation_dir, cam_channels=None, lidar_channel="LIDAR_
         frame_groups[frame_idx].append(sd)
 
     infos = []
-    for idx, (frame_idx, frame_sample_data) in enumerate(sorted(frame_groups.items())):
+    sample_idx = start_sample_idx
+    for _, (frame_idx, frame_sample_data) in enumerate(sorted(frame_groups.items())):
         info = build_frame_info(
-            frame_idx, frame_sample_data, calib_dict, ego_pose_dict, scene_root, cam_channels, lidar_channel
+            frame_idx,
+            frame_sample_data,
+            calib_dict,
+            ego_pose_dict,
+            scene_root,
+            cam_channels,
+            lidar_channel,
+            scene_id,
+            sample_idx,
         )
         if info is not None:
             infos.append(info)
-    return infos
+            sample_idx += 1
+    return infos, sample_idx
 
 
-def build_frame_info(frame_idx, frame_sample_data, calib_dict, ego_pose_dict, scene_root, cam_channels, lidar_channel):
+def build_frame_info(
+    frame_idx,
+    frame_sample_data,
+    calib_dict,
+    ego_pose_dict,
+    scene_root,
+    cam_channels,
+    lidar_channel,
+    scene_id=None,
+    sample_idx=0,
+):
     info = {
         "frame_idx": frame_idx,
+        "scene_id": scene_id,
         "images": {},
         "lidar_points": None,
+        "sample_idx": sample_idx,
     }
     for sd in frame_sample_data:
         filename = sd["filename"]
@@ -180,6 +205,7 @@ def main():
     abs_root_path = osp.abspath(args.root_path)
 
     split_infos = {"train": [], "val": [], "test": []}
+    split_sample_idx = {"train": 0, "val": 0, "test": 0}
     for dataset_version in cfg.dataset_version_list:
         dataset_list = osp.join(cfg.dataset_version_config_root, dataset_version + ".yaml")
         with open(dataset_list, "r") as f:
@@ -196,8 +222,13 @@ def main():
                     continue
                 print(f"[INFO] Generating calibration info for {scene_id} ({split}) ...")
                 rel_scene_root = osp.relpath(scene_root, abs_root_path)
-                scene_infos = generate_calib_info(
-                    annotation_dir, args.cam_channels, args.lidar_channel, rel_scene_root
+                scene_infos, split_sample_idx[split] = generate_calib_info(
+                    annotation_dir,
+                    args.cam_channels,
+                    args.lidar_channel,
+                    rel_scene_root,
+                    scene_id,
+                    split_sample_idx[split],
                 )
                 split_infos[split].extend(scene_infos)
     # Save per split
