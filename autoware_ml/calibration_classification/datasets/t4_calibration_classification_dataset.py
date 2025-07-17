@@ -33,11 +33,12 @@ class T4CalibrationClassificationDataset(Dataset):
     geometric relationships for classification or projection-based tasks.
     """
 
-    def __init__(self, ann_file, pipeline=None, data_root=None):
+    def __init__(self, ann_file, pipeline=None, data_root=None, max_samples=None):
         """
         Args:
             ann_file (str): Path to the annotation file (info.pkl) containing a list of sample dicts or a dict with 'data_list'.
             pipeline (callable or list, optional): Data processing pipeline to apply to each sample.
+            max_samples (int, optional): If set, only use the first max_samples samples.
         """
         self.ann_file = ann_file
         self.data_root = data_root
@@ -59,6 +60,8 @@ class T4CalibrationClassificationDataset(Dataset):
         # If info.pkl is a dict with 'data_list', use that as the sample list
         if isinstance(self.samples, dict) and "data_list" in self.samples:
             self.samples = self.samples["data_list"]
+        if max_samples is not None:
+            self.samples = self.samples[:max_samples]
 
     def __len__(self):
         """Return the number of samples in the dataset."""

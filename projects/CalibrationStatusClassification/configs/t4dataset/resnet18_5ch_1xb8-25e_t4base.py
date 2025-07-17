@@ -104,6 +104,7 @@ test_dataloader = dict(
         ann_file=info_directory_path + test_info_file,
         pipeline=test_pipeline,
         data_root=data_root,
+        max_samples=5,  # Only use the first 5 samples for testing
     ),
 )
 
