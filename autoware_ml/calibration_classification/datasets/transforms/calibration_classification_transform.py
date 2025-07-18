@@ -500,12 +500,52 @@ class CalibrationClassificationTransform(BaseTransform):
         depth_image = np.zeros((h, w), dtype=np.uint8)
         intensity_image = np.zeros((h, w), dtype=np.uint8)
 
-        for point3d, intensity, point2d in zip(pointcloud_ccs, intensities, pointcloud_ics):
-            if np.any(np.abs(point2d) > (2**31 - 1)):
-                continue
-            distance_color = int(np.clip(255 * point3d[2] / 80.0, 0, 255))
-            cv2.circle(depth_image, tuple(point2d.astype(int)), 3, distance_color, -1)
-            cv2.circle(intensity_image, tuple(point2d.astype(int)), 3, int(intensity * 255), -1)
+        valid_mask = (
+            (pointcloud_ics[:, 0] >= 0)
+            & (pointcloud_ics[:, 0] < w)
+            & (pointcloud_ics[:, 1] >= 0)
+            & (pointcloud_ics[:, 1] < h)
+        )
+
+        valid_ics = pointcloud_ics[valid_mask]
+        valid_ccs = pointcloud_ccs[valid_mask]
+        valid_intensities = intensities[valid_mask]
+
+        if valid_ics.size > 0:
+            radius = 2
+
+            y_offsets, x_offsets = np.mgrid[-radius : radius + 1, -radius : radius + 1]
+            y_offsets = y_offsets.flatten()
+            x_offsets = x_offsets.flatten()
+
+            center_rows = valid_ics[:, 1].astype(np.int32)
+            center_cols = valid_ics[:, 0].astype(np.int32)
+
+            patch_rows = center_rows[:, np.newaxis] + y_offsets[np.newaxis, :]
+            patch_cols = center_cols[:, np.newaxis] + x_offsets[np.newaxis, :]
+
+            in_bounds_mask = (patch_rows >= 0) & (patch_rows < h) & (patch_cols >= 0) & (patch_cols < w)
+
+            center_depths = np.clip(255 * valid_ccs[:, 2] / 80.0, 0, 255)
+            center_intensities = (valid_intensities * 255).squeeze()
+
+            broadcasted_depths = np.broadcast_to(center_depths[:, np.newaxis], patch_rows.shape)
+            broadcasted_intensities = np.broadcast_to(center_intensities[:, np.newaxis], patch_rows.shape)
+
+            final_rows = patch_rows[in_bounds_mask]
+            final_cols = patch_cols[in_bounds_mask]
+            final_depths = broadcasted_depths[in_bounds_mask]
+            final_intensities = broadcasted_intensities[in_bounds_mask]
+
+            sort_indices = np.argsort(final_depths)[::-1]
+
+            sorted_rows = final_rows[sort_indices]
+            sorted_cols = final_cols[sort_indices]
+            sorted_depths = final_depths[sort_indices]
+            sorted_intensities = final_intensities[sort_indices]
+
+            depth_image[sorted_rows, sorted_cols] = sorted_depths.astype(np.uint8)
+            intensity_image[sorted_rows, sorted_cols] = sorted_intensities.astype(np.uint8)
 
         depth_image = np.expand_dims(depth_image, axis=2)
         intensity_image = np.expand_dims(intensity_image, axis=2)
@@ -551,7 +591,7 @@ class CalibrationClassificationTransform(BaseTransform):
         overlay_image = self.create_overlay_image(camera_data, intensity_image)
 
         # Save the overlay image to a directory
-        save_dir = "./projection_vis_origin/"
+        save_dir = "./projection_vis_t4dataset/"
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, f"projection_sample_{sample_idx}_{img_index}_label_{label}.png")
         # Convert BGR to RGB for saving with cv2
@@ -630,7 +670,7 @@ class CalibrationClassificationTransform(BaseTransform):
         plt.tight_layout()
 
         # Save the figure to a directory
-        save_dir = "./projection_vis_origin/"
+        save_dir = "./projection_vis_t4dataset/"
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, f"results_sample_{sample_idx}_{img_index}_label_{label}.png")
         plt.savefig(save_path)
