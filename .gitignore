@@ -1,6 +1,8 @@
 # autoware-ml
 /data
 /work_dirs
+/output_visualizations
+/output_visualizations_direct
 tests/samplefiles/data
 *.bin
 *.onnx
