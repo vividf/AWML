@@ -77,6 +77,7 @@ class CalibrationClassificationTransform(BaseTransform):
         Returns:
             Dict[str, Any]: Transformed data dictionary with processed images and labels.
         """
+       # print(f"[DEBUG] Start transform for sample_idx={results.get('sample_idx', 'unknown')}") 
         # Set random seeds for reproducibility during validation
         if self.validation:
             random.seed(results["sample_idx"])

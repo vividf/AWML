@@ -194,6 +194,10 @@ def build_frame_info(
                     info["images"][cam]["lidar2cam"] = None
             else:
                 info["images"][cam]["lidar2cam"] = None
+    
+    if info["lidar_points"] is None:
+        raise ValueError(f"No lidar data found for frame {frame_idx} in scene {scene_id}.")
+    
     return info
 
 

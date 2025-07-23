@@ -16,6 +16,7 @@ custom_imports = dict(
 )
 
 batch_size = 8
+num_workers = 0
 max_epochs = 25
 
 data_preprocessor = dict()
@@ -50,14 +51,14 @@ train_pipeline = [
 ]
 
 
-info_directory_path = "/workspace/data/t4dataset/calibration_info_new/"
+info_directory_path = "/workspace/calibration_info/"
 train_info_file = f"t4dataset_x2_calib_infos_train.pkl"
 val_info_file = f"t4dataset_x2_calib_infos_val.pkl"
 test_info_file = f"t4dataset_x2_calib_infos_test.pkl"
 train_dataloader = dict(
     batch_size=batch_size,
-    num_workers=batch_size,
-    persistent_workers=True,
+    num_workers=num_workers,
+    persistent_workers=False,
     shuffle=True,
     dataset=dict(
         type="T4CalibrationClassificationDataset",
@@ -70,13 +71,13 @@ train_dataloader = dict(
 val_cfg = dict()
 
 val_pipeline = [
-    dict(type="CalibrationClassificationTransform", validation=True, debug=True, data_root=data_root),
+    dict(type="CalibrationClassificationTransform", validation=True, debug=False, data_root=data_root),
     dict(type="PackInputs", input_key="img"),
 ]
 
 val_dataloader = dict(
     batch_size=batch_size,
-    num_workers=batch_size,
+    num_workers=0,
     persistent_workers=False,
     shuffle=False,
     dataset=dict(
@@ -84,6 +85,7 @@ val_dataloader = dict(
         ann_file=info_directory_path + val_info_file,
         pipeline=val_pipeline,
         data_root=data_root,
+        max_samples=100,
     ),
 )
 
@@ -96,7 +98,7 @@ test_pipeline = [
 
 test_dataloader = dict(
     batch_size=batch_size,
-    num_workers=batch_size,
+    num_workers=0,
     persistent_workers=False,
     shuffle=False,
     dataset=dict(
@@ -111,7 +113,7 @@ test_dataloader = dict(
 test_evaluator = val_evaluator
 
 # Register the custom hook
-debug = True
+debug = False
 
 custom_hooks = []
 if debug:
