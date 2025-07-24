@@ -15,7 +15,7 @@ custom_imports = dict(
     allow_failed_imports=False,
 )
 
-batch_size = 8
+batch_size = 4
 num_workers = 0
 max_epochs = 25
 
@@ -51,7 +51,7 @@ train_pipeline = [
 ]
 
 
-info_directory_path = "/workspace/calibration_info/"
+info_directory_path = "/workspace/data/t4dataset/calibration_info/"
 train_info_file = f"t4dataset_x2_calib_infos_train.pkl"
 val_info_file = f"t4dataset_x2_calib_infos_val.pkl"
 test_info_file = f"t4dataset_x2_calib_infos_test.pkl"
@@ -116,8 +116,8 @@ test_evaluator = val_evaluator
 debug = False
 
 custom_hooks = []
-if debug:
-    custom_hooks.append(dict(type="ResultVisualizationHook", save_dir="./projection_vis_origin/", data_root=data_root))
+# if debug:
+#     custom_hooks.append(dict(type="ResultVisualizationHook", save_dir="./projection_vis_origin/", data_root=data_root))
 
 vis_backends = [
     dict(type="LocalVisBackend"),

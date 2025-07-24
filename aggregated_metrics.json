@@ -1,0 +1,52 @@
+{
+    "all": {
+        "metrics": {
+            "T4MetricV2/mAP_center_distance": 0.6108598925802236,
+            "T4MetricV2/mAPH_center_distance": 0.57569512730576,
+            "T4MetricV2/mAP_plane_distance": 0.6324430802116054,
+            "T4MetricV2/mAPH_plane_distance": 0.5953779291615517
+        },
+        "aggregated_metric_label": {
+            "car": {
+                "T4MetricV2/car_AP_center_distance_0.5": 0.7647653978600553,
+                "T4MetricV2/car_AP_center_distance_1.0": 0.932019367804297,
+                "T4MetricV2/car_AP_center_distance_2.0": 0.9457575163222686,
+                "T4MetricV2/car_AP_center_distance_4.0": 0.9472922372185955,
+                "T4MetricV2/car_AP_plane_distance_2.0": 0.9355930302438118,
+                "T4MetricV2/car_AP_plane_distance_4.0": 0.9472519023435091
+            },
+            "truck": {
+                "T4MetricV2/truck_AP_center_distance_0.5": 0.823116219667944,
+                "T4MetricV2/truck_AP_center_distance_1.0": 0.8428043288297373,
+                "T4MetricV2/truck_AP_center_distance_2.0": 0.857156180681589,
+                "T4MetricV2/truck_AP_center_distance_4.0": 0.857156180681589,
+                "T4MetricV2/truck_AP_plane_distance_2.0": 0.857156180681589,
+                "T4MetricV2/truck_AP_plane_distance_4.0": 0.857156180681589
+            },
+            "bus": {
+                "T4MetricV2/bus_AP_center_distance_0.5": 0.7587692917866372,
+                "T4MetricV2/bus_AP_center_distance_1.0": 0.8398846883748162,
+                "T4MetricV2/bus_AP_center_distance_2.0": 0.8406485592056027,
+                "T4MetricV2/bus_AP_center_distance_4.0": 0.8406485592056027,
+                "T4MetricV2/bus_AP_plane_distance_2.0": 0.837747301433508,
+                "T4MetricV2/bus_AP_plane_distance_4.0": 0.8406485592056027
+            },
+            "bicycle": {
+                "T4MetricV2/bicycle_AP_center_distance_0.5": 0.0,
+                "T4MetricV2/bicycle_AP_center_distance_1.0": 0.0,
+                "T4MetricV2/bicycle_AP_center_distance_2.0": 0.0,
+                "T4MetricV2/bicycle_AP_center_distance_4.0": 0.0,
+                "T4MetricV2/bicycle_AP_plane_distance_2.0": 0.0,
+                "T4MetricV2/bicycle_AP_plane_distance_4.0": 0.0
+            },
+            "pedestrian": {
+                "T4MetricV2/pedestrian_AP_center_distance_0.5": 0.39957251548616235,
+                "T4MetricV2/pedestrian_AP_center_distance_1.0": 0.5187291609531302,
+                "T4MetricV2/pedestrian_AP_center_distance_2.0": 0.5244388237632225,
+                "T4MetricV2/pedestrian_AP_center_distance_4.0": 0.5244388237632225,
+                "T4MetricV2/pedestrian_AP_plane_distance_2.0": 0.5244388237632225,
+                "T4MetricV2/pedestrian_AP_plane_distance_4.0": 0.5244388237632225
+            }
+        }
+    }
+}

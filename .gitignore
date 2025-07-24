@@ -3,6 +3,8 @@
 /work_dirs
 /output_visualizations
 /output_visualizations_direct
+/calibration_data
+/projection_vis_t4dataset
 tests/samplefiles/data
 *.bin
 *.onnx
