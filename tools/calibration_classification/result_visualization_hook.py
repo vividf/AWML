@@ -1,4 +1,4 @@
-debug = True  # 或 False
+debug = False  # 或 False
 
 custom_hooks = []
 if debug:

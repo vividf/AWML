@@ -83,7 +83,56 @@ class T4CalibrationClassificationDataset(Dataset):
         Returns:
             dict: Sample dictionary with all calibration, image, and lidar info.
         """
+        # print(f"[GETITEM] idx={idx}")
         sample = self.sample_index[idx]
+        # print(f"[GETITEM] before pipeline sample keys: {list(sample.keys())}")
+        
+        # 詳細顯示 sample 的內容
+        # print(  f"[GETITEM] Sample content:")
+        for key, value in sample.items():
+            if isinstance(value, dict):
+                # print(f"  {key}: dict with keys {list(value.keys())}")
+                # 如果是 images，顯示每個 camera 的資訊
+                if key == 'images':
+                    for cam_name, cam_data in value.items():
+                        # print(f"    {cam_name}: {type(cam_data)}")
+                        pass
+                        if isinstance(cam_data, dict):
+                            # print(f"      keys: {list(cam_data.keys())}")
+                            pass
+                # 如果是 lidar_points，顯示 lidar 資訊
+                elif key == 'lidar_points':
+                    # print(f"      keys: {list(value.keys())}")
+                    pass
+            elif isinstance(value, (list, tuple)):
+                # print(f"  {key}: {type(value)} with length {len(value)}")
+                pass
+            else:
+                #   print(f"  {key}: {type(value)} = {value}")
+                pass
+        
         if self.pipeline is not None:
+            # print(f"[GETITEM] Applying pipeline...")
             sample = self.pipeline(sample)
+            # print(f"[GETITEM] after pipeline sample keys: {list(sample.keys())}")
+            
+            # 詳細顯示 pipeline 處理後的內容
+            # print(f"[GETITEM] After pipeline content:")
+            for key, value in sample.items():
+                if hasattr(value, 'shape'):
+                    # print(f"  {key}: {type(value)} with shape {value.shape}")
+                    pass
+                elif isinstance(value, dict):
+                    # print(f"  {key}: dict with keys {list(value.keys())}")
+                    pass
+                elif isinstance(value, (list, tuple)):
+                    # print(f"  {key}: {type(value)} with length {len(value)}")
+                    pass
+                else:
+                    # print(f"  {key}: {type(value)} = {value}")
+                    pass
+        else:
+            # print(f"[GETITEM] No pipeline applied")
+            pass
+        
         return sample

@@ -77,6 +77,10 @@ class CalibrationClassificationTransform(BaseTransform):
         Returns:
             Dict[str, Any]: Transformed data dictionary with processed images and labels.
         """
+
+
+
+
        # print(f"[DEBUG] Start transform for sample_idx={results.get('sample_idx', 'unknown')}") 
         # Set random seeds for reproducibility during validation
         if self.validation:
@@ -88,6 +92,7 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Loading and preparing data
         camera_data, lidar_data, calibration_data = self.load_data(results, camera_channel="CAM_FRONT")
+
 
         # Image undistortion if necessary
         if self.undistort:
@@ -116,6 +121,8 @@ class CalibrationClassificationTransform(BaseTransform):
         else:
             label = 1  # Correctly calibrated
 
+
+
         # Data augmentation: cropping and affine transformations
         if self.enable_augmentation and not self.validation:
             augmented_image, augmented_calibration, augmentation_tf = self.apply_augmentations(
@@ -131,6 +138,8 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Visualize the results
         if self.debug:
+            print("debug is true")
+
             # Set a unique index for saving visualizations
             img_path = (
                 results["images"]["CAM_FRONT"]["img_path"]
@@ -146,10 +155,45 @@ class CalibrationClassificationTransform(BaseTransform):
                 input_data, label, img_index=self._current_img_index, sample_idx=results["sample_idx"]
             )
 
+        return {
+            "img": input_data,
+            "gt_label": label
+        }
         # Final results
 
-        results["img"] = input_data
-        results["gt_label"] = label
+
+        # dummy = np.zeros((1860, 2880, 5), dtype=np.float32)
+        # results["img"] = dummy  # ❗只要這行，就會 leak，即使 return {}
+        # # del results["img"]
+        # # return {}
+        # return {"img": dummy}
+
+
+        # import torch
+        # dummy = np.zeros((1860, 2880, 5), dtype=np.float32)
+
+        # # Convert to torch tensor immediately
+        # img_tensor = torch.from_numpy(dummy).permute(2, 0, 1)  # shape (5, H, W)
+
+        # return {
+        #     "img": img_tensor,  # Safe: PyTorch handles tensor memory
+        #     "gt_label": 0
+        # }
+        # results["img"] = input_data
+        # results["gt_label"] = label
+
+
+        # 🧹 強制清除所有其他欄位
+        allowed_keys = {"img", "gt_label"}
+        for k in list(results.keys()):
+            if k not in allowed_keys:
+                del results[k]
+
+        # TODO(vividf): only for debug
+        return {}   
+
+        # print(f"[TRANSFORM] results keys: {list(results.keys())}")
+
 
         # 移除 DataSample 與 metainfo 相關程式碼，避免 memory leak
         # meta = {"input_data": input_data}
@@ -618,6 +662,8 @@ class CalibrationClassificationTransform(BaseTransform):
             sample_idx (int, optional): Sample id to include in filename. Defaults to None.
         """
         import os
+        print("visualize resuls is called")
+
 
         camera_data = input_data[:, :, :3]
         depth_image = input_data[:, :, 3:4]

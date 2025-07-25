@@ -15,8 +15,8 @@ custom_imports = dict(
     allow_failed_imports=False,
 )
 
-batch_size = 4
-num_workers = 0
+batch_size = 8
+num_workers = 8
 max_epochs = 25
 
 data_preprocessor = dict()
@@ -58,7 +58,7 @@ test_info_file = f"t4dataset_x2_calib_infos_test.pkl"
 train_dataloader = dict(
     batch_size=batch_size,
     num_workers=num_workers,
-    persistent_workers=False,
+    persistent_workers=True,
     shuffle=True,
     dataset=dict(
         type="T4CalibrationClassificationDataset",
@@ -93,7 +93,8 @@ val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 
 test_pipeline = [
     dict(type="CalibrationClassificationTransform", test=True, debug=True, data_root=data_root),
-    dict(type="PackInputs", input_key="img", meta_keys=["img_path", "input_data", "images", "sample_idx"]),
+    # dict(type="PackInputs", input_key="img", meta_keys=["img_path", "input_data", "images", "sample_idx"]),
+    dict(type="PackInputs", input_key="img"),
 ]
 
 test_dataloader = dict(
