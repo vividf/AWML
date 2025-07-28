@@ -15,9 +15,9 @@ custom_imports = dict(
     allow_failed_imports=False,
 )
 
-batch_size = 8
-num_workers = 0
-max_epochs = 25
+batch_size = 16
+num_workers = 8
+max_epochs = 100
 
 data_preprocessor = dict()
 
@@ -58,7 +58,7 @@ test_info_file = f"t4dataset_x2_calib_infos_test.pkl"
 train_dataloader = dict(
     batch_size=batch_size,
     num_workers=num_workers,
-    persistent_workers=False,
+    persistent_workers=True,
     shuffle=True,
     dataset=dict(
         type="T4CalibrationClassificationDataset",

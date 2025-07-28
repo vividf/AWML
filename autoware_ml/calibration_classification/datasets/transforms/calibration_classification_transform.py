@@ -148,23 +148,30 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Final results
 
-        results["img"] = input_data
-        results["gt_label"] = label
+        #results["img"] = input_data
+        #results["gt_label"] = label
 
         # TODO(vividf): remove this
-        results["input_data"] = input_data  # Ensure this is available for PackInputs
+        #results["input_data"] = input_data  # Ensure this is available for PackInputs
         # Attach input_data, images, and img_path to DataSample metainfo for visualization hook
-        meta = {"input_data": input_data}
-        if "images" in results:
-            meta["images"] = results["images"]
-        if "img_path" in results:
-            meta["img_path"] = results["img_path"]
-        if "img_path" in results:
-            meta["sample_idx"] = results["sample_idx"]
-        sample = DataSample().set_gt_label(label)
-        sample.set_metainfo(meta)
-        results["data_samples"] = sample
-        return results
+        #meta = {"input_data": input_data}
+        #if "images" in results:
+        #    meta["images"] = results["images"]
+        #if "img_path" in results:
+        #    meta["img_path"] = results["img_path"]
+        #if "img_path" in results:
+        #    meta["sample_idx"] = results["sample_idx"]
+        #sample = DataSample().set_gt_label(label)
+        #sample.set_metainfo(meta)
+        #results["data_samples"] = sample
+        
+        output = {
+            "img": input_data,
+            "gt_label": label
+        }
+
+
+        return output
 
     def load_data(
         self, sample: dict, camera_channel: str = "CAM_FRONT"
