@@ -78,10 +78,7 @@ class CalibrationClassificationTransform(BaseTransform):
             Dict[str, Any]: Transformed data dictionary with processed images and labels.
         """
 
-
-
-
-       # print(f"[DEBUG] Start transform for sample_idx={results.get('sample_idx', 'unknown')}") 
+        # print(f"[DEBUG] Start transform for sample_idx={results.get('sample_idx', 'unknown')}")
         # Set random seeds for reproducibility during validation
         if self.validation:
             random.seed(results["sample_idx"])
@@ -92,7 +89,6 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Loading and preparing data
         camera_data, lidar_data, calibration_data = self.load_data(results, camera_channel="CAM_FRONT")
-
 
         # Image undistortion if necessary
         if self.undistort:
@@ -110,8 +106,8 @@ class CalibrationClassificationTransform(BaseTransform):
 
         if generate_miscalibration:
             # TODO(vividf): probably we don't want to put this back?
-            alter_lidar_to_camera_transformation = alter_calibration(
-                np.array(calibration_data.lidar_to_camera_transformation),
+            calibration_data.lidar_to_camera_transformation = alter_calibration(
+                calibration_data.lidar_to_camera_transformation,
                 min_augmentation_angle=1.0,
                 max_augmentation_angle=10.0,
                 min_augmentation_radius=0.05,
@@ -120,8 +116,6 @@ class CalibrationClassificationTransform(BaseTransform):
             label = 0  # Miscalibrated
         else:
             label = 1  # Correctly calibrated
-
-
 
         # Data augmentation: cropping and affine transformations
         if self.enable_augmentation and not self.validation:
@@ -155,19 +149,14 @@ class CalibrationClassificationTransform(BaseTransform):
                 input_data, label, img_index=self._current_img_index, sample_idx=results["sample_idx"]
             )
 
-        return {
-            "img": input_data,
-            "gt_label": label
-        }
+        return {"img": input_data, "gt_label": label}
         # Final results
-
 
         # dummy = np.zeros((1860, 2880, 5), dtype=np.float32)
         # results["img"] = dummy  # ❗只要這行，就會 leak，即使 return {}
         # # del results["img"]
         # # return {}
         # return {"img": dummy}
-
 
         # import torch
         # dummy = np.zeros((1860, 2880, 5), dtype=np.float32)
@@ -182,7 +171,6 @@ class CalibrationClassificationTransform(BaseTransform):
         # results["img"] = input_data
         # results["gt_label"] = label
 
-
         # 🧹 強制清除所有其他欄位
         allowed_keys = {"img", "gt_label"}
         for k in list(results.keys()):
@@ -190,10 +178,9 @@ class CalibrationClassificationTransform(BaseTransform):
                 del results[k]
 
         # TODO(vividf): only for debug
-        return {}   
+        return {}
 
         # print(f"[TRANSFORM] results keys: {list(results.keys())}")
-
 
         # 移除 DataSample 與 metainfo 相關程式碼，避免 memory leak
         # meta = {"input_data": input_data}
@@ -274,13 +261,13 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Compose CalibrationData
         calibration_data = CalibrationData(
-            camera_matrix=camera_matrix,
-            distortion_coefficients=distortion_coefficients,
-            lidar_to_camera_transformation=lidar_to_camera_transformation,
-            lidar_to_ego_transformation=lidar_to_ego_transformation,
-            camera_to_ego_transformation=camera_to_ego_transformation,
-            lidar_pose=lidar_pose,
-            camera_pose=camera_pose,
+            camera_matrix=np.array(camera_matrix),
+            distortion_coefficients=np.array(distortion_coefficients),
+            lidar_to_camera_transformation=np.array(lidar_to_camera_transformation),
+            lidar_to_ego_transformation=np.array(lidar_to_ego_transformation),
+            camera_to_ego_transformation=np.array(camera_to_ego_transformation),
+            lidar_pose=np.array(lidar_pose),
+            camera_pose=np.array(camera_pose),
         )
 
         return image, lidar_data, calibration_data
@@ -662,8 +649,8 @@ class CalibrationClassificationTransform(BaseTransform):
             sample_idx (int, optional): Sample id to include in filename. Defaults to None.
         """
         import os
-        print("visualize resuls is called")
 
+        print("visualize resuls is called")
 
         camera_data = input_data[:, :, :3]
         depth_image = input_data[:, :, 3:4]
