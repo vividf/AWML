@@ -77,7 +77,6 @@ class CalibrationClassificationTransform(BaseTransform):
         Returns:
             Dict[str, Any]: Transformed data dictionary with processed images and labels.
         """
-       # print(f"[DEBUG] Start transform for sample_idx={results.get('sample_idx', 'unknown')}") 
         # Set random seeds for reproducibility during validation
         if self.validation:
             random.seed(results["sample_idx"])
@@ -105,8 +104,8 @@ class CalibrationClassificationTransform(BaseTransform):
 
         if generate_miscalibration:
             # TODO(vividf): probably we don't want to put this back?
-            alter_lidar_to_camera_transformation = alter_calibration(
-                np.array(calibration_data.lidar_to_camera_transformation),
+            calibration_data.lidar_to_camera_transformation = alter_calibration(
+                calibration_data.lidar_to_camera_transformation,
                 min_augmentation_angle=1.0,
                 max_augmentation_angle=10.0,
                 min_augmentation_radius=0.05,
@@ -148,28 +147,24 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Final results
 
-        #results["img"] = input_data
-        #results["gt_label"] = label
+        # results["img"] = input_data
+        # results["gt_label"] = label
 
         # TODO(vividf): remove this
-        #results["input_data"] = input_data  # Ensure this is available for PackInputs
+        # results["input_data"] = input_data  # Ensure this is available for PackInputs
         # Attach input_data, images, and img_path to DataSample metainfo for visualization hook
-        #meta = {"input_data": input_data}
-        #if "images" in results:
+        # meta = {"input_data": input_data}
+        # if "images" in results:
         #    meta["images"] = results["images"]
-        #if "img_path" in results:
+        # if "img_path" in results:
         #    meta["img_path"] = results["img_path"]
-        #if "img_path" in results:
+        # if "img_path" in results:
         #    meta["sample_idx"] = results["sample_idx"]
-        #sample = DataSample().set_gt_label(label)
-        #sample.set_metainfo(meta)
-        #results["data_samples"] = sample
-        
-        output = {
-            "img": input_data,
-            "gt_label": label
-        }
+        # sample = DataSample().set_gt_label(label)
+        # sample.set_metainfo(meta)
+        # results["data_samples"] = sample
 
+        output = {"img": input_data, "gt_label": label}
 
         return output
 
@@ -239,13 +234,13 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Compose CalibrationData
         calibration_data = CalibrationData(
-            camera_matrix=camera_matrix,
-            distortion_coefficients=distortion_coefficients,
-            lidar_to_camera_transformation=lidar_to_camera_transformation,
-            lidar_to_ego_transformation=lidar_to_ego_transformation,
-            camera_to_ego_transformation=camera_to_ego_transformation,
-            lidar_pose=lidar_pose,
-            camera_pose=camera_pose,
+            camera_matrix=np.array(camera_matrix),
+            distortion_coefficients=np.array(distortion_coefficients),
+            lidar_to_camera_transformation=np.array(lidar_to_camera_transformation),
+            lidar_to_ego_transformation=np.array(lidar_to_ego_transformation),
+            camera_to_ego_transformation=np.array(camera_to_ego_transformation),
+            lidar_pose=np.array(lidar_pose),
+            camera_pose=np.array(camera_pose),
         )
 
         return image, lidar_data, calibration_data
