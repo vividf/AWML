@@ -19,8 +19,11 @@ from autoware_ml.calibration_classification.datasets.transforms.camera_lidar_aug
 class CalibrationData:
     """Structured representation of camera calibration data."""
 
-    camera_matrix: np.ndarray
-    distortion_coefficients: np.ndarray
+    camera_matrix: np.ndarray  # Original camera intrinsic matrix (3x3)
+    distortion_coefficients: np.ndarray  # Camera distortion coefficients
+    # Updated camera matrix after image processing (undistortion, cropping, scaling)
+    # This matrix should be used for 3D->2D projection after any image transformations
+    # to ensure geometric consistency between the processed image and 3D point projections
     new_camera_matrix: Optional[np.ndarray] = None
     lidar_to_camera_transformation: np.ndarray = None
     lidar_to_ego_transformation: np.ndarray = None
@@ -303,6 +306,7 @@ class CalibrationClassificationTransform(BaseTransform):
         if np.any(calibration_data.distortion_coefficients):
             distortion_coefficients = calibration_data.distortion_coefficients
             h, w = image.shape[:2]
+            # Compute optimal camera matrix for undistortion to maintain geometric accuracy
             calibration_data.new_camera_matrix, _ = cv2.getOptimalNewCameraMatrix(
                 calibration_data.camera_matrix, distortion_coefficients, (w, h), alpha, (w, h)
             )
@@ -363,12 +367,14 @@ class CalibrationClassificationTransform(BaseTransform):
         cropped_image = image[start_h:end_h, start_w:end_w]
         resized_image = cv2.resize(cropped_image, (w, h))
 
-        # Update the undistorted calibration matrix
+        # Update camera matrix to account for cropping and scaling transformations
+        # This ensures 3D->2D projection remains accurate after image transformations
         scale_factor = w / (end_w - start_w)
-        calibration_data.new_camera_matrix[0, 0] *= scale_factor  # fx
-        calibration_data.new_camera_matrix[1, 1] *= scale_factor  # fy
+        calibration_data.new_camera_matrix[0, 0] *= scale_factor  # fx (focal length x)
+        calibration_data.new_camera_matrix[1, 1] *= scale_factor  # fy (focal length y)
         crop_offset_w = start_w
         crop_offset_h = start_h
+        # Update principal point coordinates (cx, cy) to account for cropping offset
         calibration_data.new_camera_matrix[0, 2] = (
             calibration_data.new_camera_matrix[0, 2] - crop_offset_w
         ) * scale_factor
@@ -494,7 +500,9 @@ class CalibrationClassificationTransform(BaseTransform):
         valid_points = pointcloud_ccs[:, 2] > 0.0
         pointcloud_ccs = pointcloud_ccs[valid_points]
         lidar_data["intensities"] = lidar_data["intensities"][valid_points]
-        # Project 3D points into the image plane
+        # Project 3D points into the image plane using updated camera matrix
+        # This matrix accounts for any image transformations (undistortion, cropping, scaling)
+        # to ensure accurate projection of LiDAR points onto the processed image
         camera_matrix = calibration_data.new_camera_matrix
         distortion_coefficients = calibration_data.distortion_coefficients[:8]
         pointcloud_ics, _ = cv2.projectPoints(
