@@ -77,7 +77,8 @@ class ResultVisualizationHook(Hook):
                 distortion_coefficients,
                 newCameraMatrix=camera_matrix,
             )
-            input_data = output.metainfo.get("input_data", None)
+            # Get input_data from the img field in metainfo
+            input_data = output.metainfo.get("img", None)
             if input_data is not None:
                 img_index = os.path.splitext(os.path.basename(img_path_full))[0]
                 self.transform.visualize_results(
@@ -89,4 +90,4 @@ class ResultVisualizationHook(Hook):
                     sample_idx=sample_idx,
                 )
             else:
-                print(f"[ResultVisualizationHook] input_data not found for {img_path_full}, skipping visualization.")
+                print(f"[ResultVisualizationHook] img data not found for {img_path_full}, skipping visualization.")
