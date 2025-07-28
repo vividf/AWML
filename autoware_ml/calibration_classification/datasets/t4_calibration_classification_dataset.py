@@ -1,11 +1,10 @@
 import mmengine
-from mmcv.transforms import Compose
+from mmengine.dataset import BaseDataset
 from mmpretrain.registry import DATASETS
-from torch.utils.data import Dataset
 
 
 @DATASETS.register_module()
-class T4CalibrationClassificationDataset(Dataset):
+class T4CalibrationClassificationDataset(BaseDataset):
     """
     Dataset for T4 Calibration Classification using the full info.pkl structure.
 
@@ -40,50 +39,114 @@ class T4CalibrationClassificationDataset(Dataset):
     significantly for large datasets.
     """
 
-    def __init__(self, ann_file, pipeline=None, data_root=None, max_samples=None):
+    def __init__(self, ann_file, pipeline=None, data_root=None, max_samples=None, **kwargs):
         """
         Args:
             ann_file (str): Path to the annotation file (info.pkl) containing a list of sample dicts or a dict with 'data_list'.
             pipeline (callable or list, optional): Data processing pipeline to apply to each sample.
             data_root (str, optional): Root directory for data files, passed to pipeline transforms.
             max_samples (int, optional): If set, only use the first max_samples samples.
+            **kwargs: Additional arguments passed to BaseDataset.
         """
-        self.ann_file = ann_file
-        self.data_root = data_root
+        self.max_samples = max_samples
 
+        # Handle pipeline configuration for CalibrationClassificationTransform
+        if isinstance(pipeline, list):
+            pipeline = [
+                (
+                    dict(x)
+                    if not (isinstance(x, dict) and x.get("type") == "CalibrationClassificationTransform")
+                    else {**x, "data_root": data_root}
+                )
+                for x in pipeline
+            ]
+
+        super().__init__(ann_file=ann_file, data_root=data_root, pipeline=pipeline, **kwargs)
+
+    def load_data_list(self):
+        """Load annotations from the annotation file.
+
+        Override BaseDataset's load_data_list to handle the specific format of info.pkl.
+        """
         self.sample_index = mmengine.load(self.ann_file)
         # Handle dict with key 'data_list'
         if isinstance(self.sample_index, dict) and "data_list" in self.sample_index:
             self.sample_index = self.sample_index["data_list"]
-        if max_samples is not None:
-            self.sample_index = self.sample_index[:max_samples]
+        if self.max_samples is not None:
+            self.sample_index = self.sample_index[: self.max_samples]
 
-        if isinstance(pipeline, list):
-            pipeline = [
-                dict(x)
-                if not (isinstance(x, dict) and x.get("type") == "CalibrationClassificationTransform")
-                else {**x, "data_root": data_root}
-                for x in pipeline
-            ]
-            self.pipeline = Compose(pipeline)
-        else:
-            self.pipeline = pipeline
+        return self.sample_index
 
-    def __len__(self):
-        """Return the number of samples in the dataset."""
-        return len(self.sample_index)
-
-    def __getitem__(self, idx):
-        """
-        Get a sample by index. The full sample dict is loaded only when needed (lazy loading).
-        The pipeline can access and process any part of the sample dict.
+    def get_cat_ids(self, idx: int):
+        """Get category ids by index. Required by BaseDataset.
 
         Args:
-            idx (int): Index of the sample.
+            idx (int): The index of data.
+
         Returns:
-            dict: Sample dictionary with all calibration, image, and lidar info.
+            list[int]: All categories in the sample of specified index.
         """
-        sample = self.sample_index[idx]
-        if self.pipeline is not None:
-            sample = self.pipeline(sample)
+        # For classification tasks, we might not have category IDs in the same way
+        # as detection tasks. Return empty list for now.
+        return []
+
+    def prepare_data(self, idx):
+        """
+        Get data processed by ``self.pipeline``.
+
+        Args:
+            idx (int): The index of data.
+
+        Returns:
+            dict: Processed data.
+        """
+        # print(f"[GETITEM] idx={idx}")
+        sample = self.get_data_info(idx)
+        # print(f"[GETITEM] before pipeline sample keys: {list(sample.keys())}")
+
+        # 詳細顯示 sample 的內容
+        # print(  f"[GETITEM] Sample content:")
+        for key, value in sample.items():
+            if isinstance(value, dict):
+                # print(f"  {key}: dict with keys {list(value.keys())}")
+                # 如果是 images，顯示每個 camera 的資訊
+                if key == "images":
+                    for cam_name, cam_data in value.items():
+                        # print(f"    {cam_name}: {type(cam_data)}")
+                        pass
+                        if isinstance(cam_data, dict):
+                            # print(f"      keys: {list(cam_data.keys())}")
+                            pass
+                # 如果是 lidar_points，顯示 lidar 資訊
+                elif key == "lidar_points":
+                    # print(f"      keys: {list(value.keys())}")
+                    pass
+            elif isinstance(value, (list, tuple)):
+                # print(f"  {key}: {type(value)} with length {len(value)}")
+                pass
+            else:
+                #   print(f"  {key}: {type(value)} = {value}")
+                pass
+
+        # Apply pipeline
+        # print(f"[GETITEM] Applying pipeline...")
+        sample = self.pipeline(sample)
+        # print(f"[GETITEM] after pipeline sample keys: {list(sample.keys())}")
+
+        # 詳細顯示 pipeline 處理後的內容
+        # print(f"[GETITEM] After pipeline content:")
+        for key, value in sample.items():
+            if hasattr(value, "shape"):
+                # print(f"  {key}: {type(value)} with shape {value.shape}")
+                pass
+            elif isinstance(value, dict):
+                # print(f"  {key}: dict with keys {list(value.keys())}")
+                pass
+            elif isinstance(value, (list, tuple)):
+                # print(f"  {key}: {type(value)} with length {len(value)}")
+                pass
+            else:
+                # print(f"  {key}: {type(value)} = {value}")
+                pass
+
         return sample
