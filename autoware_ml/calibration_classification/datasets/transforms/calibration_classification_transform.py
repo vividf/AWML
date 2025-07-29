@@ -19,7 +19,6 @@ DEFAULT_AUGMENTATION_MAX_DISTORTION = 0.02
 DEFAULT_DEPTH_SCALE = 80.0
 DEFAULT_RADIUS = 2
 DEFAULT_RGB_WEIGHT = 0.3
-VISUALIZATION_DIR = "./projection_vis_t4dataset/"
 
 
 @dataclass
@@ -68,6 +67,8 @@ class CalibrationClassificationTransform(BaseTransform):
         undistort: bool = True,
         enable_augmentation: bool = False,
         data_root: str = None,
+        projection_vis_dir: Optional[str] = None,
+        results_vis_dir: Optional[str] = None,
     ):
         """Initialize the CalibrationClassificationTransform.
 
@@ -78,6 +79,8 @@ class CalibrationClassificationTransform(BaseTransform):
             undistort (bool): Whether to undistort images. Defaults to True.
             enable_augmentation (bool): Whether to enable data augmentation. Defaults to False.
             data_root (str): Root path for data files. Defaults to None.
+            projection_vis_dir (Optional[str]): Directory to save projection visualization results. Defaults to None.
+            results_vis_dir (Optional[str]): Directory to save results visualization results. Defaults to None.
         """
         super().__init__()
         self.validation = validation
@@ -86,6 +89,8 @@ class CalibrationClassificationTransform(BaseTransform):
         self.undistort = undistort
         self.enable_augmentation = enable_augmentation
         self.data_root = data_root
+        self.projection_vis_dir = projection_vis_dir
+        self.results_vis_dir = results_vis_dir
 
     def transform(self, results: Dict[str, Any], force_generate_miscalibration: bool = False) -> Dict[str, Any]:
         """Transform input data for calibration classification.
@@ -113,7 +118,7 @@ class CalibrationClassificationTransform(BaseTransform):
         input_data = self._generate_input_data(augmented_image, lidar_data, augmented_calibration, augmentation_tf)
 
         # Debug visualization
-        if self.debug:
+        if self.projection_vis_dir is not None:
             self._debug_visualization(input_data, label, results)
 
         results["img"] = input_data
@@ -751,7 +756,7 @@ class CalibrationClassificationTransform(BaseTransform):
         self._visualize_projection(input_data, label, img_index=img_index, sample_idx=results["sample_idx"])
 
     def _visualize_projection(
-        self, input_data: np.ndarray, label: int, img_index: str = None, sample_idx: int = None
+        self, input_data: np.ndarray, label: int, img_index: str = None, sample_idx: int = None, save_dir: str = None
     ) -> None:
         """Visualize LiDAR projection results.
 
@@ -760,14 +765,17 @@ class CalibrationClassificationTransform(BaseTransform):
             label: Classification label (0 for miscalibrated, 1 for correct).
             img_index: Unique index for filename.
             sample_idx: Sample id to include in filename.
+            save_dir: Directory to save visualization results.
         """
+
         camera_data = input_data[:, :, :3]
         intensity_image = input_data[:, :, 4:5]
         overlay_image = self._create_overlay_image(camera_data, intensity_image)
 
-        # Save visualization
-        os.makedirs(VISUALIZATION_DIR, exist_ok=True)
-        save_path = os.path.join(VISUALIZATION_DIR, f"projection_sample_{sample_idx}_{img_index}_label_{label}.png")
+        os.makedirs(self.projection_vis_dir, exist_ok=True)
+        save_path = os.path.join(
+            self.projection_vis_dir, f"projection_sample_{sample_idx}_{img_index}_label_{label}.png"
+        )
         # overlay_image is in BGR format, cv2.imwrite expects BGR format
         cv2.imwrite(save_path, overlay_image)
         print(f"Saved projection visualization to {save_path}")
@@ -790,7 +798,12 @@ class CalibrationClassificationTransform(BaseTransform):
             undistorted_image: Undistorted camera image in BGR format.
             img_index: Unique index for filename.
             sample_idx: Sample id to include in filename.
+            save_dir: Directory to save visualization results.
         """
+
+        if self.results_vis_dir is None:
+            return
+
         camera_data = input_data[:, :, :3]  # BGR format
         depth_image = input_data[:, :, 3:4]
         intensity_image = input_data[:, :, 4:5]
@@ -834,9 +847,8 @@ class CalibrationClassificationTransform(BaseTransform):
 
         plt.tight_layout()
 
-        # Save visualization
-        os.makedirs(VISUALIZATION_DIR, exist_ok=True)
-        save_path = os.path.join(VISUALIZATION_DIR, f"results_sample_{sample_idx}_{img_index}_label_{label}.png")
+        os.makedirs(self.results_vis_dir, exist_ok=True)
+        save_path = os.path.join(self.results_vis_dir, f"results_sample_{sample_idx}_{img_index}_label_{label}.png")
         plt.savefig(save_path)
         print(f"Saved results visualization to {save_path}")
         plt.close()

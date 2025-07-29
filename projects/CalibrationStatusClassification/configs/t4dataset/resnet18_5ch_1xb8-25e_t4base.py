@@ -13,6 +13,7 @@ custom_imports = dict(
     allow_failed_imports=False,
 )
 
+
 batch_size = 8
 num_workers = 8
 max_epochs = 25
@@ -41,10 +42,15 @@ model = dict(
 
 train_cfg = dict(by_epoch=True, max_epochs=max_epochs, val_interval=1)
 
+# Visualization directory
+projection_vis_dir = "./projection_vis_t4dataset/"
+results_vis_dir = "./results_vis_t4dataset/"
 data_root = "/workspace/data/t4dataset"
 
 train_pipeline = [
-    dict(type="CalibrationClassificationTransform", data_root=data_root),
+    dict(
+        type="CalibrationClassificationTransform", data_root=data_root, projection_vis_dir=None, results_vis_dir=None
+    ),
     dict(type="PackInputs", input_key="img"),
 ]
 
@@ -69,7 +75,14 @@ train_dataloader = dict(
 val_cfg = dict()
 
 val_pipeline = [
-    dict(type="CalibrationClassificationTransform", validation=True, debug=False, data_root=data_root),
+    dict(
+        type="CalibrationClassificationTransform",
+        validation=True,
+        debug=False,
+        data_root=data_root,
+        projection_vis_dir=None,
+        results_vis_dir=None,
+    ),
     dict(type="PackInputs", input_key="img"),
 ]
 
@@ -90,7 +103,14 @@ val_dataloader = dict(
 val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 
 test_pipeline = [
-    dict(type="CalibrationClassificationTransform", test=True, debug=True, data_root=data_root),
+    dict(
+        type="CalibrationClassificationTransform",
+        test=True,
+        debug=True,
+        data_root=data_root,
+        projection_vis_dir=projection_vis_dir,
+        results_vis_dir=results_vis_dir,
+    ),
     dict(type="PackInputs", input_key="img", meta_keys=["img_path", "img", "images", "sample_idx"]),
     # dict(type="PackInputs", input_key="img"),
 ]
@@ -111,12 +131,14 @@ test_dataloader = dict(
 
 test_evaluator = val_evaluator
 
-# Register the custom hook
-debug = True
 
 custom_hooks = []
-if debug:
-    custom_hooks.append(dict(type="ResultVisualizationHook", save_dir="./projection_vis_origin/", data_root=data_root))
+if results_vis_dir is not None:
+    hook_config = dict(type="ResultVisualizationHook", results_vis_dir=results_vis_dir)
+    if data_root is not None:
+        hook_config["data_root"] = data_root
+    custom_hooks.append(hook_config)
+
 
 vis_backends = [
     dict(type="LocalVisBackend"),

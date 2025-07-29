@@ -18,22 +18,22 @@ class ResultVisualizationHook(Hook):
     This hook saves visualizations of the original and undistorted images, along with prediction results, to a specified directory.
 
     Args:
-        save_dir (str): Directory to save the visualization results. Defaults to './projection_vis_origin/'.
         data_root (str, optional): Root directory for dataset images. Used to resolve relative image paths.
     """
 
-    def __init__(self, save_dir="./projection_vis_origin/", data_root=None):
+    def __init__(self, data_root=None, results_vis_dir=None):
         """
         Initialize the ResultVisualizationHook.
 
         Args:
-            save_dir (str): Directory to save the visualization results.
             data_root (str, optional): Root directory for dataset images.
+            results_vis_dir (str, optional): Directory to save results visualization.
         """
-        self.save_dir = save_dir
-        os.makedirs(self.save_dir, exist_ok=True)
-        self.transform = CalibrationClassificationTransform(debug=False, data_root=data_root)
+        self.transform = CalibrationClassificationTransform(
+            debug=False, data_root=data_root, results_vis_dir=results_vis_dir
+        )
         self.data_root = data_root
+        self.results_vis_dir = results_vis_dir
 
     def after_test_iter(self, runner, batch_idx, data_batch=None, outputs=None):
         """
