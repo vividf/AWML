@@ -4,11 +4,9 @@ _base_ = [
     "mmpretrain::_base_/schedules/imagenet_bs256.py",
 ]
 
-
-import autoware_ml.calibration_classification.datasets.t4_calibration_classification_dataset
-
 custom_imports = dict(
     imports=[
+        "autoware_ml.calibration_classification.datasets.t4_calibration_classification_dataset",
         "autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform",
         "autoware_ml.calibration_classification.hooks.result_visualization_hook",
     ],
@@ -93,8 +91,8 @@ val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 
 test_pipeline = [
     dict(type="CalibrationClassificationTransform", test=True, debug=True, data_root=data_root),
-    # dict(type="PackInputs", input_key="img", meta_keys=["img_path", "input_data", "images", "sample_idx"]),
-    dict(type="PackInputs", input_key="img"),
+    dict(type="PackInputs", input_key="img", meta_keys=["img_path", "img", "images", "sample_idx"]),
+    # dict(type="PackInputs", input_key="img"),
 ]
 
 test_dataloader = dict(
@@ -114,11 +112,11 @@ test_dataloader = dict(
 test_evaluator = val_evaluator
 
 # Register the custom hook
-debug = False
+debug = True
 
 custom_hooks = []
-# if debug:
-#     custom_hooks.append(dict(type="ResultVisualizationHook", save_dir="./projection_vis_origin/", data_root=data_root))
+if debug:
+    custom_hooks.append(dict(type="ResultVisualizationHook", save_dir="./projection_vis_origin/", data_root=data_root))
 
 vis_backends = [
     dict(type="LocalVisBackend"),

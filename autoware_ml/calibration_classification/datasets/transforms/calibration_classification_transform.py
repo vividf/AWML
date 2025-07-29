@@ -160,7 +160,7 @@ class CalibrationClassificationTransform(BaseTransform):
             camera_channel: Camera channel identifier.
 
         Returns:
-            Loaded camera image as numpy array.
+            Loaded camera image as numpy array in BGR format.
 
         Raises:
             FileNotFoundError: If image file is not found.
@@ -620,7 +620,7 @@ class CalibrationClassificationTransform(BaseTransform):
             intensities: LiDAR intensity values.
 
         Returns:
-            Combined image with RGB, depth, and intensity channels.
+            Combined image with BGR, depth, and intensity channels.
         """
         h, w = image.shape[:2]
         depth_image = np.zeros((h, w), dtype=np.uint8)
@@ -710,20 +710,20 @@ class CalibrationClassificationTransform(BaseTransform):
         intensity_image[sorted_rows, sorted_cols] = sorted_intensities.astype(np.uint8)
 
     def _create_overlay_image(
-        self, rgb_image: np.ndarray, feature_image: np.ndarray, rgb_weight: float = DEFAULT_RGB_WEIGHT
+        self, bgr_image: np.ndarray, feature_image: np.ndarray, rgb_weight: float = DEFAULT_RGB_WEIGHT
     ) -> np.ndarray:
         """Create colored overlay image.
 
         Args:
-            rgb_image: Base RGB image.
+            bgr_image: Base BGR image.
             feature_image: Feature image to overlay.
             rgb_weight: Weight for RGB component in overlay.
 
         Returns:
-            Overlaid image with features visualized.
+            Overlaid image with features visualized in BGR format.
         """
-        overlay_image = rgb_image.copy()
-        intensity_colormap = cv2.applyColorMap((feature_image * 255).astype(np.uint8), cv2.COLORMAP_JET)
+        overlay_image = bgr_image.copy()
+        intensity_colormap = cv2.applyColorMap((feature_image).astype(np.uint8), cv2.COLORMAP_JET)
         intensity_mask = (feature_image > 0).astype(np.uint8).squeeze(-1)
         masked_colormap = intensity_colormap * intensity_mask[:, :, None]
 
@@ -736,7 +736,7 @@ class CalibrationClassificationTransform(BaseTransform):
         """Handle debug visualization.
 
         Args:
-            input_data: Combined input data with RGB, depth, and intensity channels.
+            input_data: Combined input data with BGR, depth, and intensity channels.
             label: Classification label.
             results: Input data dictionary.
         """
@@ -756,7 +756,7 @@ class CalibrationClassificationTransform(BaseTransform):
         """Visualize LiDAR projection results.
 
         Args:
-            input_data: Combined input data with RGB, depth, and intensity channels.
+            input_data: Combined input data with BGR, depth, and intensity channels.
             label: Classification label (0 for miscalibrated, 1 for correct).
             img_index: Unique index for filename.
             sample_idx: Sample id to include in filename.
@@ -768,8 +768,8 @@ class CalibrationClassificationTransform(BaseTransform):
         # Save visualization
         os.makedirs(VISUALIZATION_DIR, exist_ok=True)
         save_path = os.path.join(VISUALIZATION_DIR, f"projection_sample_{sample_idx}_{img_index}_label_{label}.png")
-        overlay_bgr = cv2.cvtColor(overlay_image, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(save_path, overlay_bgr)
+        # overlay_image is in BGR format, cv2.imwrite expects BGR format
+        cv2.imwrite(save_path, overlay_image)
         print(f"Saved projection visualization to {save_path}")
 
     def visualize_results(
@@ -784,17 +784,17 @@ class CalibrationClassificationTransform(BaseTransform):
         """Visualize comprehensive results including all image types.
 
         Args:
-            input_data: Combined input data with RGB, depth, and intensity channels.
+            input_data: Combined input data with BGR, depth, and intensity channels.
             label: Classification label (0 for miscalibrated, 1 for correct).
-            original_image: Original camera image.
-            undistorted_image: Undistorted camera image.
+            original_image: Original camera image in BGR format.
+            undistorted_image: Undistorted camera image in BGR format.
             img_index: Unique index for filename.
             sample_idx: Sample id to include in filename.
         """
-        camera_data = input_data[:, :, :3]
+        camera_data = input_data[:, :, :3]  # BGR format
         depth_image = input_data[:, :, 3:4]
         intensity_image = input_data[:, :, 4:5]
-        overlay_image = self._create_overlay_image(camera_data, intensity_image)
+        overlay_image = self._create_overlay_image(camera_data, intensity_image)  # Returns BGR format
 
         # Create title
         title = (
@@ -807,7 +807,7 @@ class CalibrationClassificationTransform(BaseTransform):
         fig, axes = plt.subplots(2, 3, figsize=(10, 8))
         fig.suptitle(title)
 
-        # Plot images
+        # Plot images - convert BGR to RGB for matplotlib display
         axes[0, 0].imshow(cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB))
         axes[0, 0].set_title("Original RGB Image")
         axes[0, 0].axis("off")
