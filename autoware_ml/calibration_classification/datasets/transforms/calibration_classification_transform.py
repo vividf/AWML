@@ -8,18 +8,22 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from mmcv.transforms import BaseTransform
+from mmengine.logging import MMLogger
 from mmpretrain.registry import TRANSFORMS
 
 from autoware_ml.calibration_classification.datasets.transforms.camera_lidar_augmentation import alter_calibration
 
-# Constants
-DEFAULT_CAMERA_CHANNEL = "CAM_FRONT"
-DEFAULT_CROP_RATIO = 0.6
-DEFAULT_MAX_DISTORTION = 0.001
-DEFAULT_AUGMENTATION_MAX_DISTORTION = 0.02
-DEFAULT_DEPTH_SCALE = 80.0
-DEFAULT_RADIUS = 2
-DEFAULT_RGB_WEIGHT = 0.3
+# Set up logging using mmengine
+logger = MMLogger.get_instance(name="calibration_classification_transform")
+
+# Constants with detailed documentation
+DEFAULT_CAMERA_CHANNEL = "CAM_FRONT"  # Default camera channel identifier
+DEFAULT_CROP_RATIO = 0.6  # Ratio for image cropping (0.0-1.0, where 1.0 means no crop)
+DEFAULT_MAX_DISTORTION = 0.001  # Maximum affine distortion as fraction of image dimensions (0.0-1.0)
+DEFAULT_AUGMENTATION_MAX_DISTORTION = 0.02  # Maximum augmentation distortion as fraction of image dimensions
+DEFAULT_DEPTH_SCALE = 80.0  # Depth scaling factor in meters (used to normalize depth values to 0-255 range)
+DEFAULT_RADIUS = 2  # Radius in pixels for LiDAR point visualization (creates 5x5 patches around each point)
+DEFAULT_RGB_WEIGHT = 0.3  # Weight for RGB component in overlay visualization (0.0-1.0, where 1.0 is full RGB)
 
 
 class TransformMode(Enum):
@@ -86,14 +90,48 @@ class CalibrationClassificationTransform(BaseTransform):
             data_root (str): Root path for data files. Defaults to None.
             projection_vis_dir (Optional[str]): Directory to save projection visualization results. Defaults to None.
             results_vis_dir (Optional[str]): Directory to save results visualization results. Defaults to None.
+
+        Raises:
+            ValueError: If mode is invalid or data_root doesn't exist.
         """
         super().__init__()
-        self.mode = TransformMode(mode)
+
+        # Validate mode parameter
+        try:
+            self.mode = TransformMode(mode)
+        except ValueError:
+            valid_modes = [m.value for m in TransformMode]
+            raise ValueError(f"Invalid mode: '{mode}'. Must be one of {valid_modes}")
+
+        # Validate data_root if provided
+        if data_root is not None and not os.path.exists(data_root):
+            raise ValueError(f"Data root does not exist: {data_root}")
+
         self.undistort = undistort
         self.enable_augmentation = enable_augmentation
         self.data_root = data_root
         self.projection_vis_dir = projection_vis_dir
         self.results_vis_dir = results_vis_dir
+
+        self._validate_config()
+        logger.info(f"Initialized CalibrationClassificationTransform with mode: {self.mode.value}")
+
+    def _validate_config(self) -> None:
+        """Validate configuration parameters.
+
+        Raises:
+            ValueError: If configuration is invalid.
+        """
+        if not isinstance(self.undistort, bool):
+            raise ValueError(f"undistort must be a boolean, got {type(self.undistort)}")
+
+        if not isinstance(self.enable_augmentation, bool):
+            raise ValueError(f"enable_augmentation must be a boolean, got {type(self.enable_augmentation)}")
+
+        if self.data_root is not None and not os.path.exists(self.data_root):
+            raise ValueError(f"Data root does not exist: {self.data_root}")
+
+        logger.debug("Configuration validation passed")
 
     @property
     def is_train(self) -> bool:
@@ -130,12 +168,18 @@ class CalibrationClassificationTransform(BaseTransform):
         Returns:
             Dict[str, Any]: Transformed data dictionary with processed images and labels.
         """
+        logger.debug(f"Starting transform for sample {results.get('sample_idx', 'unknown')}")
         self._set_random_seeds(results)
 
         # Load and process data
         camera_data, lidar_data, calibration_data = self._load_data(results)
+        logger.debug(
+            f"Loaded data: camera shape {camera_data.shape}, lidar points {lidar_data['pointcloud'].shape[0]}"
+        )
+
         undistorted_data = self._process_image(camera_data, calibration_data)
         label = self._generate_label(force_generate_miscalibration, calibration_data)
+        logger.debug(f"Generated label: {label} (0=miscalibrated, 1=correct)")
 
         # Apply augmentations
         augmented_image, augmented_calibration, augmentation_tf = self._apply_augmentations(
@@ -144,6 +188,7 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Generate input data
         input_data = self._generate_input_data(augmented_image, lidar_data, augmented_calibration, augmentation_tf)
+        logger.debug(f"Generated input data shape: {input_data.shape}")
 
         # Visualization
         if self.projection_vis_dir is not None:
@@ -151,6 +196,7 @@ class CalibrationClassificationTransform(BaseTransform):
 
         results["fused_img"] = input_data
         results["gt_label"] = label
+        logger.debug(f"Transform completed for sample {results.get('sample_idx', 'unknown')}")
         return results
 
     def _set_random_seeds(self, results: Dict[str, Any]) -> None:
@@ -204,12 +250,15 @@ class CalibrationClassificationTransform(BaseTransform):
             img_path = os.path.join(self.data_root, img_path)
 
         if img_path is None or not os.path.exists(img_path):
+            logger.error(f"Image file not found: {img_path}")
             raise FileNotFoundError(f"Image file not found: {img_path}")
 
         image = cv2.imread(img_path)
         if image is None:
+            logger.error(f"Failed to load image: {img_path}")
             raise ValueError(f"Failed to load image: {img_path}")
 
+        logger.debug(f"Successfully loaded image from {img_path}, shape: {image.shape}")
         return image
 
     def _load_lidar_data(self, sample: dict) -> Dict[str, np.ndarray]:
@@ -229,10 +278,15 @@ class CalibrationClassificationTransform(BaseTransform):
             lidar_path = os.path.join(self.data_root, lidar_path)
 
         if lidar_path is None or not os.path.exists(lidar_path):
+            logger.error(f"Lidar file not found: {lidar_path}")
             raise FileNotFoundError(f"Lidar file not found: {lidar_path}")
 
         num_pts_feats = sample["lidar_points"].get("num_pts_feats", 5)
         pointcloud = np.fromfile(lidar_path, dtype=np.float32).reshape(-1, num_pts_feats)
+
+        logger.debug(
+            f"Successfully loaded LiDAR data from {lidar_path}, points: {pointcloud.shape[0]}, features: {pointcloud.shape[1]}"
+        )
 
         return {
             "pointcloud": pointcloud[:, :3],
@@ -251,11 +305,32 @@ class CalibrationClassificationTransform(BaseTransform):
 
         Raises:
             ValueError: If required calibration fields are missing.
+            KeyError: If camera_channel is not found in sample.
         """
+        if "images" not in sample:
+            raise KeyError("Sample does not contain 'images' key")
+
+        if camera_channel not in sample["images"]:
+            available_channels = list(sample["images"].keys())
+            raise KeyError(f"Camera channel '{camera_channel}' not found. Available channels: {available_channels}")
+
+        if "lidar_points" not in sample:
+            raise KeyError("Sample does not contain 'lidar_points' key")
+
         cam_info = sample["images"][camera_channel]
         lidar_info = sample["lidar_points"]
 
-        camera_matrix = np.array(cam_info["cam2img"]) if cam_info["cam2img"] is not None else None
+        # Validate camera matrix
+        camera_matrix = cam_info.get("cam2img")
+        if camera_matrix is None:
+            raise ValueError(f"Camera matrix (cam2img) is missing for channel {camera_channel}")
+        camera_matrix = np.array(camera_matrix)
+
+        # Validate camera matrix shape
+        if camera_matrix.shape != (3, 3):
+            raise ValueError(f"Camera matrix must be 3x3, got shape {camera_matrix.shape}")
+
+        # Initialize distortion coefficients (assuming no distortion for now)
         distortion_coefficients = np.zeros(5, dtype=np.float32)
 
         # Extract transformation matrices
@@ -265,7 +340,7 @@ class CalibrationClassificationTransform(BaseTransform):
         camera_pose = cam_info.get("cam_pose")
         lidar_pose = lidar_info.get("lidar_pose")
 
-        # Validate required fields
+        # Validate required fields with detailed error messages
         required_fields = {
             "lidar_to_ego_transformation": lidar_to_ego_transformation,
             "camera_to_ego_transformation": camera_to_ego_transformation,
@@ -273,18 +348,55 @@ class CalibrationClassificationTransform(BaseTransform):
             "lidar_pose": lidar_pose,
         }
 
+        missing_fields = []
         for name, value in required_fields.items():
             if value is None:
-                raise ValueError(f"{name} is None")
+                missing_fields.append(name)
+
+        if missing_fields:
+            raise ValueError(f"Missing required calibration fields: {missing_fields}")
+
+        # Convert all transformations to numpy arrays and validate shapes
+        try:
+            lidar_to_camera_transformation = (
+                np.array(lidar_to_camera_transformation) if lidar_to_camera_transformation is not None else None
+            )
+            lidar_to_ego_transformation = np.array(lidar_to_ego_transformation)
+            camera_to_ego_transformation = np.array(camera_to_ego_transformation)
+            lidar_pose = np.array(lidar_pose)
+            camera_pose = np.array(camera_pose)
+
+            # Validate transformation matrix shapes
+            if lidar_to_ego_transformation.shape != (4, 4):
+                raise ValueError(
+                    f"lidar_to_ego_transformation must be 4x4, got shape {lidar_to_ego_transformation.shape}"
+                )
+            if camera_to_ego_transformation.shape != (4, 4):
+                raise ValueError(
+                    f"camera_to_ego_transformation must be 4x4, got shape {camera_to_ego_transformation.shape}"
+                )
+            if lidar_pose.shape != (4, 4):
+                raise ValueError(f"lidar_pose must be 4x4, got shape {lidar_pose.shape}")
+            if camera_pose.shape != (4, 4):
+                raise ValueError(f"camera_pose must be 4x4, got shape {camera_pose.shape}")
+            if lidar_to_camera_transformation is not None and lidar_to_camera_transformation.shape != (4, 4):
+                raise ValueError(
+                    f"lidar_to_camera_transformation must be 4x4, got shape {lidar_to_camera_transformation.shape}"
+                )
+
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Failed to convert transformation matrices to numpy arrays: {e}")
+
+        logger.debug(f"Successfully loaded calibration data for channel {camera_channel}")
 
         return CalibrationData(
-            camera_matrix=np.array(camera_matrix),
-            distortion_coefficients=np.array(distortion_coefficients),
-            lidar_to_camera_transformation=np.array(lidar_to_camera_transformation),
-            lidar_to_ego_transformation=np.array(lidar_to_ego_transformation),
-            camera_to_ego_transformation=np.array(camera_to_ego_transformation),
-            lidar_pose=np.array(lidar_pose),
-            camera_pose=np.array(camera_pose),
+            camera_matrix=camera_matrix,
+            distortion_coefficients=distortion_coefficients,
+            lidar_to_camera_transformation=lidar_to_camera_transformation,
+            lidar_to_ego_transformation=lidar_to_ego_transformation,
+            camera_to_ego_transformation=camera_to_ego_transformation,
+            lidar_pose=lidar_pose,
+            camera_pose=camera_pose,
         )
 
     def _normalize_intensity(self, intensities: np.ndarray) -> np.ndarray:
@@ -298,9 +410,16 @@ class CalibrationClassificationTransform(BaseTransform):
         """
         min_intensity = intensities.min()
         max_intensity = intensities.max()
-        if min_intensity == max_intensity:
+
+        # Handle edge cases
+        epsilon = 1e-8  # Small value to prevent division by very small numbers
+        if abs(max_intensity - min_intensity) < epsilon:
+            logger.debug("Intensity range is too small, returning zeros")
             return np.zeros_like(intensities)
-        return (intensities - min_intensity) / (max_intensity - min_intensity)
+
+        normalized = (intensities - min_intensity) / (max_intensity - min_intensity)
+        logger.debug(f"Normalized intensity range: [{normalized.min():.3f}, {normalized.max():.3f}]")
+        return normalized
 
     def _process_image(self, image: np.ndarray, calibration_data: CalibrationData) -> np.ndarray:
         """Process image with undistortion if enabled.
@@ -368,6 +487,7 @@ class CalibrationClassificationTransform(BaseTransform):
             generate_miscalibration = force_generate_miscalibration or random.choice([True, False])
 
         if generate_miscalibration:
+            logger.debug("Generating miscalibration for training sample")
             calibration_data.lidar_to_camera_transformation = alter_calibration(
                 calibration_data.lidar_to_camera_transformation,
                 min_augmentation_angle=1.0,
@@ -377,6 +497,7 @@ class CalibrationClassificationTransform(BaseTransform):
             )
             return 0  # Miscalibrated
         else:
+            logger.debug("Using correct calibration for training sample")
             return 1  # Correctly calibrated
 
     def _apply_augmentations(
@@ -410,11 +531,13 @@ class CalibrationClassificationTransform(BaseTransform):
         """
         # Scaling and cropping
         if random.random() > 0.5:
+            logger.debug("Applying scale and crop augmentation")
             image, calibration_data = self._scale_and_crop_image(image, calibration_data)
 
         # Affine transformation
         affine_matrix = None
         if random.random() > 0.5:
+            logger.debug("Applying affine transformation augmentation")
             image, affine_matrix = self._apply_affine_transformation(image)
 
         return image, calibration_data, affine_matrix
@@ -587,24 +710,24 @@ class CalibrationClassificationTransform(BaseTransform):
             Points in camera coordinate system (N, 3).
         """
         if use_lidar2cam and calibration_data.lidar_to_camera_transformation is not None:
-            lidar2cam = np.array(calibration_data.lidar_to_camera_transformation)
+            lidar2cam = calibration_data.lidar_to_camera_transformation
             points_hom = (lidar2cam @ points_hom.T).T
         else:
             # Multi-step transformation
             # Step 1: LiDAR to baselink
-            lidar_to_ego = np.array(calibration_data.lidar_to_ego_transformation)
+            lidar_to_ego = calibration_data.lidar_to_ego_transformation
             points_hom = (lidar_to_ego @ points_hom.T).T
 
             # Step 2: baselink (LiDAR time) to global
-            lidar_pose = np.array(calibration_data.lidar_pose)
+            lidar_pose = calibration_data.lidar_pose
             points_hom = (lidar_pose @ points_hom.T).T
 
             # Step 3: global to baselink (Camera time)
-            camera_pose_inv = np.linalg.inv(np.array(calibration_data.camera_pose))
+            camera_pose_inv = np.linalg.inv(calibration_data.camera_pose)
             points_hom = (camera_pose_inv @ points_hom.T).T
 
             # Step 4: baselink to camera
-            camera_to_ego_inv = np.linalg.inv(np.array(calibration_data.camera_to_ego_transformation))
+            camera_to_ego_inv = np.linalg.inv(calibration_data.camera_to_ego_transformation)
             points_hom = (camera_to_ego_inv @ points_hom.T).T
 
         return points_hom[:, :3]
@@ -806,7 +929,7 @@ class CalibrationClassificationTransform(BaseTransform):
         )
         # overlay_image is in BGR format, cv2.imwrite expects BGR format
         cv2.imwrite(save_path, overlay_image)
-        print(f"Saved projection visualization to {save_path}")
+        logger.info(f"Saved projection visualization to {save_path}")
 
     def visualize_results(
         self,
@@ -881,5 +1004,5 @@ class CalibrationClassificationTransform(BaseTransform):
             self.results_vis_dir, f"results_{phase}_sample_{sample_idx}_{img_index}_label_{label}.png"
         )
         plt.savefig(save_path)
-        print(f"Saved {phase} results visualization to {save_path}")
+        logger.info(f"Saved {phase} results visualization to {save_path}")
         plt.close()

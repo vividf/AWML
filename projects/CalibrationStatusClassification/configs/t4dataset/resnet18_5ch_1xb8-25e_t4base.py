@@ -55,7 +55,7 @@ train_pipeline = [
         undistort=True,
         enable_augmentation=False,
         data_root=data_root,
-        projection_vis_dir=projection_vis_dir,
+        projection_vis_dir=None,
         results_vis_dir=None,
     ),
     dict(type="PackInputs", input_key="fused_img", meta_keys=["img_path", "fused_img", "images", "sample_idx"]),
