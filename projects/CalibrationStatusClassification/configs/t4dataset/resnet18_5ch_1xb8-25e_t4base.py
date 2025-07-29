@@ -75,8 +75,8 @@ val_pipeline = [
 
 val_dataloader = dict(
     batch_size=batch_size,
-    num_workers=0,
-    persistent_workers=False,
+    num_workers=num_workers,
+    persistent_workers=True,
     shuffle=False,
     dataset=dict(
         type="T4CalibrationClassificationDataset",
@@ -97,8 +97,8 @@ test_pipeline = [
 
 test_dataloader = dict(
     batch_size=batch_size,
-    num_workers=0,
-    persistent_workers=False,
+    num_workers=num_workers,
+    persistent_workers=True,
     shuffle=False,
     dataset=dict(
         type="T4CalibrationClassificationDataset",
