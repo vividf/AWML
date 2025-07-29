@@ -63,7 +63,6 @@ class CalibrationClassificationTransform(BaseTransform):
         self,
         validation: bool = False,
         test: bool = False,
-        debug: bool = False,
         undistort: bool = True,
         enable_augmentation: bool = False,
         data_root: str = None,
@@ -75,7 +74,6 @@ class CalibrationClassificationTransform(BaseTransform):
         Args:
             validation (bool): Whether this is for validation mode. Defaults to False.
             test (bool): Whether this is for test mode. Defaults to False.
-            debug (bool): Whether to enable debug visualization. Defaults to False.
             undistort (bool): Whether to undistort images. Defaults to True.
             enable_augmentation (bool): Whether to enable data augmentation. Defaults to False.
             data_root (str): Root path for data files. Defaults to None.
@@ -85,7 +83,6 @@ class CalibrationClassificationTransform(BaseTransform):
         super().__init__()
         self.validation = validation
         self.test = test
-        self.debug = debug
         self.undistort = undistort
         self.enable_augmentation = enable_augmentation
         self.data_root = data_root
@@ -117,9 +114,9 @@ class CalibrationClassificationTransform(BaseTransform):
         # Generate input data
         input_data = self._generate_input_data(augmented_image, lidar_data, augmented_calibration, augmentation_tf)
 
-        # Debug visualization
+        # Visualization
         if self.projection_vis_dir is not None:
-            self._debug_visualization(input_data, label, results)
+            self._projection_visualization(input_data, label, results)
 
         results["img"] = input_data
         results["gt_label"] = label
@@ -737,8 +734,8 @@ class CalibrationClassificationTransform(BaseTransform):
         )
         return overlay_image
 
-    def _debug_visualization(self, input_data: np.ndarray, label: int, results: Dict[str, Any]) -> None:
-        """Handle debug visualization.
+    def _projection_visualization(self, input_data: np.ndarray, label: int, results: Dict[str, Any]) -> None:
+        """Handle projection visualization.
 
         Args:
             input_data: Combined input data with BGR, depth, and intensity channels.
@@ -788,6 +785,7 @@ class CalibrationClassificationTransform(BaseTransform):
         undistorted_image: np.ndarray,
         img_index: str = None,
         sample_idx: int = None,
+        phase: str = "test",
     ) -> None:
         """Visualize comprehensive results including all image types.
 
@@ -798,7 +796,7 @@ class CalibrationClassificationTransform(BaseTransform):
             undistorted_image: Undistorted camera image in BGR format.
             img_index: Unique index for filename.
             sample_idx: Sample id to include in filename.
-            save_dir: Directory to save visualization results.
+            phase: Current phase ('train', 'val', or 'test'). Defaults to "test".
         """
 
         if self.results_vis_dir is None:
@@ -848,14 +846,9 @@ class CalibrationClassificationTransform(BaseTransform):
         plt.tight_layout()
 
         os.makedirs(self.results_vis_dir, exist_ok=True)
-        save_path = os.path.join(self.results_vis_dir, f"results_sample_{sample_idx}_{img_index}_label_{label}.png")
+        save_path = os.path.join(
+            self.results_vis_dir, f"results_{phase}_sample_{sample_idx}_{img_index}_label_{label}.png"
+        )
         plt.savefig(save_path)
-        print(f"Saved results visualization to {save_path}")
+        print(f"Saved {phase} results visualization to {save_path}")
         plt.close()
-
-
-if __name__ == "__main__":
-    results = dict()
-    results["img_path"] = "data/calibrated_data/training_set/data/250_image.jpg"
-    tf = CalibrationClassificationTransform(debug=True, enable_augmentation=False)
-    results = tf(results)

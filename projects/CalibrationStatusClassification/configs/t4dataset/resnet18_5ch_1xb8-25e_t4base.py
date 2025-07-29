@@ -78,7 +78,6 @@ val_pipeline = [
     dict(
         type="CalibrationClassificationTransform",
         validation=True,
-        debug=False,
         data_root=data_root,
         projection_vis_dir=None,
         results_vis_dir=None,
@@ -106,7 +105,6 @@ test_pipeline = [
     dict(
         type="CalibrationClassificationTransform",
         test=True,
-        debug=True,
         data_root=data_root,
         projection_vis_dir=projection_vis_dir,
         results_vis_dir=results_vis_dir,
