@@ -100,7 +100,8 @@ def setup_logging(level: str) -> logging.Logger:
 def load_sample_data(img_path: str, force_generate_miscalibration: bool, device: str = "cpu") -> torch.Tensor:
     """Load and preprocess sample data using CalibrationClassificationTransform."""
     # Create transform for deployment
-    transform = CalibrationClassificationTransform(test=not force_generate_miscalibration, debug=False)
+    mode = "test" if not force_generate_miscalibration else "train"
+    transform = CalibrationClassificationTransform(mode=mode, debug=False)
 
     # Apply transform
     results = transform.transform({"img_path": img_path}, force_generate_miscalibration=force_generate_miscalibration)

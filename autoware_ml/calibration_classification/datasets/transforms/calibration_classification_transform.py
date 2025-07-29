@@ -1,6 +1,7 @@
 import os
 import random
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 
 import cv2
@@ -19,6 +20,14 @@ DEFAULT_AUGMENTATION_MAX_DISTORTION = 0.02
 DEFAULT_DEPTH_SCALE = 80.0
 DEFAULT_RADIUS = 2
 DEFAULT_RGB_WEIGHT = 0.3
+
+
+class TransformMode(Enum):
+    """Enumeration for transform modes."""
+
+    TRAIN = "train"
+    VALIDATION = "validation"
+    TEST = "test"
 
 
 @dataclass
@@ -61,10 +70,9 @@ class CalibrationClassificationTransform(BaseTransform):
 
     def __init__(
         self,
-        validation: bool = False,
-        test: bool = False,
+        mode: str = "train",
         undistort: bool = True,
-        enable_augmentation: bool = False,
+        enable_augmentation: bool = True,
         data_root: str = None,
         projection_vis_dir: Optional[str] = None,
         results_vis_dir: Optional[str] = None,
@@ -72,22 +80,45 @@ class CalibrationClassificationTransform(BaseTransform):
         """Initialize the CalibrationClassificationTransform.
 
         Args:
-            validation (bool): Whether this is for validation mode. Defaults to False.
-            test (bool): Whether this is for test mode. Defaults to False.
+            mode (str): Transform mode. Options: "train", "validation", "test". Defaults to "train".
             undistort (bool): Whether to undistort images. Defaults to True.
-            enable_augmentation (bool): Whether to enable data augmentation. Defaults to False.
+            enable_augmentation (bool): Whether to enable data augmentation. Defaults to True.
             data_root (str): Root path for data files. Defaults to None.
             projection_vis_dir (Optional[str]): Directory to save projection visualization results. Defaults to None.
             results_vis_dir (Optional[str]): Directory to save results visualization results. Defaults to None.
         """
         super().__init__()
-        self.validation = validation
-        self.test = test
+        self.mode = TransformMode(mode)
         self.undistort = undistort
         self.enable_augmentation = enable_augmentation
         self.data_root = data_root
         self.projection_vis_dir = projection_vis_dir
         self.results_vis_dir = results_vis_dir
+
+    @property
+    def is_train(self) -> bool:
+        """Check if current mode is training."""
+        return self.mode == TransformMode.TRAIN
+
+    @property
+    def is_validation(self) -> bool:
+        """Check if current mode is validation."""
+        return self.mode == TransformMode.VALIDATION
+
+    @property
+    def is_test(self) -> bool:
+        """Check if current mode is test."""
+        return self.mode == TransformMode.TEST
+
+    @property
+    def should_augment(self) -> bool:
+        """Check if augmentation should be applied."""
+        return self.enable_augmentation and self.is_train
+
+    @property
+    def should_generate_miscalibration(self) -> bool:
+        """Check if miscalibration should be generated."""
+        return self.is_train
 
     def transform(self, results: Dict[str, Any], force_generate_miscalibration: bool = False) -> Dict[str, Any]:
         """Transform input data for calibration classification.
@@ -118,7 +149,7 @@ class CalibrationClassificationTransform(BaseTransform):
         if self.projection_vis_dir is not None:
             self._projection_visualization(input_data, label, results)
 
-        results["img"] = input_data
+        results["fused_img"] = input_data
         results["gt_label"] = label
         return results
 
@@ -128,7 +159,7 @@ class CalibrationClassificationTransform(BaseTransform):
         Args:
             results: Input data dictionary containing sample_idx.
         """
-        if self.validation:
+        if self.is_validation:
             seed = results["sample_idx"]
             random.seed(seed)
             np.random.seed(seed)
@@ -328,10 +359,10 @@ class CalibrationClassificationTransform(BaseTransform):
         Raises:
             ValueError: If force_generate_miscalibration is used in test mode.
         """
-        if self.test and force_generate_miscalibration:
+        if self.is_test and force_generate_miscalibration:
             raise ValueError("force_generate_miscalibration is not supported in test mode")
 
-        if self.test:
+        if self.is_test:
             generate_miscalibration = False
         else:
             generate_miscalibration = force_generate_miscalibration or random.choice([True, False])
@@ -360,7 +391,7 @@ class CalibrationClassificationTransform(BaseTransform):
         Returns:
             Tuple of augmented image, updated calibration data, and optional transformation matrix.
         """
-        if self.enable_augmentation and not self.validation:
+        if self.should_augment:
             return self._apply_augmentation_transforms(image, calibration_data)
         else:
             return image, calibration_data, None

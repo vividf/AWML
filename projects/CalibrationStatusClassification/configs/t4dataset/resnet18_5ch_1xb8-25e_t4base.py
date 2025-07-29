@@ -47,11 +47,18 @@ projection_vis_dir = "./projection_vis_t4dataset/"
 results_vis_dir = "./results_vis_t4dataset/"
 data_root = "/workspace/data/t4dataset"
 
+
 train_pipeline = [
     dict(
-        type="CalibrationClassificationTransform", data_root=data_root, projection_vis_dir=None, results_vis_dir=None
+        type="CalibrationClassificationTransform",
+        mode="train",
+        undistort=True,
+        enable_augmentation=False,
+        data_root=data_root,
+        projection_vis_dir=projection_vis_dir,
+        results_vis_dir=None,
     ),
-    dict(type="PackInputs", input_key="img"),
+    dict(type="PackInputs", input_key="fused_img", meta_keys=["img_path", "fused_img", "images", "sample_idx"]),
 ]
 
 
@@ -77,12 +84,14 @@ val_cfg = dict()
 val_pipeline = [
     dict(
         type="CalibrationClassificationTransform",
-        validation=True,
+        mode="validation",
+        undistort=True,
+        enable_augmentation=False,
         data_root=data_root,
-        projection_vis_dir=None,
+        projection_vis_dir=projection_vis_dir,
         results_vis_dir=None,
     ),
-    dict(type="PackInputs", input_key="img"),
+    dict(type="PackInputs", input_key="fused_img", meta_keys=["img_path", "fused_img", "images", "sample_idx"]),
 ]
 
 val_dataloader = dict(
@@ -104,12 +113,14 @@ val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 test_pipeline = [
     dict(
         type="CalibrationClassificationTransform",
-        test=True,
+        mode="test",
+        undistort=True,
+        enable_augmentation=False,
         data_root=data_root,
         projection_vis_dir=projection_vis_dir,
         results_vis_dir=results_vis_dir,
     ),
-    dict(type="PackInputs", input_key="img", meta_keys=["img_path", "img", "images", "sample_idx"]),
+    dict(type="PackInputs", input_key="fused_img", meta_keys=["img_path", "fused_img", "images", "sample_idx"]),
     # dict(type="PackInputs", input_key="img"),
 ]
 

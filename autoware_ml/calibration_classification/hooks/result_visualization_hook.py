@@ -172,9 +172,9 @@ class ResultVisualizationHook(Hook):
         phase: str,
     ):
         """Visualize and save results."""
-        input_data = output.metainfo.get("img", None)
+        input_data = output.metainfo.get("fused_img", None)
         if input_data is None:
-            print(f"[ResultVisualizationHook] img data not found for {img_path}, skipping visualization.")
+            print(f"[ResultVisualizationHook] fused_img data not found for {img_path}, skipping visualization.")
             return
 
         # Extract image index and sample index
