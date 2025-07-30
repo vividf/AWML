@@ -10,6 +10,8 @@ from autoware_ml.calibration_classification.datasets.transforms.calibration_clas
     CalibrationClassificationTransform,
 )
 
+DEFAULT_CAMERA_CHANNEL = "CAM_BACK_LEFT"  # Default camera channel identifier
+
 
 @HOOKS.register_module()
 class ResultVisualizationHook(Hook):
@@ -116,13 +118,13 @@ class ResultVisualizationHook(Hook):
 
     def _get_image_path(self, output) -> Optional[str]:
         """Get and validate image path from output metadata."""
-        if "images" not in output.metainfo or "CAM_FRONT" not in output.metainfo["images"]:
-            print("[ResultVisualizationHook] CAM_FRONT image not found in metainfo, skipping visualization.")
+        if "images" not in output.metainfo or DEFAULT_CAMERA_CHANNEL not in output.metainfo["images"]:
+            print("[ResultVisualizationHook] image not found in metainfo, skipping visualization.")
             return None
 
-        img_path = output.metainfo["images"]["CAM_FRONT"].get("img_path")
+        img_path = output.metainfo["images"][DEFAULT_CAMERA_CHANNEL].get("img_path")
         if not img_path:
-            print("[ResultVisualizationHook] img_path not found for CAM_FRONT, skipping visualization.")
+            print("[ResultVisualizationHook] img_path not found for image, skipping visualization.")
             return None
 
         return img_path
@@ -151,7 +153,7 @@ class ResultVisualizationHook(Hook):
 
     def _create_undistorted_image(self, output, original_image: np.ndarray) -> np.ndarray:
         """Create undistorted image using camera calibration parameters."""
-        cam_info = output.metainfo["images"]["CAM_FRONT"]
+        cam_info = output.metainfo["images"][DEFAULT_CAMERA_CHANNEL]
         camera_matrix = np.array(cam_info["cam2img"])
         distortion_coefficients = np.zeros(5, dtype=np.float32)  # Use zeros if not available
 

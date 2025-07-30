@@ -17,7 +17,7 @@ from autoware_ml.calibration_classification.datasets.transforms.camera_lidar_aug
 logger = MMLogger.get_instance(name="calibration_classification_transform")
 
 # Constants with detailed documentation
-DEFAULT_CAMERA_CHANNEL = "CAM_FRONT"  # Default camera channel identifier
+DEFAULT_CAMERA_CHANNEL = "CAM_BACK_LEFT"  # Default camera channel identifier
 DEFAULT_CROP_RATIO = 0.6  # Ratio for image cropping (0.0-1.0, where 1.0 means no crop)
 DEFAULT_MAX_DISTORTION = 0.001  # Maximum affine distortion as fraction of image dimensions (0.0-1.0)
 DEFAULT_AUGMENTATION_MAX_DISTORTION = 0.02  # Maximum augmentation distortion as fraction of image dimensions
@@ -897,8 +897,8 @@ class CalibrationClassificationTransform(BaseTransform):
             results: Input data dictionary.
         """
         img_path = (
-            results["images"]["CAM_FRONT"]["img_path"]
-            if "images" in results and "CAM_FRONT" in results["images"]
+            results["images"][DEFAULT_CAMERA_CHANNEL]["img_path"]
+            if "images" in results and DEFAULT_CAMERA_CHANNEL in results["images"]
             else None
         )
 
