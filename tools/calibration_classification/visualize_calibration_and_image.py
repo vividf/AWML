@@ -1,215 +1,303 @@
 #!/usr/bin/env python3
+"""
+LiDAR-Camera Calibration Visualization Tool.
+
+This script provides a comprehensive tool for visualizing LiDAR point cloud projections
+onto camera images using calibration data from info.pkl files. It supports both
+single sample and batch processing modes.
+
+The tool leverages the CalibrationClassificationTransform to process camera images,
+LiDAR point clouds, and calibration data, generating visualizations that show:
+- Original camera images
+- LiDAR point projections overlaid on images
+- Depth and intensity visualizations
+- Comprehensive calibration analysis results
+
+Author: AWML Team
+Date: 2024
+"""
+
 import argparse
 import os
 import pickle
+import traceback
+from typing import Any, Dict, List, Optional, Union
 
-# Import the transform and dataset classes
-import sys
-from pathlib import Path
+from mmengine.logging import MMLogger
 
-import cv2
-import numpy as np
-
-sys.path.append("/home/yihsiangfang/ml_workspace/AWML")
-
-# Import mmpretrain registry to ensure transforms are registered
-from mmpretrain.registry import TRANSFORMS
-
-# Import the transform module to ensure it's registered
-import autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform
-from autoware_ml.calibration_classification.datasets.t4_calibration_classification_dataset import (
-    T4CalibrationClassificationDataset,
-)
 from autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform import (
     CalibrationClassificationTransform,
 )
 
 
-def load_info_pkl(info_pkl_path):
-    """Load info.pkl file and return the data."""
-    with open(info_pkl_path, "rb") as f:
-        return pickle.load(f)
+class CalibrationVisualizer:
+    """
+    A comprehensive tool for visualizing LiDAR-camera calibration data.
 
+    This class provides functionality to load calibration data from info.pkl files
+    and generate visualizations using the CalibrationClassificationTransform.
 
-def visualize_using_transform_directly(info_pkl_path, output_dir=None, indices=None, data_root=None):
-    """Visualize using CalibrationClassificationTransform directly without dataset."""
+    Attributes:
+        transform: The calibration classification transform instance
+        data_root: Root directory for data files
+        output_dir: Directory for saving visualizations
+        logger: MMLogger instance for logging
+    """
 
-    # Load info.pkl data
-    info_data = load_info_pkl(info_pkl_path)
+    def __init__(self, data_root: Optional[str] = None, output_dir: Optional[str] = None):
+        """
+        Initialize the CalibrationVisualizer.
 
-    if not info_data:
-        print("[WARNING] No data found in info.pkl")
-        return
+        Args:
+            data_root: Root directory for data files. If None, absolute paths are used.
+            output_dir: Directory for saving visualizations. If None, no visualizations are saved.
+        """
+        self.data_root = data_root
+        self.output_dir = output_dir
+        self.transform = None
+        self.logger = MMLogger.get_instance(name="calibration_visualizer")
+        self._initialize_transform()
 
-    # Handle different data formats
-    if isinstance(info_data, dict):
-        # Check if it's the new format with data_list
-        if "data_list" in info_data:
-            samples_list = info_data["data_list"]
-            print(f"[INFO] Loaded {len(samples_list)} samples from info.pkl (data_list format)")
-        elif "samples" in info_data:
-            samples_list = info_data["samples"]
-            print(f"[INFO] Loaded {len(samples_list)} samples from info.pkl (samples format)")
-        elif "data" in info_data:
-            samples_list = info_data["data"]
-            print(f"[INFO] Loaded {len(samples_list)} samples from info.pkl (data format)")
-        else:
-            # Assume the dict contains sample data directly
-            samples_list = [info_data]
-            print(f"[INFO] Loaded 1 sample from info.pkl (direct dict format)")
-    elif isinstance(info_data, list):
-        samples_list = info_data
-        print(f"[INFO] Loaded {len(samples_list)} samples from info.pkl (list format)")
-    else:
-        print(f"[ERROR] Unexpected data format: {type(info_data)}")
-        return
+    def _initialize_transform(self) -> None:
+        """Initialize the CalibrationClassificationTransform with appropriate parameters."""
+        self.transform = CalibrationClassificationTransform(
+            mode="test",
+            undistort=True,
+            data_root=self.data_root,
+            projection_vis_dir=self.output_dir,
+            results_vis_dir=self.output_dir,
+            enable_augmentation=False,
+        )
 
-    # Debug: Check data structure
-    if len(samples_list) > 0:
-        print(f"[DEBUG] First sample type: {type(samples_list[0])}")
-        if isinstance(samples_list[0], dict):
-            print(f"[DEBUG] First sample keys: {list(samples_list[0].keys())}")
-            if "image" in samples_list[0]:
-                print(f"[DEBUG] Image data type: {type(samples_list[0]['image'])}")
-                if isinstance(samples_list[0]["image"], dict):
-                    print(f"[DEBUG] Image keys: {list(samples_list[0]['image'].keys())}")
-        else:
-            print(f"[DEBUG] First sample content: {samples_list[0]}")
+    def load_info_pkl(self, info_pkl_path: str) -> List[Dict[str, Any]]:
+        """
+        Load and parse info.pkl file.
 
-    # Initialize transform directly
-    transform = CalibrationClassificationTransform(
-        mode="test",
-        undistort=True,
-        data_root=data_root,  # Add data_root parameter
-        projection_vis_dir=output_dir,
-        results_vis_dir=output_dir,
-        enable_augmentation=False,
-    )
+        Args:
+            info_pkl_path: Path to the info.pkl file.
 
-    # Process samples
-    if indices is not None:
-        samples_to_process = [samples_list[i] for i in indices if i < len(samples_list)]
-    else:
-        samples_to_process = samples_list
+        Returns:
+            List of sample dictionaries.
 
-    print(f"[INFO] Processing {len(samples_to_process)} samples")
+        Raises:
+            FileNotFoundError: If info.pkl file doesn't exist.
+            ValueError: If data format is unexpected.
+        """
+        if not os.path.exists(info_pkl_path):
+            raise FileNotFoundError(f"Info.pkl file not found: {info_pkl_path}")
 
-    for i, sample in enumerate(samples_to_process):
         try:
-            # Debug: Print sample structure
-            print(f"[DEBUG] Processing sample {i+1}, type: {type(sample)}")
-            if isinstance(sample, dict):
-                print(f"[DEBUG] Sample keys: {list(sample.keys())}")
-                if "image" in sample:
-                    print(f"[DEBUG] Sample has 'image' key")
-                    print(f"[DEBUG] Image keys: {list(sample['image'].keys())}")
-                else:
-                    print(f"[DEBUG] Sample does NOT have 'image' key")
-                    print(f"[DEBUG] Available keys: {list(sample.keys())}")
-            else:
-                print(f"[DEBUG] Sample is not a dict: {sample}")
-
-            result = transform(sample)
-            print(f"[INFO] Successfully processed sample {i+1}/{len(samples_to_process)}")
+            with open(info_pkl_path, "rb") as f:
+                info_data = pickle.load(f)
         except Exception as e:
-            print(f"[ERROR] Failed to process sample {i+1}: {e}")
-            import traceback
+            raise ValueError(f"Failed to load info.pkl file: {e}")
 
-            traceback.print_exc()
-            continue
+        return self._extract_samples_from_data(info_data)
 
-    print(f"[INFO] Finished processing all samples")
+    def _extract_samples_from_data(self, info_data: Union[Dict, List]) -> List[Dict[str, Any]]:
+        """
+        Extract sample list from various info.pkl data formats.
 
+        Args:
+            info_data: Raw data from info.pkl file.
 
-def visualize_single_sample_directly(info_pkl_path, sample_idx=0, output_path=None, data_root=None):
-    """Visualize a single sample from info.pkl using transform directly."""
+        Returns:
+            List of sample dictionaries.
 
-    # Load info.pkl data
-    info_data = load_info_pkl(info_pkl_path)
-
-    if not info_data:
-        print("[WARNING] No data found in info.pkl")
-        return None
-
-    # Handle different data formats
-    if isinstance(info_data, dict):
-        if "data_list" in info_data:
-            samples_list = info_data["data_list"]
-        elif "samples" in info_data:
-            samples_list = info_data["samples"]
-        elif "data" in info_data:
-            samples_list = info_data["data"]
+        Raises:
+            ValueError: If data format is not supported.
+        """
+        if isinstance(info_data, dict):
+            if "data_list" in info_data:
+                samples_list = info_data["data_list"]
+                self.logger.info(f"Loaded {len(samples_list)} samples from info.pkl (data_list format)")
+            elif "samples" in info_data:
+                samples_list = info_data["samples"]
+                self.logger.info(f"Loaded {len(samples_list)} samples from info.pkl (samples format)")
+            elif "data" in info_data:
+                samples_list = info_data["data"]
+                self.logger.info(f"Loaded {len(samples_list)} samples from info.pkl (data format)")
+            else:
+                # Assume the dict contains sample data directly
+                samples_list = [info_data]
+                self.logger.info("Loaded 1 sample from info.pkl (direct dict format)")
+        elif isinstance(info_data, list):
+            samples_list = info_data
+            self.logger.info(f"Loaded {len(samples_list)} samples from info.pkl (list format)")
         else:
-            samples_list = [info_data]
-    elif isinstance(info_data, list):
-        samples_list = info_data
-    else:
-        print(f"[ERROR] Unexpected data format: {type(info_data)}")
-        return None
+            raise ValueError(f"Unexpected data format: {type(info_data)}")
 
-    if sample_idx >= len(samples_list):
-        print(f"[ERROR] Sample index {sample_idx} out of range (0-{len(samples_list)-1})")
-        return None
+        return samples_list
 
-    print(f"[INFO] Processing sample {sample_idx} from {len(samples_list)} total samples")
+    def _validate_sample_structure(self, sample: Dict[str, Any]) -> bool:
+        """
+        Validate that a sample has the required structure.
 
-    # Initialize transform directly
-    transform = CalibrationClassificationTransform(
-        mode="test",
-        undistort=True,
-        data_root=data_root,  # Add data_root parameter
-        projection_vis_dir=os.path.dirname(output_path) if output_path else None,
-        results_vis_dir=os.path.dirname(output_path) if output_path else None,
-        enable_augmentation=False,
+        Args:
+            sample: Sample dictionary to validate.
+
+        Returns:
+            True if sample is valid, False otherwise.
+        """
+        required_keys = ["image", "lidar_points"]
+        return all(key in sample for key in required_keys)
+
+    def process_single_sample(self, sample: Dict[str, Any], sample_idx: int) -> Optional[Dict[str, Any]]:
+        """
+        Process a single sample using the transform.
+
+        Args:
+            sample: Sample dictionary to process.
+            sample_idx: Index of the sample for logging purposes.
+
+        Returns:
+            Transformed sample data if successful, None otherwise.
+        """
+        try:
+            if not self._validate_sample_structure(sample):
+                self.logger.error(f"Sample {sample_idx} has invalid structure")
+                return None
+
+            result = self.transform(sample)
+            self.logger.info(f"Successfully processed sample {sample_idx}")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Failed to process sample {sample_idx}: {e}")
+            self.logger.debug(traceback.format_exc())
+            return None
+
+    def visualize_samples(self, info_pkl_path: str, indices: Optional[List[int]] = None) -> None:
+        """
+        Visualize multiple samples from info.pkl file.
+
+        Args:
+            info_pkl_path: Path to the info.pkl file.
+            indices: Optional list of sample indices to process. If None, all samples are processed.
+        """
+        try:
+            samples_list = self.load_info_pkl(info_pkl_path)
+
+            if not samples_list:
+                self.logger.warning("No samples found in info.pkl")
+                return
+
+            # Determine which samples to process
+            if indices is not None:
+                samples_to_process = [samples_list[i] for i in indices if i < len(samples_list)]
+            else:
+                samples_to_process = samples_list
+
+            self.logger.info(f"Processing {len(samples_to_process)} samples")
+
+            # Process each sample
+            for i, sample in enumerate(samples_to_process):
+                self.process_single_sample(sample, i + 1)
+
+            self.logger.info("Finished processing all samples")
+
+        except Exception as e:
+            self.logger.error(f"Failed to visualize samples: {e}")
+            self.logger.debug(traceback.format_exc())
+
+    def visualize_single_sample(self, info_pkl_path: str, sample_idx: int) -> Optional[Dict[str, Any]]:
+        """
+        Visualize a single sample from info.pkl file.
+
+        Args:
+            info_pkl_path: Path to the info.pkl file.
+            sample_idx: Index of the sample to process (0-based).
+
+        Returns:
+            Transformed sample data if successful, None otherwise.
+        """
+        try:
+            samples_list = self.load_info_pkl(info_pkl_path)
+
+            if sample_idx >= len(samples_list):
+                self.logger.error(f"Sample index {sample_idx} out of range (0-{len(samples_list)-1})")
+                return None
+
+            self.logger.info(f"Processing sample {sample_idx} from {len(samples_list)} total samples")
+
+            sample = samples_list[sample_idx]
+            result = self.process_single_sample(sample, sample_idx)
+
+            if result and self.output_dir:
+                self.logger.info(f"Visualizations saved to directory: {self.output_dir}")
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Failed to visualize single sample: {e}")
+            self.logger.debug(traceback.format_exc())
+            return None
+
+
+def create_argument_parser() -> argparse.ArgumentParser:
+    """Create and configure the argument parser.
+
+    Returns:
+        Configured argument parser.
+    """
+    examples = """
+Examples:
+  # Process all samples
+  python visualize_calibration_and_image.py --info_pkl data/info.pkl --data_root data/ --output_dir /vis
+
+  # Process specific sample
+  python visualize_calibration_and_image.py --info_pkl data/info.pkl --data_root data/ --output_dir /vis --sample_idx 0
+
+  # Process specific indices
+  python visualize_calibration_and_image.py --info_pkl data/info.pkl --data_root data/ --output_dir /vis --indices 0 1 2
+"""
+
+    parser = argparse.ArgumentParser(
+        description="Visualize LiDAR points projected on camera images using info.pkl",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=examples,
     )
 
-    # Process the single sample
-    try:
-        result = transform(samples_list[sample_idx])
-        print(f"[INFO] Successfully processed sample {sample_idx}")
-
-        if output_path:
-            print(f"[INFO] Visualizations saved to directory: {os.path.dirname(output_path)}")
-
-        return result
-
-    except Exception as e:
-        print(f"[ERROR] Failed to process sample {sample_idx}: {e}")
-        return None
-
-
-def main():
-    """Main entry point for the script. Parses arguments and runs the appropriate visualization."""
-    parser = argparse.ArgumentParser(description="Visualize LiDAR points projected on camera images using info.pkl")
-    parser.add_argument("--info_pkl", required=True, help="Path to info.pkl file")
+    parser.add_argument("--info_pkl", required=True, help="Path to info.pkl file containing calibration data")
     parser.add_argument("--output_dir", help="Output directory for saving visualizations")
-    parser.add_argument("--data_root", help="Root directory for data files")
+    parser.add_argument("--data_root", help="Root directory for data files (images, point clouds, etc.)")
     parser.add_argument("--sample_idx", type=int, help="Specific sample index to process (0-based)")
     parser.add_argument("--indices", nargs="+", type=int, help="Specific sample indices to process (0-based)")
     parser.add_argument(
         "--show_point_details", action="store_true", help="Show detailed point cloud field information"
     )
 
+    return parser
+
+
+def main() -> None:
+    """
+    Main entry point for the calibration visualization script.
+
+    Parses command line arguments and runs the appropriate visualization mode.
+    Supports both single sample and batch processing modes.
+    """
+    parser = create_argument_parser()
     args = parser.parse_args()
 
+    # Validate input file
     if not os.path.exists(args.info_pkl):
         raise FileNotFoundError(f"Info.pkl file not found: {args.info_pkl}")
 
+    # Create output directory if specified
+    if args.output_dir:
+        os.makedirs(args.output_dir, exist_ok=True)
+
+    # Initialize visualizer
+    visualizer = CalibrationVisualizer(data_root=args.data_root, output_dir=args.output_dir)
+
+    # Run appropriate visualization mode
     if args.sample_idx is not None:
         # Process single sample
-        output_path = None
-        if args.output_dir:
-            os.makedirs(args.output_dir, exist_ok=True)
-            output_path = os.path.join(args.output_dir, f"sample_{args.sample_idx}.jpg")
-
-        visualize_single_sample_directly(args.info_pkl, args.sample_idx, output_path, args.data_root)
-
+        visualizer.visualize_single_sample(args.info_pkl, args.sample_idx)
     else:
         # Process all samples or specific indices
-        if args.output_dir:
-            os.makedirs(args.output_dir, exist_ok=True)
-
-        visualize_using_transform_directly(args.info_pkl, args.output_dir, args.indices, args.data_root)
+        visualizer.visualize_samples(args.info_pkl, args.indices)
 
 
 if __name__ == "__main__":
