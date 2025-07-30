@@ -62,7 +62,7 @@ Each file contains calibration information including:
 - Transformation matrices (lidar2cam, cam2ego, etc.)
 - Timestamps and metadata
 
-### 2.2. Calibration Visualization
+### 2.2. Calibration Visualization (Before training)
 
 - Visualization for calibration and image view
   - This tool visualizes the calibration between LiDAR and camera sensors
@@ -85,7 +85,7 @@ python tools/calibration_classification/visualize_calibration_and_image.py --inf
 python tools/calibration_classification/visualize_calibration_and_image.py --info_pkl data/t4dataset/calibration_info/t4dataset_x2_calib_infos_test.pkl --data_root data/t4dataset --output_dir ./calibration_visualization
 ```
 
-## 3. Visualization Settings
+## 3. Visualization Settings (During training, validation, testing)
 
 Understanding visualization configuration is crucial for calibration classification tasks. The `CalibrationClassificationTransform` controls two main visualization types:
 
