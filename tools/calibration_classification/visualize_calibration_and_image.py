@@ -87,44 +87,6 @@ def project_lidar_to_image_t4(
     Otherwise, use the full chain: LiDAR -> Ego (LiDAR time) -> Global -> Ego (Camera time) -> Camera.
     """
     print("direct_lidar_to_camera: ", direct_lidar_to_camera)
-    # if direct_lidar_to_camera:
-    #     # LiDAR → Camera (skip ego/global)
-    #     print("lidar_calib:", lidar_calib)
-    #     print("cam_calib:", cam_calib)
-    #     print("lidar_points shape:", lidar_points.shape)
-    #     print("lidar_points sample:", lidar_points[:5])
-    #     points = lidar_points @ Quaternion(lidar_calib["rotation"]).rotation_matrix.T + np.array(
-    #         lidar_calib["translation"]
-    #     )
-    #     print("After lidar extrinsic transform, points shape:", points.shape)
-    #     print("points sample:", points[:5])
-    #     points = points - np.array(cam_calib["translation"])
-    #     print("After translation to camera, points shape:", points.shape)
-    #     print("points sample:", points[:5])
-    #     points = points @ Quaternion(cam_calib["rotation"]).rotation_matrix
-    #     print("After camera rotation, points shape:", points.shape)
-    #     print("points sample:", points[:5])
-    #     # Additional testing point
-    #     test_lidar_points = np.array(
-    #         [
-    #             [10.157314, 15.85494, 7.982893],
-    #             [10.486984, 15.857815, 8.009439],
-    #             [10.817074, 15.850803, 8.034791],
-    #             [11.156458, 15.859216, 8.066649],
-    #             [11.504626, 15.883657, 8.105005],
-    #         ]
-    #     )
-    #     print("\n[TEST] lidar_points sample:", test_lidar_points)
-    #     test_points = test_lidar_points @ Quaternion(lidar_calib["rotation"]).rotation_matrix.T + np.array(
-    #         lidar_calib["translation"]
-    #     )
-    #     print("[TEST] After lidar extrinsic transform, points:", test_points)
-    #     test_points = test_points - np.array(cam_calib["translation"])
-    #     print("[TEST] After translation to camera, points:", test_points)
-    #     test_points = test_points @ Quaternion(cam_calib["rotation"]).rotation_matrix
-    #     print("[TEST] After camera rotation, points:", test_points)
-    # else:
-    # Full chain: LiDAR -> Ego (LiDAR time) -> Global -> Ego (Camera time) -> Camera
 
     print("lidar_calib[rotation]:", lidar_calib["rotation"])
     print("lidar_pose[rotation]:", lidar_pose["rotation"])

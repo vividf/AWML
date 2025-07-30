@@ -3,9 +3,7 @@ import json
 import os
 import os.path as osp
 import re
-import sys
 from collections import defaultdict
-from typing import Any, Dict
 
 import mmengine
 import numpy as np
@@ -38,26 +36,58 @@ def convert_quaternion_to_matrix(rotation, translation):
 
 
 def get_pose_dict(ego_pose_json):
-    """Create a dict mapping pose token to pose entry from ego_pose_json."""
-    return {e["token"]: e for e in ego_pose_json}
+    """Create a dict mapping pose token to pose entry from ego_pose_json.
+
+    Args:
+        ego_pose_json (list): List of ego pose dictionaries from the annotation file.
+
+    Returns:
+        dict: Dictionary mapping pose tokens to their corresponding pose entries.
+    """
+    return {ego_pose["token"]: ego_pose for ego_pose in ego_pose_json}
 
 
 def get_calib_dict(calib_json):
-    """Create a dict mapping calibration token to calibration entry from calib_json."""
-    return {c["token"]: c for c in calib_json}
+    """Create a dict mapping calibration token to calibration entry from calib_json.
+
+    Args:
+        calib_json (list): List of calibrated sensor dictionaries from the annotation file.
+
+    Returns:
+        dict: Dictionary mapping calibration tokens to their corresponding calibration entries.
+    """
+    return {calib["token"]: calib for calib in calib_json}
 
 
 def get_all_channels(sample_data_json):
-    """Return all unique camera channels by parsing filename in sample_data_json."""
-    return sorted(set(s["filename"].split("/")[1] for s in sample_data_json if s["filename"].startswith("data/CAM_")))
+    """Return all unique camera channels by parsing filename in sample_data_json.
+
+    Args:
+        sample_data_json (list): List of sample data dictionaries from the annotation file.
+
+    Returns:
+        list: Sorted list of unique camera channel names (e.g., ['CAM_FRONT', 'CAM_LEFT', ...]).
+    """
+    return sorted(
+        set(
+            sample_data["filename"].split("/")[1]
+            for sample_data in sample_data_json
+            if sample_data["filename"].startswith("data/CAM_")
+        )
+    )
 
 
 def extract_frame_index(filename):
     """
     Extract the frame index (all digits before the first dot in the basename).
     E.g. 00001.jpg -> 00001, 123.pcd.bin -> 123, 5.jpg -> 5
+
+    Args:
+        filename (str): The filename to extract frame index from.
+
+    Returns:
+        str: The extracted frame index as a string.
     """
-    import re
 
     base = osp.basename(filename)
     # Get the part before the first dot
@@ -80,7 +110,19 @@ def generate_calib_info(
     """
     Generate calibration info for each frame (grouped by filename index).
     Each info contains all sensor sample_data (lidar, cameras, etc) belonging to the same frame.
-    Returns: (infos, next_sample_idx)
+
+    Args:
+        annotation_dir (str): Path to the annotation directory containing JSON files.
+        lidar_channel (str, optional): Name of the lidar channel. Defaults to "LIDAR_CONCAT".
+        scene_root (str, optional): Root path of the scene data. Defaults to None.
+        scene_id (str, optional): ID of the scene. Defaults to None.
+        start_sample_idx (int, optional): Starting index for sample numbering. Defaults to 0.
+        target_cameras (list, optional): List of target camera channels to process.
+            If None, processes all available cameras. Defaults to None.
+
+    Returns:
+        tuple: (infos, next_sample_idx) where infos is a list of calibration info dictionaries
+               and next_sample_idx is the next available sample index.
     """
     sample_data_json = load_json(osp.join(annotation_dir, "sample_data.json"))
     ego_pose_json = load_json(osp.join(annotation_dir, "ego_pose.json"))
@@ -131,7 +173,26 @@ def build_frame_info(
     scene_id=None,
     sample_idx=0,
 ):
-    """Build frame info for each target camera. If target_cameras is None, build for all cameras."""
+    """Build frame info for each target camera. If target_cameras is None, build for all cameras.
+
+    Args:
+        frame_idx (str): Frame index identifier.
+        frame_sample_data (list): List of sample data dictionaries for this frame.
+        calib_dict (dict): Dictionary mapping calibration tokens to calibration entries.
+        ego_pose_dict (dict): Dictionary mapping pose tokens to pose entries.
+        scene_root (str): Root path of the scene data.
+        target_cameras (list): List of target camera channels to process.
+        lidar_channel (str): Name of the lidar channel.
+        scene_id (str, optional): ID of the scene. Defaults to None.
+        sample_idx (int, optional): Starting index for sample numbering. Defaults to 0.
+
+    Returns:
+        list: List of frame info dictionaries, one for each available camera in the frame.
+              Each info contains camera data, lidar data, and transformation matrices.
+
+    Raises:
+        ValueError: If no lidar data is found for the given frame.
+    """
 
     # Find lidar data for this frame
     lidar_data = None
@@ -216,6 +277,17 @@ def build_frame_info(
 
 
 def parse_args():
+    """Parse command line arguments for the T4dataset calibration info creation script.
+
+    Returns:
+        argparse.Namespace: Parsed command line arguments containing:
+            - config: Path to the T4dataset configuration file
+            - root_path: Root path of the dataset
+            - version: Product version
+            - out_dir: Output directory for info files
+            - lidar_channel: Lidar channel name (default: LIDAR_CONCAT)
+            - target_cameras: List of target cameras to process (default: all cameras)
+    """
     parser = argparse.ArgumentParser(description="Create calibration info for T4dataset (classification version)")
     parser.add_argument("--config", type=str, required=True, help="config for T4dataset")
     parser.add_argument("--root_path", type=str, required=True, help="specify the root path of dataset")
@@ -229,6 +301,18 @@ def parse_args():
 
 
 def get_scene_root_dir_path(root_path, dataset_version, scene_id):
+    """Get the scene root directory path, handling version subdirectories.
+
+    Args:
+        root_path (str): Root path of the dataset.
+        dataset_version (str): Version of the dataset.
+        scene_id (str): ID of the scene.
+
+    Returns:
+        str: Path to the scene root directory. If version subdirectories exist,
+             returns the path to the highest version number subdirectory.
+             Otherwise, returns the base scene directory path.
+    """
     scene_root_dir_path = osp.join(root_path, dataset_version, scene_id)
     version_dirs = [
         d for d in os.listdir(scene_root_dir_path) if d.isdigit() and osp.isdir(osp.join(scene_root_dir_path, d))
@@ -240,6 +324,18 @@ def get_scene_root_dir_path(root_path, dataset_version, scene_id):
 
 
 def main():
+    """Main function to create calibration info for T4dataset.
+
+    This function:
+    1. Parses command line arguments
+    2. Loads configuration files
+    3. Iterates through dataset versions and scenes
+    4. Generates calibration info for each scene
+    5. Saves the results to pickle files for each split (train/val/test)
+
+    The script processes T4dataset annotations to create calibration information
+    that includes camera and lidar data with their respective transformation matrices.
+    """
     args = parse_args()
     cfg = Config.fromfile(args.config)
     os.makedirs(args.out_dir, exist_ok=True)

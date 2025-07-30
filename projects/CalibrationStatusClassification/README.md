@@ -5,7 +5,7 @@
 - ROS package: [package_name](https://github.com/autowarefoundation/autoware.universe/tree/main/perception/)
 - Supported dataset
   - [ ] NuScenes
-  - [ ] T4dataset
+  - [x] T4dataset
 - Supported model
   - [x] ResNet18
 - Other supported feature
@@ -52,27 +52,31 @@ TBD
 Make sure the dataset structure is as follows:
 
 ```
-|workspace
-    └──|data
-          └── calibrated_data
-              └── training_set
-              |  └── data
-              |       ├── 0_calibration.npz
-              |       ├── 0_image.jpg
-              |       ├── 0_pointcloud.npz
-              |       ├── 1_calibration.npz
-              |       ├── 1_image.jpg
-              |       ├── 1_pointcloud.npz
-              |       ...
-              └── validation_set
-                  └── data
-                      ├── 0_calibration.npz
-                      ├── 0_image.jpg
-                      ├── 0_pointcloud.npz
-                      ├── 1_calibration.npz
-                      ├── 1_image.jpg
-                      ├── 1_pointcloud.npz
-                      ...
+workspace/
+└── data/
+    └── t4dataset/
+        ├── dataset_v1/
+        │   ├── scene1/0/
+        │   │   ├── annotation/
+        │   │   ├── data/
+        │   │   ├── map/
+        │   │   └── ...
+        │   └── scene2/0/
+        │       ├── annotation/
+        │       ├── data/
+        │       ├── map/
+        │       └── ...
+        └── dataset_v2/
+            ├── scene1/0/
+            │   ├── annotation/
+            │   ├── data/
+            │   ├── map/
+            │   └── ...
+            └── scene2/0/
+                ├── annotation/
+                ├── data/
+                ├── map/
+                └── ...
 ```
 
 Run training:
