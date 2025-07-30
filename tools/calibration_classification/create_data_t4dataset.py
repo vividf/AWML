@@ -70,7 +70,12 @@ def extract_frame_index(filename):
 
 
 def generate_calib_info(
-    annotation_dir, cam_channels=None, lidar_channel="LIDAR_CONCAT", scene_root=None, scene_id=None, start_sample_idx=0
+    annotation_dir,
+    lidar_channel="LIDAR_CONCAT",
+    scene_root=None,
+    scene_id=None,
+    start_sample_idx=0,
+    target_cameras=None,
 ):
     """
     Generate calibration info for each frame (grouped by filename index).
@@ -82,8 +87,10 @@ def generate_calib_info(
     calib_json = load_json(osp.join(annotation_dir, "calibrated_sensor.json"))
     calib_dict = get_calib_dict(calib_json)
     ego_pose_dict = get_pose_dict(ego_pose_json)
-    if cam_channels is None:
-        cam_channels = get_all_channels(sample_data_json)
+
+    # Get all available camera channels if target_cameras is not specified
+    if target_cameras is None:
+        target_cameras = get_all_channels(sample_data_json)
 
     # Group all sample_data by frame index
     frame_groups = defaultdict(list)
@@ -96,20 +103,20 @@ def generate_calib_info(
     infos = []
     sample_idx = start_sample_idx
     for _, (frame_idx, frame_sample_data) in enumerate(sorted(frame_groups.items())):
-        info = build_frame_info(
+        frame_infos = build_frame_info(
             frame_idx,
             frame_sample_data,
             calib_dict,
             ego_pose_dict,
             scene_root,
-            cam_channels,
+            target_cameras,
             lidar_channel,
             scene_id,
             sample_idx,
         )
-        if info is not None:
-            infos.append(info)
-            sample_idx += 1
+        if frame_infos:
+            infos.extend(frame_infos)
+            sample_idx += len(frame_infos)
     return infos, sample_idx
 
 
@@ -119,86 +126,93 @@ def build_frame_info(
     calib_dict,
     ego_pose_dict,
     scene_root,
-    cam_channels,
+    target_cameras,
     lidar_channel,
     scene_id=None,
     sample_idx=0,
 ):
-    info = {
-        "frame_idx": frame_idx,
-        "scene_id": scene_id,
-        "images": {},
-        "lidar_points": None,
-        "sample_idx": sample_idx,
-    }
+    """Build frame info for each target camera. If target_cameras is None, build for all cameras."""
+
+    # Find lidar data for this frame
+    lidar_data = None
     for sd in frame_sample_data:
         filename = sd["filename"]
         if filename.startswith(f"data/{lidar_channel}/"):
-            # lidar
             lidar_calib = calib_dict[sd["calibrated_sensor_token"]]
             lidar_pose = ego_pose_dict[sd["ego_pose_token"]]
-            info["lidar_points"] = {
+            lidar_data = {
                 "lidar_path": osp.join(scene_root, filename),
                 "lidar_pose": convert_quaternion_to_matrix(lidar_pose["rotation"], lidar_pose["translation"]),
                 "lidar2ego": convert_quaternion_to_matrix(lidar_calib["rotation"], lidar_calib["translation"]),
                 "timestamp": sd["timestamp"],
                 "sample_data_token": sd["token"],
             }
-        else:
-            for cam in cam_channels:
-                if filename.startswith(f"data/{cam}/"):
-                    cam_calib = calib_dict[sd["calibrated_sensor_token"]]
-                    cam_pose = ego_pose_dict[sd["ego_pose_token"]]
-                    info["images"][cam] = {
-                        "img_path": osp.join(scene_root, filename),
-                        "cam2img": cam_calib.get("camera_intrinsic"),
-                        "cam2ego": convert_quaternion_to_matrix(cam_calib["rotation"], cam_calib["translation"]),
-                        "cam_pose": convert_quaternion_to_matrix(cam_pose["rotation"], cam_pose["translation"]),
-                        "sample_data_token": sd["token"],
-                        "timestamp": sd["timestamp"],
-                        "height": sd.get("height"),
-                        "width": sd.get("width"),
-                    }
-    # Fill missing cameras with None values
-    for cam in cam_channels:
-        if cam not in info["images"]:
-            info["images"][cam] = {
-                "img_path": None,
-                "cam2img": None,
-                "cam2ego": None,
-                "cam_pose": None,
-                "sample_data_token": None,
-                "timestamp": None,
-                "height": None,
-                "width": None,
-                "lidar2cam": None,
-            }
-        else:
-            # Calculate lidar2cam if all required matrices are present
-            lidar2ego = info["lidar_points"]["lidar2ego"] if info["lidar_points"] else None
-            lidar_pose = info["lidar_points"]["lidar_pose"] if info["lidar_points"] else None
-            cam_pose = info["images"][cam]["cam_pose"]
-            cam2ego = info["images"][cam]["cam2ego"]
-            if None not in (lidar2ego, lidar_pose, cam_pose, cam2ego):
-                try:
-                    lidar2ego_mat = np.array(lidar2ego)
-                    lidar_pose_mat = np.array(lidar_pose)
-                    cam_pose_mat = np.array(cam_pose)
-                    cam2ego_mat = np.array(cam2ego)
-                    cam_pose_inv = np.linalg.inv(cam_pose_mat)
-                    cam2ego_inv = np.linalg.inv(cam2ego_mat)
+            break
 
-                    lidar2cam = cam2ego_inv @ cam_pose_inv @ lidar_pose_mat @ lidar2ego_mat
-                    info["images"][cam]["lidar2cam"] = lidar2cam.tolist()
-                except Exception as e:
-                    info["images"][cam]["lidar2cam"] = None
-            else:
-                info["images"][cam]["lidar2cam"] = None
-    
-    if info["lidar_points"] is None:
+    if lidar_data is None:
         raise ValueError(f"No lidar data found for frame {frame_idx} in scene {scene_id}.")
-    
-    return info
+
+    # Find camera data for this frame
+    camera_data = {}
+    for sd in frame_sample_data:
+        filename = sd["filename"]
+        for cam in target_cameras:
+            if filename.startswith(f"data/{cam}/"):
+                cam_calib = calib_dict[sd["calibrated_sensor_token"]]
+                cam_pose = ego_pose_dict[sd["ego_pose_token"]]
+                camera_data[cam] = {
+                    "img_path": osp.join(scene_root, filename),
+                    "cam2img": cam_calib.get("camera_intrinsic"),
+                    "cam2ego": convert_quaternion_to_matrix(cam_calib["rotation"], cam_calib["translation"]),
+                    "cam_pose": convert_quaternion_to_matrix(cam_pose["rotation"], cam_pose["translation"]),
+                    "sample_data_token": sd["token"],
+                    "timestamp": sd["timestamp"],
+                    "height": sd.get("height"),
+                    "width": sd.get("width"),
+                }
+                break
+
+    # Filter to only include cameras that exist in the data
+    available_cameras = [cam for cam in target_cameras if cam in camera_data]
+
+    infos = []
+    for i, cam in enumerate(available_cameras):
+        cam_info = camera_data[cam]
+
+        # Calculate lidar2cam if all required matrices are present
+        lidar2ego = lidar_data["lidar2ego"]
+        lidar_pose = lidar_data["lidar_pose"]
+        cam_pose = cam_info["cam_pose"]
+        cam2ego = cam_info["cam2ego"]
+
+        if None not in (lidar2ego, lidar_pose, cam_pose, cam2ego):
+            try:
+                lidar2ego_mat = np.array(lidar2ego)
+                lidar_pose_mat = np.array(lidar_pose)
+                cam_pose_mat = np.array(cam_pose)
+                cam2ego_mat = np.array(cam2ego)
+                cam_pose_inv = np.linalg.inv(cam_pose_mat)
+                cam2ego_inv = np.linalg.inv(cam2ego_mat)
+
+                lidar2cam = cam2ego_inv @ cam_pose_inv @ lidar_pose_mat @ lidar2ego_mat
+                cam_info["lidar2cam"] = lidar2cam.tolist()
+            except Exception as e:
+                cam_info["lidar2cam"] = None
+        else:
+            cam_info["lidar2cam"] = None
+
+        # Create info for this camera
+        info = {
+            "frame_idx": frame_idx,
+            "frame_id": cam,
+            "image": cam_info,
+            "lidar_points": lidar_data,
+            "sample_idx": sample_idx + i,
+            "scene_id": scene_id,
+        }
+        infos.append(info)
+
+    return infos
 
 
 def parse_args():
@@ -208,7 +222,9 @@ def parse_args():
     parser.add_argument("--version", type=str, required=True, help="product version")
     parser.add_argument("-o", "--out_dir", type=str, required=True, help="output directory of info file")
     parser.add_argument("--lidar_channel", default="LIDAR_CONCAT", help="Lidar channel name (default: LIDAR_CONCAT)")
-    parser.add_argument("--cam_channels", nargs="*", default=None, help="Camera channel names (default: all CAM_*)")
+    parser.add_argument(
+        "--target_cameras", nargs="*", default=None, help="Target cameras to generate info for (default: all cameras)"
+    )
     return parser.parse_args()
 
 
@@ -250,11 +266,11 @@ def main():
                 rel_scene_root = osp.relpath(scene_root, abs_root_path)
                 scene_infos, split_sample_idx[split] = generate_calib_info(
                     annotation_dir,
-                    args.cam_channels,
                     args.lidar_channel,
                     rel_scene_root,
                     scene_id,
                     split_sample_idx[split],
+                    args.target_cameras,
                 )
                 split_infos[split].extend(scene_infos)
     # Save per split
