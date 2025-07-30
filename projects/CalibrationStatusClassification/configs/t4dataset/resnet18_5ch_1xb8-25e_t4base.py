@@ -58,11 +58,15 @@ train_pipeline = [
         projection_vis_dir=None,
         results_vis_dir=None,
     ),
-    dict(type="PackInputs", input_key="fused_img", meta_keys=["img_path", "fused_img", "image", "sample_idx"]),
+    dict(
+        type="PackInputs",
+        input_key="fused_img",
+        meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
+    ),
 ]
 
 
-info_directory_path = "/workspace/data/t4dataset/calibration_info_seperate/"
+info_directory_path = "/workspace/data/t4dataset/calibration_info/"
 train_info_file = f"t4dataset_x2_calib_infos_train.pkl"
 val_info_file = f"t4dataset_x2_calib_infos_val.pkl"
 test_info_file = f"t4dataset_x2_calib_infos_test.pkl"
@@ -91,7 +95,11 @@ val_pipeline = [
         projection_vis_dir=projection_vis_dir,
         results_vis_dir=None,
     ),
-    dict(type="PackInputs", input_key="fused_img", meta_keys=["img_path", "fused_img", "image", "sample_idx"]),
+    dict(
+        type="PackInputs",
+        input_key="fused_img",
+        meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
+    ),
 ]
 
 val_dataloader = dict(
@@ -123,7 +131,7 @@ test_pipeline = [
     dict(
         type="PackInputs",
         input_key="fused_img",
-        meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id"],
+        meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
     ),
     # dict(type="PackInputs", input_key="img"),
 ]
@@ -138,7 +146,7 @@ test_dataloader = dict(
         ann_file=info_directory_path + test_info_file,
         pipeline=test_pipeline,
         data_root=data_root,
-        indices=5,  # Use first 5 samples for testing
+        indices=100,  # Use first 5 samples for testing
     ),
 )
 

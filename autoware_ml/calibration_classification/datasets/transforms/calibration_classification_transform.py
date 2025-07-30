@@ -191,7 +191,7 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Visualization
         if self.projection_vis_dir is not None:
-            self._projection_visualization(input_data, label, results)
+            self._visualize_projection(input_data, label, results)
 
         results["fused_img"] = input_data
         results["gt_label"] = label
@@ -881,47 +881,25 @@ class CalibrationClassificationTransform(BaseTransform):
         )
         return overlay_image
 
-    def _projection_visualization(self, input_data: np.ndarray, label: int, results: Dict[str, Any]) -> None:
-        """Handle projection visualization.
-
-        Args:
-            input_data: Combined input data with BGR, depth, and intensity channels.
-            label: Classification label.
-            results: Input data dictionary.
-        """
-        img_path = results["image"]["img_path"] if "image" in results else None
-        frame_id = results.get("frame_id", "unknown")
-        img_index = os.path.splitext(os.path.basename(img_path))[0] if img_path else "unknown"
-        self._visualize_projection(
-            input_data, label, img_index=img_index, sample_idx=results["sample_idx"], frame_id=frame_id
-        )
-
-    def _visualize_projection(
-        self,
-        input_data: np.ndarray,
-        label: int,
-        img_index: str = None,
-        sample_idx: int = None,
-        frame_id: str = None,
-        save_dir: str = None,
-    ) -> None:
+    def _visualize_projection(self, input_data: np.ndarray, label: int, results: Dict[str, Any]) -> None:
         """Visualize LiDAR projection results.
 
         Args:
             input_data: Combined input data with BGR, depth, and intensity channels.
             label: Classification label (0 for miscalibrated, 1 for correct).
-            img_index: Unique index for filename.
-            sample_idx: Sample id to include in filename.
-            frame_id: Camera frame id to include in filename.
-            save_dir: Directory to save visualization results.
+            results: Input data dictionary.
         """
+        frame_id = results.get("frame_id", "unknown")
+        frame_idx = results.get("frame_idx", "unknown")
+        sample_idx = results["sample_idx"]
+
         camera_data = input_data[:, :, :3]
         intensity_image = input_data[:, :, 4:5]
         overlay_image = self._create_overlay_image(camera_data, intensity_image)
         os.makedirs(self.projection_vis_dir, exist_ok=True)
         frame_id_str = frame_id if frame_id is not None else "unknown"
         save_path = os.path.join(
-            self.projection_vis_dir, f"projection_sample_{sample_idx}_{img_index}_{frame_id_str}_label_{label}.png"
+            self.projection_vis_dir, f"projection_sample_{sample_idx}_{frame_idx}_{frame_id_str}_label_{label}.png"
         )
         cv2.imwrite(save_path, overlay_image)
         logger.info(f"Saved projection visualization to {save_path}")
@@ -932,7 +910,7 @@ class CalibrationClassificationTransform(BaseTransform):
         label: int,
         original_image: np.ndarray,
         undistorted_image: np.ndarray,
-        img_index: str = None,
+        frame_idx: str = None,
         sample_idx: int = None,
         phase: str = "test",
         frame_id: str = None,
@@ -990,7 +968,7 @@ class CalibrationClassificationTransform(BaseTransform):
         os.makedirs(self.results_vis_dir, exist_ok=True)
         frame_id_str = frame_id if frame_id is not None else "unknown"
         save_path = os.path.join(
-            self.results_vis_dir, f"results_{phase}_sample_{sample_idx}_{img_index}_{frame_id_str}_label_{label}.png"
+            self.results_vis_dir, f"results_{phase}_sample_{sample_idx}_{frame_idx}_{frame_id_str}_label_{label}.png"
         )
         plt.savefig(save_path)
         logger.info(f"Saved {phase} results visualization to {save_path}")

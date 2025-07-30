@@ -4,6 +4,7 @@ from typing import List, Optional
 import cv2
 import numpy as np
 from mmengine.hooks import Hook
+from mmengine.logging import MMLogger
 from mmengine.registry import HOOKS
 
 from autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform import (
@@ -34,6 +35,7 @@ class ResultVisualizationHook(Hook):
         self.transform = CalibrationClassificationTransform(data_root=data_root, results_vis_dir=results_vis_dir)
         self.data_root = data_root
         self.results_vis_dir = results_vis_dir
+        self.logger = MMLogger.get_current_instance()
 
     def after_train_iter(self, runner, batch_idx: int, data_batch=None, outputs: Optional[List] = None):
         """
@@ -88,6 +90,13 @@ class ResultVisualizationHook(Hook):
     def _process_single_output(self, output, phase: str):
         """Process a single output for visualization."""
         try:
+            # Check if output is a valid DataSample object
+            if not hasattr(output, "pred_label") or not hasattr(output, "metainfo"):
+                self.logger.warning(
+                    f"[ResultVisualizationHook] Invalid output type in {phase} phase: {type(output)}. Expected DataSample object."
+                )
+                return
+
             # Extract prediction label
             pred_label = self._extract_prediction_label(output)
 
@@ -108,21 +117,31 @@ class ResultVisualizationHook(Hook):
             self._visualize_results(output, pred_label, original_image, undistorted_image, img_path, phase)
 
         except Exception as e:
-            print(f"[ResultVisualizationHook] Error processing output in {phase} phase: {e}")
+            self.logger.error(f"[ResultVisualizationHook] Error processing output in {phase} phase: {e}")
 
     def _extract_prediction_label(self, output) -> int:
         """Extract prediction label from output."""
-        return int(output.pred_label.item())
+        pred_label = output.pred_label
+        if hasattr(pred_label, "item"):
+            return int(pred_label.item())
+        else:
+            return int(pred_label)
 
     def _get_image_path(self, output) -> Optional[str]:
         """Get and validate image path from output metadata."""
+        if not hasattr(output, "metainfo") or not isinstance(output.metainfo, dict):
+            self.logger.warning(
+                "[ResultVisualizationHook] metainfo not found or not a dictionary, skipping visualization."
+            )
+            return None
+
         if "image" not in output.metainfo:
-            print("[ResultVisualizationHook] image not found in metainfo, skipping visualization.")
+            self.logger.warning("[ResultVisualizationHook] image not found in metainfo, skipping visualization.")
             return None
 
         img_path = output.metainfo["image"].get("img_path")
         if not img_path:
-            print("[ResultVisualizationHook] img_path not found for image, skipping visualization.")
+            self.logger.warning("[ResultVisualizationHook] img_path not found for image, skipping visualization.")
             return None
 
         return img_path
@@ -133,12 +152,12 @@ class ResultVisualizationHook(Hook):
         img_path_full = self._resolve_image_path(img_path)
 
         if not os.path.exists(img_path_full):
-            print(f"[ResultVisualizationHook] img_path does not exist on disk: {img_path_full}")
+            self.logger.warning(f"[ResultVisualizationHook] img_path does not exist on disk: {img_path_full}")
             return None
 
         original_image = cv2.imread(img_path_full)
         if original_image is None:
-            print(f"[ResultVisualizationHook] cv2.imread failed to load image: {img_path_full}")
+            self.logger.warning(f"[ResultVisualizationHook] cv2.imread failed to load image: {img_path_full}")
             return None
 
         return original_image
@@ -151,16 +170,22 @@ class ResultVisualizationHook(Hook):
 
     def _create_undistorted_image(self, output, original_image: np.ndarray) -> np.ndarray:
         """Create undistorted image using camera calibration parameters."""
-        cam_info = output.metainfo["image"]
-        camera_matrix = np.array(cam_info["cam2img"])
-        distortion_coefficients = np.zeros(5, dtype=np.float32)  # Use zeros if not available
+        try:
+            cam_info = output.metainfo["image"]
+            camera_matrix = np.array(cam_info["cam2img"])
+            distortion_coefficients = np.zeros(5, dtype=np.float32)  # Use zeros if not available
 
-        return cv2.undistort(
-            original_image,
-            camera_matrix,
-            distortion_coefficients,
-            newCameraMatrix=camera_matrix,
-        )
+            return cv2.undistort(
+                original_image,
+                camera_matrix,
+                distortion_coefficients,
+                newCameraMatrix=camera_matrix,
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            self.logger.warning(
+                f"[ResultVisualizationHook] Failed to create undistorted image: {e}. Using original image."
+            )
+            return original_image
 
     def _visualize_results(
         self,
@@ -172,25 +197,29 @@ class ResultVisualizationHook(Hook):
         phase: str,
     ):
         """Visualize and save results."""
-        input_data = output.metainfo.get("fused_img", None)
-        frame_id = output.metainfo.get("frame_id", None)
-        if input_data is None:
-            print(f"[ResultVisualizationHook] fused_img data not found for {img_path}, skipping visualization.")
-            return
+        try:
+            input_data = output.metainfo.get("fused_img", None)
+            frame_id = output.metainfo.get("frame_id", None)
+            if input_data is None:
+                self.logger.warning(
+                    f"[ResultVisualizationHook] fused_img data not found for {img_path}, skipping visualization."
+                )
+                return
 
-        # Extract image index and sample index
-        img_path_full = self._resolve_image_path(img_path)
-        img_index = os.path.splitext(os.path.basename(img_path_full))[0]
-        sample_idx = output.metainfo["sample_idx"]
+            # Extract image index and sample index
+            frame_idx = output.metainfo.get("frame_idx", None)
+            sample_idx = output.metainfo.get("sample_idx", 0)  # Default to 0 if not available
 
-        # Perform visualization with phase information
-        self.transform.visualize_results(
-            input_data,
-            pred_label,
-            original_image,
-            undistorted_image,
-            img_index=img_index,
-            sample_idx=sample_idx,
-            phase=phase,
-            frame_id=frame_id,
-        )
+            # Perform visualization with phase information
+            self.transform.visualize_results(
+                input_data,
+                pred_label,
+                original_image,
+                undistorted_image,
+                frame_idx=frame_idx,
+                sample_idx=sample_idx,
+                phase=phase,
+                frame_id=frame_id,
+            )
+        except Exception as e:
+            self.logger.error(f"[ResultVisualizationHook] Error in visualization for {img_path}: {e}")
