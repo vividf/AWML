@@ -10,8 +10,6 @@ from autoware_ml.calibration_classification.datasets.transforms.calibration_clas
     CalibrationClassificationTransform,
 )
 
-DEFAULT_CAMERA_CHANNEL = "CAM_BACK_LEFT"  # Default camera channel identifier
-
 
 @HOOKS.register_module()
 class ResultVisualizationHook(Hook):
@@ -118,11 +116,11 @@ class ResultVisualizationHook(Hook):
 
     def _get_image_path(self, output) -> Optional[str]:
         """Get and validate image path from output metadata."""
-        if "images" not in output.metainfo or DEFAULT_CAMERA_CHANNEL not in output.metainfo["images"]:
+        if "image" not in output.metainfo:
             print("[ResultVisualizationHook] image not found in metainfo, skipping visualization.")
             return None
 
-        img_path = output.metainfo["images"][DEFAULT_CAMERA_CHANNEL].get("img_path")
+        img_path = output.metainfo["image"].get("img_path")
         if not img_path:
             print("[ResultVisualizationHook] img_path not found for image, skipping visualization.")
             return None
@@ -153,7 +151,7 @@ class ResultVisualizationHook(Hook):
 
     def _create_undistorted_image(self, output, original_image: np.ndarray) -> np.ndarray:
         """Create undistorted image using camera calibration parameters."""
-        cam_info = output.metainfo["images"][DEFAULT_CAMERA_CHANNEL]
+        cam_info = output.metainfo["image"]
         camera_matrix = np.array(cam_info["cam2img"])
         distortion_coefficients = np.zeros(5, dtype=np.float32)  # Use zeros if not available
 
@@ -175,6 +173,7 @@ class ResultVisualizationHook(Hook):
     ):
         """Visualize and save results."""
         input_data = output.metainfo.get("fused_img", None)
+        frame_id = output.metainfo.get("frame_id", None)
         if input_data is None:
             print(f"[ResultVisualizationHook] fused_img data not found for {img_path}, skipping visualization.")
             return
@@ -192,5 +191,6 @@ class ResultVisualizationHook(Hook):
             undistorted_image,
             img_index=img_index,
             sample_idx=sample_idx,
-            phase=phase,  # Pass phase information to the transform
+            phase=phase,
+            frame_id=frame_id,
         )

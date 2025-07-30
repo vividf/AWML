@@ -17,7 +17,6 @@ from autoware_ml.calibration_classification.datasets.transforms.camera_lidar_aug
 logger = MMLogger.get_instance(name="calibration_classification_transform")
 
 # Constants with detailed documentation
-DEFAULT_CAMERA_CHANNEL = "CAM_BACK_LEFT"  # Default camera channel identifier
 DEFAULT_CROP_RATIO = 0.6  # Ratio for image cropping (0.0-1.0, where 1.0 means no crop)
 DEFAULT_MAX_DISTORTION = 0.001  # Maximum affine distortion as fraction of image dimensions (0.0-1.0)
 DEFAULT_AUGMENTATION_MAX_DISTORTION = 0.02  # Maximum augmentation distortion as fraction of image dimensions
@@ -213,30 +212,26 @@ class CalibrationClassificationTransform(BaseTransform):
             random.seed(None)
             np.random.seed(None)
 
-    def _load_data(
-        self, sample: dict, camera_channel: str = DEFAULT_CAMERA_CHANNEL
-    ) -> Tuple[np.ndarray, Dict[str, np.ndarray], CalibrationData]:
+    def _load_data(self, sample: dict) -> Tuple[np.ndarray, Dict[str, np.ndarray], CalibrationData]:
         """Load camera, LiDAR, and calibration data from a sample dict.
 
         Args:
             sample: Sample dictionary from info.pkl.
-            camera_channel: Camera channel identifier.
 
         Returns:
             Tuple of camera image, LiDAR data dictionary, and calibration data.
         """
-        image = self._load_image(sample, camera_channel)
+        image = self._load_image(sample)
         lidar_data = self._load_lidar_data(sample)
-        calibration_data = self._load_calibration_data(sample, camera_channel)
+        calibration_data = self._load_calibration_data(sample)
 
         return image, lidar_data, calibration_data
 
-    def _load_image(self, sample: dict, camera_channel: str) -> np.ndarray:
+    def _load_image(self, sample: dict) -> np.ndarray:
         """Load and validate camera image.
 
         Args:
             sample: Sample dictionary containing image information.
-            camera_channel: Camera channel identifier.
 
         Returns:
             Loaded camera image as numpy array in BGR format.
@@ -245,7 +240,11 @@ class CalibrationClassificationTransform(BaseTransform):
             FileNotFoundError: If image file is not found.
             ValueError: If image loading fails.
         """
-        img_path = sample["images"][camera_channel]["img_path"]
+        if "image" not in sample:
+            raise KeyError("Sample does not contain 'image' key")
+
+        img_path = sample["image"]["img_path"]
+
         if img_path is not None and self.data_root is not None:
             img_path = os.path.join(self.data_root, img_path)
 
@@ -293,37 +292,32 @@ class CalibrationClassificationTransform(BaseTransform):
             "intensities": self._normalize_intensity(pointcloud[:, 3]),
         }
 
-    def _load_calibration_data(self, sample: dict, camera_channel: str) -> CalibrationData:
+    def _load_calibration_data(self, sample: dict) -> CalibrationData:
         """Load and validate calibration data.
 
         Args:
             sample: Sample dictionary containing calibration information.
-            camera_channel: Camera channel identifier.
 
         Returns:
             CalibrationData object with all transformation matrices.
 
         Raises:
             ValueError: If required calibration fields are missing.
-            KeyError: If camera_channel is not found in sample.
+            KeyError: If image key is not found in sample.
         """
-        if "images" not in sample:
-            raise KeyError("Sample does not contain 'images' key")
-
-        if camera_channel not in sample["images"]:
-            available_channels = list(sample["images"].keys())
-            raise KeyError(f"Camera channel '{camera_channel}' not found. Available channels: {available_channels}")
+        if "image" not in sample:
+            raise KeyError("Sample does not contain 'image' key")
 
         if "lidar_points" not in sample:
             raise KeyError("Sample does not contain 'lidar_points' key")
 
-        cam_info = sample["images"][camera_channel]
+        cam_info = sample["image"]
         lidar_info = sample["lidar_points"]
 
         # Validate camera matrix
         camera_matrix = cam_info.get("cam2img")
         if camera_matrix is None:
-            raise ValueError(f"Camera matrix (cam2img) is missing for channel {camera_channel}")
+            raise ValueError(f"Camera matrix (cam2img) is missing")
         camera_matrix = np.array(camera_matrix)
 
         # Validate camera matrix shape
@@ -386,8 +380,6 @@ class CalibrationClassificationTransform(BaseTransform):
 
         except (ValueError, TypeError) as e:
             raise ValueError(f"Failed to convert transformation matrices to numpy arrays: {e}")
-
-        logger.debug(f"Successfully loaded calibration data for channel {camera_channel}")
 
         return CalibrationData(
             camera_matrix=camera_matrix,
@@ -713,6 +705,7 @@ class CalibrationClassificationTransform(BaseTransform):
             lidar2cam = calibration_data.lidar_to_camera_transformation
             points_hom = (lidar2cam @ points_hom.T).T
         else:
+            # Note: We will never use this path since we make sure to have lidar2cam transformation
             # Multi-step transformation
             # Step 1: LiDAR to baselink
             lidar_to_ego = calibration_data.lidar_to_ego_transformation
@@ -896,18 +889,21 @@ class CalibrationClassificationTransform(BaseTransform):
             label: Classification label.
             results: Input data dictionary.
         """
-        img_path = (
-            results["images"][DEFAULT_CAMERA_CHANNEL]["img_path"]
-            if "images" in results and DEFAULT_CAMERA_CHANNEL in results["images"]
-            else None
+        img_path = results["image"]["img_path"] if "image" in results else None
+        frame_id = results.get("frame_id", "unknown")
+        img_index = os.path.splitext(os.path.basename(img_path))[0] if img_path else "unknown"
+        self._visualize_projection(
+            input_data, label, img_index=img_index, sample_idx=results["sample_idx"], frame_id=frame_id
         )
 
-        img_index = os.path.splitext(os.path.basename(img_path))[0] if img_path else "unknown"
-
-        self._visualize_projection(input_data, label, img_index=img_index, sample_idx=results["sample_idx"])
-
     def _visualize_projection(
-        self, input_data: np.ndarray, label: int, img_index: str = None, sample_idx: int = None, save_dir: str = None
+        self,
+        input_data: np.ndarray,
+        label: int,
+        img_index: str = None,
+        sample_idx: int = None,
+        frame_id: str = None,
+        save_dir: str = None,
     ) -> None:
         """Visualize LiDAR projection results.
 
@@ -916,18 +912,17 @@ class CalibrationClassificationTransform(BaseTransform):
             label: Classification label (0 for miscalibrated, 1 for correct).
             img_index: Unique index for filename.
             sample_idx: Sample id to include in filename.
+            frame_id: Camera frame id to include in filename.
             save_dir: Directory to save visualization results.
         """
-
         camera_data = input_data[:, :, :3]
         intensity_image = input_data[:, :, 4:5]
         overlay_image = self._create_overlay_image(camera_data, intensity_image)
-
         os.makedirs(self.projection_vis_dir, exist_ok=True)
+        frame_id_str = frame_id if frame_id is not None else "unknown"
         save_path = os.path.join(
-            self.projection_vis_dir, f"projection_sample_{sample_idx}_{img_index}_label_{label}.png"
+            self.projection_vis_dir, f"projection_sample_{sample_idx}_{img_index}_{frame_id_str}_label_{label}.png"
         )
-        # overlay_image is in BGR format, cv2.imwrite expects BGR format
         cv2.imwrite(save_path, overlay_image)
         logger.info(f"Saved projection visualization to {save_path}")
 
@@ -940,6 +935,7 @@ class CalibrationClassificationTransform(BaseTransform):
         img_index: str = None,
         sample_idx: int = None,
         phase: str = "test",
+        frame_id: str = None,
     ) -> None:
         """Visualize comprehensive results including all image types.
 
@@ -951,28 +947,21 @@ class CalibrationClassificationTransform(BaseTransform):
             img_index: Unique index for filename.
             sample_idx: Sample id to include in filename.
             phase: Current phase ('train', 'val', or 'test'). Defaults to "test".
+            frame_id: Camera frame id to include in filename.
         """
-
         if self.results_vis_dir is None:
             return
-
         camera_data = input_data[:, :, :3]  # BGR format
         depth_image = input_data[:, :, 3:4]
         intensity_image = input_data[:, :, 4:5]
         overlay_image = self._create_overlay_image(camera_data, intensity_image)  # Returns BGR format
-
-        # Create title
         title = (
             "Calibration Correct"
             if label == 1
             else "Calibration Error" if label == 0 else f"Calibration Label {label}"
         )
-
-        # Create visualization
         fig, axes = plt.subplots(2, 3, figsize=(10, 8))
         fig.suptitle(title)
-
-        # Plot images - convert BGR to RGB for matplotlib display
         axes[0, 0].imshow(cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB))
         axes[0, 0].set_title("Original RGB Image")
         axes[0, 0].axis("off")
@@ -998,10 +987,10 @@ class CalibrationClassificationTransform(BaseTransform):
         axes[1, 2].axis("off")
 
         plt.tight_layout()
-
         os.makedirs(self.results_vis_dir, exist_ok=True)
+        frame_id_str = frame_id if frame_id is not None else "unknown"
         save_path = os.path.join(
-            self.results_vis_dir, f"results_{phase}_sample_{sample_idx}_{img_index}_label_{label}.png"
+            self.results_vis_dir, f"results_{phase}_sample_{sample_idx}_{img_index}_{frame_id_str}_label_{label}.png"
         )
         plt.savefig(save_path)
         logger.info(f"Saved {phase} results visualization to {save_path}")
