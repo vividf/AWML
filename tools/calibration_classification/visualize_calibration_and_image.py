@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""
-LiDAR-Camera Calibration Visualization Tool.
-
-This script provides a comprehensive tool for visualizing LiDAR point cloud projections
-onto camera images using calibration data from info.pkl files. It supports both
-single sample and batch processing modes.
-
-The tool leverages the CalibrationClassificationTransform to process camera images,
-LiDAR point clouds, and calibration data, generating visualizations that show:
-- Original camera images
-- LiDAR point projections overlaid on images
-- Depth and intensity visualizations
-- Comprehensive calibration analysis results
-
-Author: AWML Team
-Date: 2024
-"""
 
 import argparse
 import os
@@ -65,7 +48,7 @@ class CalibrationVisualizer:
             undistort=True,
             data_root=self.data_root,
             projection_vis_dir=self.output_dir,
-            results_vis_dir=self.output_dir,
+            results_vis_dir=None,
             enable_augmentation=False,
         )
 
@@ -96,7 +79,7 @@ class CalibrationVisualizer:
 
     def _extract_samples_from_data(self, info_data: Union[Dict, List]) -> List[Dict[str, Any]]:
         """
-        Extract sample list from various info.pkl data formats.
+        Extract sample list from info.pkl data format.
 
         Args:
             info_data: Raw data from info.pkl file.
@@ -110,22 +93,11 @@ class CalibrationVisualizer:
         if isinstance(info_data, dict):
             if "data_list" in info_data:
                 samples_list = info_data["data_list"]
-                self.logger.info(f"Loaded {len(samples_list)} samples from info.pkl (data_list format)")
-            elif "samples" in info_data:
-                samples_list = info_data["samples"]
-                self.logger.info(f"Loaded {len(samples_list)} samples from info.pkl (samples format)")
-            elif "data" in info_data:
-                samples_list = info_data["data"]
-                self.logger.info(f"Loaded {len(samples_list)} samples from info.pkl (data format)")
+                self.logger.info(f"Loaded {len(samples_list)} samples from info.pkl")
             else:
-                # Assume the dict contains sample data directly
-                samples_list = [info_data]
-                self.logger.info("Loaded 1 sample from info.pkl (direct dict format)")
-        elif isinstance(info_data, list):
-            samples_list = info_data
-            self.logger.info(f"Loaded {len(samples_list)} samples from info.pkl (list format)")
+                raise ValueError(f"Expected 'data_list' key in info_data, found keys: {list(info_data.keys())}")
         else:
-            raise ValueError(f"Unexpected data format: {type(info_data)}")
+            raise ValueError(f"Expected dict format, got {type(info_data)}")
 
         return samples_list
 
@@ -279,14 +251,6 @@ def main() -> None:
     """
     parser = create_argument_parser()
     args = parser.parse_args()
-
-    # Validate input file
-    if not os.path.exists(args.info_pkl):
-        raise FileNotFoundError(f"Info.pkl file not found: {args.info_pkl}")
-
-    # Create output directory if specified
-    if args.output_dir:
-        os.makedirs(args.output_dir, exist_ok=True)
 
     # Initialize visualizer
     visualizer = CalibrationVisualizer(data_root=args.data_root, output_dir=args.output_dir)
