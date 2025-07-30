@@ -112,7 +112,6 @@ val_dataloader = dict(
         ann_file=info_directory_path + val_info_file,
         pipeline=val_pipeline,
         data_root=data_root,
-        indices=100,  # Use first 100 samples for validation
     ),
 )
 
@@ -146,7 +145,7 @@ test_dataloader = dict(
         ann_file=info_directory_path + test_info_file,
         pipeline=test_pipeline,
         data_root=data_root,
-        indices=100,  # Use first 5 samples for testing
+        indices=5,  # Use first 5 samples for testing
     ),
 )
 

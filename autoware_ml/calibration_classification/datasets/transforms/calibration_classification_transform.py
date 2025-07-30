@@ -29,7 +29,7 @@ class TransformMode(Enum):
     """Enumeration for transform modes."""
 
     TRAIN = "train"
-    VALIDATION = "validation"
+    VALIDATION = "val"
     TEST = "test"
 
 
@@ -191,7 +191,7 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Visualization
         if self.projection_vis_dir is not None:
-            self._visualize_projection(input_data, label, results)
+            self._visualize_projection(input_data, label, results, self.mode.value)
 
         results["fused_img"] = input_data
         results["gt_label"] = label
@@ -881,13 +881,16 @@ class CalibrationClassificationTransform(BaseTransform):
         )
         return overlay_image
 
-    def _visualize_projection(self, input_data: np.ndarray, label: int, results: Dict[str, Any]) -> None:
+    def _visualize_projection(
+        self, input_data: np.ndarray, label: int, results: Dict[str, Any], phase: str = "test"
+    ) -> None:
         """Visualize LiDAR projection results.
 
         Args:
             input_data: Combined input data with BGR, depth, and intensity channels.
             label: Classification label (0 for miscalibrated, 1 for correct).
             results: Input data dictionary.
+            phase: Current phase ('train', 'val', or 'test'). Defaults to "test".
         """
         frame_id = results.get("frame_id", "unknown")
         frame_idx = results.get("frame_idx", "unknown")
@@ -899,10 +902,11 @@ class CalibrationClassificationTransform(BaseTransform):
         os.makedirs(self.projection_vis_dir, exist_ok=True)
         frame_id_str = frame_id if frame_id is not None else "unknown"
         save_path = os.path.join(
-            self.projection_vis_dir, f"projection_sample_{sample_idx}_{frame_idx}_{frame_id_str}_label_{label}.png"
+            self.projection_vis_dir,
+            f"projection_{phase}_sample_{sample_idx}_{frame_idx}_{frame_id_str}_label_{label}.png",
         )
         cv2.imwrite(save_path, overlay_image)
-        logger.info(f"Saved projection visualization to {save_path}")
+        logger.info(f"Saved {phase} projection visualization to {save_path}")
 
     def visualize_results(
         self,
