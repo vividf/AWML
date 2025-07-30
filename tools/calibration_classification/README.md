@@ -62,6 +62,59 @@ Each file contains calibration information including:
 - Transformation matrices (lidar2cam, cam2ego, etc.)
 - Timestamps and metadata
 
+**Example data structure:**
+```python
+{
+    'frame_id': 'CAM_FRONT',
+    'frame_idx': '00003',
+    'image': {
+        'cam2ego': [[1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0]],
+        'cam2img': [[1000.0, 0.0, 960.0],
+                    [0.0, 1000.0, 540.0],
+                    [0.0, 0.0, 1.0]],
+        'cam_pose': [[1.0, 0.0, 0.0, 100.0],
+                     [0.0, 1.0, 0.0, 200.0],
+                     [0.0, 0.0, 1.0, 1.5],
+                     [0.0, 0.0, 0.0, 1.0]],
+        'height': 1080,
+        'img_path': 'data/camera/front/00003.jpg',
+        'lidar2cam': [[1.0, 0.0, 0.0, 0.1],
+                      [0.0, 1.0, 0.0, 0.0],
+                      [0.0, 0.0, 1.0, 0.0],
+                      [0.0, 0.0, 0.0, 1.0]],
+        'sample_data_token': 'sample_token_123',
+        'timestamp': 1234567890,
+        'width': 1920
+    },
+    'lidar_points': {
+        'lidar2ego': [[1.0, 0.0, 0.0, 0.0],
+                      [0.0, 1.0, 0.0, 0.0],
+                      [0.0, 0.0, 1.0, 0.0],
+                      [0.0, 0.0, 0.0, 1.0]],
+        'lidar_path': 'data/lidar/00003.pcd.bin',
+        'lidar_pose': [[1.0, 0.0, 0.0, 100.0],
+                       [0.0, 1.0, 0.0, 200.0],
+                       [0.0, 0.0, 1.0, 1.5],
+                       [0.0, 0.0, 0.0, 1.0]],
+        'sample_data_token': 'lidar_token_456',
+        'timestamp': 1234567890
+    },
+    'sample_idx': 3,
+    'scene_id': 'scene_001'
+}
+```
+
+**Key fields explained:**
+- `frame_id`: Camera identifier (e.g., CAM_FRONT, CAM_LEFT)
+- `frame_idx`: Frame index in the sequence
+- `image`: Camera-specific data including intrinsic/extrinsic parameters
+- `lidar_points`: LiDAR data with transformation matrices
+- `sample_idx`: Sample index in the dataset
+- `scene_id`: Scene identifier
+
 ### 2.2. Calibration Visualization (Before training)
 
 - Visualization for calibration and image view
@@ -170,8 +223,7 @@ tensorboard --logdir work_dirs --bind_all
 ```sh
 python tools/calibration_classification/test.py {config_file} {checkpoint_file}
 ```
-
-example
+* Example
 ```sh
 python tools/calibration_classification/test.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_t4base.py  epoch_25.pth --out {output_file}
 ```
