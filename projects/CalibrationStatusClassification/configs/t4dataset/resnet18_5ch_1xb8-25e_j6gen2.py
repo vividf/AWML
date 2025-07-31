@@ -35,7 +35,7 @@ model = dict(
 # Overwrite default optimization settings if needed
 optim_wrapper = dict(optimizer=dict(type="SGD", lr=0.1, momentum=0.9, weight_decay=0.0001))
 
-param_scheduler = dict(type="MultiStepLR", by_epoch=True, milestones=[10, 15, 20], gamma=0.1)
+param_scheduler = dict(type="MultiStepLR", by_epoch=True, milestones=[5, 15, 20], gamma=0.1)
 
 
 train_cfg = dict(by_epoch=True, max_epochs=max_epochs, val_interval=1)
@@ -48,7 +48,7 @@ info_directory_path = "/workspace/data/t4dataset/calibration_info/"
 
 # Visualization setting
 train_projection_vis_dir = None
-train_results_vis_dir = None
+
 val_projection_vis_dir = None
 val_results_vis_dir = None
 test_projection_vis_dir = "./test_projection_vis_t4dataset/"
@@ -63,7 +63,7 @@ train_pipeline = [
         enable_augmentation=False,
         data_root=data_root,
         projection_vis_dir=train_projection_vis_dir,
-        results_vis_dir=train_results_vis_dir,
+        results_vis_dir=None,
     ),
     dict(
         type="PackInputs",
