@@ -156,28 +156,28 @@ Understanding visualization configuration is crucial for calibration classificat
 
 ```python
 # In config file
-projection_vis_dir = "./projection_vis_t4dataset/"
-results_vis_dir = "./results_vis_t4dataset/"
+test_projection_vis_dir = "./test_projection_vis_t4dataset/"
+test_results_vis_dir = "./test_results_vis_t4dataset/"
 
 # In transform pipeline
 dict(
     type="CalibrationClassificationTransform",
-    mode="validation",
+    mode="test",
     undistort=True,
     enable_augmentation=False,
     data_root=data_root,
-    projection_vis_dir=projection_vis_dir,  # LiDAR projection visualization
-    results_vis_dir=results_vis_dir,        # Model prediction visualization
+    projection_vis_dir=test_projection_vis_dir,  # LiDAR projection visualization
+    results_vis_dir=test_results_vis_dir,        # Model prediction visualization
 ),
 ```
 
 ### 3.3. Usage Strategy
 
-**Training Phase:**
+**Training/Validataion Phase:**
 - Disable visualization for efficiency: `projection_vis_dir=None`, `results_vis_dir=None`
 - Focus on model training performance
 
-**Validation/Testing Phase:**
+**Testing Phase:**
 - Enable visualization for analysis: Set both directories to desired paths
 - Use projection visualization to verify calibration quality
 - Use results visualization to understand model predictions
@@ -191,7 +191,6 @@ dict(
 
 - You can change batchsize by file name.
   - For example, 1×b1 -> 2×b8
-- If you use custom pkl file, you need to change pkl file from `nuscenes_infos_train.pkl`.
 
 ### 4.2. Train
 
