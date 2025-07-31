@@ -29,7 +29,7 @@ docker run -it --rm --gpus '"device=0"' --shm-size=64g --name awml -p 6006:6006 
 - Make info files for T4dataset X2 Gen2
 
 ```sh
-python3 tools/calibration_classification/create_data_t4dataset.py --config /workspace/autoware_ml/configs/calibration_classification/dataset/t4dataset/x2.py --version x2 --root_path ./data/t4dataset -o ./data/t4dataset/calibration_info/
+python3 tools/calibration_classification/create_data_t4dataset.py --config /workspace/autoware_ml/configs/calibration_classification/dataset/t4dataset/gen2_base.py --version gen2_base --root_path ./data/t4dataset -o ./data/t4dataset/calibration_info/
 ```
 
 **Available command line arguments:**
@@ -45,10 +45,10 @@ python3 tools/calibration_classification/create_data_t4dataset.py --config /work
 
 ```sh
 # Basic usage with default settings (all cameras)
-python3 tools/calibration_classification/create_data_t4dataset.py --config /workspace/autoware_ml/configs/calibration_classification/dataset/t4dataset/x2.py --version x2 --root_path ./data/t4dataset -o ./data/t4dataset/calibration_info/
+python3 tools/calibration_classification/create_data_t4dataset.py --config /workspace/autoware_ml/configs/calibration_classification/dataset/t4dataset/gen2_base.py --version gen2_base --root_path ./data/t4dataset -o ./data/t4dataset/calibration_info/
 
 # Process only specific cameras
-python3 tools/calibration_classification/create_data_t4dataset.py --config /workspace/autoware_ml/configs/calibration_classification/dataset/t4dataset/x2.py --version x2 --root_path ./data/t4dataset -o ./data/t4dataset/calibration_info/ --target_cameras CAM_FRONT CAM_LEFT CAM_RIGHT
+python3 tools/calibration_classification/create_data_t4dataset.py --config /workspace/autoware_ml/configs/calibration_classification/dataset/t4dataset/gen2_base.py --version gen2_base --root_path ./data/t4dataset -o ./data/t4dataset/calibration_info/ --target_cameras CAM_FRONT CAM_LEFT CAM_RIGHT
 ```
 
 **Output files:**
@@ -201,6 +201,11 @@ dict(
 python tools/calibration_classification/train.py {config_file}
 ```
 
+* Example
+```sh
+python tools/calibration_classification/train.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_gen2_base.py
+```
+
 - You can use docker command for training as below.
 
 ```sh
@@ -225,5 +230,5 @@ python tools/calibration_classification/test.py {config_file} {checkpoint_file}
 ```
 * Example
 ```sh
-python tools/calibration_classification/test.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_t4base.py  epoch_25.pth --out {output_file}
+python tools/calibration_classification/test.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_gen2_base.py  epoch_25.pth --out {output_file}
 ```
