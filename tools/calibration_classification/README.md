@@ -53,9 +53,9 @@ python3 tools/calibration_classification/create_data_t4dataset.py --config /work
 
 **Output files:**
 The script generates three pickle files for train/val/test splits:
-- `t4dataset_{version}_calib_infos_train.pkl`
-- `t4dataset_{version}_calib_infos_val.pkl`
-- `t4dataset_{version}_calib_infos_test.pkl`
+- `t4dataset_{version}_infos_train.pkl`
+- `t4dataset_{version}_infos_val.pkl`
+- `t4dataset_{version}_infos_test.pkl`
 
 Each file contains calibration information including:
 - Camera and LiDAR data paths
@@ -123,19 +123,19 @@ Each file contains calibration information including:
 
 ```sh
 # Process all samples from info.pkl
-python tools/calibration_classification/visualize_calibration_and_image.py --info_pkl data/info.pkl --data_root data/ --output_dir ./calibration_visualization
+python tools/calibration_classification/visualize_lidar_camera_projection.py --info_pkl data/info.pkl --data_root data/ --output_dir ./calibration_visualization
 
 # Process specific sample
-python tools/calibration_classification/visualize_calibration_and_image.py --info_pkl data/info.pkl --data_root data/ --output_dir ./calibration_visualization --sample_idx 0
+python tools/calibration_classification/visualize_lidar_camera_projection.py --info_pkl data/info.pkl --data_root data/ --output_dir ./calibration_visualization --sample_idx 0
 
 # Process specific indices
-python tools/calibration_classification/visualize_calibration_and_image.py --info_pkl data/info.pkl --data_root data/ --output_dir ./calibration_visualization --indices 0 1 2
+python tools/calibration_classification/visualize_lidar_camera_projection.py --info_pkl data/info.pkl --data_root data/ --output_dir ./calibration_visualization --indices 0 1 2
 ```
 
 - For T4dataset visualization:
 
 ```sh
-python tools/calibration_classification/visualize_calibration_and_image.py --info_pkl data/t4dataset/calibration_info/t4dataset_x2_calib_infos_test.pkl --data_root data/t4dataset --output_dir ./calibration_visualization
+python tools/calibration_classification/visualize_lidar_camera_projection.py --info_pkl data/t4dataset/calibration_info/t4dataset_x2_calib_infos_test.pkl --data_root data/t4dataset --output_dir ./calibration_visualization
 ```
 
 ## 3. Visualization Settings (During training, validation, testing)
