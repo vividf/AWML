@@ -1,17 +1,11 @@
+from modulefinder import test
+
 _base_ = [
     "mmpretrain::_base_/default_runtime.py",
     "mmpretrain::_base_/models/resnet18.py",
     "mmpretrain::_base_/schedules/imagenet_bs256.py",
+    "../../../../../autoware_ml/configs/calibration_classification/dataset/t4dataset/gen2_base.py",
 ]
-
-custom_imports = dict(
-    imports=[
-        "autoware_ml.calibration_classification.datasets.t4_calibration_classification_dataset",
-        "autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform",
-        "autoware_ml.calibration_classification.hooks.result_visualization_hook",
-    ],
-    allow_failed_imports=False,
-)
 
 
 batch_size = 8
@@ -40,12 +34,27 @@ model = dict(
     ),
 )
 
+# Overwrite default optimization settings if needed
+optim_wrapper = dict(optimizer=dict(type="SGD", lr=0.1, momentum=0.9, weight_decay=0.0001))
+
+param_scheduler = dict(type="MultiStepLR", by_epoch=True, milestones=[10, 15, 20], gamma=0.1)
+
+
 train_cfg = dict(by_epoch=True, max_epochs=max_epochs, val_interval=1)
 
-# Visualization directory
-projection_vis_dir = "./projection_vis_t4dataset/"
-results_vis_dir = "./results_vis_t4dataset/"
+
+# User setting
+# Dataset setting
 data_root = "/workspace/data/t4dataset"
+info_directory_path = "/workspace/data/t4dataset/calibration_info/"
+
+# Visualization setting
+train_projection_vis_dir = None
+train_results_vis_dir = None
+val_projection_vis_dir = None
+val_results_vis_dir = None
+test_projection_vis_dir = "./projection_vis_t4dataset/"
+test_results_vis_dir = "./results_vis_t4dataset/"
 
 
 train_pipeline = [
@@ -55,21 +64,18 @@ train_pipeline = [
         undistort=True,
         enable_augmentation=False,
         data_root=data_root,
-        projection_vis_dir=None,
-        results_vis_dir=None,
+        projection_vis_dir=train_projection_vis_dir,
+        results_vis_dir=train_results_vis_dir,
     ),
     dict(
         type="PackInputs",
         input_key="fused_img",
-        meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
+        # Uncomment to use meta_keys for visualization
+        # meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
     ),
 ]
 
 
-info_directory_path = "/workspace/data/t4dataset/calibration_info/"
-train_info_file = f"t4dataset_x2_calib_infos_train.pkl"
-val_info_file = f"t4dataset_x2_calib_infos_val.pkl"
-test_info_file = f"t4dataset_x2_calib_infos_test.pkl"
 train_dataloader = dict(
     batch_size=batch_size,
     num_workers=num_workers,
@@ -77,7 +83,7 @@ train_dataloader = dict(
     shuffle=True,
     dataset=dict(
         type="T4CalibrationClassificationDataset",
-        ann_file=info_directory_path + train_info_file,
+        ann_file=info_directory_path + _base_.info_train_file_name,
         pipeline=train_pipeline,
         data_root=data_root,
     ),
@@ -88,17 +94,18 @@ val_cfg = dict()
 val_pipeline = [
     dict(
         type="CalibrationClassificationTransform",
-        mode="validation",
+        mode="val",
         undistort=True,
         enable_augmentation=False,
         data_root=data_root,
-        projection_vis_dir=projection_vis_dir,
-        results_vis_dir=None,
+        projection_vis_dir=val_projection_vis_dir,
+        results_vis_dir=val_results_vis_dir,
     ),
     dict(
         type="PackInputs",
         input_key="fused_img",
-        meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
+        # Uncomment to use meta_keys for visualization
+        # meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
     ),
 ]
 
@@ -109,7 +116,7 @@ val_dataloader = dict(
     shuffle=False,
     dataset=dict(
         type="T4CalibrationClassificationDataset",
-        ann_file=info_directory_path + val_info_file,
+        ann_file=info_directory_path + _base_.info_val_file_name,
         pipeline=val_pipeline,
         data_root=data_root,
     ),
@@ -120,12 +127,12 @@ val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 test_pipeline = [
     dict(
         type="CalibrationClassificationTransform",
-        mode="test",
+        mode="val",
         undistort=True,
         enable_augmentation=False,
         data_root=data_root,
-        projection_vis_dir=projection_vis_dir,
-        results_vis_dir=results_vis_dir,
+        projection_vis_dir=test_projection_vis_dir,
+        results_vis_dir=test_results_vis_dir,
     ),
     dict(
         type="PackInputs",
@@ -142,10 +149,10 @@ test_dataloader = dict(
     shuffle=False,
     dataset=dict(
         type="T4CalibrationClassificationDataset",
-        ann_file=info_directory_path + test_info_file,
+        ann_file=info_directory_path + _base_.info_test_file_name,
         pipeline=test_pipeline,
         data_root=data_root,
-        indices=5,  # Use first 5 samples for testing
+        indices=100,  # Use first 5 samples for testing
     ),
 )
 
@@ -153,11 +160,24 @@ test_evaluator = val_evaluator
 
 
 custom_hooks = []
-if results_vis_dir is not None:
-    hook_config = dict(type="ResultVisualizationHook", results_vis_dir=results_vis_dir)
+# Add visualization hooks for train, val, and test results if their respective directories are specified
+if train_results_vis_dir is not None:
+    train_hook_config = dict(type="ResultVisualizationHook", results_vis_dir=train_results_vis_dir)
     if data_root is not None:
-        hook_config["data_root"] = data_root
-    custom_hooks.append(hook_config)
+        train_hook_config["data_root"] = data_root
+    custom_hooks.append(train_hook_config)
+
+if val_results_vis_dir is not None:
+    val_hook_config = dict(type="ResultVisualizationHook", results_vis_dir=val_results_vis_dir)
+    if data_root is not None:
+        val_hook_config["data_root"] = data_root
+    custom_hooks.append(val_hook_config)
+
+if test_results_vis_dir is not None:
+    test_hook_config = dict(type="ResultVisualizationHook", results_vis_dir=test_results_vis_dir)
+    if data_root is not None:
+        test_hook_config["data_root"] = data_root
+    custom_hooks.append(test_hook_config)
 
 
 vis_backends = [

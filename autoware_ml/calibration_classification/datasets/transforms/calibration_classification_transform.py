@@ -29,7 +29,7 @@ class TransformMode(Enum):
     """Enumeration for transform modes."""
 
     TRAIN = "train"
-    VALIDATION = "val"
+    VAL = "val"
     TEST = "test"
 
 
@@ -83,7 +83,7 @@ class CalibrationClassificationTransform(BaseTransform):
         """Initialize the CalibrationClassificationTransform.
 
         Args:
-            mode (str): Transform mode. Options: "train", "validation", "test". Defaults to "train".
+            mode (str): Transform mode. Options: "train", "val", "test". Defaults to "train".
             undistort (bool): Whether to undistort images. Defaults to True.
             enable_augmentation (bool): Whether to enable data augmentation. Defaults to True.
             data_root (str): Root path for data files. Defaults to None.
@@ -138,9 +138,9 @@ class CalibrationClassificationTransform(BaseTransform):
         return self.mode == TransformMode.TRAIN
 
     @property
-    def is_validation(self) -> bool:
+    def is_val(self) -> bool:
         """Check if current mode is validation."""
-        return self.mode == TransformMode.VALIDATION
+        return self.mode == TransformMode.VAL
 
     @property
     def is_test(self) -> bool:
@@ -204,7 +204,7 @@ class CalibrationClassificationTransform(BaseTransform):
         Args:
             results: Input data dictionary containing sample_idx.
         """
-        if self.is_validation:
+        if self.is_val:
             seed = results["sample_idx"]
             random.seed(seed)
             np.random.seed(seed)
