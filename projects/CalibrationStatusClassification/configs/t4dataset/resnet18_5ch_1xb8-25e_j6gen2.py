@@ -68,8 +68,6 @@ train_pipeline = [
     dict(
         type="PackInputs",
         input_key="fused_img",
-        # Uncomment to use meta_keys for result visualization
-        meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
     ),
 ]
 
@@ -84,7 +82,6 @@ train_dataloader = dict(
         ann_file=info_directory_path + _base_.info_train_file_name,
         pipeline=train_pipeline,
         data_root=data_root,
-        indices=5,
     ),
 )
 
@@ -104,7 +101,7 @@ val_pipeline = [
         type="PackInputs",
         input_key="fused_img",
         # Uncomment to use meta_keys for result visualization
-        meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
+        # meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
     ),
 ]
 
@@ -118,7 +115,6 @@ val_dataloader = dict(
         ann_file=info_directory_path + _base_.info_val_file_name,
         pipeline=val_pipeline,
         data_root=data_root,
-        indices=5,  # Use first 5 samples for testing
     ),
 )
 
@@ -139,7 +135,6 @@ test_pipeline = [
         input_key="fused_img",
         meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
     ),
-    # dict(type="PackInputs", input_key="img"),
 ]
 
 test_dataloader = dict(
@@ -152,7 +147,7 @@ test_dataloader = dict(
         ann_file=info_directory_path + _base_.info_test_file_name,
         pipeline=test_pipeline,
         data_root=data_root,
-        indices=5,  # Use first 5 samples for testing
+        # indices=5,  # Use first 5 samples for testing
     ),
 )
 
