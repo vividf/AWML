@@ -30,7 +30,7 @@ import torch
 from mmengine.config import Config
 from mmpretrain.apis import get_model
 
-from autoware_ml.classification2d.datasets.transforms.calibration_classification_transform import (
+from autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform import (
     CalibrationClassificationTransform,
 )
 
@@ -100,7 +100,9 @@ def setup_logging(level: str) -> logging.Logger:
 def load_sample_data(img_path: str, force_generate_miscalibration: bool, device: str = "cpu") -> torch.Tensor:
     """Load and preprocess sample data using CalibrationClassificationTransform."""
     # Create transform for deployment
-    transform = CalibrationClassificationTransform(test=not force_generate_miscalibration, debug=False)
+    # TODO(vividf): check whether we need the debug flag
+    mode = "test" if not force_generate_miscalibration else "train"
+    transform = CalibrationClassificationTransform(mode=mode, debug=False)
 
     # Apply transform
     results = transform.transform({"img_path": img_path}, force_generate_miscalibration=force_generate_miscalibration)

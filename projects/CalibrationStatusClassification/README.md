@@ -5,7 +5,7 @@
 - ROS package: [package_name](https://github.com/autowarefoundation/autoware.universe/tree/main/perception/)
 - Supported dataset
   - [ ] NuScenes
-  - [ ] T4dataset
+  - [x] T4dataset
 - Supported model
   - [x] ResNet18
 - Other supported feature
@@ -21,7 +21,7 @@
 ## Get started
 ### 1. Setup
 
-- [Run setup environment at first](/tools/setting_environment/)
+- [Run setup environment at first](../../tools/setting_environment/README.md)
 - Docker build for CalibrationStatusClassification
 
 ```sh
@@ -45,46 +45,22 @@ max_epochs = 25
 
 ### 3. Dataset
 
-TBD
+- [Create dataset](../../tools/calibration_classification/README.md)
+
 
 ### 4. Train
 
-Make sure the dataset structure is as follows:
-
-```
-|workspace
-    └──|data
-          └── calibrated_data
-              └── training_set
-              |  └── data
-              |       ├── 0_calibration.npz
-              |       ├── 0_image.jpg
-              |       ├── 0_pointcloud.npz
-              |       ├── 1_calibration.npz
-              |       ├── 1_image.jpg
-              |       ├── 1_pointcloud.npz
-              |       ...
-              └── validation_set
-                  └── data
-                      ├── 0_calibration.npz
-                      ├── 0_image.jpg
-                      ├── 0_pointcloud.npz
-                      ├── 1_calibration.npz
-                      ├── 1_image.jpg
-                      ├── 1_pointcloud.npz
-                      ...
-```
 
 Run training:
 
 - Single GPU:
 ```sh
-python tools/classification2d/train.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_t4base.py
+python tools/calibration_classification/train.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_t4base.py
 ```
 
 - Multi GPU (example with 2 GPUs):
 ```sh
-./tools/classification2d/dist_train.sh projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_t4base.py 2
+./tools/calibration_classification/dist_train.sh projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_t4base.py 2
 ```
 
 ### 5. Deploy
@@ -92,7 +68,7 @@ python tools/classification2d/train.py projects/CalibrationStatusClassification/
 Example commands for deployment (modify paths if needed):
 - mmdeploy script:
 ```sh
-python3 tools/classification2d/deploy.py projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_t4base.py work_dirs/resnet18_5ch_1xb8-25e_t4base/epoch_25.pth data/calibrated_data/training_set/data/0_image.jpg 1 --device cuda:0 --work-dir /workspace/work_dirs/
+python3 tools/calibration_classification/deploy.py projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_t4base.py work_dirs/resnet18_5ch_1xb8-25e_t4base/epoch_25.pth data/calibrated_data/training_set/data/0_image.jpg 1 --device cuda:0 --work-dir /workspace/work_dirs/
 ```
 
 - Custom script (with verification):
