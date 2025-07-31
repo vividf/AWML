@@ -16,7 +16,7 @@ custom_imports = dict(
 
 batch_size = 8
 num_workers = 8
-max_epochs = 25
+max_epochs = 30
 
 data_preprocessor = dict()
 
@@ -88,11 +88,11 @@ val_cfg = dict()
 val_pipeline = [
     dict(
         type="CalibrationClassificationTransform",
-        mode="validation",
+        mode="val",
         undistort=True,
         enable_augmentation=False,
         data_root=data_root,
-        projection_vis_dir=projection_vis_dir,
+        projection_vis_dir=None,
         results_vis_dir=None,
     ),
     dict(
@@ -150,6 +150,15 @@ test_dataloader = dict(
 )
 
 test_evaluator = val_evaluator
+
+
+# Overwrite learning rate
+optim_wrapper = dict(
+    optimizer=dict(type='SGD', lr=0.1, momentum=0.9, weight_decay=0.0001))
+
+# Overwrite learning rate scheduler
+param_scheduler = dict(
+    type='MultiStepLR', by_epoch=True, milestones=[10, 15, 20], gamma=0.1)
 
 
 custom_hooks = []
