@@ -135,7 +135,7 @@ python tools/calibration_classification/visualize_lidar_camera_projection.py --i
 - For T4dataset visualization:
 
 ```sh
-python tools/calibration_classification/visualize_lidar_camera_projection.py --info_pkl data/t4dataset/calibration_info/t4dataset_x2_calib_infos_test.pkl --data_root data/t4dataset --output_dir ./calibration_visualization
+python tools/calibration_classification/visualize_lidar_camera_projection.py --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl --data_root data/t4dataset --output_dir ./calibration_visualization
 ```
 
 ## 3. Visualization Settings (During training, validation, testing)
