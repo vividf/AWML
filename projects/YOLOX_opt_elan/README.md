@@ -5,11 +5,11 @@
 - ROS package
   - [tensorrt_yolox](https://github.com/autowarefoundation/autoware.universe/tree/main/perception/tensorrt_yolox)
 - Supported dataset
-  - [ ] COCO dataset
-  - [ ] T4dataset
+  - [x] BDD100K dataset
+  - [x] T4dataset
 - Supported model
 - Other supported feature
-  - [ ] Add script to make .onnx file and deploy to Autoware
+  - [x] Add script to make .onnx file and deploy to Autoware
   - [ ] Add unit test
 - Limited feature
 
