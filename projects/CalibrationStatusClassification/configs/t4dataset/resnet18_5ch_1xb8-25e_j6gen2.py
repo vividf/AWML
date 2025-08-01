@@ -2,7 +2,7 @@ _base_ = [
     "mmpretrain::_base_/default_runtime.py",
     "mmpretrain::_base_/models/resnet18.py",
     "mmpretrain::_base_/schedules/imagenet_bs256.py",
-    "/workspace/autoware_ml/configs/calibration_classification/dataset/t4dataset/gen2_base.py",
+    "../../../../autoware_ml/configs/calibration_classification/dataset/t4dataset/gen2_base.py",
 ]
 
 
