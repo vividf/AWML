@@ -1,3 +1,5 @@
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
+
 from mmengine.dataset import BaseDataset
 from mmpretrain.registry import DATASETS
 
@@ -10,9 +12,9 @@ class T4CalibrationClassificationDataset(BaseDataset):
     camera images, lidar point clouds, and geometric transformations.
     Args:
         ann_file (str): Path to the annotation file (info.pkl) containing sample data.
-        pipeline (callable or list, optional): Data processing pipeline to apply to each sample.
+        pipeline (list, optional): Data processing pipeline to apply to each sample.
         data_root (str, optional): Root directory for data files.
-        indices (int or list, optional): If set, only use the specified indices or first N samples.
+        indices (int or Sequence[int], optional): If set, only use the specified indices or first N samples.
         lazy_init (bool, optional): Whether to lazy initialize the dataset.
         serialize_data (bool, optional): Whether to serialize data for memory efficiency.
         filter_cfg (dict, optional): Config for filtering data.
@@ -20,20 +22,20 @@ class T4CalibrationClassificationDataset(BaseDataset):
 
     def __init__(
         self,
-        ann_file,
-        pipeline=None,
-        data_root=None,
-        indices=None,
-        lazy_init=False,
-        serialize_data=True,
-        filter_cfg=None,
-    ):
+        ann_file: str,
+        pipeline: Optional[List[Union[Dict[str, Any], Callable]]] = None,
+        data_root: Optional[str] = None,
+        indices: Optional[Union[int, Sequence[int]]] = None,
+        lazy_init: bool = False,
+        serialize_data: bool = True,
+        filter_cfg: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Initialize the T4 Calibration Classification Dataset.
         Args:
             ann_file (str): Path to the annotation file (info.pkl) containing sample data.
-            pipeline (callable or list, optional): Data processing pipeline to apply to each sample.
+            pipeline (list, optional): Data processing pipeline to apply to each sample.
             data_root (str, optional): Root directory for data files, passed to pipeline transforms.
-            indices (int or list, optional): If set, only use the specified indices or first N samples.
+            indices (int or Sequence[int], optional): If set, only use the specified indices or first N samples.
             lazy_init (bool, optional): Whether to lazy initialize the dataset.
             serialize_data (bool, optional): Whether to serialize data for memory efficiency.
             filter_cfg (dict, optional): Config for filtering data.
@@ -59,7 +61,7 @@ class T4CalibrationClassificationDataset(BaseDataset):
             filter_cfg=filter_cfg,
         )
 
-    def parse_data_info(self, raw_data_info: dict) -> dict:
+    def parse_data_info(self, raw_data_info: Dict[str, Any]) -> Dict[str, Any]:
         """Parse raw annotation to target format for T4 dataset.
         T4 dataset has a different structure where image paths are nested under
         'images' dictionary for each camera, rather than at the root level.
@@ -72,7 +74,7 @@ class T4CalibrationClassificationDataset(BaseDataset):
         # since the structure is different. Just return the raw data as is.
         return raw_data_info
 
-    def get_cat_ids(self, idx: int):
+    def get_cat_ids(self, idx: int) -> List[int]:
         """Get category ids by index. Required by BaseDataset.
         For calibration classification task, the label is generated dynamically
         in the transform pipeline (CalibrationClassificationTransform).
@@ -89,12 +91,12 @@ class T4CalibrationClassificationDataset(BaseDataset):
         # This allows ClassBalancedDataset and other wrappers to work properly
         return [0, 1]
 
-    def prepare_data(self, idx):
+    def prepare_data(self, idx: int) -> Any:
         """Get data processed by ``self.pipeline``.
         Args:
             idx (int): The index of data.
         Returns:
-            dict: Processed data.
+            Any: Processed data.
         """
         sample = self.get_data_info(idx)
         sample = self.pipeline(sample)
