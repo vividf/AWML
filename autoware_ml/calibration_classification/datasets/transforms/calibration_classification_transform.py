@@ -13,10 +13,9 @@ from mmpretrain.registry import TRANSFORMS
 
 from autoware_ml.calibration_classification.datasets.transforms.camera_lidar_augmentation import alter_calibration
 
-# Set up logging using mmengine
 logger = MMLogger.get_instance(name="calibration_classification_transform")
 
-# Constants with detailed documentation
+# Constants values
 DEFAULT_CROP_RATIO = 0.6  # Ratio for image cropping (0.0-1.0, where 1.0 means no crop)
 DEFAULT_MAX_DISTORTION = 0.001  # Maximum affine distortion as fraction of image dimensions (0.0-1.0)
 DEFAULT_AUGMENTATION_MAX_DISTORTION = 0.02  # Maximum augmentation distortion as fraction of image dimensions
