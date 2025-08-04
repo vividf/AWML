@@ -123,7 +123,7 @@ val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 test_pipeline = [
     dict(
         type="CalibrationClassificationTransform",
-        mode="val",
+        mode="test",
         undistort=True,
         enable_augmentation=False,
         data_root=data_root,
