@@ -23,7 +23,7 @@ Prepare the dataset you use.
 - Run docker
 
 ```sh
-docker run -it --rm --gpus '"device=0"' --shm-size=64g --name awml -p 6006:6006 -v $PWD/:/workspace -v $PWD/data:/workspace/data autoware-ml
+docker run -it --rm --gpus --shm-size=64g --name awml -p 6006:6006 -v $PWD/:/workspace -v $PWD/data:/workspace/data autoware-ml
 ```
 
 - Make info files for T4dataset X2 Gen2
@@ -208,7 +208,7 @@ python tools/calibration_classification/train.py projects/CalibrationStatusClass
 - You can use docker command for training as below.
 
 ```sh
-docker run -it --rm --gpus '"device=0"' --name autoware-ml --shm-size=64g -d -v $PWD/:/workspace -v $PWD/data:/workspace/data autoware-ml bash -c 'python tools/calibration_classification/train.py {config_file}'
+docker run -it --rm --gpus --name autoware-ml --shm-size=64g -d -v $PWD/:/workspace -v $PWD/data:/workspace/data autoware-ml bash -c 'python tools/calibration_classification/train.py {config_file}'
 ```
 
 ### 4.3. Log analysis by Tensorboard
