@@ -24,6 +24,7 @@ import numpy as np
 import onnx
 import onnxruntime as ort
 import onnxsim
+import pycuda.autoinit
 import pycuda.driver as cuda
 import tensorrt as trt
 import torch
