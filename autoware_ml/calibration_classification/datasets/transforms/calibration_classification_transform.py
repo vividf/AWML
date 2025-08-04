@@ -778,7 +778,7 @@ class CalibrationClassificationTransform(BaseTransform):
         frame_id_str = frame_id if frame_id is not None else "unknown"
         save_path = os.path.join(
             self.projection_vis_dir,
-            f"projection_{phase}_sample_{sample_idx}_{frame_idx}_{frame_id_str}_label_{label}.png",
+            f"projection_{phase}_sample_{sample_idx}_{frame_idx}_{frame_id_str}_gt_label_{label}.png",
         )
         cv2.imwrite(save_path, overlay_image)
         logger.info(f"Saved {phase} projection visualization to {save_path}")
@@ -786,7 +786,8 @@ class CalibrationClassificationTransform(BaseTransform):
     def visualize_results(
         self,
         input_data: np.ndarray,
-        label: int,
+        pred_label: int,
+        gt_label: int,
         original_image: np.ndarray,
         undistorted_image: np.ndarray,
         frame_idx: str = None,
@@ -811,11 +812,21 @@ class CalibrationClassificationTransform(BaseTransform):
         depth_image = input_data[:, :, 3:4]
         intensity_image = input_data[:, :, 4:5]
         overlay_image = self._create_overlay_image(camera_data, intensity_image)  # Returns BGR format
-        title = (
-            "Calibration Correct"
-            if label == 1
-            else "Calibration Error" if label == 0 else f"Calibration Label {label}"
-        )
+        # Determine if prediction matches ground truth
+        prediction_correct = pred_label == gt_label
+
+        # Create title based on prediction and correctness
+        if pred_label == 1:
+            if prediction_correct:
+                title = "Sensors Calibrated (Correct Prediction)"
+            else:
+                title = "Sensors Calibrated (Wrong Prediction)"
+        else:
+            if prediction_correct:
+                title = "Sensors Miscalibrated (Correct Prediction)"
+            else:
+                title = "Sensors Miscalibrated (Wrong Prediction)"
+
         fig, axes = plt.subplots(2, 3, figsize=(10, 8))
         fig.suptitle(title)
         axes[0, 0].imshow(cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB))
@@ -846,7 +857,8 @@ class CalibrationClassificationTransform(BaseTransform):
         os.makedirs(self.results_vis_dir, exist_ok=True)
         frame_id_str = frame_id if frame_id is not None else "unknown"
         save_path = os.path.join(
-            self.results_vis_dir, f"results_{phase}_sample_{sample_idx}_{frame_idx}_{frame_id_str}_label_{label}.png"
+            self.results_vis_dir,
+            f"results_{phase}_sample_{sample_idx}_{frame_idx}_{frame_id_str}_pred_label_{pred_label}_gt_label_{gt_label}.png",
         )
         plt.savefig(save_path)
         logger.info(f"Saved {phase} results visualization to {save_path}")
