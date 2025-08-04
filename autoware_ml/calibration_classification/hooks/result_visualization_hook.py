@@ -96,6 +96,9 @@ class ResultVisualizationHook(Hook):
             # Extract prediction label
             pred_label = self._extract_prediction_label(output)
 
+            # Extract ground truth label
+            gt_label = self._extract_ground_truth_label(output)
+
             # Get image path and validate
             img_path = self._get_image_path(output)
             if not img_path:
@@ -110,7 +113,7 @@ class ResultVisualizationHook(Hook):
             undistorted_image = self._create_undistorted_image(output, original_image)
 
             # Visualize results
-            self._visualize_results(output, pred_label, original_image, undistorted_image, img_path, phase)
+            self._visualize_results(output, pred_label, gt_label, original_image, undistorted_image, img_path, phase)
 
         except Exception as e:
             self.logger.error(f"[ResultVisualizationHook] Error processing output in {phase} phase: {e}")
@@ -122,6 +125,14 @@ class ResultVisualizationHook(Hook):
             return int(pred_label.item())
         else:
             return int(pred_label)
+
+    def _extract_ground_truth_label(self, output) -> int:
+        """Extract ground truth label from output."""
+        gt_label = output.gt_label
+        if hasattr(gt_label, "item"):
+            return int(gt_label.item())
+        else:
+            return int(gt_label)
 
     def _get_image_path(self, output) -> Optional[str]:
         """Get and validate image path from output metadata."""
@@ -187,6 +198,7 @@ class ResultVisualizationHook(Hook):
         self,
         output,
         pred_label: int,
+        gt_label: int,
         original_image: np.ndarray,
         undistorted_image: np.ndarray,
         img_path: str,
@@ -210,6 +222,7 @@ class ResultVisualizationHook(Hook):
             self.transform.visualize_results(
                 input_data,
                 pred_label,
+                gt_label,
                 original_image,
                 undistorted_image,
                 frame_idx=frame_idx,
