@@ -5,11 +5,6 @@ _base_ = [
     "../../../../autoware_ml/configs/calibration_classification/dataset/t4dataset/gen2_base.py",
 ]
 
-custom_imports = dict(
-    imports=["autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform"],
-    allow_failed_imports=False,
-)
-
 data_root = "/workspace/data/t4dataset"
 info_directory_path = "/workspace/data/t4dataset/calibration_info/"
 train_projection_vis_dir = None
