@@ -5,7 +5,18 @@ _base_ = [
     "../../../../autoware_ml/configs/calibration_classification/dataset/t4dataset/gen2_base.py",
 ]
 
+custom_imports = dict(
+    imports=["autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform"],
+    allow_failed_imports=False,
+)
 
+data_root = "/workspace/data/t4dataset"
+info_directory_path = "/workspace/data/t4dataset/calibration_info/"
+train_projection_vis_dir = None
+val_projection_vis_dir = None
+val_results_vis_dir = None
+test_projection_vis_dir = "./test_projection_vis_t4dataset/"
+test_results_vis_dir = "./test_results_vis_t4dataset/"
 batch_size = 8
 num_workers = 8
 max_epochs = 25
@@ -32,28 +43,9 @@ model = dict(
     ),
 )
 
-# Overwrite default optimization settings if needed
-optim_wrapper = dict(optimizer=dict(type="SGD", lr=0.1, momentum=0.9, weight_decay=0.0001))
-
 param_scheduler = dict(type="MultiStepLR", by_epoch=True, milestones=[5, 15, 20], gamma=0.1)
 
-
 train_cfg = dict(by_epoch=True, max_epochs=max_epochs, val_interval=1)
-
-
-# User setting
-# Dataset setting
-data_root = "/workspace/data/t4dataset"
-info_directory_path = "/workspace/data/t4dataset/calibration_info/"
-
-# Visualization setting
-train_projection_vis_dir = None
-
-val_projection_vis_dir = None
-val_results_vis_dir = None
-test_projection_vis_dir = "./test_projection_vis_t4dataset/"
-test_results_vis_dir = "./test_results_vis_t4dataset/"
-
 
 train_pipeline = [
     dict(
@@ -70,7 +62,6 @@ train_pipeline = [
         input_key="fused_img",
     ),
 ]
-
 
 train_dataloader = dict(
     batch_size=batch_size,
@@ -100,8 +91,7 @@ val_pipeline = [
     dict(
         type="PackInputs",
         input_key="fused_img",
-        # Uncomment to use meta_keys for result visualization
-        # meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
+        # meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],  # Visualization
     ),
 ]
 
@@ -133,7 +123,7 @@ test_pipeline = [
     dict(
         type="PackInputs",
         input_key="fused_img",
-        meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],
+        meta_keys=["img_path", "fused_img", "image", "sample_idx", "frame_id", "frame_idx"],  # Visualization
     ),
 ]
 
@@ -153,7 +143,6 @@ test_dataloader = dict(
 
 test_evaluator = val_evaluator
 
-
 custom_hooks = []
 # Add visualization hooks for val and test results if their respective directories are specified
 # Note: Training phase only supports projection visualization, not result visualization
@@ -168,7 +157,6 @@ if test_results_vis_dir is not None:
     if data_root is not None:
         test_hook_config["data_root"] = data_root
     custom_hooks.append(test_hook_config)
-
 
 vis_backends = [
     dict(type="LocalVisBackend"),
