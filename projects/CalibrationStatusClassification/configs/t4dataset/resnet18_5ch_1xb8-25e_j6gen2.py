@@ -105,6 +105,8 @@ val_dataloader = dict(
 
 val_evaluator = dict(topk=(1,), type="mmpretrain.evaluation.Accuracy")
 
+test_cfg = dict()
+
 test_pipeline = [
     dict(
         type="CalibrationClassificationTransform",
