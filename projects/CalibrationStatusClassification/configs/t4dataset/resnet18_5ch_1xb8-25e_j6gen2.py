@@ -140,20 +140,11 @@ test_dataloader = dict(
 
 test_evaluator = val_evaluator
 
-custom_hooks = []
-# Add visualization hooks for val and test results if their respective directories are specified
-# Note: Training phase only supports projection visualization, not result visualization
-if val_results_vis_dir is not None:
-    val_hook_config = dict(type="ResultVisualizationHook", results_vis_dir=val_results_vis_dir, phases=["val"])
-    if data_root is not None:
-        val_hook_config["data_root"] = data_root
-    custom_hooks.append(val_hook_config)
 
-if test_results_vis_dir is not None:
-    test_hook_config = dict(type="ResultVisualizationHook", results_vis_dir=test_results_vis_dir, phases=["test"])
-    if data_root is not None:
-        test_hook_config["data_root"] = data_root
-    custom_hooks.append(test_hook_config)
+custom_hooks = [
+    dict(type="ResultVisualizationHook", results_vis_dir=val_results_vis_dir, phases=["val"]),
+    dict(type="ResultVisualizationHook", results_vis_dir=test_results_vis_dir, phases=["test"]),
+]
 
 vis_backends = [
     dict(type="LocalVisBackend"),

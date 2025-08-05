@@ -55,6 +55,9 @@ class ResultVisualizationHook(Hook):
             data_batch: The input data batch (not used).
             outputs (list): List of DataSample objects, one per batch element.
         """
+        if not self.results_vis_dir:
+            return
+
         if "val" in self.phases:
             self._process_iteration_outputs(outputs, "val")
 
@@ -67,6 +70,9 @@ class ResultVisualizationHook(Hook):
             data_batch: The input data batch (not used).
             outputs (list): List of DataSample objects, one per batch element.
         """
+        if not self.results_vis_dir:
+            return
+
         if "test" in self.phases:
             self._process_iteration_outputs(outputs, "test")
 
