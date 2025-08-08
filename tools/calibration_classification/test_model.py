@@ -2,36 +2,28 @@
 """
 Integrated model evaluation script for calibration classification.
 Supports both ONNX and TensorRT inference modes.
+Simplified version that directly uses info.pkl files instead of dataset.
 """
 
 import argparse
 import gc
 import logging
 import os
+import pickle
 import signal
 import sys
 import time
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from mmengine.config import Config
-from mmengine.registry import DATASETS, TRANSFORMS
-from mmpretrain.datasets.transforms.formatting import PackInputs
 
-# Ensure the transforms are registered with the correct registry
-from mmpretrain.registry import DATASETS as MMPRETRAIN_DATASETS
-from mmpretrain.registry import TRANSFORMS as MMPRETRAIN_TRANSFORMS
-
-# Import the custom dataset and transform classes to register them
-import autoware_ml.calibration_classification.datasets.t4_calibration_classification_dataset
+# Import the custom transform class to register it
 import autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform
 
-# Now we can import the classes directly
-from autoware_ml.calibration_classification.datasets.t4_calibration_classification_dataset import (
-    T4CalibrationClassificationDataset,
-)
+# Now we can import the class directly
 from autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform import (
     CalibrationClassificationTransform,
 )
@@ -74,48 +66,123 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
     return logging.getLogger(__name__)
 
 
-def register_components():
-    """Register custom components with mmengine and mmpretrain registries."""
-    logger = logging.getLogger(__name__)
+def load_info_pkl_data(info_pkl_path: str, sample_idx: int = 0) -> Dict[str, Any]:
+    """
+    Load a single sample from info.pkl file.
 
-    # Manually register the transform and dataset with mmengine registry
+    Args:
+        info_pkl_path: Path to the info.pkl file
+        sample_idx: Index of the sample to load (default: 0)
+
+    Returns:
+        Sample dictionary with the required structure for CalibrationClassificationTransform
+
+    Raises:
+        FileNotFoundError: If info.pkl file doesn't exist
+        ValueError: If data format is unexpected or sample index is invalid
+    """
+    if not os.path.exists(info_pkl_path):
+        raise FileNotFoundError(f"Info.pkl file not found: {info_pkl_path}")
+
     try:
-        from mmengine.registry import DATASETS as MMENGINE_DATASETS
-        from mmengine.registry import TRANSFORMS as MMENGINE_TRANSFORMS
-
-        if "CalibrationClassificationTransform" not in MMENGINE_TRANSFORMS:
-            MMENGINE_TRANSFORMS.register_module(
-                name="CalibrationClassificationTransform", module=CalibrationClassificationTransform
-            )
-            logger.info("Successfully registered CalibrationClassificationTransform with mmengine registry")
-
-        if "T4CalibrationClassificationDataset" not in MMENGINE_DATASETS:
-            MMENGINE_DATASETS.register_module(
-                name="T4CalibrationClassificationDataset", module=T4CalibrationClassificationDataset
-            )
-            logger.info("Successfully registered T4CalibrationClassificationDataset with mmengine registry")
-
-        if "PackInputs" not in MMENGINE_TRANSFORMS:
-            MMENGINE_TRANSFORMS.register_module(name="PackInputs", module=PackInputs)
-            logger.info("Successfully registered PackInputs with mmengine registry")
-
+        with open(info_pkl_path, "rb") as f:
+            info_data = pickle.load(f)
     except Exception as e:
-        logger.warning(f"Failed to register with mmengine registry: {e}")
+        raise ValueError(f"Failed to load info.pkl file: {e}")
 
-    # Register with mmpretrain registry
-    try:
-        if "CalibrationClassificationTransform" not in MMPRETRAIN_TRANSFORMS:
-            MMPRETRAIN_TRANSFORMS.register_module(
-                name="CalibrationClassificationTransform", module=CalibrationClassificationTransform
-            )
-            logger.info("Successfully registered CalibrationClassificationTransform with mmpretrain registry")
+    # Extract samples from info.pkl
+    if isinstance(info_data, dict):
+        if "data_list" in info_data:
+            samples_list = info_data["data_list"]
+        else:
+            raise ValueError(f"Expected 'data_list' key in info_data, found keys: {list(info_data.keys())}")
+    else:
+        raise ValueError(f"Expected dict format, got {type(info_data)}")
 
-        if "PackInputs" not in MMPRETRAIN_TRANSFORMS:
-            MMPRETRAIN_TRANSFORMS.register_module(name="PackInputs", module=PackInputs)
-            logger.info("Successfully registered PackInputs with mmpretrain registry")
+    if not samples_list:
+        raise ValueError("No samples found in info.pkl")
 
-    except Exception as e:
-        logger.warning(f"Failed to register with mmpretrain registry: {e}")
+    if sample_idx >= len(samples_list):
+        raise ValueError(f"Sample index {sample_idx} out of range (0-{len(samples_list)-1})")
+
+    sample = samples_list[sample_idx]
+
+    # Validate sample structure
+    required_keys = ["image", "lidar_points"]
+    if not all(key in sample for key in required_keys):
+        raise ValueError(f"Sample {sample_idx} has invalid structure. Required keys: {required_keys}")
+
+    return sample
+
+
+def load_sample_data_from_info_pkl(
+    info_pkl_path: str,
+    model_cfg: Config,
+    sample_idx: int = 0,
+    force_generate_miscalibration: bool = False,
+    device: str = "cpu",
+    transform_test: Optional[CalibrationClassificationTransform] = None,
+) -> torch.Tensor:
+    """
+    Load and preprocess sample data from info.pkl using CalibrationClassificationTransform.
+
+    Args:
+        info_pkl_path: Path to the info.pkl file
+        model_cfg: Model configuration containing data_root setting
+        sample_idx: Index of the sample to load (default: 0)
+        force_generate_miscalibration: Whether to force generation of miscalibration
+        device: Device to load tensor on
+        transform_test: Pre-created test transform instance (optional)
+
+    Returns:
+        Preprocessed tensor ready for model inference
+    """
+    # Load sample data from info.pkl
+    sample_data = load_info_pkl_data(info_pkl_path, sample_idx)
+
+    # Get data_root from model config
+    data_root = model_cfg.get("data_root", None)
+    if data_root is None:
+        raise ValueError("data_root not found in model configuration")
+
+    # Use pre-created transform or create new one (always use test mode)
+    if transform_test is None:
+        transform = CalibrationClassificationTransform(
+            mode="test",
+            data_root=data_root,
+            projection_vis_dir=None,
+            results_vis_dir=None,
+            enable_augmentation=False,
+        )
+    else:
+        transform = transform_test
+
+    # Apply transform with miscalibration control
+    results = transform.transform(sample_data, force_generate_miscalibration=force_generate_miscalibration)
+    input_data_processed = results["fused_img"]  # (H, W, 5)
+
+    # Convert to tensor
+    input_tensor = torch.from_numpy(input_data_processed).permute(2, 0, 1).float()  # (5, H, W)
+    input_tensor = input_tensor.unsqueeze(0).to(device)  # (1, 5, H, W)
+
+    return input_tensor
+
+
+def create_test_transform(model_cfg: Config) -> CalibrationClassificationTransform:
+    """Create test transform instance once for reuse."""
+    data_root = model_cfg.get("data_root", None)
+    if data_root is None:
+        raise ValueError("data_root not found in model configuration")
+
+    transform_test = CalibrationClassificationTransform(
+        mode="test",
+        data_root=data_root,
+        projection_vis_dir=None,
+        results_vis_dir=None,
+        enable_augmentation=False,
+    )
+
+    return transform_test
 
 
 def run_onnx_inference(
@@ -302,36 +369,41 @@ def load_tensorrt_engine(engine_path: str, logger: logging.Logger):
         raise
 
 
-def build_dataset(model_cfg_path: str, logger: logging.Logger):
-    """Build dataset from config."""
+def evaluate_model(
+    model_path: str,
+    model_type: str,
+    model_cfg_path: str,
+    info_pkl_path: str,
+    logger: logging.Logger,
+    device: str = "cpu",
+    num_samples: int = 10,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Evaluate model using info.pkl data and return predictions, ground truth, probabilities, and latencies."""
+
     # Load model config
     model_cfg = Config.fromfile(model_cfg_path)
-    dataset_cfg = model_cfg.test_dataloader.dataset
 
-    # Try to build dataset with error handling
+    # Load info.pkl data
     try:
-        dataset = MMPRETRAIN_DATASETS.build(dataset_cfg)
-        logger.info(f"Test dataset created with {len(dataset)} samples")
-        return dataset
+        with open(info_pkl_path, "rb") as f:
+            info_data = pickle.load(f)
+
+        if "data_list" not in info_data:
+            raise ValueError("Expected 'data_list' key in info.pkl")
+
+        samples_list = info_data["data_list"]
+        logger.info(f"Loaded {len(samples_list)} samples from info.pkl")
+
+        # Limit number of samples for evaluation
+        num_samples = min(num_samples, len(samples_list))
+        logger.info(f"Evaluating {num_samples} samples")
+
     except Exception as e:
-        logger.error(f"Failed to build dataset with MMPRETRAIN_DATASETS: {e}")
-        logger.info("Trying with mmengine DATASETS...")
-        try:
-            dataset = DATASETS.build(dataset_cfg)
-            logger.info(f"Test dataset created with {len(dataset)} samples")
-            return dataset
-        except Exception as e2:
-            logger.error(f"Failed to build dataset with mmengine DATASETS: {e2}")
-            raise RuntimeError(f"Could not build dataset with either registry: {e}, {e2}")
+        logger.error(f"Failed to load info.pkl: {e}")
+        raise
 
-
-def evaluate_model(
-    model_path: str, model_type: str, model_cfg_path: str, logger: logging.Logger, device: str = "cpu"
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Evaluate model and return predictions, ground truth, probabilities, and latencies."""
-
-    # Build dataset
-    dataset = build_dataset(model_cfg_path, logger)
+    # Create transform instances once
+    transform_test = create_test_transform(model_cfg)
 
     # Initialize inference engine
     if model_type == "onnx":
@@ -350,51 +422,71 @@ def evaluate_model(
     all_probabilities = []
     all_latencies = []
 
-    # Evaluate entire dataset
-    for sample_idx in range(len(dataset)):
-        if sample_idx % 10 == 0:
-            logger.info(f"Processing sample {sample_idx + 1}/{len(dataset)}")
+    # Evaluate samples
+    for sample_idx in range(num_samples):
+        if sample_idx % 5 == 0:
+            logger.info(f"Processing sample {sample_idx + 1}/{num_samples}")
 
         try:
-            # Get a single sample from dataset
-            data_sample = dataset[sample_idx]
-            input_tensor = data_sample["inputs"]
-            gt_label = data_sample["data_samples"].gt_label.item()
+            # Load sample data directly from info.pkl
+            input_tensor_calibrated = load_sample_data_from_info_pkl(
+                info_pkl_path,
+                model_cfg,
+                sample_idx,
+                force_generate_miscalibration=False,
+                device=device,
+                transform_test=transform_test,
+            )
+            input_tensor_miscalibrated = load_sample_data_from_info_pkl(
+                info_pkl_path,
+                model_cfg,
+                sample_idx,
+                force_generate_miscalibration=True,
+                device=device,
+                transform_test=transform_test,
+            )
 
-            # Debug: Print input tensor info for first few samples
-            if sample_idx < 3:
-                logger.info(f"Sample {sample_idx + 1} input tensor:")
-                logger.info(f"  Shape: {input_tensor.shape}")
-                logger.info(f"  Dtype: {input_tensor.dtype}")
-                logger.info(f"  Min: {input_tensor.min():.4f}, Max: {input_tensor.max():.4f}")
+            # Test both calibrated and miscalibrated samples
+            test_samples = [
+                (input_tensor_calibrated, 1),  # calibrated sample
+                (input_tensor_miscalibrated, 0),  # miscalibrated sample
+            ]
 
-            # Run inference
-            output_np, latency = inference_func(input_tensor)
+            for input_tensor, gt_label in test_samples:
+                # Debug: Print input tensor info for first few samples
+                if sample_idx < 3:
+                    logger.info(f"Sample {sample_idx + 1} (GT={gt_label}) input tensor:")
+                    logger.info(f"  Shape: {input_tensor.shape}")
+                    logger.info(f"  Dtype: {input_tensor.dtype}")
+                    logger.info(f"  Min: {input_tensor.min():.4f}, Max: {input_tensor.max():.4f}")
 
-            if output_np is None:
-                logger.error(f"Failed to get output for sample {sample_idx}")
-                continue
+                # Run inference
+                output_np, latency = inference_func(input_tensor)
 
-            # Convert logits to probabilities
-            logits = torch.from_numpy(output_np)
-            probabilities = F.softmax(logits, dim=-1)
-            predicted_class = torch.argmax(probabilities, dim=-1).item()
-            confidence = probabilities.max().item()
+                if output_np is None:
+                    logger.error(f"Failed to get output for sample {sample_idx}")
+                    continue
 
-            # Store results
-            all_predictions.append(predicted_class)
-            all_ground_truth.append(gt_label)
-            all_probabilities.append(probabilities.cpu().numpy())
-            all_latencies.append(latency)
+                # Convert logits to probabilities
+                logits = torch.from_numpy(output_np)
+                probabilities = F.softmax(logits, dim=-1)
+                predicted_class = torch.argmax(probabilities, dim=-1).item()
+                confidence = probabilities.max().item()
 
-            # Print first few samples for debugging
-            if sample_idx < 3:
-                logger.info(
-                    f"Sample {sample_idx + 1}: GT={gt_label}, Pred={predicted_class}, Confidence={confidence:.4f}, Latency={latency:.2f}ms"
-                )
+                # Store results
+                all_predictions.append(predicted_class)
+                all_ground_truth.append(gt_label)
+                all_probabilities.append(probabilities.cpu().numpy())
+                all_latencies.append(latency)
+
+                # Print first few samples for debugging
+                if sample_idx < 3:
+                    logger.info(
+                        f"Sample {sample_idx + 1} (GT={gt_label}): Pred={predicted_class}, Confidence={confidence:.4f}, Latency={latency:.2f}ms"
+                    )
 
             # Clear GPU memory periodically for TensorRT
-            if model_type == "tensorrt" and sample_idx % 50 == 0:
+            if model_type == "tensorrt" and sample_idx % 10 == 0:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 gc.collect()
@@ -483,7 +575,7 @@ def print_results(
 
 def main():
     """Main function."""
-    parser = argparse.ArgumentParser(description="Evaluate calibration classification model")
+    parser = argparse.ArgumentParser(description="Evaluate calibration classification model using info.pkl")
     parser.add_argument("--onnx", type=str, help="Path to ONNX model file")
     parser.add_argument("--tensorrt", type=str, help="Path to TensorRT engine file")
     parser.add_argument(
@@ -491,6 +583,18 @@ def main():
         type=str,
         default="projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py",
         help="Path to model config file",
+    )
+    parser.add_argument(
+        "--info-pkl",
+        type=str,
+        required=True,
+        help="Path to info.pkl file containing calibration data",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=10,
+        help="Number of samples to evaluate (default: 10)",
     )
     parser.add_argument(
         "--device", type=str, default="cpu", choices=["cpu", "cuda"], help="Device to use for inference"
@@ -511,9 +615,6 @@ def main():
     # Setup logging
     logger = setup_logging(args.log_level)
 
-    # Register components
-    register_components()
-
     try:
         # Determine model type and path
         if args.onnx:
@@ -528,15 +629,19 @@ def main():
             raise FileNotFoundError(f"Model file not found: {model_path}")
         if not os.path.exists(args.model_cfg):
             raise FileNotFoundError(f"Model config file not found: {args.model_cfg}")
+        if not os.path.exists(args.info_pkl):
+            raise FileNotFoundError(f"Info.pkl file not found: {args.info_pkl}")
 
         logger.info(f"Starting {model_type.upper()} model evaluation...")
         logger.info(f"Model path: {model_path}")
         logger.info(f"Model config: {args.model_cfg}")
+        logger.info(f"Info.pkl: {args.info_pkl}")
         logger.info(f"Device: {args.device}")
+        logger.info(f"Number of samples: {args.num_samples}")
 
         # Evaluate model
         all_predictions, all_ground_truth, all_probabilities, all_latencies = evaluate_model(
-            model_path, model_type, args.model_cfg, logger, args.device
+            model_path, model_type, args.model_cfg, args.info_pkl, logger, args.device, args.num_samples
         )
 
         # Print results

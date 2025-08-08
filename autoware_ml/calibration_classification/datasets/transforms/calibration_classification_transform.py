@@ -440,10 +440,12 @@ class CalibrationClassificationTransform(BaseTransform):
         Raises:
             ValueError: If force_generate_miscalibration is used in test mode.
         """
-        if self.is_test and force_generate_miscalibration:
-            raise ValueError("force_generate_miscalibration is not supported in test mode")
+        # if self.is_test and force_generate_miscalibration:
+        #     raise ValueError("force_generate_miscalibration is not supported in test mode")
 
-        if self.is_test:
+        if self.is_test and force_generate_miscalibration:
+            generate_miscalibration = True
+        elif self.is_test:
             generate_miscalibration = False
         else:
             generate_miscalibration = force_generate_miscalibration or random.choice([True, False])
