@@ -1,6 +1,6 @@
 # modify from https://github.com/mit-han-lab/bevfusion
 import copy
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -43,6 +43,8 @@ class BEVFusionHead(nn.Module):
 
     def __init__(
         self,
+        class_names: List[str],
+        dense_heatmap_pooling_classes: Optional[List[str]] = None,
         num_proposals=128,
         auxiliary=True,
         in_channels=128 * 3,
@@ -70,8 +72,8 @@ class BEVFusionHead(nn.Module):
         bbox_coder=None,
     ):
         super().__init__()
-
-        self.num_classes = num_classes
+        self.class_names = class_names
+        self.num_classes = len(self.class_names)
         self.num_proposals = num_proposals
         self.auxiliary = auxiliary
         self.in_channels = in_channels
@@ -158,6 +160,33 @@ class BEVFusionHead(nn.Module):
         self.img_feat_pos = None
         self.img_feat_collapsed_pos = None
 
+        self.dense_heatmap_pooling_classes = dense_heatmap_pooling_classes
+        self.class_name_to_indices = {class_name: i for i, class_name in enumerate(class_names)}
+        # Map class names to indices for processing
+        # TODO (KokSeang): This will increase latency if we don't pool for some classes
+        if dense_heatmap_pooling_classes is not None:
+            self.dense_heatmap_pooling_class_indices = [
+                self.class_name_to_indices[class_name] for class_name in self.dense_heatmap_pooling_classes
+            ]
+            # Sort it
+            self.dense_heatmap_pooling_class_indices = sorted(self.dense_heatmap_pooling_class_indices)
+
+            self.dense_heatmap_exclude_pooling_classes = sorted(
+                list(set(self.class_name_to_indices.values()) - set(self.dense_heatmap_pooling_class_indices))
+            )
+        else:
+            self.dense_heatmap_pooling_class_indices = None
+            self.dense_heatmap_exclude_pooling_classes = None
+
+        self.local_heatmap_padding = self.nms_kernel_size // 2
+        # NMS clusters
+        self.nms_clusters = self.test_cfg.get("nms_clusters", [])
+        # Add class indices for nms
+        for cluster in self.nms_clusters:
+            cluster["class_indices"] = sorted(
+                [self.class_name_to_indices[class_name] for class_name in cluster["class_names"]]
+            )
+
     def create_2D_grid(self, x_size, y_size):
         meshgrid = [[0, x_size - 1, x_size], [0, y_size - 1, y_size]]
         # NOTE: modified
@@ -220,23 +249,30 @@ class BEVFusionHead(nn.Module):
             # with torch.autocast('cuda', enabled=False):
             dense_heatmap = self.heatmap_head(fusion_feat.float())
         heatmap = dense_heatmap.detach().sigmoid()
-        padding = self.nms_kernel_size // 2
         local_max = torch.zeros_like(heatmap)
         # equals to nms radius = voxel_size * out_size_factor * kenel_size
-        local_max_inner = F.max_pool2d(heatmap, kernel_size=self.nms_kernel_size, stride=1, padding=0)
-        local_max[:, :, padding:(-padding), padding:(-padding)] = local_max_inner
-        # for Pedestrian & Traffic_cone in nuScenes
-        # if self.test_cfg['dataset'] == 'nuScenes':
-        #    local_max[:, 8, ] = F.max_pool2d(
-        #        heatmap[:, 8], kernel_size=1, stride=1, padding=0)
-        #    local_max[:, 9, ] = F.max_pool2d(
-        #        heatmap[:, 9], kernel_size=1, stride=1, padding=0)
-        # elif self.test_cfg[
-        #        'dataset'] == 'Waymo':  # for Pedestrian & Cyclist in Waymo
-        #    local_max[:, 1, ] = F.max_pool2d(
-        #        heatmap[:, 1], kernel_size=1, stride=1, padding=0)
-        #    local_max[:, 2, ] = F.max_pool2d(
-        #        heatmap[:, 2], kernel_size=1, stride=1, padding=0)
+        if self.dense_heatmap_pooling_class_indices is not None:
+            # Pooling
+            local_max_inner = F.max_pool2d(
+                heatmap[:, self.dense_heatmap_pooling_class_indices],
+                kernel_size=self.nms_kernel_size,
+                stride=1,
+                padding=0,
+            )
+            local_max[
+                :,
+                self.dense_heatmap_pooling_class_indices,
+                self.local_heatmap_padding : (-self.local_heatmap_padding),
+                self.local_heatmap_padding : (-self.local_heatmap_padding),
+            ] = local_max_inner
+            # Non-pooling classes
+            if self.dense_heatmap_exclude_pooling_classes:
+                local_max[:, self.dense_heatmap_exclude_pooling_classes] = heatmap[
+                    :, self.dense_heatmap_exclude_pooling_classes
+                ]
+        else:
+            local_max = heatmap
+
         heatmap = heatmap * (heatmap == local_max)
         heatmap = heatmap.view(batch_size, heatmap.shape[1], -1)
 
@@ -356,34 +392,6 @@ class BEVFusionHead(nn.Module):
                 filter=True,
             )
 
-            if self.test_cfg["dataset"] == "nuScenes":
-                self.tasks = [
-                    dict(
-                        num_class=8,
-                        class_names=[],
-                        indices=[0, 1, 2, 3, 4, 5, 6, 7],
-                        radius=-1,
-                    ),
-                    dict(
-                        num_class=1,
-                        class_names=["pedestrian"],
-                        indices=[8],
-                        radius=0.175,
-                    ),
-                    dict(
-                        num_class=1,
-                        class_names=["traffic_cone"],
-                        indices=[9],
-                        radius=0.175,
-                    ),
-                ]
-            elif self.test_cfg["dataset"] == "Waymo":
-                self.tasks = [
-                    dict(num_class=1, class_names=["Car"], indices=[0], radius=0.7),
-                    dict(num_class=1, class_names=["Pedestrian"], indices=[1], radius=0.7),
-                    dict(num_class=1, class_names=["Cyclist"], indices=[2], radius=0.7),
-                ]
-
             ret_layer = []
             for i in range(batch_size):
                 boxes3d = temp[i]["bboxes"]
@@ -392,12 +400,12 @@ class BEVFusionHead(nn.Module):
                 # adopt circle nms for different categories
                 if self.test_cfg["nms_type"] is not None:
                     keep_mask = torch.zeros_like(scores)
-                    for task in self.tasks:
+                    for nms_cluster in self.nms_clusters:
                         task_mask = torch.zeros_like(scores)
-                        for cls_idx in task["indices"]:
+                        for cls_idx in nms_cluster["class_indices"]:
                             task_mask += labels == cls_idx
                         task_mask = task_mask.bool()
-                        if task["radius"] > 0:
+                        if nms_cluster["nms_threshold"] > 0:
                             if self.test_cfg["nms_type"] == "circle":
                                 boxes_for_nms = torch.cat(
                                     [
@@ -409,7 +417,7 @@ class BEVFusionHead(nn.Module):
                                 task_keep_indices = torch.tensor(
                                     circle_nms(
                                         boxes_for_nms.detach().cpu().numpy(),
-                                        task["radius"],
+                                        nms_cluster["nms_threshold"],
                                     )
                                 )
                             else:
@@ -418,7 +426,7 @@ class BEVFusionHead(nn.Module):
                                 task_keep_indices = nms_bev(
                                     boxes_for_nms,
                                     top_scores,
-                                    thresh=task["radius"],
+                                    thresh=nms_cluster["nms_threshold"],
                                     pre_max_size=self.test_cfg["pre_max_size"],
                                     post_max_size=self.test_cfg["post_max_size"],
                                 )
