@@ -2,6 +2,9 @@
 /data
 /work_dirs
 tests/samplefiles/data
+/*_projection_vis_t4dataset/
+/*_results_vis_t4dataset/
+/calibration_visualization/
 *.bin
 *.onnx
 *.engine
