@@ -20,9 +20,6 @@ import torch
 import torch.nn.functional as F
 from mmengine.config import Config
 
-# Import the custom transform class to register it
-import autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform
-
 # Now we can import the class directly
 from autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform import (
     CalibrationClassificationTransform,
@@ -377,6 +374,7 @@ def evaluate_model(
     logger: logging.Logger,
     device: str = "cpu",
     num_samples: int = 10,
+    verbose: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Evaluate model using info.pkl data and return predictions, ground truth, probabilities, and latencies."""
 
@@ -453,12 +451,10 @@ def evaluate_model(
             ]
 
             for input_tensor, gt_label in test_samples:
-                # Debug: Print input tensor info for first few samples
-                if sample_idx < 3:
+                # Debug: Print input tensor info only in verbose mode
+                if verbose:
                     logger.info(f"Sample {sample_idx + 1} (GT={gt_label}) input tensor:")
-                    logger.info(f"  Shape: {input_tensor.shape}")
                     logger.info(f"  Dtype: {input_tensor.dtype}")
-                    logger.info(f"  Min: {input_tensor.min():.4f}, Max: {input_tensor.max():.4f}")
 
                 # Run inference
                 output_np, latency = inference_func(input_tensor)
@@ -479,8 +475,8 @@ def evaluate_model(
                 all_probabilities.append(probabilities.cpu().numpy())
                 all_latencies.append(latency)
 
-                # Print first few samples for debugging
-                if sample_idx < 3:
+                # Print sample results only in verbose mode
+                if verbose:
                     logger.info(
                         f"Sample {sample_idx + 1} (GT={gt_label}): Pred={predicted_class}, Confidence={confidence:.4f}, Latency={latency:.2f}ms"
                     )
@@ -602,6 +598,9 @@ def main():
     parser.add_argument(
         "--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Logging level"
     )
+    parser.add_argument(
+        "--verbose", action="store_true", help="Enable verbose logging for detailed sample information"
+    )
 
     args = parser.parse_args()
 
@@ -638,10 +637,11 @@ def main():
         logger.info(f"Info.pkl: {args.info_pkl}")
         logger.info(f"Device: {args.device}")
         logger.info(f"Number of samples: {args.num_samples}")
+        logger.info(f"Verbose logging: {args.verbose}")
 
         # Evaluate model
         all_predictions, all_ground_truth, all_probabilities, all_latencies = evaluate_model(
-            model_path, model_type, args.model_cfg, args.info_pkl, logger, args.device, args.num_samples
+            model_path, model_type, args.model_cfg, args.info_pkl, logger, args.device, args.num_samples, args.verbose
         )
 
         # Print results
