@@ -15,14 +15,6 @@ from autoware_ml.calibration_classification.datasets.transforms.camera_lidar_aug
 
 logger = MMLogger.get_instance(name="calibration_classification_transform")
 
-# Constants values
-DEFAULT_CROP_RATIO = 0.6  # Ratio for image cropping (0.0-1.0, where 1.0 means no crop)
-DEFAULT_MAX_DISTORTION = 0.001  # Maximum affine distortion as fraction of image dimensions (0.0-1.0)
-DEFAULT_AUGMENTATION_MAX_DISTORTION = 0.02  # Maximum augmentation distortion as fraction of image dimensions
-DEFAULT_DEPTH_SCALE = 80.0  # Depth scaling factor in meters (used to normalize depth values to 0-255 range)
-DEFAULT_RADIUS = 2  # Radius in pixels for LiDAR point visualization (creates 5x5 patches around each point)
-DEFAULT_RGB_WEIGHT = 0.3  # Weight for RGB component in overlay visualization (0.0-1.0, where 1.0 is full RGB)
-
 
 class TransformMode(Enum):
     """Enumeration for transform modes."""
@@ -69,6 +61,7 @@ class CalibrationClassificationTransform(BaseTransform):
 
     def __init__(
         self,
+        transform_config: Dict[str, Any],
         mode: str = "train",
         undistort: bool = True,
         enable_augmentation: bool = True,
@@ -78,6 +71,12 @@ class CalibrationClassificationTransform(BaseTransform):
     ):
         """Initialize the CalibrationClassificationTransform.
         Args:
+            transform_config (Dict[str, Any]): Configuration for transform parameters. Must contain:
+                - crop_ratio: Crop ratio for image augmentation (0.0, 1.0]
+                - max_distortion: Maximum distortion for affine transformation [0.0, 1.0]
+                - depth_scale: Scale factor for depth visualization (> 0.0)
+                - radius: Radius for point visualization (>= 0)
+                - rgb_weight: Weight for RGB overlay [0.0, 1.0]
             mode (str): Transform mode. Options: "train", "val", "test". Defaults to "train".
             undistort (bool): Whether to undistort images. Defaults to True.
             enable_augmentation (bool): Whether to enable data augmentation. Defaults to True.
@@ -85,7 +84,7 @@ class CalibrationClassificationTransform(BaseTransform):
             projection_vis_dir (Optional[str]): Directory to save projection visualization results. Defaults to None.
             results_vis_dir (Optional[str]): Directory to save results visualization results. Defaults to None.
         Raises:
-            ValueError: If mode is invalid or data_root doesn't exist.
+            ValueError: If mode is invalid, data_root doesn't exist, or transform_config is invalid.
         """
         super().__init__()
 
@@ -102,18 +101,29 @@ class CalibrationClassificationTransform(BaseTransform):
 
         self.undistort = undistort
         self.enable_augmentation = enable_augmentation
+        self.transform_config = transform_config
         self.data_root = data_root
         self.projection_vis_dir = projection_vis_dir
         self.results_vis_dir = results_vis_dir
-
         self._validate_config()
         logger.info(f"Initialized CalibrationClassificationTransform with mode: {self.mode.value}")
+        logger.info(f"Transform config: {self.transform_config}")
 
     def _validate_config(self) -> None:
         """Validate configuration parameters.
         Raises:
             ValueError: If configuration is invalid.
         """
+        # Validate transform_config is not None and contains required keys
+        if self.transform_config is None:
+            raise ValueError("transform_config cannot be None")
+
+        required_keys = ["crop_ratio", "max_distortion", "depth_scale", "radius", "rgb_weight"]
+
+        missing_keys = [key for key in required_keys if key not in self.transform_config]
+        if missing_keys:
+            raise ValueError(f"transform_config is missing required keys: {missing_keys}")
+
         if not isinstance(self.undistort, bool):
             raise ValueError(f"undistort must be a boolean, got {type(self.undistort)}")
 
@@ -122,6 +132,22 @@ class CalibrationClassificationTransform(BaseTransform):
 
         if self.data_root is not None and not os.path.exists(self.data_root):
             raise ValueError(f"Data root does not exist: {self.data_root}")
+
+        # Validate augmentation parameters
+        if not (0.0 < self.transform_config["crop_ratio"] <= 1.0):
+            raise ValueError(f"crop_ratio must be in (0.0, 1.0], got {self.transform_config['crop_ratio']}")
+
+        if not (0.0 <= self.transform_config["max_distortion"] <= 1.0):
+            raise ValueError(f"max_distortion must be in [0.0, 1.0], got {self.transform_config['max_distortion']}")
+
+        if self.transform_config["depth_scale"] <= 0.0:
+            raise ValueError(f"depth_scale must be positive, got {self.transform_config['depth_scale']}")
+
+        if self.transform_config["radius"] < 0:
+            raise ValueError(f"radius must be non-negative, got {self.transform_config['radius']}")
+
+        if not (0.0 <= self.transform_config["rgb_weight"] <= 1.0):
+            raise ValueError(f"rgb_weight must be in [0.0, 1.0], got {self.transform_config['rgb_weight']}")
 
         logger.debug("Configuration validation passed")
 
@@ -501,18 +527,18 @@ class CalibrationClassificationTransform(BaseTransform):
         return image, calibration_data, affine_matrix
 
     def _scale_and_crop_image(
-        self, image: np.ndarray, calibration_data: CalibrationData, crop_ratio: float = DEFAULT_CROP_RATIO
+        self, image: np.ndarray, calibration_data: CalibrationData
     ) -> Tuple[np.ndarray, CalibrationData]:
         """Scale and crop image, updating camera matrix accordingly.
         Args:
             image: Input image to scale and crop.
             calibration_data: Camera calibration parameters.
-            crop_ratio: Ratio for cropping.
         Returns:
             Tuple of scaled and cropped image with updated calibration data.
         """
         h, w = image.shape[:2]
 
+        crop_ratio = self.transform_config["crop_ratio"]
         # Random crop center with noise
         crop_center_noise = [self._signed_random(0, crop_ratio / 2), self._signed_random(0, crop_ratio / 2)]
         crop_center = np.array([h * (1 + crop_center_noise[0]) / 2, w * (1 + crop_center_noise[1]) / 2])
@@ -569,19 +595,17 @@ class CalibrationClassificationTransform(BaseTransform):
         sign = 1 if random.random() < 0.5 else -1
         return sign * random.uniform(min_value, max_value)
 
-    def _apply_affine_transformation(
-        self, image: np.ndarray, max_distortion: float = DEFAULT_MAX_DISTORTION
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    def _apply_affine_transformation(self, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Applies a controlled affine transformation to the image and updates the calibration matrix.
         Args:
             image (np.ndarray): Input image.
-            max_distortion (float): Maximum allowable distortion as a fraction of image dimensions. Defaults to 0.001.
         Returns:
             Tuple[np.ndarray, np.ndarray]:
                 Transformed image and the 3x3 affine transformation matrix.
         """
         h, w = image.shape[:2]
+        max_distortion = self.transform_config["max_distortion"]
 
         # Limit distortions to a fraction of image dimensions
         max_offset_x = max_distortion * w
@@ -724,28 +748,30 @@ class CalibrationClassificationTransform(BaseTransform):
         depth_image = np.zeros((h, w), dtype=np.uint8)
         intensity_image = np.zeros((h, w), dtype=np.uint8)
 
+        depth_scale = self.transform_config["depth_scale"]
+        radius = self.transform_config["radius"]
+
         for point3d, intensity, point2d in zip(pointcloud_ccs, intensities, pointcloud_ics):
             if np.any(np.abs(point2d) > (2**31 - 1)):
                 continue
-            distance_color = int(np.clip(255 * point3d[2] / 80.0, 0, 255))
-            cv2.circle(depth_image, tuple(point2d.astype(int)), 3, distance_color, -1)
-            cv2.circle(intensity_image, tuple(point2d.astype(int)), 3, int(intensity * 255), -1)
+            distance_color = int(np.clip(255 * point3d[2] / depth_scale, 0, 255))
+            cv2.circle(depth_image, tuple(point2d.astype(int)), radius, distance_color, -1)
+            cv2.circle(intensity_image, tuple(point2d.astype(int)), radius, int(intensity * 255), -1)
 
         depth_image = np.expand_dims(depth_image, axis=2)
         intensity_image = np.expand_dims(intensity_image, axis=2)
         return np.concatenate([image, depth_image, intensity_image], axis=2)
 
-    def _create_overlay_image(
-        self, bgr_image: np.ndarray, feature_image: np.ndarray, rgb_weight: float = DEFAULT_RGB_WEIGHT
-    ) -> np.ndarray:
+    def _create_overlay_image(self, bgr_image: np.ndarray, feature_image: np.ndarray) -> np.ndarray:
         """Create colored overlay image.
         Args:
             bgr_image: Base BGR image.
             feature_image: Feature image to overlay.
-            rgb_weight: Weight for RGB component in overlay.
         Returns:
             Overlaid image with features visualized in BGR format.
         """
+        rgb_weight = self.transform_config["rgb_weight"]
+
         overlay_image = bgr_image.copy()
         intensity_colormap = cv2.applyColorMap((feature_image).astype(np.uint8), cv2.COLORMAP_JET)
         intensity_mask = (feature_image > 0).astype(np.uint8).squeeze(-1)
