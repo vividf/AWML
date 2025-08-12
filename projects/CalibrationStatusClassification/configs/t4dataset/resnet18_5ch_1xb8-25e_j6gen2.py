@@ -142,8 +142,8 @@ test_evaluator = val_evaluator
 
 
 custom_hooks = [
-    dict(type="ResultVisualizationHook", results_vis_dir=val_results_vis_dir, phases=["val"]),
-    dict(type="ResultVisualizationHook", results_vis_dir=test_results_vis_dir, phases=["test"]),
+    dict(type="ResultVisualizationHook", data_root=data_root, results_vis_dir=val_results_vis_dir, phases=["val"]),
+    dict(type="ResultVisualizationHook", data_root=data_root, results_vis_dir=test_results_vis_dir, phases=["test"]),
 ]
 
 vis_backends = [
