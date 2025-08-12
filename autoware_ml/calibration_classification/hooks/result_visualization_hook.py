@@ -1,5 +1,5 @@
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -27,6 +27,7 @@ class ResultVisualizationHook(Hook):
 
     def __init__(
         self,
+        transform_config: Dict[str, Any],
         data_root: Optional[str] = None,
         results_vis_dir: Optional[str] = None,
         phases: Optional[List[str]] = None,
@@ -40,7 +41,9 @@ class ResultVisualizationHook(Hook):
                                    Options: ['val', 'test']. Default: ['test']
                                    Note: Training phase is not supported for result visualization.
         """
-        self.transform = CalibrationClassificationTransform(data_root=data_root, results_vis_dir=results_vis_dir)
+        self.transform = CalibrationClassificationTransform(
+            transform_config=transform_config, data_root=data_root, results_vis_dir=results_vis_dir
+        )
         self.data_root = data_root
         self.results_vis_dir = results_vis_dir
         self.phases = phases if phases is not None else ["test"]

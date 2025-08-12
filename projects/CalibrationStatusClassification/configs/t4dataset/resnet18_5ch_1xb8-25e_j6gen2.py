@@ -48,6 +48,7 @@ train_pipeline = [
         mode="train",
         undistort=True,
         enable_augmentation=False,
+        transform_config=_base_.transform_config,
         data_root=data_root,
         projection_vis_dir=train_projection_vis_dir,
         results_vis_dir=None,
@@ -79,6 +80,7 @@ val_pipeline = [
         mode="val",
         undistort=True,
         enable_augmentation=False,
+        transform_config=_base_.transform_config,
         data_root=data_root,
         projection_vis_dir=val_projection_vis_dir,
         results_vis_dir=val_results_vis_dir,
@@ -113,6 +115,7 @@ test_pipeline = [
         mode="test",
         undistort=True,
         enable_augmentation=False,
+        transform_config=_base_.transform_config,
         data_root=data_root,
         projection_vis_dir=test_projection_vis_dir,
         results_vis_dir=test_results_vis_dir,
@@ -142,8 +145,20 @@ test_evaluator = val_evaluator
 
 
 custom_hooks = [
-    dict(type="ResultVisualizationHook", data_root=data_root, results_vis_dir=val_results_vis_dir, phases=["val"]),
-    dict(type="ResultVisualizationHook", data_root=data_root, results_vis_dir=test_results_vis_dir, phases=["test"]),
+    dict(
+        type="ResultVisualizationHook",
+        transform_config=_base_.transform_config,
+        data_root=data_root,
+        results_vis_dir=val_results_vis_dir,
+        phases=["val"],
+    ),
+    dict(
+        type="ResultVisualizationHook",
+        transform_config=_base_.transform_config,
+        data_root=data_root,
+        results_vis_dir=test_results_vis_dir,
+        phases=["test"],
+    ),
 ]
 
 vis_backends = [
