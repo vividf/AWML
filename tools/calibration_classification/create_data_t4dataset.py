@@ -334,6 +334,7 @@ def build_frame_info(
                     "cam2img": cam_calib["camera_intrinsic"],
                     "cam2ego": convert_quaternion_to_matrix(cam_calib["rotation"], cam_calib["translation"]),
                     "cam_pose": convert_quaternion_to_matrix(cam_pose["rotation"], cam_pose["translation"]),
+                    "distortion_coefficients": cam_calib["camera_distortion"],
                     "sample_data_token": sd["token"],
                     "timestamp": sd["timestamp"],
                     "height": sd["height"],
