@@ -165,14 +165,9 @@ class CalibrationClassificationTransform(BaseTransform):
         return self.mode == TransformMode.TEST
 
     @property
-    def should_augment(self) -> bool:
-        """Check if augmentation should be applied."""
+    def is_augmentation_enabled(self) -> bool:
+        """Check if augmentation is enabled for current mode."""
         return self.enable_augmentation and self.is_train
-
-    @property
-    def should_generate_miscalibration(self) -> bool:
-        """Check if miscalibration should be generated."""
-        return self.is_train
 
     def transform(self, results: Dict[str, Any], force_generate_miscalibration: bool = False) -> Dict[str, Any]:
         """Transform input data for calibration classification.
@@ -455,10 +450,11 @@ class CalibrationClassificationTransform(BaseTransform):
         Returns:
             Tuple of augmented image, updated calibration data, and optional transformation matrix.
         """
-        if self.should_augment:
-            return self._apply_augmentation_transforms(image, calibration_data)
-        else:
-            return image, calibration_data, None
+        return (
+            self._apply_augmentation_transforms(image, calibration_data)
+            if self.is_augmentation_enabled
+            else (image, calibration_data, None)
+        )
 
     def _apply_augmentation_transforms(
         self, image: npt.NDArray[np.float64], calibration_data: CalibrationData
