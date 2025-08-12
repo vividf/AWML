@@ -2,6 +2,7 @@ import os
 import random
 from dataclasses import dataclass
 from enum import Enum
+from tkinter import NO
 from typing import Any, Dict, Optional, Tuple
 
 import cv2
@@ -316,34 +317,28 @@ class CalibrationClassificationTransform(BaseTransform):
             raise KeyError("Sample does not contain 'lidar_points' key")
 
         cam_info = sample["image"]
-        lidar_info = sample["lidar_points"]
 
-        # Validate camera matrix
-        camera_matrix = cam_info.get("cam2img")
+        # Validate camera
+        camera_matrix = cam_info.get("cam2img", None)
         if camera_matrix is None:
             raise ValueError(f"Camera matrix (cam2img) is missing")
         camera_matrix = np.array(camera_matrix)
 
-        # Validate camera matrix shape
         if camera_matrix.shape != (3, 3):
             raise ValueError(f"Camera matrix must be 3x3, got shape {camera_matrix.shape}")
 
-        # Initialize distortion coefficients (assuming no distortion for now)
+        # Validate Lidar
+        lidar_to_camera_transformation = cam_info.get("lidar2cam", None)
+        if lidar_to_camera_transformation is None:
+            raise ValueError(f"lidar_to_camera_transformation is missing")
+
+        lidar_to_camera_transformation = np.array(lidar_to_camera_transformation)
+        if lidar_to_camera_transformation.shape != (4, 4):
+            raise ValueError(
+                f"lidar_to_camera_transformation must be 4x4, got shape {lidar_to_camera_transformation.shape}"
+            )
+
         distortion_coefficients = np.zeros(5, dtype=np.float32)
-
-        # Extract transformation matrices
-        lidar_to_camera_transformation = cam_info.get("lidar2cam")
-
-        # Convert all transformations to numpy arrays and validate shapes
-        try:
-            lidar_to_camera_transformation = np.array(lidar_to_camera_transformation)
-            if lidar_to_camera_transformation.shape != (4, 4):
-                raise ValueError(
-                    f"lidar_to_camera_transformation must be 4x4, got shape {lidar_to_camera_transformation.shape}"
-                )
-
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Failed to convert transformation matrices to numpy arrays: {e}")
 
         return CalibrationData(
             camera_matrix=camera_matrix,
