@@ -201,6 +201,7 @@ def generate_calib_info(
     """
     Generate calibration info for each frame (grouped by filename index).
     Each info contains all sensor sample_data (lidar, cameras, etc) belonging to the same frame.
+    Invalid samples (is_valid = false) are automatically filtered out.
     Args:
         annotation_dir (str): Path to the annotation directory containing JSON files.
         lidar_channel (str, optional): Name of the lidar channel. Defaults to "LIDAR_CONCAT".
@@ -230,15 +231,22 @@ def generate_calib_info(
         target_cameras = get_all_channels(sample_data_json)
         logger.info(f"Using all available cameras: {target_cameras}")
 
-    # Group all sample_data by frame index
+    # Group all sample_data by frame index, filtering out invalid samples
     frame_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    invalid_count = 0
     for sd in sample_data_json:
         if "filename" not in sd or not sd["filename"]:
+            continue
+        # Skip invalid sample data (is_valid = false)
+        if sd.get("is_valid") is False:
+            invalid_count += 1
             continue
         frame_idx: str = extract_frame_index(sd["filename"])
         frame_groups[frame_idx].append(sd)
 
-    logger.info(f"Found {len(frame_groups)} frames in scene {scene_id}")
+    logger.warning(
+        f"Found {len(frame_groups)} frames in scene {scene_id} (filtered out {invalid_count} invalid samples)"
+    )
 
     infos: List[Dict[str, Any]] = []
     sample_idx: int = start_sample_idx
@@ -323,13 +331,13 @@ def build_frame_info(
                 cam_pose = ego_pose_dict[sd["ego_pose_token"]]
                 camera_data[cam] = {
                     "img_path": osp.join(scene_root, filename),
-                    "cam2img": cam_calib.get("camera_intrinsic"),
+                    "cam2img": cam_calib["camera_intrinsic"],
                     "cam2ego": convert_quaternion_to_matrix(cam_calib["rotation"], cam_calib["translation"]),
                     "cam_pose": convert_quaternion_to_matrix(cam_pose["rotation"], cam_pose["translation"]),
                     "sample_data_token": sd["token"],
                     "timestamp": sd["timestamp"],
-                    "height": sd.get("height"),
-                    "width": sd.get("width"),
+                    "height": sd["height"],
+                    "width": sd["width"],
                 }
                 break
 
