@@ -178,7 +178,6 @@ class CalibrationClassificationTransform(BaseTransform):
             Dict[str, Any]: Transformed data dictionary with processed images and labels.
         """
         logger.debug(f"Starting transform for sample {results.get('sample_idx', 'unknown')}")
-        self._set_random_seeds(results)
 
         # Load and process data
         camera_data, lidar_data, calibration_data = self._load_data(results)
@@ -207,19 +206,6 @@ class CalibrationClassificationTransform(BaseTransform):
         results["gt_label"] = label
         logger.debug(f"Transform completed for sample {results.get('sample_idx', 'unknown')}")
         return results
-
-    def _set_random_seeds(self, results: Dict[str, Any]) -> None:
-        """Set random seeds for reproducibility during validation.
-        Args:
-            results: Input data dictionary containing sample_idx.
-        """
-        if self.is_val:
-            seed = results["sample_idx"]
-            random.seed(seed)
-            np.random.seed(seed)
-        else:
-            random.seed(None)
-            np.random.seed(None)
 
     def _load_data(
         self, sample: dict
