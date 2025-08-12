@@ -397,18 +397,20 @@ class CalibrationClassificationTransform(BaseTransform):
         Returns:
             Tuple of undistorted image and updated calibration data.
         """
-        if np.any(calibration_data.distortion_coefficients):
-            h, w = image.shape[:2]
-            calibration_data.new_camera_matrix, _ = cv2.getOptimalNewCameraMatrix(
-                calibration_data.camera_matrix, calibration_data.distortion_coefficients, (w, h), alpha, (w, h)
-            )
-            image = cv2.undistort(
-                image,
-                calibration_data.camera_matrix,
-                calibration_data.distortion_coefficients,
-                newCameraMatrix=calibration_data.new_camera_matrix,
-            )
-            calibration_data.distortion_coefficients = np.zeros_like(calibration_data.distortion_coefficients)
+        if not np.any(calibration_data.distortion_coefficients):
+            return image, calibration_data
+
+        h, w = image.shape[:2]
+        calibration_data.new_camera_matrix, _ = cv2.getOptimalNewCameraMatrix(
+            calibration_data.camera_matrix, calibration_data.distortion_coefficients, (w, h), alpha, (w, h)
+        )
+        image = cv2.undistort(
+            image,
+            calibration_data.camera_matrix,
+            calibration_data.distortion_coefficients,
+            newCameraMatrix=calibration_data.new_camera_matrix,
+        )
+        calibration_data.distortion_coefficients = np.zeros_like(calibration_data.distortion_coefficients)
         return image, calibration_data
 
     def _generate_label(self, force_generate_miscalibration: bool, calibration_data: CalibrationData) -> int:
