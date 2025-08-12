@@ -15,6 +15,8 @@ test_results_vis_dir = "./test_results_vis_t4dataset/"
 batch_size = 8
 num_workers = 8
 max_epochs = 25
+randomness = dict(seed=0, diff_rank_seed=False, deterministic=True)
+
 
 data_preprocessor = dict()
 
