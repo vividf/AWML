@@ -1,289 +1,319 @@
-# Calibration Classification Model Evaluation
+# tools/calibration_classification
 
-This directory contains scripts for evaluating CalibrationStatusClassification models in different formats (ONNX and TensorRT).
+The pipeline to make the model.
+It contains training, evaluation, and visualization for Calibration classification.
 
-## Scripts Overview
+- [Support priority](https://github.com/tier4/AWML/blob/main/docs/design/autoware_ml_design.md#support-priority): Tier B
+- Supported dataset
+  - [] NuScenes
+  - [x] T4dataset
+- Other supported feature
+  - [ ] Add unit test
 
-### 1. `test_onnx.py` - ONNX Model Evaluation
-Evaluates ONNX models using ONNX Runtime backend.
+## 1. Setup environment
 
-**Usage:**
-```bash
-python test_onnx.py
+See [setting environment](/tools/setting_environment/)
+
+## 2. Prepare dataset
+
+Prepare the dataset you use.
+
+### 2.1. T4dataset
+
+- Run docker
+
+```sh
+docker run -it --rm --gpus --shm-size=64g --name awml -p 6006:6006 -v $PWD/:/workspace -v $PWD/data:/workspace/data autoware-ml
 ```
 
-**Features:**
-- Evaluates ONNX models on the entire test dataset
-- Calculates accuracy, per-class accuracy, and confidence
-- Shows confusion matrix
-- Uses CPU for inference
+- Make info files for T4dataset X2 Gen2
 
-### 2. `test_tensorrt.py` - TensorRT Model Evaluation
-Evaluates TensorRT models using TensorRT backend.
-
-**Usage:**
-```bash
-python test_tensorrt.py
+```sh
+python tools/calibration_classification/create_data_t4dataset.py --config /workspace/autoware_ml/configs/calibration_classification/dataset/t4dataset/gen2_base.py --version gen2_base --root_path ./data/t4dataset -o ./data/t4dataset/calibration_info/
 ```
 
-**Features:**
-- Evaluates TensorRT models on the entire test dataset
-- Calculates accuracy, per-class accuracy, and confidence
-- Shows confusion matrix and latency statistics
-- Uses CUDA for inference
+**Available command line arguments:**
 
-### 3. `test_tensorrt_simple.py` - TensorRT with Fallback
-Evaluates TensorRT models with automatic fallback to ONNX Runtime if TensorRT fails.
+- `--config` (required): Path to the T4dataset configuration file
+- `--root_path` (required): Root path of the dataset
+- `--version` (required): Product version (e.g., x2)
+- `-o, --out_dir` (required): Output directory for info files
+- `--lidar_channel` (optional): Lidar channel name (default: LIDAR_CONCAT)
+- `--target_cameras` (optional): List of target cameras to process (default: all cameras)
 
-**Usage:**
-```bash
-python test_tensorrt_simple.py
+**Examples:**
+
+```sh
+# Basic usage with default settings (all cameras)
+python tools/calibration_classification/create_data_t4dataset.py --config /workspace/autoware_ml/configs/calibration_classification/dataset/t4dataset/gen2_base.py --version gen2_base --root_path ./data/t4dataset -o ./data/t4dataset/calibration_info/
+
+# Process only specific cameras
+python tools/calibration_classification/create_data_t4dataset.py --config /workspace/autoware_ml/configs/calibration_classification/dataset/t4dataset/gen2_base.py --version gen2_base --root_path ./data/t4dataset -o ./data/t4dataset/calibration_info/ --target_cameras CAM_FRONT CAM_LEFT CAM_RIGHT
 ```
 
-**Features:**
-- Attempts TensorRT evaluation first
-- Automatically falls back to ONNX Runtime if TensorRT fails
-- Handles library path issues automatically
-- Provides detailed error messages
+**Output files:**
+The script generates three pickle files for train/val/test splits:
+- `t4dataset_{version}_infos_train.pkl`
+- `t4dataset_{version}_infos_val.pkl`
+- `t4dataset_{version}_infos_test.pkl`
 
-### 4. `compare_onnx_tensorrt.py` - Model Comparison
-Compares ONNX and TensorRT models side by side.
+Each file contains calibration information including:
+- Camera and LiDAR data paths
+- Transformation matrices (lidar2cam, cam2ego, etc.)
+- Timestamps and metadata
 
-**Usage:**
-```bash
-# Basic comparison
-python compare_onnx_tensorrt.py
-
-# Custom model paths
-python compare_onnx_tensorrt.py \
-    --onnx-model /path/to/onnx/model.onnx \
-    --tensorrt-model /path/to/tensorrt/model.engine \
-    --device cuda \
-    --max-samples 100
+**Example data structure:**
+```python
+{
+    'frame_id': 'CAM_FRONT',
+    'frame_idx': '00003',
+    'image': {
+        'cam2ego': [[1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0]],
+        'cam2img': [[1000.0, 0.0, 960.0],
+                    [0.0, 1000.0, 540.0],
+                    [0.0, 0.0, 1.0]],
+        'cam_pose': [[1.0, 0.0, 0.0, 100.0],
+                     [0.0, 1.0, 0.0, 200.0],
+                     [0.0, 0.0, 1.0, 1.5],
+                     [0.0, 0.0, 0.0, 1.0]],
+        'height': 1080,
+        'img_path': 'data/camera/front/00003.jpg',
+        'lidar2cam': [[1.0, 0.0, 0.0, 0.1],
+                      [0.0, 1.0, 0.0, 0.0],
+                      [0.0, 0.0, 1.0, 0.0],
+                      [0.0, 0.0, 0.0, 1.0]],
+        'sample_data_token': 'sample_token_123',
+        'timestamp': 1234567890,
+        'width': 1920
+    },
+    'lidar_points': {
+        'lidar2ego': [[1.0, 0.0, 0.0, 0.0],
+                      [0.0, 1.0, 0.0, 0.0],
+                      [0.0, 0.0, 1.0, 0.0],
+                      [0.0, 0.0, 0.0, 1.0]],
+        'lidar_path': 'data/lidar/00003.pcd.bin',
+        'lidar_pose': [[1.0, 0.0, 0.0, 100.0],
+                       [0.0, 1.0, 0.0, 200.0],
+                       [0.0, 0.0, 1.0, 1.5],
+                       [0.0, 0.0, 0.0, 1.0]],
+        'sample_data_token': 'lidar_token_456',
+        'timestamp': 1234567890
+    },
+    'sample_idx': 3,
+    'scene_id': 'scene_001'
+}
 ```
 
-**Features:**
-- Compares accuracy, latency, and confidence between models
-- Checks prediction consistency
-- Provides detailed performance analysis
+**Key fields explained:**
+- `frame_id`: Camera identifier (e.g., CAM_FRONT, CAM_LEFT)
+- `frame_idx`: Frame index in the sequence
+- `image`: Camera-specific data including intrinsic/extrinsic parameters
+- `lidar_points`: LiDAR data with transformation matrices
+- `sample_idx`: Sample index in the dataset
+- `scene_id`: Scene identifier
 
-## Configuration Files
+### 2.2. Calibration Visualization (Before training)
 
-### ONNX Configuration
-- **File:** `projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch_onnxruntime.py`
-- **Backend:** ONNX Runtime
-- **Device:** CPU
-- **Format:** ONNX (.onnx)
+- Visualization for calibration and image view
+  - This tool visualizes the calibration between LiDAR and camera sensors
+  - It shows the projection of LiDAR points onto camera images using info.pkl files
 
-### TensorRT Configuration
-- **File:** `projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch_tensorrt.py`
-- **Backend:** TensorRT
-- **Device:** CUDA
-- **Format:** TensorRT Engine (.engine)
+```sh
+# Process all samples from info.pkl
+python tools/calibration_classification/visualize_lidar_camera_projection.py --info_pkl data/info.pkl --data_root data/ --output_dir ./calibration_visualization
 
-## Model Conversion
+# Process specific sample
+python tools/calibration_classification/visualize_lidar_camera_projection.py --info_pkl data/info.pkl --data_root data/ --output_dir ./calibration_visualization --sample_idx 0
 
-Before running the evaluation scripts, you need to convert your trained model to ONNX and TensorRT formats.
+# Process specific indices
+python tools/calibration_classification/visualize_lidar_camera_projection.py --info_pkl data/info.pkl --data_root data/ --output_dir ./calibration_visualization --indices 0 1 2
+```
 
-### Convert to ONNX
+- For T4dataset visualization:
+
+```sh
+python tools/calibration_classification/visualize_lidar_camera_projection.py --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl --data_root data/t4dataset --output_dir ./calibration_visualization
+```
+
+## 3. Visualization Settings (During training, validation, testing)
+
+Understanding visualization configuration is crucial for calibration classification tasks. The `CalibrationClassificationTransform` controls two main visualization types:
+
+### 3.1. Visualization Types
+
+**Projection Visualization** (`projection_vis_dir`):
+- Shows LiDAR points projected onto camera images
+- Helps verify calibration accuracy between sensors
+
+**Results Visualization** (`results_vis_dir`):
+- Displays model predictions
+- Shows classification results overlaid on images
+
+### 3.2. Configuration Example
+
+```python
+# In config file
+test_projection_vis_dir = "./test_projection_vis_t4dataset/"
+test_results_vis_dir = "./test_results_vis_t4dataset/"
+
+# In transform pipeline
+dict(
+    type="CalibrationClassificationTransform",
+    mode="test",
+    undistort=True,
+    enable_augmentation=False,
+    data_root=data_root,
+    projection_vis_dir=test_projection_vis_dir,  # LiDAR projection visualization
+    results_vis_dir=test_results_vis_dir,        # Model prediction visualization
+),
+```
+
+### 3.3. Usage Strategy
+
+**Training/Validataion Phase:**
+- Disable visualization for efficiency: `projection_vis_dir=None`, `results_vis_dir=None`
+- Focus on model training performance
+
+**Testing Phase:**
+- Enable visualization for analysis: Set both directories to desired paths
+- Use projection visualization to verify calibration quality
+- Use results visualization to understand model predictions
+
+**Output Files:**
+- `projection_vis_dir/`: LiDAR points overlaid on camera images
+- `results_vis_dir/`: Classification results with predicted labels
+
+## 4. Train
+### 4.1. Change config
+
+- You can change batchsize by file name.
+  - For example, 1×b1 -> 2×b8
+
+### 4.2. Train
+
+- Train in general by below command.
+
+```sh
+python tools/calibration_classification/train.py {config_file}
+```
+
+* Example
+```sh
+python tools/calibration_classification/train.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py
+```
+
+- You can use docker command for training as below.
+
+```sh
+docker run -it --rm --gpus --name autoware-ml --shm-size=64g -d -v $PWD/:/workspace -v $PWD/data:/workspace/data autoware-ml bash -c 'python tools/calibration_classification/train.py {config_file}'
+```
+
+### 4.3. Log analysis by Tensorboard
+
+- Run the TensorBoard and navigate to http://127.0.0.1:6006/
+
+```sh
+tensorboard --logdir work_dirs --bind_all
+```
+
+## 5. Analyze
+### 5.1. Evaluation
+
+- Evaluation
+
+```sh
+python tools/calibration_classification/test.py {config_file} {checkpoint_file}
+```
+* Example
+```sh
+python tools/calibration_classification/test.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py  epoch_25.pth --out {output_file}
+```
+
+
+## Calibration Classification Model Evaluation
+
+This directory contains scripts for evaluating calibration classification models in different formats.
+
+### Integrated Evaluation Script
+
+The `test_model.py` script is an integrated solution that supports both ONNX and TensorRT model evaluation.
+
+#### Usage
+
+##### ONNX Model Evaluation
 ```bash
-python projects/CalibrationStatusClassification/deploy/main.py \
-    --deploy-cfg projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch_onnxruntime.py \
+python test_model.py --onnx /path/to/your/model.onnx
+```
+
+##### TensorRT Model Evaluation
+```bash
+python test_model.py --tensorrt /path/to/your/model.engine
+```
+
+##### Additional Options
+```bash
+python test_model.py \
+    --onnx /path/to/your/model.onnx \
     --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py \
-    --checkpoint your_checkpoint.pth
+    --device cpu \
+    --log-level INFO
 ```
 
-### Convert to TensorRT
+#### Command Line Arguments
+
+- `--onnx`: Path to ONNX model file (mutually exclusive with `--tensorrt`)
+- `--tensorrt`: Path to TensorRT engine file (mutually exclusive with `--onnx`)
+- `--model-cfg`: Path to model config file (default: `projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py`)
+- `--device`: Device to use for inference (`cpu` or `cuda`, default: `cpu`)
+- `--log-level`: Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, default: `INFO`)
+
+#### Requirements
+
+##### For ONNX Evaluation
 ```bash
-python projects/CalibrationStatusClassification/deploy/main.py \
-    --deploy-cfg projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch_tensorrt.py \
-    --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py \
-    --checkpoint your_checkpoint.pth
+pip install onnxruntime
 ```
 
-## Output Examples
-
-### ONNX Evaluation Output
-```
-==================================================
-ONNX Model Evaluation Results
-==================================================
-Total samples: 100
-Correct predictions: 85
-Accuracy: 0.8500 (85.00%)
-
-Per-class accuracy:
-  Class 0: 42/50 = 0.8400 (84.00%)
-  Class 1: 43/50 = 0.8600 (86.00%)
-
-Average confidence: 0.8234
-
-Confusion Matrix:
-Predicted ->
-Actual    0    1
-  0      42    8
-  1       7   43
-
-ONNX model evaluation completed successfully!
-Model accuracy: 0.8500 (85.00%)
-```
-
-### TensorRT Evaluation Output
-```
-==================================================
-TensorRT Model Evaluation Results
-==================================================
-Total samples: 100
-Correct predictions: 85
-Accuracy: 0.8500 (85.00%)
-
-Per-class accuracy:
-  Class 0: 42/50 = 0.8400 (84.00%)
-  Class 1: 43/50 = 0.8600 (86.00%)
-
-Average confidence: 0.8234
-
-Latency Statistics:
-  Average latency: 12.34 ms
-  Min latency: 10.12 ms
-  Max latency: 15.67 ms
-  Std latency: 1.23 ms
-
-Confusion Matrix:
-Predicted ->
-Actual    0    1
-  0      42    8
-  1       7   43
-
-TensorRT model evaluation completed successfully!
-Model accuracy: 0.8500 (85.00%)
-Average inference latency: 12.34 ms
-```
-
-### Comparison Output
-```
-============================================================
-ONNX vs TensorRT Model Comparison
-============================================================
-
-Accuracy Comparison:
-  ONNX:     0.8500 (85.00%)
-  TensorRT: 0.8500 (85.00%)
-  Difference: 0.0000
-
-Latency Comparison:
-  ONNX:     45.67 ms
-  TensorRT: 12.34 ms
-  Speedup:  3.70x
-
-Confidence Comparison:
-  ONNX:     0.8234
-  TensorRT: 0.8234
-  Difference: 0.0000
-
-Prediction Consistency:
-  Predictions match: True
-
-Comparison completed successfully!
-```
-
-## Requirements
-
-- Python 3.8+
-- PyTorch
-- MMDeploy
-- ONNX Runtime
-- TensorRT (for TensorRT evaluation)
-- CUDA (for TensorRT evaluation)
-
-## Notes
-
-1. **Device Requirements:**
-   - ONNX evaluation runs on CPU
-   - TensorRT evaluation requires CUDA GPU
-
-2. **Model Paths:**
-   - Update the model paths in the scripts if your models are in different locations
-   - Default paths are set to `/workspace/work_dirs/`
-
-3. **Performance:**
-   - TensorRT models typically provide better inference speed
-   - ONNX models are more portable and easier to deploy
-
-4. **Accuracy:**
-   - Both models should produce similar accuracy results
-   - Small differences may occur due to numerical precision differences
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Model not found:**
-   - Ensure the model files exist at the specified paths
-   - Check if the model conversion was successful
-
-2. **CUDA out of memory:**
-   - Reduce batch size or number of samples
-   - Use `--max-samples` parameter to limit evaluation
-
-3. **TensorRT errors:**
-   - Ensure TensorRT is properly installed
-   - Check CUDA version compatibility
-   - Verify GPU memory availability
-
-4. **Configuration errors:**
-   - Ensure all config files exist
-   - Check file paths in the scripts
-
-### TensorRT Library Issues
-
-If you encounter `libnvinfer.so.8: cannot open shared object file` errors:
-
-#### Solution 1: Use the Simple Script
+##### For TensorRT Evaluation
 ```bash
-python test_tensorrt_simple.py
-```
-This script automatically handles library path issues and falls back to ONNX Runtime if TensorRT fails.
-
-#### Solution 2: Set Library Path Manually
-```bash
-export LD_LIBRARY_PATH=/opt/conda/lib/python3.10/site-packages/tensorrt_libs:$LD_LIBRARY_PATH
-python test_tensorrt.py
+pip install tensorrt pycuda
 ```
 
-#### Solution 3: Check TensorRT Installation
-```bash
-# Check TensorRT version
-python -c "import tensorrt as trt; print(trt.__version__)"
+#### Output
 
-# Find TensorRT libraries
-find /opt/conda -name "libnvinfer.so*" 2>/dev/null
-```
+The script will output:
+- Model accuracy and per-class accuracy
+- Average confidence
+- Latency statistics (average, min, max, std)
+- Confusion matrix
+- Detailed logging information
 
-#### Solution 4: Use ONNX Runtime Instead
-If TensorRT continues to have issues, use ONNX Runtime evaluation:
-```bash
-python test_onnx.py
-```
+#### Examples
 
-### Recommended Workflow
-
-1. **Start with ONNX evaluation** (most reliable):
+1. **Evaluate ONNX model with default settings:**
    ```bash
-   python test_onnx.py
+   python test_model.py --onnx /workspace/work_dirs/end2end_train_200_ptq.quant.onnx
    ```
 
-2. **Try TensorRT with fallback**:
+2. **Evaluate TensorRT model with custom config:**
    ```bash
-   python test_tensorrt_simple.py
+   python test_model.py \
+       --tensorrt /workspace/work_dirs/end2end_train_200_ptq.engine \
+       --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py \
+       --device cuda
    ```
 
-3. **Compare both models**:
+3. **Evaluate with debug logging:**
    ```bash
-   python compare_onnx_tensorrt.py
+   python test_model.py --onnx /path/to/model.onnx --log-level DEBUG
    ```
 
-4. **Use TensorRT directly** (if library issues are resolved):
-   ```bash
-   python test_tensorrt.py
-   ```
+#### Notes
+
+- The script automatically handles component registration for custom datasets and transforms
+- GPU memory is automatically cleaned up during TensorRT evaluation
+- The script includes signal handlers for graceful cleanup on interruption
+- Both ONNX and TensorRT evaluation use the same dataset and evaluation metrics for consistency
