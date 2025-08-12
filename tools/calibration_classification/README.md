@@ -85,6 +85,7 @@ Each file contains calibration information including:
                       [0.0, 1.0, 0.0, 0.0],
                       [0.0, 0.0, 1.0, 0.0],
                       [0.0, 0.0, 0.0, 1.0]],
+        'distortion_coefficients': [0.0, 0.0, 0.0, 0.0, 0.0],
         'sample_data_token': 'sample_token_123',
         'timestamp': 1234567890,
         'width': 1920
