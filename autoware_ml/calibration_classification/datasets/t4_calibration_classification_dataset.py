@@ -41,7 +41,7 @@ class T4CalibrationClassificationDataset(BaseDataset):
             filter_cfg (dict, optional): Config for filtering data.
         """
         # Handle pipeline configuration for CalibrationClassificationTransform
-        if isinstance(pipeline, list):
+        if pipeline:
             pipeline = [
                 (
                     dict(x)
