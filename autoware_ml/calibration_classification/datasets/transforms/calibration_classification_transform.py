@@ -568,8 +568,8 @@ class CalibrationClassificationTransform(BaseTransform):
             Combined image with RGB, depth, and intensity channels.
         """
         points = lidar_data["pointcloud"]
-        N = points.shape[0]
-        points_hom = np.concatenate([points, np.ones((N, 1), dtype=points.dtype)], axis=1)
+        num_points = points.shape[0]
+        points_hom = np.concatenate([points, np.ones((num_points, 1), dtype=points.dtype)], axis=1)
 
         # Transform points to camera coordinate system
         pointcloud_ccs = self._transform_points_to_camera(points_hom, calibration_data)
