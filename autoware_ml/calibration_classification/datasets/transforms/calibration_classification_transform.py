@@ -338,7 +338,13 @@ class CalibrationClassificationTransform(BaseTransform):
                 f"lidar_to_camera_transformation must be 4x4, got shape {lidar_to_camera_transformation.shape}"
             )
 
-        distortion_coefficients = np.zeros(5, dtype=np.float32)
+        # Validate distortion coefficients
+        distortion_coefficients = cam_info.get("distortion_coefficients", None)
+        if distortion_coefficients is None:
+            raise ValueError(f"distortion_coefficients is missing")
+        distortion_coefficients = np.array(distortion_coefficients)
+        if distortion_coefficients.shape != (5,):
+            raise ValueError(f"distortion_coefficients must be 5, got shape {distortion_coefficients.shape}")
 
         return CalibrationData(
             camera_matrix=camera_matrix,
@@ -660,7 +666,7 @@ class CalibrationClassificationTransform(BaseTransform):
             Points in image coordinate system (N, 2).
         """
         camera_matrix = calibration_data.new_camera_matrix
-        distortion_coefficients = calibration_data.distortion_coefficients[:8]
+        distortion_coefficients = calibration_data.distortion_coefficients
         pointcloud_ics, _ = cv2.projectPoints(
             pointcloud_ccs, np.zeros(3), np.zeros(3), camera_matrix, distortion_coefficients
         )
