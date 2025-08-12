@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+import numpy.typing as npt
 from mmcv.transforms import BaseTransform
 from mmengine.logging import MMLogger
 from mmpretrain.registry import TRANSFORMS
@@ -31,17 +32,13 @@ class CalibrationData:
     coordinate transformations and image processing operations.
     """
 
-    camera_matrix: np.ndarray  # Original camera intrinsic matrix (3x3)
-    distortion_coefficients: np.ndarray  # Camera distortion coefficients
+    camera_matrix: npt.NDArray[np.float64]  # Original camera intrinsic matrix (3x3)
+    distortion_coefficients: npt.NDArray[np.float64]  # Camera distortion coefficients
+    lidar_to_camera_transformation: npt.NDArray[np.float64]
     # Updated camera matrix after image processing (undistortion, cropping, scaling)
     # This matrix should be used for 3D->2D projection after any image transformations
     # to ensure geometric consistency between the processed image and 3D point projections
-    new_camera_matrix: Optional[np.ndarray] = None
-    lidar_to_camera_transformation: np.ndarray = None
-    lidar_to_ego_transformation: np.ndarray = None
-    camera_to_ego_transformation: np.ndarray = None
-    lidar_pose: np.ndarray = None
-    camera_pose: np.ndarray = None
+    new_camera_matrix: Optional[npt.NDArray[np.float64]] = None
 
     def __post_init__(self):
         """Initialize new_camera_matrix if not provided.
@@ -228,7 +225,9 @@ class CalibrationClassificationTransform(BaseTransform):
             random.seed(None)
             np.random.seed(None)
 
-    def _load_data(self, sample: dict) -> Tuple[np.ndarray, Dict[str, np.ndarray], CalibrationData]:
+    def _load_data(
+        self, sample: dict
+    ) -> Tuple[npt.NDArray[np.float64], Dict[str, npt.NDArray[np.float64]], CalibrationData]:
         """Load camera, LiDAR, and calibration data from a sample dict.
         Args:
             sample: Sample dictionary from info.pkl.
@@ -241,7 +240,7 @@ class CalibrationClassificationTransform(BaseTransform):
 
         return image, lidar_data, calibration_data
 
-    def _load_image(self, sample: dict) -> np.ndarray:
+    def _load_image(self, sample: dict) -> npt.NDArray[np.float64]:
         """Load and validate camera image.
         Args:
             sample: Sample dictionary containing image information.
@@ -271,7 +270,7 @@ class CalibrationClassificationTransform(BaseTransform):
         logger.debug(f"Successfully loaded image from {img_path}, shape: {image.shape}")
         return image
 
-    def _load_lidar_data(self, sample: dict) -> Dict[str, np.ndarray]:
+    def _load_lidar_data(self, sample: dict) -> Dict[str, npt.NDArray[np.float64]]:
         """Load and process LiDAR data.
         Args:
             sample: Sample dictionary containing LiDAR information.
@@ -334,51 +333,11 @@ class CalibrationClassificationTransform(BaseTransform):
 
         # Extract transformation matrices
         lidar_to_camera_transformation = cam_info.get("lidar2cam")
-        lidar_to_ego_transformation = lidar_info.get("lidar2ego")
-        camera_to_ego_transformation = cam_info.get("cam2ego")
-        camera_pose = cam_info.get("cam_pose")
-        lidar_pose = lidar_info.get("lidar_pose")
-
-        # Validate required fields with detailed error messages
-        required_fields = {
-            "lidar_to_ego_transformation": lidar_to_ego_transformation,
-            "camera_to_ego_transformation": camera_to_ego_transformation,
-            "camera_pose": camera_pose,
-            "lidar_pose": lidar_pose,
-        }
-
-        missing_fields = []
-        for name, value in required_fields.items():
-            if value is None:
-                missing_fields.append(name)
-
-        if missing_fields:
-            raise ValueError(f"Missing required calibration fields: {missing_fields}")
 
         # Convert all transformations to numpy arrays and validate shapes
         try:
-            lidar_to_camera_transformation = (
-                np.array(lidar_to_camera_transformation) if lidar_to_camera_transformation is not None else None
-            )
-            lidar_to_ego_transformation = np.array(lidar_to_ego_transformation)
-            camera_to_ego_transformation = np.array(camera_to_ego_transformation)
-            lidar_pose = np.array(lidar_pose)
-            camera_pose = np.array(camera_pose)
-
-            # Validate transformation matrix shapes
-            if lidar_to_ego_transformation.shape != (4, 4):
-                raise ValueError(
-                    f"lidar_to_ego_transformation must be 4x4, got shape {lidar_to_ego_transformation.shape}"
-                )
-            if camera_to_ego_transformation.shape != (4, 4):
-                raise ValueError(
-                    f"camera_to_ego_transformation must be 4x4, got shape {camera_to_ego_transformation.shape}"
-                )
-            if lidar_pose.shape != (4, 4):
-                raise ValueError(f"lidar_pose must be 4x4, got shape {lidar_pose.shape}")
-            if camera_pose.shape != (4, 4):
-                raise ValueError(f"camera_pose must be 4x4, got shape {camera_pose.shape}")
-            if lidar_to_camera_transformation is not None and lidar_to_camera_transformation.shape != (4, 4):
+            lidar_to_camera_transformation = np.array(lidar_to_camera_transformation)
+            if lidar_to_camera_transformation.shape != (4, 4):
                 raise ValueError(
                     f"lidar_to_camera_transformation must be 4x4, got shape {lidar_to_camera_transformation.shape}"
                 )
@@ -390,13 +349,9 @@ class CalibrationClassificationTransform(BaseTransform):
             camera_matrix=camera_matrix,
             distortion_coefficients=distortion_coefficients,
             lidar_to_camera_transformation=lidar_to_camera_transformation,
-            lidar_to_ego_transformation=lidar_to_ego_transformation,
-            camera_to_ego_transformation=camera_to_ego_transformation,
-            lidar_pose=lidar_pose,
-            camera_pose=camera_pose,
         )
 
-    def _normalize_intensity(self, intensities: np.ndarray) -> np.ndarray:
+    def _normalize_intensity(self, intensities: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         """Normalize LiDAR intensity values to [0, 1] using min-max normalization.
         Args:
             intensities: Raw LiDAR intensity values.
@@ -416,7 +371,9 @@ class CalibrationClassificationTransform(BaseTransform):
         logger.debug(f"Normalized intensity range: [{normalized.min():.3f}, {normalized.max():.3f}]")
         return normalized
 
-    def _process_image(self, image: np.ndarray, calibration_data: CalibrationData) -> np.ndarray:
+    def _process_image(
+        self, image: npt.NDArray[np.float64], calibration_data: CalibrationData
+    ) -> npt.NDArray[np.float64]:
         """Process image with undistortion if enabled.
         Args:
             image: Input camera image.
@@ -425,15 +382,12 @@ class CalibrationClassificationTransform(BaseTransform):
             Processed image (undistorted if enabled).
         """
         if self.undistort:
-            undistorted_image, _ = self._undistort_image(calibration_data, image)
-            return undistorted_image
-        else:
-            calibration_data.new_camera_matrix = calibration_data.camera_matrix
-            return image
+            image, _ = self._undistort_image(calibration_data, image)
+        return image
 
     def _undistort_image(
-        self, calibration_data: CalibrationData, image: np.ndarray, alpha: float = 0.0
-    ) -> Tuple[np.ndarray, CalibrationData]:
+        self, calibration_data: CalibrationData, image: npt.NDArray[np.float64], alpha: float = 0.0
+    ) -> Tuple[npt.NDArray[np.float64], CalibrationData]:
         """Undistort image and update calibration data.
         Args:
             calibration_data: Camera calibration parameters.
@@ -489,8 +443,8 @@ class CalibrationClassificationTransform(BaseTransform):
             return 1  # Correctly calibrated
 
     def _apply_augmentations(
-        self, image: np.ndarray, calibration_data: CalibrationData
-    ) -> Tuple[np.ndarray, CalibrationData, Optional[np.ndarray]]:
+        self, image: npt.NDArray[np.float64], calibration_data: CalibrationData
+    ) -> Tuple[npt.NDArray[np.float64], CalibrationData, Optional[npt.NDArray[np.float64]]]:
         """Apply data augmentations if enabled.
         Args:
             image: Input image to augment.
@@ -504,8 +458,8 @@ class CalibrationClassificationTransform(BaseTransform):
             return image, calibration_data, None
 
     def _apply_augmentation_transforms(
-        self, image: np.ndarray, calibration_data: CalibrationData
-    ) -> Tuple[np.ndarray, CalibrationData, Optional[np.ndarray]]:
+        self, image: npt.NDArray[np.float64], calibration_data: CalibrationData
+    ) -> Tuple[npt.NDArray[np.float64], CalibrationData, Optional[npt.NDArray[np.float64]]]:
         """Apply scaling, cropping, and affine transformations.
         Args:
             image: Input image to augment.
@@ -527,8 +481,8 @@ class CalibrationClassificationTransform(BaseTransform):
         return image, calibration_data, affine_matrix
 
     def _scale_and_crop_image(
-        self, image: np.ndarray, calibration_data: CalibrationData
-    ) -> Tuple[np.ndarray, CalibrationData]:
+        self, image: npt.NDArray[np.float64], calibration_data: CalibrationData
+    ) -> Tuple[npt.NDArray[np.float64], CalibrationData]:
         """Scale and crop image, updating camera matrix accordingly.
         Args:
             image: Input image to scale and crop.
@@ -595,7 +549,9 @@ class CalibrationClassificationTransform(BaseTransform):
         sign = 1 if random.random() < 0.5 else -1
         return sign * random.uniform(min_value, max_value)
 
-    def _apply_affine_transformation(self, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _apply_affine_transformation(
+        self, image: npt.NDArray[np.float64]
+    ) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """
         Applies a controlled affine transformation to the image and updates the calibration matrix.
         Args:
@@ -632,19 +588,17 @@ class CalibrationClassificationTransform(BaseTransform):
 
     def _generate_input_data(
         self,
-        image: np.ndarray,
-        lidar_data: Dict[str, np.ndarray],
+        image: npt.NDArray[np.float64],
+        lidar_data: Dict[str, npt.NDArray[np.float64]],
         calibration_data: CalibrationData,
-        augmentation_tf: Optional[np.ndarray] = None,
-        use_lidar2cam: bool = True,
-    ) -> np.ndarray:
+        augmentation_tf: Optional[npt.NDArray[np.float64]] = None,
+    ) -> npt.NDArray[np.float64]:
         """Generate depth and intensity images using augmented calibration.
         Args:
             image: Input camera image.
             lidar_data: LiDAR point cloud and intensity data.
             calibration_data: Camera calibration parameters.
             augmentation_tf: Optional augmentation transformation matrix.
-            use_lidar2cam: Whether to use direct lidar2cam transformation.
         Returns:
             Combined image with RGB, depth, and intensity channels.
         """
@@ -653,7 +607,7 @@ class CalibrationClassificationTransform(BaseTransform):
         points_hom = np.concatenate([points, np.ones((N, 1), dtype=points.dtype)], axis=1)
 
         # Transform points to camera coordinate system
-        pointcloud_ccs = self._transform_points_to_camera(points_hom, calibration_data, use_lidar2cam)
+        pointcloud_ccs = self._transform_points_to_camera(points_hom, calibration_data)
 
         # Filter valid points and project to image
         valid_points = pointcloud_ccs[:, 2] > 0.0
@@ -670,41 +624,39 @@ class CalibrationClassificationTransform(BaseTransform):
         return self._create_lidar_images(image, pointcloud_ics, pointcloud_ccs, intensities)
 
     def _transform_points_to_camera(
-        self, points_hom: np.ndarray, calibration_data: CalibrationData, use_lidar2cam: bool
-    ) -> np.ndarray:
+        self,
+        points_hom: npt.NDArray[np.float64],
+        calibration_data: CalibrationData,
+    ) -> npt.NDArray[np.float64]:
         """Transform points to camera coordinate system.
         Args:
             points_hom: Homogeneous point coordinates (N, 4).
             calibration_data: Camera calibration parameters.
-            use_lidar2cam: Whether to use direct lidar2cam transformation.
         Returns:
             Points in camera coordinate system (N, 3).
         """
-        if use_lidar2cam and calibration_data.lidar_to_camera_transformation is not None:
-            lidar2cam = calibration_data.lidar_to_camera_transformation
-            points_hom = (lidar2cam @ points_hom.T).T
-        else:
-            # Note: We will never use this path since we make sure to have lidar2cam transformation
-            # Multi-step transformation
-            # Step 1: LiDAR to baselink
-            lidar_to_ego = calibration_data.lidar_to_ego_transformation
-            points_hom = (lidar_to_ego @ points_hom.T).T
 
-            # Step 2: baselink (LiDAR time) to global
-            lidar_pose = calibration_data.lidar_pose
-            points_hom = (lidar_pose @ points_hom.T).T
+        lidar2cam = calibration_data.lidar_to_camera_transformation
+        points_hom = (lidar2cam @ points_hom.T).T
 
-            # Step 3: global to baselink (Camera time)
-            camera_pose_inv = np.linalg.inv(calibration_data.camera_pose)
-            points_hom = (camera_pose_inv @ points_hom.T).T
+        # The lidar2cam is calcuated from multi-step transformation
+        # Step 1: LiDAR to baselink
+        # points_hom = (lidar_to_ego @ points_hom.T).T
 
-            # Step 4: baselink to camera
-            camera_to_ego_inv = np.linalg.inv(calibration_data.camera_to_ego_transformation)
-            points_hom = (camera_to_ego_inv @ points_hom.T).T
+        # # Step 2: baselink (LiDAR time) to global
+        # points_hom = (lidar_pose @ points_hom.T).T
+
+        # # Step 3: global to baselink (Camera time)
+        # points_hom = (camera_pose_inv @ points_hom.T).T
+
+        # # Step 4: baselink to camera
+        # points_hom = (camera_to_ego_inv @ points_hom.T).T
 
         return points_hom[:, :3]
 
-    def _project_points_to_image(self, pointcloud_ccs: np.ndarray, calibration_data: CalibrationData) -> np.ndarray:
+    def _project_points_to_image(
+        self, pointcloud_ccs: npt.NDArray[np.float64], calibration_data: CalibrationData
+    ) -> npt.NDArray[np.float64]:
         """Project 3D points to image coordinates.
         Args:
             pointcloud_ccs: Points in camera coordinate system (N, 3).
@@ -719,7 +671,9 @@ class CalibrationClassificationTransform(BaseTransform):
         )
         return pointcloud_ics.reshape(-1, 2)
 
-    def _apply_augmentation_to_points(self, pointcloud_ics: np.ndarray, augmentation_tf: np.ndarray) -> np.ndarray:
+    def _apply_augmentation_to_points(
+        self, pointcloud_ics: npt.NDArray[np.float64], augmentation_tf: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
         """Apply augmentation transformation to 2D points.
         Args:
             pointcloud_ics: Points in image coordinate system (N, 2).
@@ -733,8 +687,12 @@ class CalibrationClassificationTransform(BaseTransform):
         return transformed_ics
 
     def _create_lidar_images(
-        self, image: np.ndarray, pointcloud_ics: np.ndarray, pointcloud_ccs: np.ndarray, intensities: np.ndarray
-    ) -> np.ndarray:
+        self,
+        image: npt.NDArray[np.float64],
+        pointcloud_ics: npt.NDArray[np.float64],
+        pointcloud_ccs: npt.NDArray[np.float64],
+        intensities: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
         """Create depth and intensity images.
         Args:
             image: Base camera image.
@@ -762,7 +720,9 @@ class CalibrationClassificationTransform(BaseTransform):
         intensity_image = np.expand_dims(intensity_image, axis=2)
         return np.concatenate([image, depth_image, intensity_image], axis=2)
 
-    def _create_overlay_image(self, bgr_image: np.ndarray, feature_image: np.ndarray) -> np.ndarray:
+    def _create_overlay_image(
+        self, bgr_image: npt.NDArray[np.float64], feature_image: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
         """Create colored overlay image.
         Args:
             bgr_image: Base BGR image.
@@ -783,7 +743,7 @@ class CalibrationClassificationTransform(BaseTransform):
         return overlay_image
 
     def _visualize_projection(
-        self, input_data: np.ndarray, label: int, results: Dict[str, Any], phase: str = "test"
+        self, input_data: npt.NDArray[np.float64], label: int, results: Dict[str, Any], phase: str = "test"
     ) -> None:
         """Visualize LiDAR projection results.
         Args:
@@ -810,11 +770,11 @@ class CalibrationClassificationTransform(BaseTransform):
 
     def visualize_results(
         self,
-        input_data: np.ndarray,
+        input_data: npt.NDArray[np.float64],
         pred_label: int,
         gt_label: int,
-        original_image: np.ndarray,
-        undistorted_image: np.ndarray,
+        original_image: npt.NDArray[np.float64],
+        undistorted_image: npt.NDArray[np.float64],
         frame_idx: str = None,
         sample_idx: int = None,
         phase: str = "test",
