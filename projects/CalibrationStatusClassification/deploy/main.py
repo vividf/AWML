@@ -121,7 +121,13 @@ def load_sample_data_from_info_pkl(
 
     # Create transform for deployment
     mode = "test" if not force_generate_miscalibration else "train"
+
+    transform_config = model_cfg.get("transform_config", None)
+    if transform_config is None:
+        raise ValueError("transform_config not found in model configuration")
+
     transform = CalibrationClassificationTransform(
+        transform_config=transform_config,
         mode=mode,
         data_root=data_root,
         projection_vis_dir=None,

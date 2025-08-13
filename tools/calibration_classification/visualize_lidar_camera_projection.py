@@ -6,6 +6,7 @@ import pickle
 import traceback
 from typing import Any, Dict, List, Optional, Union
 
+from mmengine.config import Config
 from mmengine.logging import MMLogger
 
 from autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform import (
@@ -25,13 +26,14 @@ class CalibrationVisualizer:
         logger: MMLogger instance for logging
     """
 
-    def __init__(self, data_root: Optional[str] = None, output_dir: Optional[str] = None):
+    def __init__(self, model_cfg: Config, data_root: Optional[str] = None, output_dir: Optional[str] = None):
         """
         Initialize the CalibrationVisualizer.
         Args:
             data_root: Root directory for data files. If None, absolute paths are used.
             output_dir: Directory for saving visualizations. If None, no visualizations are saved.
         """
+        self.model_cfg = model_cfg
         self.data_root = data_root
         self.output_dir = output_dir
         self.transform = None
@@ -40,7 +42,12 @@ class CalibrationVisualizer:
 
     def _initialize_transform(self) -> None:
         """Initialize the CalibrationClassificationTransform with appropriate parameters."""
+        transform_config = self.model_cfg.get("transform_config", None)
+        if transform_config is None:
+            raise ValueError("transform_config not found in model configuration")
+
         self.transform = CalibrationClassificationTransform(
+            transform_config=transform_config,
             mode="test",
             undistort=True,
             data_root=self.data_root,
@@ -210,7 +217,7 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=examples,
     )
-
+    parser.add_argument("model_cfg", help="model config path")
     parser.add_argument("--info_pkl", required=True, help="Path to info.pkl file containing calibration data")
     parser.add_argument("--output_dir", help="Output directory for saving visualizations")
     parser.add_argument("--data_root", help="Root directory for data files (images, point clouds, etc.)")
@@ -232,8 +239,11 @@ def main() -> None:
     parser = create_argument_parser()
     args = parser.parse_args()
 
+    # Load model configuration
+    model_cfg = Config.fromfile(args.model_cfg)
+
     # Initialize visualizer
-    visualizer = CalibrationVisualizer(data_root=args.data_root, output_dir=args.output_dir)
+    visualizer = CalibrationVisualizer(model_cfg=model_cfg, data_root=args.data_root, output_dir=args.output_dir)
 
     # Run appropriate visualization mode
     if args.sample_idx is not None:
