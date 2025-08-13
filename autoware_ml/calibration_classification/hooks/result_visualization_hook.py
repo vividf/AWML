@@ -189,7 +189,7 @@ class ResultVisualizationHook(Hook):
         try:
             cam_info = output.metainfo["image"]
             camera_matrix = np.array(cam_info["cam2img"])
-            distortion_coefficients = np.zeros(5, dtype=np.float32)  # Use zeros if not available
+            distortion_coefficients = np.array(cam_info["distortion_coefficients"])
 
             return cv2.undistort(
                 original_image,
