@@ -188,10 +188,12 @@ dict(
 - `results_vis_dir/`: Classification results with predicted labels
 
 ## 4. Train
-### 4.1. Change config
+### 4.1. Environment set up
+Set `CUBLAS_WORKSPACE_CONFIG` for the deterministic behavior, plese check this [nvidia doc](https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility) for more info
 
-- You can change batchsize by file name.
-  - For example, 1×b1 -> 2×b8
+```sh
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+```
 
 ### 4.2. Train
 
