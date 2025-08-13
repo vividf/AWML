@@ -2,8 +2,7 @@ import os
 import random
 from dataclasses import dataclass
 from enum import Enum
-from tkinter import NO
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 
 import cv2
 import matplotlib.pyplot as plt
