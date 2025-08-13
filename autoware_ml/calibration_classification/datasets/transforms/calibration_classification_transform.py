@@ -256,7 +256,7 @@ class CalibrationClassificationTransform(BaseTransform):
         Args:
             sample: Sample dictionary containing LiDAR information.
         Returns:
-            Dictionary containing pointcloud and normalized intensities.
+            Dictionary containing pointcloud and intensities.
         Raises:
             FileNotFoundError: If LiDAR file is not found.
         """
