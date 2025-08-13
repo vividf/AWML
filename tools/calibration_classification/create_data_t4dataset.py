@@ -244,9 +244,12 @@ def generate_calib_info(
         frame_idx: str = extract_frame_index(sd["filename"])
         frame_groups[frame_idx].append(sd)
 
-    logger.warning(
-        f"Found {len(frame_groups)} frames in scene {scene_id} (filtered out {invalid_count} invalid samples)"
-    )
+    if invalid_count > 0:
+        logger.warning(
+            f"Found {len(frame_groups)} frames in scene {scene_id} (filtered out {invalid_count} invalid samples)"
+        )
+    else:
+        logger.info(f"Found {len(frame_groups)} frames in scene {scene_id}")
 
     infos: List[Dict[str, Any]] = []
     sample_idx: int = start_sample_idx
