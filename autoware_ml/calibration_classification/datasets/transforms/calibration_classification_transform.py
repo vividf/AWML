@@ -673,13 +673,52 @@ class CalibrationClassificationTransform(BaseTransform):
         depth_scale = self.transform_config["depth_scale"]
         radius = self.transform_config["radius"]
 
-        for point3d, intensity, point2d in zip(pointcloud_ccs, intensities, pointcloud_ics):
-            if np.any(np.abs(point2d) > (2**31 - 1)):
-                continue
+        valid_mask = (
+            (pointcloud_ics[:, 0] >= 0)
+            & (pointcloud_ics[:, 0] < w)
+            & (pointcloud_ics[:, 1] >= 0)
+            & (pointcloud_ics[:, 1] < h)
+        )
 
-            distance_color = int(np.clip(255 * point3d[2] / depth_scale, 0, 255))
-            cv2.circle(depth_image, tuple(point2d.astype(int)), radius, distance_color, -1)
-            cv2.circle(intensity_image, tuple(point2d.astype(int)), radius, int(intensity), -1)
+        valid_ics = pointcloud_ics[valid_mask]
+        valid_ccs = pointcloud_ccs[valid_mask]
+        valid_intensities = intensities[valid_mask]
+
+        if valid_ics.size > 0:
+            radius = 2
+
+            y_offsets, x_offsets = np.mgrid[-radius : radius + 1, -radius : radius + 1]
+            y_offsets = y_offsets.flatten()
+            x_offsets = x_offsets.flatten()
+
+            center_rows = valid_ics[:, 1].astype(np.int32)
+            center_cols = valid_ics[:, 0].astype(np.int32)
+
+            patch_rows = center_rows[:, np.newaxis] + y_offsets[np.newaxis, :]
+            patch_cols = center_cols[:, np.newaxis] + x_offsets[np.newaxis, :]
+
+            in_bounds_mask = (patch_rows >= 0) & (patch_rows < h) & (patch_cols >= 0) & (patch_cols < w)
+
+            center_depths = np.clip(255 * valid_ccs[:, 2] / depth_scale, 0, 255)
+            center_intensities = (valid_intensities).squeeze()
+
+            broadcasted_depths = np.broadcast_to(center_depths[:, np.newaxis], patch_rows.shape)
+            broadcasted_intensities = np.broadcast_to(center_intensities[:, np.newaxis], patch_rows.shape)
+
+            final_rows = patch_rows[in_bounds_mask]
+            final_cols = patch_cols[in_bounds_mask]
+            final_depths = broadcasted_depths[in_bounds_mask]
+            final_intensities = broadcasted_intensities[in_bounds_mask]
+
+            sort_indices = np.argsort(final_depths)[::-1]
+
+            sorted_rows = final_rows[sort_indices]
+            sorted_cols = final_cols[sort_indices]
+            sorted_depths = final_depths[sort_indices]
+            sorted_intensities = final_intensities[sort_indices]
+
+            depth_image[sorted_rows, sorted_cols] = sorted_depths.astype(np.uint8)
+            intensity_image[sorted_rows, sorted_cols] = sorted_intensities.astype(np.uint8)
 
         depth_image = np.expand_dims(depth_image, axis=2)
         intensity_image = np.expand_dims(intensity_image, axis=2)
