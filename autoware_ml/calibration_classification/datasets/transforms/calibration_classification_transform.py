@@ -208,7 +208,7 @@ class CalibrationClassificationTransform(BaseTransform):
 
     def _load_data(
         self, sample: dict
-    ) -> Tuple[npt.NDArray[np.float32], Dict[str, npt.NDArray[np.float32]], CalibrationData]:
+    ) -> Tuple[npt.NDArray[np.uint8], Dict[str, npt.NDArray[np.float32]], CalibrationData]:
         """Load camera, LiDAR, and calibration data from a sample dict.
         Args:
             sample: Sample dictionary from info.pkl.
@@ -216,12 +216,13 @@ class CalibrationClassificationTransform(BaseTransform):
             Tuple of camera image, LiDAR data dictionary, and calibration data.
         """
         image = self._load_image(sample)
+
         lidar_data = self._load_lidar_data(sample)
         calibration_data = self._load_calibration_data(sample)
 
         return image, lidar_data, calibration_data
 
-    def _load_image(self, sample: dict) -> npt.NDArray[np.float32]:
+    def _load_image(self, sample: dict) -> npt.NDArray[np.uint8]:
         """Load and validate camera image.
         Args:
             sample: Sample dictionary containing image information.
@@ -332,9 +333,7 @@ class CalibrationClassificationTransform(BaseTransform):
             lidar_to_camera_transformation=lidar_to_camera_transformation,
         )
 
-    def _process_image(
-        self, image: npt.NDArray[np.float32], calibration_data: CalibrationData
-    ) -> npt.NDArray[np.float32]:
+    def _process_image(self, image: npt.NDArray[np.uint8], calibration_data: CalibrationData) -> npt.NDArray[np.uint8]:
         """Process image with undistortion if enabled.
         Args:
             image: Input camera image.
@@ -347,8 +346,8 @@ class CalibrationClassificationTransform(BaseTransform):
         return image
 
     def _undistort_image(
-        self, calibration_data: CalibrationData, image: npt.NDArray[np.float32], alpha: float = 0.0
-    ) -> Tuple[npt.NDArray[np.float32], CalibrationData]:
+        self, calibration_data: CalibrationData, image: npt.NDArray[np.uint8], alpha: float = 0.0
+    ) -> Tuple[npt.NDArray[np.uint8], CalibrationData]:
         """Undistort image and update calibration data.
         Args:
             calibration_data: Camera calibration parameters.
@@ -406,8 +405,8 @@ class CalibrationClassificationTransform(BaseTransform):
             return 1  # Correctly calibrated
 
     def _apply_augmentations(
-        self, image: npt.NDArray[np.float32], calibration_data: CalibrationData
-    ) -> Tuple[npt.NDArray[np.float32], CalibrationData, Optional[npt.NDArray[np.float32]]]:
+        self, image: npt.NDArray[np.uint8], calibration_data: CalibrationData
+    ) -> Tuple[npt.NDArray[np.uint8], CalibrationData, Optional[npt.NDArray[np.float32]]]:
         """Apply data augmentations if enabled.
         Args:
             image: Input image to augment.
@@ -422,8 +421,8 @@ class CalibrationClassificationTransform(BaseTransform):
         )
 
     def _apply_augmentation_transforms(
-        self, image: npt.NDArray[np.float32], calibration_data: CalibrationData
-    ) -> Tuple[npt.NDArray[np.float32], CalibrationData, Optional[npt.NDArray[np.float32]]]:
+        self, image: npt.NDArray[np.uint8], calibration_data: CalibrationData
+    ) -> Tuple[npt.NDArray[np.uint8], CalibrationData, Optional[npt.NDArray[np.float32]]]:
         """Apply scaling, cropping, and affine transformations.
         Args:
             image: Input image to augment.
@@ -445,8 +444,8 @@ class CalibrationClassificationTransform(BaseTransform):
         return image, calibration_data, affine_matrix
 
     def _scale_and_crop_image(
-        self, image: npt.NDArray[np.float32], calibration_data: CalibrationData
-    ) -> Tuple[npt.NDArray[np.float32], CalibrationData]:
+        self, image: npt.NDArray[np.uint8], calibration_data: CalibrationData
+    ) -> Tuple[npt.NDArray[np.uint8], CalibrationData]:
         """Scale and crop image, updating camera matrix accordingly.
         Args:
             image: Input image to scale and crop.
@@ -514,8 +513,8 @@ class CalibrationClassificationTransform(BaseTransform):
         return sign * random.uniform(min_value, max_value)
 
     def _apply_affine_transformation(
-        self, image: npt.NDArray[np.float32]
-    ) -> Tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
+        self, image: npt.NDArray[np.uint8]
+    ) -> Tuple[npt.NDArray[np.uint8], npt.NDArray[np.float32]]:
         """
         Applies a controlled affine transformation to the image and updates the calibration matrix.
         Args:
@@ -552,11 +551,11 @@ class CalibrationClassificationTransform(BaseTransform):
 
     def _generate_input_data(
         self,
-        image: npt.NDArray[np.float32],
+        image: npt.NDArray[np.uint8],
         lidar_data: Dict[str, npt.NDArray[np.float32]],
         calibration_data: CalibrationData,
         augmentation_tf: Optional[npt.NDArray[np.float32]] = None,
-    ) -> npt.NDArray[np.float32]:
+    ) -> npt.NDArray[np.uint8]:
         """Generate depth and intensity images using augmented calibration.
         Args:
             image: Input camera image.
@@ -652,11 +651,11 @@ class CalibrationClassificationTransform(BaseTransform):
 
     def _create_lidar_images(
         self,
-        image: npt.NDArray[np.float32],
+        image: npt.NDArray[np.uint8],
         pointcloud_ics: npt.NDArray[np.float32],
         pointcloud_ccs: npt.NDArray[np.float32],
-        intensities: npt.NDArray[np.float32],
-    ) -> npt.NDArray[np.float32]:
+        intensities: npt.NDArray[np.uint8],
+    ) -> npt.NDArray[np.uint8]:
         """Create depth and intensity images.
         Args:
             image: Base camera image.
@@ -686,8 +685,8 @@ class CalibrationClassificationTransform(BaseTransform):
         return np.concatenate([image, depth_image, intensity_image], axis=2)
 
     def _create_overlay_image(
-        self, bgr_image: npt.NDArray[np.float32], feature_image: npt.NDArray[np.float32]
-    ) -> npt.NDArray[np.float32]:
+        self, bgr_image: npt.NDArray[np.uint8], feature_image: npt.NDArray[np.uint8]
+    ) -> npt.NDArray[np.uint8]:
         """Create colored overlay image.
         Args:
             bgr_image: Base BGR image.
@@ -708,7 +707,7 @@ class CalibrationClassificationTransform(BaseTransform):
         return overlay_image
 
     def _visualize_projection(
-        self, input_data: npt.NDArray[np.float32], label: int, results: Dict[str, Any], phase: str = "test"
+        self, input_data: npt.NDArray[np.uint8], label: int, results: Dict[str, Any], phase: str = "test"
     ) -> None:
         """Visualize LiDAR projection results.
         Args:
@@ -735,11 +734,11 @@ class CalibrationClassificationTransform(BaseTransform):
 
     def visualize_results(
         self,
-        input_data: npt.NDArray[np.float32],
+        input_data: npt.NDArray[np.uint8],
         pred_label: int,
         gt_label: int,
-        original_image: npt.NDArray[np.float32],
-        undistorted_image: npt.NDArray[np.float32],
+        original_image: npt.NDArray[np.uint8],
+        undistorted_image: npt.NDArray[np.uint8],
         frame_idx: str = None,
         sample_idx: int = None,
         phase: str = "test",
