@@ -176,6 +176,7 @@ class DeploymentConfig:
             "max_workspace_size": common_config.get("max_workspace_size", DEFAULT_WORKSPACE_SIZE),
             "fp16_mode": common_config.get("fp16_mode", False),
             "model_inputs": self.backend_config.get("model_inputs", []),
+            "strongly_typed": common_config.get("strongly_typed", False),
         }
 
 
@@ -269,7 +270,17 @@ def export_to_tensorrt(
     builder = trt.Builder(TRT_LOGGER)
 
     # Create network and config
-    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+    strongly_typed = settings.get("strongly_typed", False)
+
+    if strongly_typed:
+        flags = (1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)) | (
+            1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
+        )
+        network = builder.create_network(flags)
+        logger.info("Using strongly typed TensorRT network creation")
+    else:
+        network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+        logger.info("Using standard TensorRT network creation (EXPLICIT_BATCH only)")
     config_trt = builder.create_builder_config()
     config_trt.set_memory_pool_limit(pool=trt.MemoryPoolType.WORKSPACE, pool_size=settings["max_workspace_size"])
 
