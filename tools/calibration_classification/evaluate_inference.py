@@ -113,7 +113,6 @@ def load_sample_data_from_info_pkl(
     info_pkl_path: str,
     model_cfg: Config,
     sample_idx: int = 0,
-    force_generate_miscalibration: bool = False,
     device: str = "cpu",
     transform_test: Optional[CalibrationClassificationTransform] = None,
 ) -> torch.Tensor:
@@ -123,7 +122,6 @@ def load_sample_data_from_info_pkl(
         info_pkl_path: Path to the info.pkl file
         model_cfg: Model configuration containing data_root setting
         sample_idx: Index of the sample to load (default: 0)
-        force_generate_miscalibration: Whether to force generation of miscalibration
         device: Device to load tensor on
         transform_test: Pre-created test transform instance (optional)
     Returns:
@@ -151,7 +149,7 @@ def load_sample_data_from_info_pkl(
         transform = transform_test
 
     # Apply transform with miscalibration control
-    results = transform.transform(sample_data, force_generate_miscalibration=force_generate_miscalibration)
+    results = transform.transform(sample_data)
     input_data_processed = results["fused_img"]  # (H, W, 5)
 
     # Convert to tensor
@@ -428,7 +426,6 @@ def evaluate_model(
                 info_pkl_path,
                 model_cfg,
                 sample_idx,
-                force_generate_miscalibration=False,
                 device=device,
                 transform_test=transform_test,
             )
@@ -436,7 +433,6 @@ def evaluate_model(
                 info_pkl_path,
                 model_cfg,
                 sample_idx,
-                force_generate_miscalibration=True,
                 device=device,
                 transform_test=transform_test,
             )
