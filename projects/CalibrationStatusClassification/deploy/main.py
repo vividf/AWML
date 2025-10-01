@@ -127,7 +127,7 @@ def load_sample_data_from_info_pkl(
     transform = CalibrationClassificationTransform(
         transform_config=transform_config,
         mode="test",
-        lidar_range=model_cfg.get("lidar_range", 128.0),
+        max_depth=model_cfg.get("max_depth", 128.0),
         dilation_size=model_cfg.get("dilation_size", 1),
         undistort=True,
         miscalibration_probability=miscalibration_probability,
@@ -263,42 +263,59 @@ def _optimize_onnx_model(onnx_path: str, logger: logging.Logger) -> None:
 def export_to_tensorrt(
     onnx_path: str, output_path: str, input_tensor: torch.Tensor, config: DeploymentConfig, logger: logging.Logger
 ) -> bool:
-    """Export ONNX model to TensorRT format."""
+    """Export ONNX model to a TensorRT engine.
+
+    Notes:
+      - Always uses EXPLICIT_BATCH.
+      - If strongly_typed=True, disallows precision-changing builder flags (FP16/BF16/FP8/INT8/INT4/FP4).
+        Only TF32 is permitted (controls Tensor Cores for FP32, not dtype).
+    """
     settings = config.tensorrt_settings
+    strongly_typed = settings.get("strongly_typed", False)
+    fp16_mode = settings.get("fp16_mode", False)
+    tf32_mode = bool(settings.get("tf32_mode", False))
 
     # Initialize TensorRT
-    TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
-    trt.init_libnvinfer_plugins(TRT_LOGGER, "")
-    runtime = trt.Runtime(TRT_LOGGER)
-    builder = trt.Builder(TRT_LOGGER)
+    trt_logger = trt.Logger(trt.Logger.WARNING)
+    trt.init_libnvinfer_plugins(trt_logger, "")
+
+    builder = trt.Builder(trt_logger)
+    builder_config = builder.create_builder_config()
+    builder_config.set_memory_pool_limit(pool=trt.MemoryPoolType.WORKSPACE, pool_size=settings["max_workspace_size"])
 
     # Create network and config
-    strongly_typed = settings.get("strongly_typed", False)
+    flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+    if strongly_typed:
+        flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
+        logger.info("Using strongly typed TensorRT network creation")
+    network = builder.create_network(flags)
+
+    def _warn_if(flag_name: str, enabled: bool):
+        if enabled:
+            logger.warning(
+                f"'{flag_name}' requested but will be IGNORED because strongly_typed=True. "
+                "Strongly typed mode must derive dtypes from the model/Q-DQ/Cast."
+            )
 
     if strongly_typed:
-        flags = (1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)) | (
-            1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
-        )
-        network = builder.create_network(flags)
-        logger.info("Using strongly typed TensorRT network creation")
+        # Disallow precision-changing flags in strongly typed mode
+        _warn_if("FP16", fp16_mode)
     else:
-        network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
-        logger.info("Using standard TensorRT network creation (EXPLICIT_BATCH only)")
-    config_trt = builder.create_builder_config()
-    config_trt.set_memory_pool_limit(pool=trt.MemoryPoolType.WORKSPACE, pool_size=settings["max_workspace_size"])
+        if fp16_mode:
+            builder_config.set_flag(trt.BuilderFlag.FP16)
+            logger.info("BuilderFlag.FP16 enabled")
 
-    # Enable FP16 if specified
-    if settings["fp16_mode"]:
-        config_trt.set_flag(trt.BuilderFlag.FP16)
-        logger.info("FP16 mode enabled")
+    if tf32_mode and hasattr(trt.BuilderFlag, "TF32"):
+        builder_config.set_flag(trt.BuilderFlag.TF32)
+        logger.info("BuilderFlag.TF32 enabled")
 
     # Setup optimization profile
     profile = builder.create_optimization_profile()
     _configure_input_shapes(profile, input_tensor, settings["model_inputs"], logger)
-    config_trt.add_optimization_profile(profile)
+    builder_config.add_optimization_profile(profile)
 
     # Parse ONNX model
-    parser = trt.OnnxParser(network, TRT_LOGGER)
+    parser = trt.OnnxParser(network, trt_logger)
     with open(onnx_path, "rb") as f:
         if not parser.parse(f.read()):
             _log_parser_errors(parser, logger)
@@ -307,7 +324,7 @@ def export_to_tensorrt(
 
     # Build engine
     logger.info("Building TensorRT engine...")
-    serialized_engine = builder.build_serialized_network(network, config_trt)
+    serialized_engine = builder.build_serialized_network(network, builder_config)
 
     if serialized_engine is None:
         logger.error("Failed to build TensorRT engine")
@@ -317,9 +334,8 @@ def export_to_tensorrt(
     with open(output_path, "wb") as f:
         f.write(serialized_engine)
 
-    workspace_gb = settings["max_workspace_size"] / (1024**3)
     logger.info(f"TensorRT engine saved to {output_path}")
-    logger.info(f"Engine max workspace size: {workspace_gb:.2f} GB")
+    logger.info(f"Engine max workspace size: {settings['max_workspace_size'] / (1024**3):.2f} GB")
 
     return True
 
@@ -425,9 +441,9 @@ def run_tensorrt_inference(
         torch.cuda.empty_cache()
 
     # Load TensorRT engine
-    TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
-    trt.init_libnvinfer_plugins(TRT_LOGGER, "")
-    runtime = trt.Runtime(TRT_LOGGER)
+    trt_logger = trt.Logger(trt.Logger.WARNING)
+    trt.init_libnvinfer_plugins(trt_logger, "")
+    runtime = trt.Runtime(trt_logger)
 
     with open(tensorrt_path, "rb") as f:
         engine = runtime.deserialize_cuda_engine(f.read())
