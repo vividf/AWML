@@ -6,12 +6,15 @@ with comprehensive verification and performance benchmarking.
 
 Features:
 - ONNX export with optimization
-- TensorRT conversion
-- Dual verification (ONNX + TensorRT)
-- Performance benchmarking
+- TensorRT conversion with precision policy support
+- Dual verification (ONNX + TensorRT) on single samples
+- Full model evaluation on multiple samples with metrics
+- Performance benchmarking with latency statistics
+- Confusion matrix and per-class accuracy analysis
 """
 
 import argparse
+import gc
 import logging
 import os
 import os.path as osp
@@ -28,6 +31,7 @@ import pycuda.autoinit
 import pycuda.driver as cuda
 import tensorrt as trt
 import torch
+import torch.nn.functional as F
 from mmengine.config import Config
 from mmpretrain.apis import get_model
 
@@ -202,6 +206,11 @@ class DeploymentConfig:
         return self.deploy_cfg.get("runtime_io", {})
 
     @property
+    def evaluation_config(self) -> Dict:
+        """Get evaluation configuration (enabled, num_samples, verbose, model paths)."""
+        return self.deploy_cfg.get("evaluation", {})
+
+    @property
     def should_export_onnx(self) -> bool:
         """Check if ONNX export is requested."""
         mode = self.export_config.get("mode", "both")
@@ -277,6 +286,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-level", default="INFO", choices=list(logging._nameToLevel.keys()), help="Logging level")
     parser.add_argument("--info-pkl", help="Override info.pkl path from config")
     parser.add_argument("--sample-idx", type=int, help="Override sample index from config")
+
+    # Evaluation mode
+    parser.add_argument("--evaluate", action="store_true", help="Run full evaluation on multiple samples")
+    parser.add_argument(
+        "--num-samples", type=int, default=10, help="Number of samples to evaluate (only with --evaluate)"
+    )
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging during evaluation")
+
     return parser.parse_args()
 
 
@@ -651,6 +668,292 @@ def run_verification(
     logger.info("=" * 50)
 
 
+def evaluate_exported_model(
+    model_path: str,
+    model_type: str,
+    model_cfg: Config,
+    info_pkl_path: str,
+    logger: logging.Logger,
+    device: str = "cpu",
+    num_samples: int = 10,
+    verbose: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Evaluate exported model (ONNX or TensorRT) using info.pkl data.
+
+    Args:
+        model_path: Path to model file (.onnx or .engine)
+        model_type: Type of model ("onnx" or "tensorrt")
+        model_cfg: Model configuration
+        info_pkl_path: Path to info.pkl file
+        logger: Logger instance
+        device: Device for preprocessing
+        num_samples: Number of samples to evaluate
+        verbose: Enable verbose logging
+
+    Returns:
+        Tuple of (predictions, ground_truth, probabilities, latencies)
+    """
+
+    # Load info.pkl data
+    try:
+        with open(info_pkl_path, "rb") as f:
+            info_data = pickle.load(f)
+
+        if "data_list" not in info_data:
+            raise ValueError("Expected 'data_list' key in info.pkl")
+
+        samples_list = info_data["data_list"]
+        logger.info(f"Loaded {len(samples_list)} samples from info.pkl")
+
+        # Limit number of samples for evaluation
+        num_samples = min(num_samples, len(samples_list))
+        logger.info(f"Evaluating {num_samples} samples")
+
+    except Exception as e:
+        logger.error(f"Failed to load info.pkl: {e}")
+        raise
+
+    # Initialize transform once and reuse it for all samples
+    data_root = model_cfg.get("data_root", None)
+    if data_root is None:
+        raise ValueError("data_root not found in model configuration")
+
+    transform_config = model_cfg.get("transform_config", None)
+    if transform_config is None:
+        raise ValueError("transform_config not found in model configuration")
+
+    transform = CalibrationClassificationTransform(
+        transform_config=transform_config,
+        mode="test",
+        max_depth=model_cfg.get("max_depth", 128.0),
+        dilation_size=model_cfg.get("dilation_size", 1),
+        undistort=True,
+        miscalibration_probability=0.0,  # Will be updated per sample
+        enable_augmentation=False,
+        data_root=data_root,
+        projection_vis_dir=None,
+        results_vis_dir=None,
+        binary_save_dir=None,
+    )
+
+    # Initialize inference engine
+    if model_type == "onnx":
+        logger.info(f"Using ONNX model: {model_path}")
+        logger.info("Creating ONNX InferenceSession...")
+
+        # Configure execution providers
+        if device.startswith("cuda"):
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            logger.info("Attempting to use CUDA acceleration for ONNX inference...")
+            try:
+                available_providers = ort.get_available_providers()
+                if "CUDAExecutionProvider" not in available_providers:
+                    logger.warning(
+                        f"CUDAExecutionProvider not available. Available: {available_providers}. "
+                        "Install onnxruntime-gpu for CUDA acceleration"
+                    )
+                    providers = ["CPUExecutionProvider"]
+                else:
+                    logger.info("CUDAExecutionProvider is available")
+            except Exception as e:
+                logger.warning(f"Error checking CUDA provider: {e}. Falling back to CPU")
+                providers = ["CPUExecutionProvider"]
+        else:
+            providers = ["CPUExecutionProvider"]
+            logger.info("Using CPU for ONNX inference")
+
+        # Create session once and reuse it
+        ort_session = ort.InferenceSession(model_path, providers=providers)
+        logger.info(f"ONNX session using providers: {ort_session.get_providers()}")
+
+        # Define inference function
+        def inference_func(input_tensor):
+            input_name = ort_session.get_inputs()[0].name
+            onnx_input = {input_name: input_tensor.cpu().numpy()}
+            start_time = time.perf_counter()
+            onnx_output = ort_session.run(None, onnx_input)[0]
+            latency = (time.perf_counter() - start_time) * 1000
+            return onnx_output, latency
+
+    elif model_type == "tensorrt":
+        logger.info(f"Using TensorRT model: {model_path}")
+
+        # Load TensorRT engine
+        trt_logger = trt.Logger(trt.Logger.WARNING)
+        trt.init_libnvinfer_plugins(trt_logger, "")
+        runtime = trt.Runtime(trt_logger)
+
+        with open(model_path, "rb") as f:
+            engine = runtime.deserialize_cuda_engine(f.read())
+
+        if engine is None:
+            raise RuntimeError("Failed to deserialize TensorRT engine")
+
+        # Define inference function
+        def inference_func(input_tensor):
+            return _run_tensorrt_inference(engine, input_tensor.cpu(), logger)
+
+    else:
+        raise ValueError(f"Unsupported model type: {model_type}")
+
+    # Lists to store results
+    all_predictions = []
+    all_ground_truth = []
+    all_probabilities = []
+    all_latencies = []
+
+    # Evaluate samples
+    for sample_idx in range(num_samples):
+        if sample_idx % 5 == 0:
+            logger.info(f"Processing sample {sample_idx + 1}/{num_samples}")
+
+        try:
+            # Test both calibrated and miscalibrated versions
+            for miscalibration_prob, expected_label in [(0.0, 1), (1.0, 0)]:
+                # Update transform's miscalibration probability
+                transform.miscalibration_probability = miscalibration_prob
+
+                # Load and preprocess sample
+                sample_data = load_info_pkl_data(info_pkl_path, sample_idx)
+                sample_data["sample_idx"] = sample_idx
+
+                results = transform.transform(sample_data)
+                input_data_processed = results["fused_img"]
+                gt_label = results["gt_label"]
+
+                # Convert to tensor
+                input_tensor = torch.from_numpy(input_data_processed).permute(2, 0, 1).float()
+                input_tensor = input_tensor.unsqueeze(0).to(device)
+
+                # Run inference
+                output_np, latency = inference_func(input_tensor)
+
+                if output_np is None:
+                    logger.error(f"Failed to get output for sample {sample_idx}")
+                    continue
+
+                # Convert logits to probabilities
+                logits = torch.from_numpy(output_np)
+                probabilities = F.softmax(logits, dim=-1)
+                predicted_class = torch.argmax(probabilities, dim=-1).item()
+                confidence = probabilities.max().item()
+
+                # Store results
+                all_predictions.append(predicted_class)
+                all_ground_truth.append(gt_label)
+                all_probabilities.append(probabilities.cpu().numpy())
+                all_latencies.append(latency)
+
+                # Print sample results only in verbose mode
+                if verbose:
+                    logger.info(
+                        f"Sample {sample_idx + 1} (GT={gt_label}): "
+                        f"Pred={predicted_class}, Confidence={confidence:.4f}, Latency={latency:.2f}ms"
+                    )
+
+            # Clear GPU memory periodically
+            if model_type == "tensorrt" and sample_idx % 10 == 0:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+        except Exception as e:
+            logger.error(f"Error processing sample {sample_idx}: {e}")
+            continue
+
+    return (
+        np.array(all_predictions),
+        np.array(all_ground_truth),
+        np.array(all_probabilities),
+        np.array(all_latencies),
+    )
+
+
+def print_evaluation_results(
+    all_predictions: np.ndarray,
+    all_ground_truth: np.ndarray,
+    all_probabilities: np.ndarray,
+    all_latencies: np.ndarray,
+    model_type: str,
+    logger: logging.Logger,
+) -> None:
+    """Print comprehensive evaluation results with metrics and statistics."""
+
+    if len(all_predictions) == 0:
+        logger.error("No samples were processed successfully.")
+        return
+
+    correct_predictions = (all_predictions == all_ground_truth).sum()
+    total_samples = len(all_predictions)
+    accuracy = correct_predictions / total_samples
+    avg_latency = np.mean(all_latencies)
+
+    # Print header
+    logger.info(f"\n{'='*60}")
+    logger.info(f"{model_type.upper()} Model Evaluation Results")
+    logger.info(f"{'='*60}")
+    logger.info(f"Total samples: {total_samples}")
+    logger.info(f"Correct predictions: {correct_predictions}")
+    logger.info(f"Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+    logger.info(f"Average latency: {avg_latency:.2f} ms")
+
+    # Calculate per-class accuracy
+    unique_classes = np.unique(all_ground_truth)
+    logger.info(f"\nPer-class accuracy:")
+    for cls in unique_classes:
+        cls_mask = all_ground_truth == cls
+        cls_correct = (all_predictions[cls_mask] == all_ground_truth[cls_mask]).sum()
+        cls_total = cls_mask.sum()
+        cls_accuracy = cls_correct / cls_total if cls_total > 0 else 0
+        logger.info(
+            f"  Class {cls} ({LABELS[str(cls)]}): "
+            f"{cls_correct}/{cls_total} = {cls_accuracy:.4f} ({cls_accuracy*100:.2f}%)"
+        )
+
+    # Calculate average confidence
+    avg_confidence = np.mean([prob.max() for prob in all_probabilities])
+    logger.info(f"\nAverage confidence: {avg_confidence:.4f}")
+
+    # Calculate latency statistics
+    min_latency = np.min(all_latencies)
+    max_latency = np.max(all_latencies)
+    std_latency = np.std(all_latencies)
+    p50_latency = np.percentile(all_latencies, 50)
+    p95_latency = np.percentile(all_latencies, 95)
+    p99_latency = np.percentile(all_latencies, 99)
+
+    logger.info(f"\nLatency Statistics:")
+    logger.info(f"  Average: {avg_latency:.2f} ms")
+    logger.info(f"  Median (P50): {p50_latency:.2f} ms")
+    logger.info(f"  P95: {p95_latency:.2f} ms")
+    logger.info(f"  P99: {p99_latency:.2f} ms")
+    logger.info(f"  Min: {min_latency:.2f} ms")
+    logger.info(f"  Max: {max_latency:.2f} ms")
+    logger.info(f"  Std: {std_latency:.2f} ms")
+
+    # Show confusion matrix
+    logger.info(f"\nConfusion Matrix:")
+    logger.info(f"{'':>10} Predicted")
+    logger.info(f"{'Actual':>10} {'0 (misc)':>10} {'1 (calib)':>10}")
+    logger.info(f"{'-'*32}")
+    for true_cls in unique_classes:
+        row_label = f"{true_cls} ({LABELS[str(true_cls)][:4]})"
+        row = [f"{row_label:>10}"]
+        for pred_cls in unique_classes:
+            count = ((all_ground_truth == true_cls) & (all_predictions == pred_cls)).sum()
+            row.append(f"{count:>10}")
+        logger.info(" ".join(row))
+
+    logger.info(f"\n{'='*60}")
+    logger.info(f"Evaluation Summary:")
+    logger.info(f"  Model Type: {model_type.upper()}")
+    logger.info(f"  Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+    logger.info(f"  Avg Latency: {avg_latency:.2f} ms")
+    logger.info(f"  Throughput: {1000/avg_latency:.2f} samples/sec")
+    logger.info(f"{'='*60}\n")
+
+
 def main():
     """Main deployment function."""
     args = parse_args()
@@ -750,6 +1053,93 @@ def main():
         trt_path_for_verify = trt_path if config.should_export_tensorrt else None
 
         run_verification(model, onnx_path_for_verify, trt_path_for_verify, input_tensors, logger)
+
+    # Get evaluation settings from config and CLI
+    eval_cfg = config.evaluation_config
+    should_evaluate = args.evaluate or eval_cfg.get("enabled", False)
+    num_samples = args.num_samples if args.num_samples != 10 else eval_cfg.get("num_samples", 10)
+    verbose_mode = args.verbose or eval_cfg.get("verbose", False)
+
+    # Run full evaluation if requested
+    if should_evaluate:
+        logger.info(f"\n{'='*60}")
+        logger.info("Starting full model evaluation...")
+        logger.info(f"{'='*60}")
+
+        # Determine which models to evaluate
+        models_to_evaluate = []
+
+        # Check for ONNX model (config-specified or auto-detected)
+        eval_onnx_path = eval_cfg.get("onnx_model")
+        if eval_onnx_path:
+            # Use config-specified ONNX model
+            if osp.exists(eval_onnx_path):
+                models_to_evaluate.append(("onnx", eval_onnx_path))
+                logger.info(f"Using config-specified ONNX model: {eval_onnx_path}")
+            else:
+                logger.warning(f"Config-specified ONNX model not found: {eval_onnx_path}")
+        elif config.should_export_onnx or existing_onnx:
+            # Auto-detect exported ONNX model
+            if onnx_path and osp.exists(onnx_path):
+                models_to_evaluate.append(("onnx", onnx_path))
+            else:
+                logger.warning(f"ONNX model not found at {onnx_path}, skipping ONNX evaluation")
+
+        # Check for TensorRT model (config-specified or auto-detected)
+        eval_trt_path = eval_cfg.get("tensorrt_model")
+        if eval_trt_path:
+            # Use config-specified TensorRT model
+            if osp.exists(eval_trt_path):
+                models_to_evaluate.append(("tensorrt", eval_trt_path))
+                logger.info(f"Using config-specified TensorRT model: {eval_trt_path}")
+            else:
+                logger.warning(f"Config-specified TensorRT model not found: {eval_trt_path}")
+        elif config.should_export_tensorrt:
+            # Auto-detect exported TensorRT model
+            if trt_path and osp.exists(trt_path):
+                models_to_evaluate.append(("tensorrt", trt_path))
+            else:
+                logger.warning(f"TensorRT model not found at {trt_path}, skipping TensorRT evaluation")
+
+        if not models_to_evaluate:
+            logger.error(
+                "No models available for evaluation. Please export models first or specify model paths in config."
+            )
+        else:
+            # Evaluate each model
+            for model_type, model_path in models_to_evaluate:
+                logger.info(f"\nEvaluating {model_type.upper()} model...")
+                logger.info(f"Model path: {model_path}")
+                logger.info(f"Number of samples: {num_samples}")
+                logger.info(f"Verbose mode: {verbose_mode}")
+
+                try:
+                    # Run evaluation
+                    predictions, ground_truth, probabilities, latencies = evaluate_exported_model(
+                        model_path=model_path,
+                        model_type=model_type,
+                        model_cfg=model_cfg,
+                        info_pkl_path=info_pkl,
+                        logger=logger,
+                        device=device.type if isinstance(device, torch.device) else device,
+                        num_samples=num_samples,
+                        verbose=verbose_mode,
+                    )
+
+                    # Print results
+                    print_evaluation_results(predictions, ground_truth, probabilities, latencies, model_type, logger)
+
+                    # Cleanup
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    gc.collect()
+
+                except Exception as e:
+                    logger.error(f"Evaluation failed for {model_type.upper()} model: {e}")
+                    import traceback
+
+                    logger.error(traceback.format_exc())
+                    continue
 
     logger.info("Deployment completed successfully!")
 

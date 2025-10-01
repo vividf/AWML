@@ -31,6 +31,20 @@ runtime_io = dict(
 )
 
 # ==============================================================================
+# Evaluation Configuration
+# ==============================================================================
+evaluation = dict(
+    enabled=True,  # Enable full model evaluation (set to True to run evaluation)
+    num_samples=100,  # Number of samples to evaluate from info.pkl
+    verbose=True,  # Enable verbose logging showing per-sample results
+    # Optional: Specify models to evaluate (if None, uses exported models from work_dir)
+    onnx_model="/workspace/work_dirs/end2end.onnx",  # Path to ONNX model file to evaluate (e.g., "/path/to/model.onnx")
+    tensorrt_model="/workspace/work_dirs/end2end.engine",  # Path to TensorRT engine file to evaluate (e.g., "/path/to/model.engine")
+    # Note: If models are None, will automatically detect and evaluate exported models
+    # Note: Command line args (--evaluate, --num-samples, --verbose) override these settings
+)
+
+# ==============================================================================
 # Codebase Configuration
 # ==============================================================================
 codebase_config = dict(type="mmpretrain", task="Classification", model_type="end2end")
@@ -101,13 +115,28 @@ onnx_config = dict(
 #   2) Set runtime_io.onnx_file = "/path/to/existing/model.onnx"
 #   3) Run the command above
 #
+# Enable evaluation in config:
+#   1) Set evaluation.enabled = True
+#   2) Set evaluation.num_samples = 100  # Adjust as needed
+#   3) Optionally set evaluation.onnx_model and/or evaluation.tensorrt_model
+#   4) Run the command above
+#
+# Evaluate specific models:
+#   1) Set evaluation.enabled = True
+#   2) Set evaluation.onnx_model = "/path/to/model.onnx"
+#   3) Set evaluation.tensorrt_model = "/path/to/model.engine"
+#   4) Run the command above
+#
 # Override config settings via command line:
 #   python projects/CalibrationStatusClassification/deploy/main.py \
 #       <deploy_cfg> <model_cfg> <checkpoint> \
 #       --work-dir ./custom_output \
 #       --device cuda:1 \
 #       --info-pkl /path/to/custom/info.pkl \
-#       --sample-idx 5
+#       --sample-idx 5 \
+#       --evaluate \
+#       --num-samples 50 \
+#       --verbose
 #
 # Available precision policies:
 #   - auto: Let TensorRT decide (default, good balance)

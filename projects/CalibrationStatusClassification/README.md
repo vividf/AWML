@@ -66,13 +66,79 @@ python tools/calibration_classification/train.py projects/CalibrationStatusClass
 
 ### 5. Deploy
 
-Example commands for deployment (modify paths if needed):
+The deployment script supports model export, verification, and evaluation.
 
-- Custom script (with verification):
+#### 5.1 Basic Export (ONNX and TensorRT)
+
+Export model to ONNX and TensorRT formats:
 
 ```sh
-python projects/CalibrationStatusClassification/deploy/main.py projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py checkpoint.pth --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl --sample_idx 0 --device cuda:0 --work-dir /workspace/work_dirs/ --verify
+python projects/CalibrationStatusClassification/deploy/main.py \
+  projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
+  projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
+  checkpoint.pth \
+  --info-pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl \
+  --device cuda:0 \
+  --work-dir ./work_dirs/
 ```
+
+#### 5.2 Export with Verification
+
+Verify exported models against PyTorch reference on single sample:
+
+```sh
+python projects/CalibrationStatusClassification/deploy/main.py \
+  projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
+  projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
+  checkpoint.pth \
+  --info-pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl \
+  --sample-idx 0 \
+  --device cuda:0 \
+  --work-dir ./work_dirs/ \
+  --verify
+```
+
+#### 5.3 Full Model Evaluation
+
+Evaluate exported models on multiple samples with comprehensive metrics:
+
+```sh
+python projects/CalibrationStatusClassification/deploy/main.py \
+  projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
+  projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
+  checkpoint.pth \
+  --info-pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl \
+  --device cuda:0 \
+  --work-dir ./work_dirs/ \
+  --evaluate \
+  --num-samples 50 \
+  --verbose
+```
+
+**Evaluation output includes:**
+- Overall accuracy and per-class accuracy
+- Confusion matrix
+- Latency statistics (mean, median, P95, P99, min, max, std)
+- Throughput (samples/sec)
+
+#### 5.4 Evaluate Existing Models (without re-export)
+
+To evaluate previously exported models without re-exporting:
+
+```sh
+# Evaluate ONNX model
+python projects/CalibrationStatusClassification/deploy/main.py \
+  projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
+  projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
+  checkpoint.pth \
+  --info-pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl \
+  --device cuda:0 \
+  --work-dir ./work_dirs/ \
+  --evaluate \
+  --num-samples 100
+```
+
+**Note:** The script will automatically detect and evaluate existing ONNX/TensorRT models in the work directory.
 
 ## Troubleshooting
 

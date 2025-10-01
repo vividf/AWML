@@ -154,29 +154,16 @@ def run_onnx_inference(
     logger: logging.Logger,
 ) -> Tuple[np.ndarray, float]:
     """Run ONNX inference directly and return output and latency."""
-    # Convert input tensor to float32
-    input_tensor = input_tensor.float()
-
-    # Debug: Print input tensor info before preprocessing
-    logger.debug(
-        f"Input tensor before preprocessing - Shape: {input_tensor.shape}, Dtype: {input_tensor.dtype}, Min: {input_tensor.min():.4f}, Max: {input_tensor.max():.4f}"
-    )
-
-    # Add batch dimension if needed (ONNX expects 4D input: batch, channels, height, width)
-    if input_tensor.dim() == 3:
-        input_tensor = input_tensor.unsqueeze(0)  # Add batch dimension
-        logger.debug(f"Added batch dimension - Shape: {input_tensor.shape}")
-
     # Get input name from session
     input_name = ort_session.get_inputs()[0].name
-    onnx_input = {input_name: input_tensor.cpu().numpy().astype(np.float32)}
+
+    # Convert to numpy (input_tensor is already in correct shape from load_sample_data_from_info_pkl)
+    onnx_input = {input_name: input_tensor.cpu().numpy()}
 
     start_time = time.perf_counter()
     onnx_output = ort_session.run(None, onnx_input)[0]
     end_time = time.perf_counter()
     onnx_latency = (end_time - start_time) * 1000
-
-    logger.info(f"ONNX inference latency: {onnx_latency:.2f} ms")
 
     # Ensure onnx_output is numpy array
     if not isinstance(onnx_output, np.ndarray):
@@ -217,11 +204,18 @@ def run_tensorrt_inference(engine, input_tensor: torch.Tensor, logger: logging.L
             raise RuntimeError("Could not find input/output tensor names")
 
         # Prepare arrays
-        # Convert torch tensor to numpy (handle both CPU and CUDA tensors)
-        if hasattr(input_tensor, "cpu"):
-            input_np = input_tensor.cpu().numpy().astype(np.float32)
-        else:
-            input_np = input_tensor.astype(np.float32)
+        # Convert torch tensor to numpy (input_tensor is guaranteed to be on CPU)
+        input_np = input_tensor.numpy().astype(np.float32)
+
+        # Validate input data quality
+        if np.isnan(input_np).any():
+            raise ValueError(f"Input contains NaN values")
+        if np.isinf(input_np).any():
+            raise ValueError(f"Input contains Inf values")
+
+        logger.debug(
+            f"Input data stats: min={input_np.min():.4f}, max={input_np.max():.4f}, mean={input_np.mean():.4f}"
+        )
 
         if not input_np.flags["C_CONTIGUOUS"]:
             input_np = np.ascontiguousarray(input_np)
@@ -429,12 +423,9 @@ def evaluate_model(
         inference_func = lambda input_tensor: run_onnx_inference(ort_session, input_tensor, logger)
     elif model_type == "tensorrt":
         logger.info(f"Using TensorRT model: {model_path}")
-        # TensorRT has its own CUDA memory management, force CPU device for data preparation
-        # if device != "cpu":
-        #     logger.warning(f"TensorRT inference requires CPU device for data preparation. Overriding device from '{device}' to 'cpu'")
-        #     device = "cpu"
         engine = load_tensorrt_engine(model_path, logger)
-        inference_func = lambda input_tensor: run_tensorrt_inference(engine, input_tensor, logger)
+        # TensorRT requires CPU tensors - it manages GPU memory internally
+        inference_func = lambda input_tensor: run_tensorrt_inference(engine, input_tensor.cpu(), logger)
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
 
@@ -622,8 +613,8 @@ def main():
         "--device",
         type=str,
         default="cpu",
-        choices=["cpu", "cuda"],
-        help="Device to use for inference. For ONNX: enables CUDA acceleration (requires onnxruntime-gpu). For TensorRT: always uses CUDA internally regardless of this setting.",
+        choices=["cpu", "cuda:0"],
+        help="Device to use for data preprocessing. For ONNX: also enables CUDA acceleration if onnxruntime-gpu is installed. For TensorRT: data is always transferred to CPU before inference (TensorRT manages GPU memory internally).",
     )
     parser.add_argument(
         "--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Logging level"
