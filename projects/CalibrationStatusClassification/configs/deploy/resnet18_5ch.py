@@ -4,7 +4,8 @@ backend_config = dict(
     type="tensorrt",
     common_config=dict(
         max_workspace_size=1 << 30,
-        fp16_mode=True,
+        fp16_mode=False,
+        tf32_mode=False,
         strongly_typed=False,
     ),
     model_inputs=[
