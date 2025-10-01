@@ -5,14 +5,14 @@ It contains training, evaluation, and visualization for Calibration classificati
 
 - [Support priority](https://github.com/tier4/AWML/blob/main/docs/design/autoware_ml_design.md#support-priority): Tier B
 - Supported dataset
-  - [] NuScenes
+  - [ ] NuScenes
   - [x] T4dataset
 - Other supported feature
   - [ ] Add unit test
 
 ## 1. Setup environment
 
-Please follow the [installation tutorial](/docs/tutorial/tutorial_detection_3d.md)to set up the environment.
+Please follow the [installation tutorial](/docs/tutorial/tutorial_detection_3d.md) to set up the environment.
 
 ## 2. Prepare dataset
 
@@ -26,7 +26,7 @@ Prepare the dataset you use.
 docker run -it --rm --gpus --shm-size=64g --name awml -p 6006:6006 -v $PWD/:/workspace -v $PWD/data:/workspace/data autoware-ml
 ```
 
-- Make info files for T4dataset X2 Gen2
+- Create info files for T4dataset X2 Gen2
 
 ```sh
 python tools/calibration_classification/create_data_t4dataset.py --config /workspace/autoware_ml/configs/calibration_classification/dataset/t4dataset/gen2_base.py --version gen2_base --root_path ./data/t4dataset -o ./data/t4dataset/calibration_info/
@@ -124,19 +124,19 @@ Each file contains calibration information including:
 
 ```sh
 # Process all samples from info.pkl
-python tools/calibration_classification/visualize_lidar_camera_projection.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py --info_pkl data/info.pkl --data_root data/ --output_dir ./work_dirs/calibration_visualization
+python tools/calibration_classification/toolkit.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py --info_pkl data/info.pkl --data_root data/ --output_dir ./work_dirs/calibration_visualization
 
 # Process specific sample
-python tools/calibration_classification/visualize_lidar_camera_projection.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py --info_pkl data/info.pkl --data_root data/ --output_dir ./work_dirs/calibration_visualization --sample_idx 0
+python tools/calibration_classification/toolkit.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py --info_pkl data/info.pkl --data_root data/ --output_dir ./work_dirs/calibration_visualization --sample_idx 0
 
 # Process specific indices
-python tools/calibration_classification/visualize_lidar_camera_projection.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py --info_pkl data/info.pkl --data_root data/ --output_dir ./work_dirs/calibration_visualization --indices 0 1 2
+python tools/calibration_classification/toolkit.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py --info_pkl data/info.pkl --data_root data/ --output_dir ./work_dirs/calibration_visualization --indices 0 1 2
 ```
 
 - For T4dataset visualization:
 
 ```sh
-python tools/calibration_classification/visualize_lidar_camera_projection.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl --data_root data/t4dataset --output_dir ./work_dirs/calibration_visualization
+python tools/calibration_classification/toolkit.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl --data_root data/t4dataset --output_dir ./work_dirs/calibration_visualization
 ```
 
 ## 3. Visualization Settings (During training, validation, testing)
@@ -174,7 +174,7 @@ dict(
 
 ### 3.3. Usage Strategy
 
-**Training/Validataion Phase:**
+**Training/Validation Phase:**
 - Disable visualization for efficiency: `projection_vis_dir=None`, `results_vis_dir=None`
 - Focus on model training performance
 
@@ -188,8 +188,8 @@ dict(
 - `results_vis_dir/`: Classification results with predicted labels
 
 ## 4. Train
-### 4.1. Environment set up
-Set `CUBLAS_WORKSPACE_CONFIG` for the deterministic behavior, plese check this [nvidia doc](https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility) for more info
+### 4.1. Environment Setup
+Set `CUBLAS_WORKSPACE_CONFIG` for deterministic behavior, please check this [nvidia doc](https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility) for more info
 
 ```sh
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
@@ -214,16 +214,16 @@ python tools/calibration_classification/train.py projects/CalibrationStatusClass
 docker run -it --rm --gpus --name autoware-ml --shm-size=64g -d -v $PWD/:/workspace -v $PWD/data:/workspace/data autoware-ml bash -c 'python tools/calibration_classification/train.py {config_file}'
 ```
 
-### 4.3. Log analysis by Tensorboard
+### 4.3. Log Analysis with TensorBoard
 
-- Run the TensorBoard and navigate to http://127.0.0.1:6006/
+- Run TensorBoard and navigate to http://127.0.0.1:6006/
 
 ```sh
 tensorboard --logdir work_dirs --bind_all
 ```
 
-## 5. Analyze
-### 5.1. Evaluation Pytorch
+## 5. Evaluation
+### 5.1. PyTorch Model Evaluation
 
 - Evaluation
 
@@ -238,56 +238,138 @@ python tools/calibration_classification/test.py projects/CalibrationStatusClassi
 
 
 ## 6. Deployment
-This directory contains scripts for evaluating calibration classification models in different formats.
 
-### 6.1 Convert from Pytorch to ONNX and TensorRT
-```sh
-python projects/CalibrationStatusClassification/deploy/main.py projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py checkpoint.pth --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl --sample_idx 0 --device cuda:0 --work-dir /workspace/work_dirs/ --verify --onnx --tensorrt
-```
+The deployment system supports exporting models to ONNX and TensorRT formats with a unified configuration approach.
 
-### 6.1.1 Convert from Pytorch to ONNX
-```sh
-python projects/CalibrationStatusClassification/deploy/main.py projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py checkpoint.pth --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl --sample_idx 0 --device cuda:0 --work-dir /workspace/work_dirs/ --verify --onnx
-```
+### 6.1. Deployment Configuration
 
-### 6.1.2 Convert from ONNX to TensorRT
-```sh
-# Without verification (checkpoint not needed)
-python projects/CalibrationStatusClassification/deploy/main.py projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py dummy.pth --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl --sample_idx 0 --device cuda:0 --work-dir /workspace/work_dirs/ --tensorrt --onnx-file model.onnx
+The deployment uses a **config-first approach** where all settings are defined in the deployment config file. The config has three main sections:
 
-# With verification (checkpoint required for reference)
-python projects/CalibrationStatusClassification/deploy/main.py projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py checkpoint.pth --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl --sample_idx 0 --device cuda:0 --work-dir /workspace/work_dirs/ --verify --tensorrt --onnx-file model.onnx
-```
-
-**Note:** When converting from ONNX to TensorRT without `--verify`, the checkpoint file is not actually used (you can use a dummy filename). However, with `--verify`, a valid checkpoint is required to compare outputs.
-
-
-
-
-### 6.2 Evaluate ONNX and tensorrt
-
-##### ONNX Model Evaluation
-```bash
-python tools/calibration_classification/evaluate_inference.py --onnx work_dirs/end2end.onnx --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py --info-pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl
-```
-
-##### TensorRT Model Evaluation
-```bash
-python tools/calibration_classification/evaluate_inference.py --tensorrt work_dirs/end2end.quant.engine --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py --info-pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl
-```
-
-
-
-
-### 6.3 INT8 Optimization
-
-Set the number of image you want for calibration. Note that you need to consider the size of your memory.
-For 32 GB, the most you can do is 1860 x 2880 x 5 x 4 Bytes / 32 GB
-
-Thus, please limit the calibration data with the indices parameters
+#### Configuration Structure
 
 ```python
-python tools/calibration_classification/visualize_lidar_camera_projection.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_train.pkl --data_root data/t4dataset --output_dir /vis --npz_output_path calibration_file.npz --indices 200
+# Export configuration - controls export behavior
+export = dict(
+    mode="both",                       # "onnx", "trt", or "both"
+    verify=True,                       # Run verification comparing outputs
+    device="cuda:0",                   # Device for export
+    work_dir="/workspace/work_dirs",   # Output directory
+)
+
+# Runtime I/O configuration - data paths
+runtime_io = dict(
+    info_pkl="data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl",
+    sample_idx=0,                      # Sample for export/verification
+    onnx_file=None,                    # Optional: existing ONNX path
+)
+
+# TensorRT backend configuration
+backend_config = dict(
+    type="tensorrt",
+    common_config=dict(
+        max_workspace_size=1 << 30,    # 1 GiB
+        precision_policy="auto",        # Precision policy (see below)
+    ),
+    model_inputs=[...],                 # Dynamic shape configuration
+)
+```
+
+#### Precision Policies
+
+Control TensorRT inference precision with the `precision_policy` parameter:
+
+| Policy | Description | Use Case |
+|--------|-------------|----------|
+| `auto` | TensorRT decides automatically | Default, FP32 |
+| `fp16` | Half-precision floating point | 2x faster, small accuracy loss |
+| `fp32_tf32` | Tensor Cores for FP32 | Ampere+ GPUs, FP32 speedup |
+| `strongly_typed` | Enforces explicit type constraints, preserves QDQ (Quantize-Dequantize) nodes | INT8 quantized models from QAT or PTQ with explicit Q/DQ ops |
+
+### 6.2. Basic Usage
+
+#### Export to Both ONNX and TensorRT
+
+All settings come from the config file:
+
+```sh
+python projects/CalibrationStatusClassification/deploy/main.py \
+    projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
+    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
+    checkpoint.pth
+```
+
+#### Override Config Settings via CLI
+
+```sh
+python projects/CalibrationStatusClassification/deploy/main.py \
+    projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
+    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
+    checkpoint.pth \
+    --work-dir ./custom_output \
+    --device cuda:1 \
+    --info-pkl /path/to/custom/info.pkl \
+    --sample-idx 5
+```
+
+### 6.3. Export Modes
+
+#### Export to ONNX Only
+
+In config file, set `export.mode = "onnx"`.
+
+
+#### Convert Existing ONNX to TensorRT
+
+In config file:
+- Set `export.mode = "trt"`
+- Set `runtime_io.onnx_file = "/path/to/model.onnx"`
+
+
+**Note:** The checkpoint is used for verification. To skip verification, set `export.verify = False` in config.
+
+
+
+
+
+
+### 6.4. Evaluate ONNX and TensorRT Models
+
+#### ONNX Model Evaluation
+
+```bash
+python tools/calibration_classification/evaluate_inference.py \
+    --onnx work_dirs/end2end.onnx \
+    --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py \
+    --info-pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl
+```
+
+#### TensorRT Model Evaluation
+
+```bash
+python tools/calibration_classification/evaluate_inference.py \
+    --tensorrt work_dirs/end2end.engine \
+    --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py \
+    --info-pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl
+```
+
+#### Command Line Arguments
+
+- `--onnx`: Path to ONNX model file (mutually exclusive with `--tensorrt`)
+- `--tensorrt`: Path to TensorRT engine file (mutually exclusive with `--onnx`)
+- `--model-cfg`: Path to model config file
+- `--info-pkl`: Path to dataset info file
+- `--device`: Device to use for inference (`cpu` or `cuda`, default: `cpu`)
+- `--log-level`: Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, default: `INFO`)
+
+### 6.5. INT8 Quantization
+
+Set the number of images you want for calibration. Note that you need to consider the size of your memory.
+For 32 GB memory, the maximum you can use is approximately: 1860 x 2880 x 5 x 4 Bytes / 32 GB
+
+Therefore, please limit the calibration data using the indices parameter
+
+```python
+python tools/calibration_classification/toolkit.py  projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_train.pkl --data_root data/t4dataset --output_dir /vis --npz_output_path calibration_file.npz --indices 200
 ```
 
 
@@ -298,15 +380,5 @@ docker run -it --rm --gpus all --shm-size=32g --name awml-opt -p 6006:6006 -v $P
 # Access the optimization docker
 python3 -m modelopt.onnx.quantization --onnx_path=end2end.onnx --quantize_mode=int8 --calibration_data_path=calibration_file.npz
 
-# After getting the end2en2.quant.onnx, you can evaluate with quant onnx or engine
+# After getting the end2end.quant.onnx, you can evaluate with quant onnx or conver to int8 engine by following section 6.3
 ```
-
-
-
-#### Command Line Arguments
-
-- `--onnx`: Path to ONNX model file (mutually exclusive with `--tensorrt`)
-- `--tensorrt`: Path to TensorRT engine file (mutually exclusive with `--onnx`)
-- `--model-cfg`: Path to model config file (default: `projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py`)
-- `--device`: Device to use for inference (`cpu` or `cuda`, default: `cpu`)
-- `--log-level`: Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, default: `INFO`)

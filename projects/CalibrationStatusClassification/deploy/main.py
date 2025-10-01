@@ -41,6 +41,15 @@ DEFAULT_WORKSPACE_SIZE = 1 << 30  # 1 GB
 EXPECTED_CHANNELS = 5  # RGB + Depth + Intensity
 LABELS = {"0": "miscalibrated", "1": "calibrated"}
 
+# Precision policy mapping
+PRECISION_POLICIES = {
+    "auto": {},  # No special flags, TensorRT decides
+    "fp16": {"FP16": True},
+    "fp32_tf32": {"TF32": True},  # TF32 for FP32 operations
+    "explicit_int8": {"INT8": True},
+    "strongly_typed": {"STRONGLY_TYPED": True},  # Network creation flag
+}
+
 
 def load_info_pkl_data(info_pkl_path: str, sample_idx: int = 0) -> Dict[str, Any]:
     """
@@ -150,36 +159,105 @@ def load_sample_data_from_info_pkl(
 
 
 class DeploymentConfig:
-    """Configuration container for deployment settings."""
+    """Enhanced configuration container for deployment settings with validation."""
 
     def __init__(self, deploy_cfg: Config):
         self.deploy_cfg = deploy_cfg
-        self.backend_config = deploy_cfg.get("backend_config", {})
-        self.onnx_config = deploy_cfg.get("onnx_config", {})
+        self._validate_config()
+
+    def _validate_config(self) -> None:
+        """Validate configuration structure and required fields."""
+        if "export" not in self.deploy_cfg:
+            raise ValueError(
+                "Missing 'export' section in deploy config. "
+                "Please update your config to the new format with 'export', 'runtime_io' sections."
+            )
+
+        if "runtime_io" not in self.deploy_cfg:
+            raise ValueError("Missing 'runtime_io' section in deploy config.")
+
+        # Validate export mode
+        valid_modes = ["onnx", "trt", "both"]
+        mode = self.export_config.get("mode", "both")
+        if mode not in valid_modes:
+            raise ValueError(f"Invalid export mode '{mode}'. Must be one of {valid_modes}")
+
+        # Validate precision policy if present
+        backend_cfg = self.deploy_cfg.get("backend_config", {})
+        common_cfg = backend_cfg.get("common_config", {})
+        precision_policy = common_cfg.get("precision_policy", "auto")
+        if precision_policy not in PRECISION_POLICIES:
+            raise ValueError(
+                f"Invalid precision_policy '{precision_policy}'. " f"Must be one of {list(PRECISION_POLICIES.keys())}"
+            )
+
+    @property
+    def export_config(self) -> Dict:
+        """Get export configuration (mode, verify, device, work_dir)."""
+        return self.deploy_cfg.get("export", {})
+
+    @property
+    def runtime_io_config(self) -> Dict:
+        """Get runtime I/O configuration (info_pkl, sample_idx, onnx_file)."""
+        return self.deploy_cfg.get("runtime_io", {})
+
+    @property
+    def should_export_onnx(self) -> bool:
+        """Check if ONNX export is requested."""
+        mode = self.export_config.get("mode", "both")
+        return mode in ["onnx", "both"]
+
+    @property
+    def should_export_tensorrt(self) -> bool:
+        """Check if TensorRT export is requested."""
+        mode = self.export_config.get("mode", "both")
+        return mode in ["trt", "both"]
+
+    @property
+    def should_verify(self) -> bool:
+        """Check if verification is requested."""
+        return self.export_config.get("verify", False)
+
+    @property
+    def device(self) -> str:
+        """Get device for export."""
+        return self.export_config.get("device", "cuda:0")
+
+    @property
+    def work_dir(self) -> str:
+        """Get working directory."""
+        return self.export_config.get("work_dir", os.getcwd())
 
     @property
     def onnx_settings(self) -> Dict:
         """Get ONNX export settings."""
+        onnx_config = self.deploy_cfg.get("onnx_config", {})
         return {
-            "opset_version": self.onnx_config.get("opset_version", 11),
-            "do_constant_folding": self.onnx_config.get("do_constant_folding", True),
-            "input_names": self.onnx_config.get("input_names", ["input"]),
-            "output_names": self.onnx_config.get("output_names", ["output"]),
-            "dynamic_axes": self.onnx_config.get("dynamic_axes"),
-            "export_params": self.onnx_config.get("export_params", True),
-            "keep_initializers_as_inputs": self.onnx_config.get("keep_initializers_as_inputs", False),
-            "save_file": self.onnx_config.get("save_file", "calibration_classifier.onnx"),
+            "opset_version": onnx_config.get("opset_version", 16),
+            "do_constant_folding": onnx_config.get("do_constant_folding", True),
+            "input_names": onnx_config.get("input_names", ["input"]),
+            "output_names": onnx_config.get("output_names", ["output"]),
+            "dynamic_axes": onnx_config.get("dynamic_axes"),
+            "export_params": onnx_config.get("export_params", True),
+            "keep_initializers_as_inputs": onnx_config.get("keep_initializers_as_inputs", False),
+            "save_file": onnx_config.get("save_file", "calibration_classifier.onnx"),
         }
 
     @property
     def tensorrt_settings(self) -> Dict:
-        """Get TensorRT export settings."""
-        common_config = self.backend_config.get("common_config", {})
+        """Get TensorRT export settings with precision policy support."""
+        backend_config = self.deploy_cfg.get("backend_config", {})
+        common_config = backend_config.get("common_config", {})
+
+        # Get precision policy
+        precision_policy = common_config.get("precision_policy", "auto")
+        policy_flags = PRECISION_POLICIES.get(precision_policy, {})
+
         return {
             "max_workspace_size": common_config.get("max_workspace_size", DEFAULT_WORKSPACE_SIZE),
-            "fp16_mode": common_config.get("fp16_mode", False),
-            "model_inputs": self.backend_config.get("model_inputs", []),
-            "strongly_typed": common_config.get("strongly_typed", False),
+            "precision_policy": precision_policy,
+            "policy_flags": policy_flags,
+            "model_inputs": backend_config.get("model_inputs", []),
         }
 
 
@@ -189,20 +267,16 @@ def parse_args() -> argparse.Namespace:
         description="Export CalibrationStatusClassification model to ONNX/TensorRT.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("deploy_cfg", help="deploy config path")
-    parser.add_argument("model_cfg", help="model config path")
-    parser.add_argument("checkpoint", help="model checkpoint path")
-    parser.add_argument("--info_pkl", required=True, help="info.pkl file path containing calibration data")
-    parser.add_argument("--sample_idx", type=int, default=0, help="sample index from info.pkl (default: 0)")
-    parser.add_argument("--work-dir", default=os.getcwd(), help="output directory")
-    parser.add_argument("--device", default="cpu", help="device for conversion")
-    parser.add_argument("--log-level", default="INFO", choices=list(logging._nameToLevel.keys()), help="logging level")
-    parser.add_argument("--verify", action="store_true", help="verify model outputs")
-    parser.add_argument("--onnx", action="store_true", help="export to ONNX format")
-    parser.add_argument("--tensorrt", action="store_true", help="export to TensorRT format")
-    parser.add_argument(
-        "--onnx-file", help="path to existing ONNX file (required when --tensorrt is specified without --onnx)"
-    )
+    parser.add_argument("deploy_cfg", help="Deploy config path")
+    parser.add_argument("model_cfg", help="Model config path")
+    parser.add_argument("checkpoint", help="Model checkpoint path")
+
+    # Optional overrides
+    parser.add_argument("--work-dir", help="Override output directory from config")
+    parser.add_argument("--device", help="Override device from config")
+    parser.add_argument("--log-level", default="INFO", choices=list(logging._nameToLevel.keys()), help="Logging level")
+    parser.add_argument("--info-pkl", help="Override info.pkl path from config")
+    parser.add_argument("--sample-idx", type=int, help="Override sample index from config")
     return parser.parse_args()
 
 
@@ -263,17 +337,12 @@ def _optimize_onnx_model(onnx_path: str, logger: logging.Logger) -> None:
 def export_to_tensorrt(
     onnx_path: str, output_path: str, input_tensor: torch.Tensor, config: DeploymentConfig, logger: logging.Logger
 ) -> bool:
-    """Export ONNX model to a TensorRT engine.
-
-    Notes:
-      - Always uses EXPLICIT_BATCH.
-      - If strongly_typed=True, disallows precision-changing builder flags (FP16/BF16/FP8/INT8/INT4/FP4).
-        Only TF32 is permitted (controls Tensor Cores for FP32, not dtype).
-    """
+    """Export ONNX model to a TensorRT engine with precision policy support."""
     settings = config.tensorrt_settings
-    strongly_typed = settings.get("strongly_typed", False)
-    fp16_mode = settings.get("fp16_mode", False)
-    tf32_mode = bool(settings.get("tf32_mode", False))
+    precision_policy = settings["precision_policy"]
+    policy_flags = settings["policy_flags"]
+
+    logger.info(f"Building TensorRT engine with precision policy: {precision_policy}")
 
     # Initialize TensorRT
     trt_logger = trt.Logger(trt.Logger.WARNING)
@@ -283,31 +352,23 @@ def export_to_tensorrt(
     builder_config = builder.create_builder_config()
     builder_config.set_memory_pool_limit(pool=trt.MemoryPoolType.WORKSPACE, pool_size=settings["max_workspace_size"])
 
-    # Create network and config
+    # Create network with appropriate flags
     flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-    if strongly_typed:
+
+    # Handle strongly typed flag (network creation flag, not builder flag)
+    if policy_flags.get("STRONGLY_TYPED"):
         flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
         logger.info("Using strongly typed TensorRT network creation")
+
     network = builder.create_network(flags)
 
-    def _warn_if(flag_name: str, enabled: bool):
-        if enabled:
-            logger.warning(
-                f"'{flag_name}' requested but will be IGNORED because strongly_typed=True. "
-                "Strongly typed mode must derive dtypes from the model/Q-DQ/Cast."
-            )
-
-    if strongly_typed:
-        # Disallow precision-changing flags in strongly typed mode
-        _warn_if("FP16", fp16_mode)
-    else:
-        if fp16_mode:
-            builder_config.set_flag(trt.BuilderFlag.FP16)
-            logger.info("BuilderFlag.FP16 enabled")
-
-    if tf32_mode and hasattr(trt.BuilderFlag, "TF32"):
-        builder_config.set_flag(trt.BuilderFlag.TF32)
-        logger.info("BuilderFlag.TF32 enabled")
+    # Apply precision flags to builder config
+    for flag_name, enabled in policy_flags.items():
+        if flag_name == "STRONGLY_TYPED":
+            continue  # Already handled as network creation flag above
+        if enabled and hasattr(trt.BuilderFlag, flag_name):
+            builder_config.set_flag(getattr(trt.BuilderFlag, flag_name))
+            logger.info(f"BuilderFlag.{flag_name} enabled")
 
     # Setup optimization profile
     profile = builder.create_optimization_profile()
@@ -595,21 +656,6 @@ def main():
     args = parse_args()
     logger = setup_logging(args.log_level)
 
-    # Check if at least one export format is specified
-    if not args.onnx and not args.tensorrt:
-        logger.error("Please specify at least one export format: --onnx or --tensorrt")
-        return
-
-    # Check if TensorRT is requested but no ONNX file is provided and ONNX export is not requested
-    if args.tensorrt and not args.onnx and not args.onnx_file:
-        logger.error(
-            "TensorRT export requires either --onnx (to export ONNX first) or --onnx-file (to use existing ONNX file)"
-        )
-        return
-
-    # Setup
-    mmengine.mkdir_or_exist(osp.abspath(args.work_dir))
-
     # Load configurations
     logger.info(f"Loading deploy config from: {args.deploy_cfg}")
     deploy_cfg = Config.fromfile(args.deploy_cfg)
@@ -618,58 +664,69 @@ def main():
     logger.info(f"Loading model config from: {args.model_cfg}")
     model_cfg = Config.fromfile(args.model_cfg)
 
-    # Setup file paths
+    # Get settings from config with CLI overrides
+    work_dir = args.work_dir if args.work_dir else config.work_dir
+    device = args.device if args.device else config.device
+    info_pkl = args.info_pkl if args.info_pkl else config.runtime_io_config.get("info_pkl")
+    sample_idx = args.sample_idx if args.sample_idx is not None else config.runtime_io_config.get("sample_idx", 0)
+    existing_onnx = config.runtime_io_config.get("onnx_file")
+
+    # Validate required parameters
+    if not info_pkl:
+        logger.error("info_pkl path must be provided either in config or via --info-pkl")
+        return
+
+    # Setup working directory
+    mmengine.mkdir_or_exist(osp.abspath(work_dir))
+    logger.info(f"Working directory: {work_dir}")
+    logger.info(f"Device: {device}")
+    logger.info(f"Export mode: {config.export_config.get('mode', 'both')}")
+
+    # Determine export paths
     onnx_path = None
     trt_path = None
-    trt_file = None
 
-    if args.onnx:
+    if config.should_export_onnx:
         onnx_settings = config.onnx_settings
-        onnx_path = osp.join(args.work_dir, onnx_settings["save_file"])
+        onnx_path = osp.join(work_dir, onnx_settings["save_file"])
 
-    if args.tensorrt:
-        if args.onnx_file:
-            # Use provided ONNX file path
-            onnx_path = args.onnx_file
+    if config.should_export_tensorrt:
+        # Use existing ONNX if provided, otherwise use the one we'll export
+        if existing_onnx and not config.should_export_onnx:
+            onnx_path = existing_onnx
             if not osp.exists(onnx_path):
                 logger.error(f"Provided ONNX file does not exist: {onnx_path}")
                 return
             logger.info(f"Using existing ONNX file: {onnx_path}")
-        elif args.onnx:
-            # ONNX will be exported first, use the path from config
-            onnx_settings = config.onnx_settings
-            onnx_path = osp.join(args.work_dir, onnx_settings["save_file"])
-        else:
-            # This should not happen due to validation above, but just in case
-            logger.error("No ONNX file path available for TensorRT conversion")
+        elif not onnx_path:
+            # Need ONNX for TensorRT but neither export nor existing file specified
+            logger.error("TensorRT export requires ONNX file. Set mode='both' or provide onnx_file in config.")
             return
 
         # Set TensorRT output path
         onnx_settings = config.onnx_settings
         trt_file = onnx_settings["save_file"].replace(".onnx", ".engine")
-        trt_path = osp.join(args.work_dir, trt_file)
+        trt_path = osp.join(work_dir, trt_file)
+
     # Load model
     logger.info(f"Loading model from checkpoint: {args.checkpoint}")
-    device = torch.device(args.device)
+    device = torch.device(device)
     model = get_model(model_cfg, args.checkpoint, device=device)
 
     # Load sample data
-    logger.info(f"Loading sample data from info.pkl: {args.info_pkl}")
-    input_tensor_calibrated = load_sample_data_from_info_pkl(
-        args.info_pkl, model_cfg, 0.0, args.sample_idx, device=args.device
-    )
-    input_tensor_miscalibrated = load_sample_data_from_info_pkl(
-        args.info_pkl, model_cfg, 1.0, args.sample_idx, device=args.device
-    )
+    logger.info(f"Loading sample data from info.pkl: {info_pkl}")
+    input_tensor_calibrated = load_sample_data_from_info_pkl(info_pkl, model_cfg, 0.0, sample_idx, device=device)
+    input_tensor_miscalibrated = load_sample_data_from_info_pkl(info_pkl, model_cfg, 1.0, sample_idx, device=device)
 
     # Export models
-    if args.onnx:
+    if config.should_export_onnx:
         export_to_onnx(model, input_tensor_calibrated, onnx_path, config, logger)
-    if args.tensorrt:
+
+    if config.should_export_tensorrt:
         logger.info("Converting ONNX to TensorRT...")
 
         # Ensure CUDA device for TensorRT
-        if args.device == "cpu":
+        if not device.startswith("cuda"):
             logger.warning("TensorRT requires CUDA device, switching to cuda")
             device = torch.device("cuda")
             input_tensor_calibrated = input_tensor_calibrated.to(device)
@@ -682,14 +739,15 @@ def main():
             logger.error("TensorRT conversion failed")
 
     # Run verification if requested
-    if args.verify:
+    if config.should_verify:
         logger.info(
             "Running verification for miscalibrated and calibrated samples with an output array [SCORE_MISCALIBRATED, SCORE_CALIBRATED]..."
         )
         input_tensors = {"0": input_tensor_miscalibrated, "1": input_tensor_calibrated}
-        # Only verify formats that were exported
-        onnx_path_for_verify = onnx_path if (args.onnx or (args.tensorrt and args.onnx_file)) else None
-        trt_path_for_verify = trt_path if args.tensorrt else None
+
+        # Only verify formats that were exported or provided
+        onnx_path_for_verify = onnx_path if (config.should_export_onnx or existing_onnx) else None
+        trt_path_for_verify = trt_path if config.should_export_tensorrt else None
 
         run_verification(model, onnx_path_for_verify, trt_path_for_verify, input_tensors, logger)
 
@@ -697,14 +755,13 @@ def main():
 
     # Log what was exported
     exported_formats = []
-    if args.onnx:
+    if config.should_export_onnx:
         exported_formats.append("ONNX")
-    if args.tensorrt:
+    if config.should_export_tensorrt:
         exported_formats.append("TensorRT")
 
     logger.info(f"Exported formats: {', '.join(exported_formats)}")
 
 
-# TODO: make deployment script inherit from awml base deploy script or use awml deploy script directly
 if __name__ == "__main__":
     main()
