@@ -111,70 +111,41 @@ def load_info_pkl_data(info_pkl_path: str, sample_idx: int = 0) -> Dict[str, Any
 
 def load_sample_data_from_info_pkl(
     info_pkl_path: str,
-    model_cfg: Config,
+    transform: CalibrationClassificationTransform,
     sample_idx: int = 0,
     device: str = "cpu",
-    transform_test: Optional[CalibrationClassificationTransform] = None,
-) -> torch.Tensor:
+    miscalibration_probability: float = 0.0,
+) -> Tuple[torch.Tensor, int]:
     """
     Load and preprocess sample data from info.pkl using CalibrationClassificationTransform.
     Args:
         info_pkl_path: Path to the info.pkl file
-        model_cfg: Model configuration containing data_root setting
+        transform: Reusable CalibrationClassificationTransform instance
         sample_idx: Index of the sample to load (default: 0)
         device: Device to load tensor on
-        transform_test: Pre-created test transform instance (optional)
+        miscalibration_probability: Probability to generate miscalibrated samples (0.0=calibrated, 1.0=miscalibrated)
     Returns:
-        Preprocessed tensor ready for model inference
+        Tuple of (preprocessed tensor ready for model inference, ground truth label)
     """
     # Load sample data from info.pkl
     sample_data = load_info_pkl_data(info_pkl_path, sample_idx)
 
-    # Get data_root from model config
-    data_root = model_cfg.get("data_root", None)
-    if data_root is None:
-        raise ValueError("data_root not found in model configuration")
+    # Ensure sample_idx is in the data
+    sample_data["sample_idx"] = sample_idx
 
-    # Use pre-created transform or create new one (always use test mode)
-    if transform_test is None:
-        transform = CalibrationClassificationTransform(
-            transform_config=model_cfg.get("transform_config", None),
-            mode="test",
-            data_root=data_root,
-            projection_vis_dir=None,
-            results_vis_dir=None,
-            enable_augmentation=False,
-        )
-    else:
-        transform = transform_test
+    # Update transform's miscalibration probability (reuse existing transform instance)
+    transform.miscalibration_probability = miscalibration_probability
 
     # Apply transform with miscalibration control
     results = transform.transform(sample_data)
     input_data_processed = results["fused_img"]  # (H, W, 5)
+    gt_label = results["gt_label"]  # 0=miscalibrated, 1=calibrated
 
     # Convert to tensor
     input_tensor = torch.from_numpy(input_data_processed).permute(2, 0, 1).float()  # (5, H, W)
     input_tensor = input_tensor.unsqueeze(0).to(device)  # (1, 5, H, W)
 
-    return input_tensor
-
-
-def create_test_transform(model_cfg: Config) -> CalibrationClassificationTransform:
-    """Create test transform instance once for reuse."""
-    data_root = model_cfg.get("data_root", None)
-    if data_root is None:
-        raise ValueError("data_root not found in model configuration")
-
-    transform_test = CalibrationClassificationTransform(
-        transform_config=model_cfg.get("transform_config", None),
-        mode="test",
-        data_root=data_root,
-        projection_vis_dir=None,
-        results_vis_dir=None,
-        enable_augmentation=False,
-    )
-
-    return transform_test
+    return input_tensor, gt_label
 
 
 def run_onnx_inference(
@@ -246,7 +217,12 @@ def run_tensorrt_inference(engine, input_tensor: torch.Tensor, logger: logging.L
             raise RuntimeError("Could not find input/output tensor names")
 
         # Prepare arrays
-        input_np = input_tensor.numpy().astype(np.float32)
+        # Convert torch tensor to numpy (handle both CPU and CUDA tensors)
+        if hasattr(input_tensor, "cpu"):
+            input_np = input_tensor.cpu().numpy().astype(np.float32)
+        else:
+            input_np = input_tensor.astype(np.float32)
+
         if not input_np.flags["C_CONTIGUOUS"]:
             input_np = np.ascontiguousarray(input_np)
 
@@ -384,8 +360,20 @@ def evaluate_model(
         logger.error(f"Failed to load info.pkl: {e}")
         raise
 
-    # Create transform instances once
-    transform_test = create_test_transform(model_cfg)
+    # Initialize transform once and reuse it for all samples
+    data_root = model_cfg.get("data_root", None)
+    if data_root is None:
+        raise ValueError("data_root not found in model configuration")
+
+    transform = CalibrationClassificationTransform(
+        transform_config=model_cfg.get("transform_config", None),
+        mode="test",
+        data_root=data_root,
+        projection_vis_dir=None,
+        results_vis_dir=None,
+        enable_augmentation=False,
+        miscalibration_probability=0.0,  # Will be updated per sample
+    )
 
     # Initialize inference engine
     if model_type == "onnx":
@@ -399,9 +387,36 @@ def evaluate_model(
         logger.info(f"Using ONNX model: {model_path}")
         logger.info("Creating ONNX InferenceSession (one-time setup)...")
 
+        # Configure execution providers based on device
+        if device == "cuda":
+            # Try to use CUDA provider, fall back to CPU if not available
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            logger.info("Attempting to use CUDA acceleration for ONNX inference...")
+            try:
+                available_providers = ort.get_available_providers()
+                if "CUDAExecutionProvider" not in available_providers:
+                    logger.warning(
+                        "CUDAExecutionProvider not available. Available providers: {}. "
+                        "Install onnxruntime-gpu for CUDA acceleration: pip install onnxruntime-gpu".format(
+                            available_providers
+                        )
+                    )
+                    logger.warning("Falling back to CPU execution")
+                    providers = ["CPUExecutionProvider"]
+                else:
+                    logger.info("CUDAExecutionProvider is available")
+            except Exception as e:
+                logger.warning(f"Error checking CUDA provider: {e}. Falling back to CPU")
+                providers = ["CPUExecutionProvider"]
+        else:
+            providers = ["CPUExecutionProvider"]
+            logger.info("Using CPU for ONNX inference")
+
         # Create session once and reuse it
-        providers = ["CPUExecutionProvider"]
         ort_session = ort.InferenceSession(model_path, providers=providers)
+
+        # Log which provider is actually being used
+        logger.info(f"ONNX session using providers: {ort_session.get_providers()}")
 
         # Debug: Print ONNX model input info
         input_name = ort_session.get_inputs()[0].name
@@ -414,6 +429,10 @@ def evaluate_model(
         inference_func = lambda input_tensor: run_onnx_inference(ort_session, input_tensor, logger)
     elif model_type == "tensorrt":
         logger.info(f"Using TensorRT model: {model_path}")
+        # TensorRT has its own CUDA memory management, force CPU device for data preparation
+        # if device != "cpu":
+        #     logger.warning(f"TensorRT inference requires CPU device for data preparation. Overriding device from '{device}' to 'cpu'")
+        #     device = "cpu"
         engine = load_tensorrt_engine(model_path, logger)
         inference_func = lambda input_tensor: run_tensorrt_inference(engine, input_tensor, logger)
     else:
@@ -431,26 +450,28 @@ def evaluate_model(
             logger.info(f"Processing sample {sample_idx + 1}/{num_samples}")
 
         try:
-            # Load sample data directly from info.pkl
-            input_tensor_calibrated = load_sample_data_from_info_pkl(
+            # Load sample data directly from info.pkl - generate calibrated sample
+            input_tensor_calibrated, gt_label_calibrated = load_sample_data_from_info_pkl(
                 info_pkl_path,
-                model_cfg,
+                transform,
                 sample_idx,
                 device=device,
-                transform_test=transform_test,
+                miscalibration_probability=0.0,  # Always calibrated
             )
-            input_tensor_miscalibrated = load_sample_data_from_info_pkl(
+
+            # Load sample data again - generate miscalibrated sample
+            input_tensor_miscalibrated, gt_label_miscalibrated = load_sample_data_from_info_pkl(
                 info_pkl_path,
-                model_cfg,
+                transform,
                 sample_idx,
                 device=device,
-                transform_test=transform_test,
+                miscalibration_probability=1.0,  # Always miscalibrated
             )
 
             # Test both calibrated and miscalibrated samples
             test_samples = [
-                (input_tensor_calibrated, 1),  # calibrated sample
-                (input_tensor_miscalibrated, 0),  # miscalibrated sample
+                (input_tensor_calibrated, gt_label_calibrated),
+                (input_tensor_miscalibrated, gt_label_miscalibrated),
             ]
 
             for input_tensor, gt_label in test_samples:
@@ -483,6 +504,8 @@ def evaluate_model(
                     logger.info(
                         f"Sample {sample_idx + 1} (GT={gt_label}): Pred={predicted_class}, Confidence={confidence:.4f}, Latency={latency:.2f}ms"
                     )
+                    logger.info(f"  Raw logits: {logits.squeeze()}")
+                    logger.info(f"  Probabilities: {probabilities.squeeze()}")
 
             # Clear GPU memory periodically for TensorRT
             if model_type == "tensorrt" and sample_idx % 10 == 0:
@@ -596,7 +619,11 @@ def main():
         help="Number of samples to evaluate (default: 10)",
     )
     parser.add_argument(
-        "--device", type=str, default="cpu", choices=["cpu", "cuda"], help="Device to use for inference"
+        "--device",
+        type=str,
+        default="cpu",
+        choices=["cpu", "cuda"],
+        help="Device to use for inference. For ONNX: enables CUDA acceleration (requires onnxruntime-gpu). For TensorRT: always uses CUDA internally regardless of this setting.",
     )
     parser.add_argument(
         "--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Logging level"
