@@ -2,6 +2,13 @@ ARG AWML_BASE_IMAGE="autoware-ml:latest"
 FROM ${AWML_BASE_IMAGE}
 ARG TRT_VERSION=10.8.0.43
 
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+  libcudnn9-cuda-12 \
+  libcudnn9-dev-cuda-12 \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
+
 # Install pip dependencies
 RUN python3 -m pip --no-cache-dir install \
   onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ \
