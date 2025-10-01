@@ -178,22 +178,11 @@ def create_test_transform(model_cfg: Config) -> CalibrationClassificationTransfo
 
 
 def run_onnx_inference(
-    onnx_path: str,
+    ort_session,
     input_tensor: torch.Tensor,
     logger: logging.Logger,
 ) -> Tuple[np.ndarray, float]:
     """Run ONNX inference directly and return output and latency."""
-    try:
-        import onnxruntime as ort
-    except ImportError:
-        raise ImportError(
-            "onnxruntime is required for ONNX inference. Please install it with: pip install onnxruntime"
-        )
-
-    # Clear GPU cache if available
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
     # Convert input tensor to float32
     input_tensor = input_tensor.float()
 
@@ -207,16 +196,8 @@ def run_onnx_inference(
         input_tensor = input_tensor.unsqueeze(0)  # Add batch dimension
         logger.debug(f"Added batch dimension - Shape: {input_tensor.shape}")
 
-    # ONNX inference with timing
-    providers = ["CPUExecutionProvider"]
-    ort_session = ort.InferenceSession(onnx_path, providers=providers)
-
-    # Debug: Print ONNX model input info
+    # Get input name from session
     input_name = ort_session.get_inputs()[0].name
-    input_shape = ort_session.get_inputs()[0].shape
-    input_type = ort_session.get_inputs()[0].type
-    logger.debug(f"ONNX model expects - Input name: {input_name}, Shape: {input_shape}, Type: {input_type}")
-
     onnx_input = {input_name: input_tensor.cpu().numpy().astype(np.float32)}
 
     start_time = time.perf_counter()
@@ -271,19 +252,23 @@ def run_tensorrt_inference(engine, input_tensor: torch.Tensor, logger: logging.L
 
         # Validate input shape
         expected_shape = engine.get_tensor_shape(input_name)
-        if input_np.shape != tuple(expected_shape):
-            logger.warning(f"Input shape mismatch: expected {expected_shape}, got {input_np.shape}")
-            # Try to reshape if possible
-            if len(input_np.shape) == len(expected_shape):
-                try:
-                    input_np = input_np.reshape(expected_shape)
-                    logger.info(f"Reshaped input to {input_np.shape}")
-                except Exception as e:
-                    raise RuntimeError(f"Cannot reshape input from {input_np.shape} to {expected_shape}: {e}")
-            elif len(input_np.shape) == len(expected_shape) - 1 and expected_shape[0] == 1:
+
+        # Check if shapes are compatible (considering -1 as dynamic dimension)
+        def shapes_compatible(actual_shape, expected_shape):
+            """Check if actual shape is compatible with expected shape (which may contain -1 for dynamic dims)."""
+            if len(actual_shape) != len(expected_shape):
+                return False
+            for actual_dim, expected_dim in zip(actual_shape, expected_shape):
+                if expected_dim != -1 and actual_dim != expected_dim:
+                    return False
+            return True
+
+        if not shapes_compatible(input_np.shape, expected_shape):
+            # Only warn/error if shapes are truly incompatible
+            if len(input_np.shape) == len(expected_shape) - 1 and expected_shape[0] == 1:
                 # Add batch dimension if missing
                 try:
-                    input_np = input_np.reshape(expected_shape)
+                    input_np = np.expand_dims(input_np, axis=0)
                     logger.info(f"Added batch dimension to input: {input_np.shape}")
                 except Exception as e:
                     raise RuntimeError(
@@ -293,6 +278,10 @@ def run_tensorrt_inference(engine, input_tensor: torch.Tensor, logger: logging.L
                 raise RuntimeError(
                     f"Input shape mismatch: expected {expected_shape}, got {input_np.shape}. Please ensure input has correct batch dimension."
                 )
+        else:
+            # Shapes are compatible (dynamic dimensions match), use actual shape
+            if tuple(expected_shape) != input_np.shape:
+                logger.debug(f"Using dynamic input shape {input_np.shape} (engine expects {expected_shape})")
 
         context.set_input_shape(input_name, input_np.shape)
         output_shape = context.get_tensor_shape(output_name)
@@ -400,8 +389,29 @@ def evaluate_model(
 
     # Initialize inference engine
     if model_type == "onnx":
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            raise ImportError(
+                "onnxruntime is required for ONNX inference. Please install it with: pip install onnxruntime"
+            )
+
         logger.info(f"Using ONNX model: {model_path}")
-        inference_func = lambda input_tensor: run_onnx_inference(model_path, input_tensor, logger)
+        logger.info("Creating ONNX InferenceSession (one-time setup)...")
+
+        # Create session once and reuse it
+        providers = ["CPUExecutionProvider"]
+        ort_session = ort.InferenceSession(model_path, providers=providers)
+
+        # Debug: Print ONNX model input info
+        input_name = ort_session.get_inputs()[0].name
+        input_shape = ort_session.get_inputs()[0].shape
+        input_type = ort_session.get_inputs()[0].type
+        logger.info(f"ONNX model expects - Input name: {input_name}, Shape: {input_shape}, Type: {input_type}")
+        logger.info("ONNX InferenceSession created successfully.")
+
+        # Bind session to closure for reuse
+        inference_func = lambda input_tensor: run_onnx_inference(ort_session, input_tensor, logger)
     elif model_type == "tensorrt":
         logger.info(f"Using TensorRT model: {model_path}")
         engine = load_tensorrt_engine(model_path, logger)

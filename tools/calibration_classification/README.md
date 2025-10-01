@@ -339,7 +339,7 @@ In config file:
 ```bash
 python tools/calibration_classification/evaluate_inference.py \
     --onnx work_dirs/end2end.onnx \
-    --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py \
+    --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
     --info-pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl
 ```
 
@@ -348,7 +348,7 @@ python tools/calibration_classification/evaluate_inference.py \
 ```bash
 python tools/calibration_classification/evaluate_inference.py \
     --tensorrt work_dirs/end2end.engine \
-    --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py \
+    --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
     --info-pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl
 ```
 
@@ -369,7 +369,7 @@ For 32 GB memory, the maximum you can use is approximately: 1860 x 2880 x 5 x 4 
 Therefore, please limit the calibration data using the indices parameter
 
 ```python
-python tools/calibration_classification/toolkit.py  projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb8-25e_j6gen2.py --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_train.pkl --data_root data/t4dataset --output_dir /vis --npz_output_path calibration_file.npz --indices 200
+python tools/calibration_classification/toolkit.py  projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_train.pkl --data_root data/t4dataset --output_dir /vis --npz_output_path calibration_file.npz --indices 200
 ```
 
 

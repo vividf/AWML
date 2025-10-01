@@ -726,7 +726,7 @@ def main():
         logger.info("Converting ONNX to TensorRT...")
 
         # Ensure CUDA device for TensorRT
-        if not device.startswith("cuda"):
+        if device.type != "cuda":
             logger.warning("TensorRT requires CUDA device, switching to cuda")
             device = torch.device("cuda")
             input_tensor_calibrated = input_tensor_calibrated.to(device)
