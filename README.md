@@ -62,6 +62,7 @@ We hope that `AWML` promotes the community between Autoware and ML researchers a
 ## Get started
 
 - [Start training for 3D object detection](/docs/tutorial/tutorial_detection_3d.md)
+- [Start training for Classification Status Classifier](/docs/tutorial/tutorial_calibration_status_classification.md)
 
 ## Docs
 ### Design documents

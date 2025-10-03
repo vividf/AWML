@@ -118,14 +118,14 @@ class CalibrationToolkit:
         return all(key in sample for key in required_keys)
 
     def process_single_sample(
-        self, sample: Dict[str, Any], sample_idx: int, save_npz: bool = False
+        self, sample: Dict[str, Any], sample_idx: int, npz_output_path: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Process a single sample using the transform.
         Args:
             sample: Sample dictionary to process.
             sample_idx: Index of the sample for logging purposes.
-            save_npz: Whether to collect result for NPZ saving.
+            npz_output_path: Path for NPZ output. If provided, result will be collected for later saving.
         Returns:
             Transformed sample data if successful, None otherwise.
         """
@@ -136,8 +136,8 @@ class CalibrationToolkit:
 
             result = self.transform(sample)
 
-            # Store the result for NPZ saving only if requested
-            if save_npz:
+            # Store the result for NPZ saving if output path is provided
+            if npz_output_path:
                 self.collected_results.append(result["fused_img"])
 
             self.logger.info(f"Successfully processed sample {sample_idx}")
@@ -177,7 +177,6 @@ class CalibrationToolkit:
         info_pkl_path: str,
         indices: Optional[List[int]] = None,
         visualize: bool = False,
-        save_npz: bool = False,
         npz_output_path: Optional[str] = None,
     ) -> None:
         """
@@ -186,8 +185,7 @@ class CalibrationToolkit:
             info_pkl_path: Path to the info.pkl file.
             indices: Optional list of sample indices to process. If None, all samples are processed.
             visualize: Whether to generate visualizations (requires output_dir to be set).
-            save_npz: Whether to collect results for NPZ saving.
-            npz_output_path: Path for saving NPZ file (only used if save_npz=True).
+            npz_output_path: Path for saving NPZ file. If provided, NPZ saving is automatically enabled.
         """
         try:
             samples_list = self.load_info_pkl(info_pkl_path)
@@ -208,15 +206,15 @@ class CalibrationToolkit:
             self.logger.info(f"Processing {len(samples_to_process)} samples")
             if visualize:
                 self.logger.info("Visualization enabled")
-            if save_npz:
+            if npz_output_path:
                 self.logger.info("NPZ saving enabled")
 
             # Process each sample
             for i, sample in enumerate(samples_to_process):
-                self.process_single_sample(sample, i + 1, save_npz=save_npz)
+                self.process_single_sample(sample, i + 1, npz_output_path=npz_output_path)
 
             # Save NPZ file if requested
-            if save_npz and npz_output_path:
+            if npz_output_path:
                 self.save_npz_file(npz_output_path)
 
             self.logger.info("Finished processing all samples")
@@ -230,7 +228,6 @@ class CalibrationToolkit:
         info_pkl_path: str,
         sample_idx: int,
         visualize: bool = False,
-        save_npz: bool = False,
         npz_output_path: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
@@ -239,8 +236,7 @@ class CalibrationToolkit:
             info_pkl_path: Path to the info.pkl file.
             sample_idx: Index of the sample to process (0-based).
             visualize: Whether to generate visualizations (requires output_dir to be set).
-            save_npz: Whether to collect results for NPZ saving.
-            npz_output_path: Path for saving NPZ file (only used if save_npz=True).
+            npz_output_path: Path for saving NPZ file. If provided, NPZ saving is automatically enabled.
         Returns:
             Transformed sample data if successful, None otherwise.
         """
@@ -254,20 +250,20 @@ class CalibrationToolkit:
             self.logger.info(f"Processing sample {sample_idx} from {len(samples_list)} total samples")
             if visualize:
                 self.logger.info("Visualization enabled")
-            if save_npz:
+            if npz_output_path:
                 self.logger.info("NPZ saving enabled")
 
             # Clear previous results for single sample processing
             self.collected_results = []
 
             sample = samples_list[sample_idx]
-            result = self.process_single_sample(sample, sample_idx, save_npz=save_npz)
+            result = self.process_single_sample(sample, sample_idx, npz_output_path=npz_output_path)
 
             if result and visualize and self.output_dir:
                 self.logger.info(f"Visualizations saved to directory: {self.output_dir}")
 
             # Save NPZ file if requested
-            if save_npz and npz_output_path and result:
+            if npz_output_path and result:
                 self.save_npz_file(npz_output_path)
             return result
 
@@ -289,15 +285,15 @@ Examples:
   # Process all samples with visualization
   python toolkit.py model_config.py --info_pkl data/info.pkl --data_root data/ --output_dir /vis --visualize
   # Process all samples and save as NPZ
-  python toolkit.py model_config.py --info_pkl data/info.pkl --data_root data/ --npz_output_path results.npz --save_npz
+  python toolkit.py model_config.py --info_pkl data/info.pkl --data_root data/ --npz_output_path results.npz
   # Process all samples with both visualization and NPZ saving
-  python toolkit.py model_config.py --info_pkl data/info.pkl --data_root data/ --output_dir /vis --visualize --npz_output_path results.npz --save_npz
+  python toolkit.py model_config.py --info_pkl data/info.pkl --data_root data/ --output_dir /vis --visualize --npz_output_path results.npz
   # Process specific sample with visualization
   python toolkit.py model_config.py --info_pkl data/info.pkl --data_root data/ --output_dir /vis --visualize --sample_idx 0
   # Process specific indices with NPZ saving
-  python toolkit.py model_config.py --info_pkl data/info.pkl --data_root data/ --save_npz --npz_output_path results.npz --indices 0 1 2
+  python toolkit.py model_config.py --info_pkl data/info.pkl --data_root data/ --npz_output_path results.npz --indices 0 1 2
   # Process first 5 samples (indices 0, 1, 2, 3, 4) with both features
-  python toolkit.py model_config.py --info_pkl data/info.pkl --data_root data/ --output_dir /vis --visualize --save_npz --npz_output_path results.npz --indices 5
+  python toolkit.py model_config.py --info_pkl data/info.pkl --data_root data/ --output_dir /vis --visualize --npz_output_path results.npz --indices 5
 """
 
     parser = argparse.ArgumentParser(
@@ -318,8 +314,7 @@ Examples:
         help="Specific sample indices to process (0-based), or a single number N to process indices 0 to N-1",
     )
     parser.add_argument("--visualize", action="store_true", help="Enable visualization (requires --output_dir)")
-    parser.add_argument("--save_npz", action="store_true", help="Enable NPZ saving (requires --npz_output_path)")
-    parser.add_argument("--npz_output_path", help="Path for saving NPZ file (only used with --save_npz)")
+    parser.add_argument("--npz_output_path", help="Path for saving NPZ file (automatically enables NPZ saving)")
     parser.add_argument(
         "--show_point_details", action="store_true", help="Show detailed point cloud field information"
     )
@@ -339,9 +334,6 @@ def main() -> None:
     # Validate argument combinations
     if args.visualize and not args.output_dir:
         parser.error("--visualize requires --output_dir to be specified")
-
-    if args.save_npz and not args.npz_output_path:
-        parser.error("--save_npz requires --npz_output_path to be specified")
 
     # Load model configuration
     model_cfg = Config.fromfile(args.model_cfg)
@@ -369,7 +361,6 @@ def main() -> None:
             args.info_pkl,
             args.sample_idx,
             visualize=args.visualize,
-            save_npz=args.save_npz,
             npz_output_path=args.npz_output_path,
         )
     else:
@@ -378,7 +369,6 @@ def main() -> None:
             args.info_pkl,
             processed_indices,
             visualize=args.visualize,
-            save_npz=args.save_npz,
             npz_output_path=args.npz_output_path,
         )
 

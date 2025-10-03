@@ -9,10 +9,12 @@
 # Export Configuration
 # ==============================================================================
 export = dict(
-    mode="both",  # Export mode: "onnx", "trt", or "both"
+    mode="none",  # Export mode: "onnx", "trt", "both", or "none"
     # - "onnx": Export to ONNX only
     # - "trt": Convert to TensorRT only (requires onnx_file in runtime_io)
     # - "both": Export to ONNX then convert to TensorRT
+    # - "none": Skip export, only run evaluation on existing models
+    #           (requires evaluation.onnx_model and/or evaluation.tensorrt_model)
     verify=True,  # Run verification comparing PyTorch/ONNX/TRT outputs
     device="cuda:0",  # Device for export (use "cuda:0" or "cpu")
     # Note: TensorRT always requires CUDA, will auto-switch if needed
@@ -36,7 +38,7 @@ runtime_io = dict(
 evaluation = dict(
     enabled=True,  # Enable full model evaluation (set to True to run evaluation)
     num_samples=100,  # Number of samples to evaluate from info.pkl
-    verbose=True,  # Enable verbose logging showing per-sample results
+    verbose=False,  # Enable verbose logging showing per-sample results
     # Optional: Specify models to evaluate (if None, uses exported models from work_dir)
     onnx_model="/workspace/work_dirs/end2end.onnx",  # Path to ONNX model file to evaluate (e.g., "/path/to/model.onnx")
     tensorrt_model="/workspace/work_dirs/end2end.engine",  # Path to TensorRT engine file to evaluate (e.g., "/path/to/model.engine")
@@ -121,11 +123,15 @@ onnx_config = dict(
 #   3) Optionally set evaluation.onnx_model and/or evaluation.tensorrt_model
 #   4) Run the command above
 #
-# Evaluate specific models:
-#   1) Set evaluation.enabled = True
-#   2) Set evaluation.onnx_model = "/path/to/model.onnx"
-#   3) Set evaluation.tensorrt_model = "/path/to/model.engine"
-#   4) Run the command above
+# Evaluate specific models (without export):
+#   1) Set export.mode = "none"
+#   2) Set evaluation.enabled = True
+#   3) Set evaluation.onnx_model = "/path/to/model.onnx"
+#   4) Set evaluation.tensorrt_model = "/path/to/model.engine"
+#   5) Run the command WITHOUT checkpoint:
+#      python projects/CalibrationStatusClassification/deploy/main.py \
+#          projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
+#          projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py
 #
 # Override config settings via command line:
 #   python projects/CalibrationStatusClassification/deploy/main.py \

@@ -1,6 +1,6 @@
 # tools/calibration_classification
 
-The pipeline to make the model.
+The pipeline to develop the calibration classification model.
 It contains training, evaluation, and visualization for Calibration classification.
 
 - [Support priority](https://github.com/tier4/AWML/blob/main/docs/design/autoware_ml_design.md#support-priority): Tier B
@@ -23,7 +23,7 @@ Prepare the dataset you use.
 - Run docker
 
 ```sh
-docker run -it --rm --gpus --shm-size=64g --name awml -p 6006:6006 -v $PWD/:/workspace -v $PWD/data:/workspace/data autoware-ml
+docker run -it --rm --gpus all --shm-size=64g --name awml-calib -p 6006:6006 -v $PWD/:/workspace -v $PWD/data:/workspace/data autoware-ml-calib
 ```
 
 - Create info files for T4dataset X2 Gen2
@@ -159,17 +159,6 @@ Understanding visualization configuration is crucial for calibration classificat
 # In config file
 test_projection_vis_dir = "./test_projection_vis_t4dataset/"
 test_results_vis_dir = "./test_results_vis_t4dataset/"
-
-# In transform pipeline
-dict(
-    type="CalibrationClassificationTransform",
-    mode="test",
-    undistort=True,
-    enable_augmentation=False,
-    data_root=data_root,
-    projection_vis_dir=test_projection_vis_dir,  # LiDAR projection visualization
-    results_vis_dir=test_results_vis_dir,        # Model prediction visualization
-),
 ```
 
 ### 3.3. Usage Strategy
@@ -187,7 +176,7 @@ dict(
 - `projection_vis_dir/`: LiDAR points overlaid on camera images
 - `results_vis_dir/`: Classification results with predicted labels
 
-## 4. Train
+## 4. Training
 ### 4.1. Environment Setup
 Set `CUBLAS_WORKSPACE_CONFIG` for deterministic behavior, please check this [nvidia doc](https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility) for more info
 
@@ -195,9 +184,9 @@ Set `CUBLAS_WORKSPACE_CONFIG` for deterministic behavior, please check this [nvi
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 ```
 
-### 4.2. Train
+### 4.2. Run Training
 
-- Train in general by below command.
+- Run training with the following command:
 
 ```sh
 python tools/calibration_classification/train.py {config_file}
@@ -208,7 +197,7 @@ python tools/calibration_classification/train.py {config_file}
 python tools/calibration_classification/train.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py
 ```
 
-- You can use docker command for training as below.
+- Alternatively, you can use Docker:
 
 ```sh
 docker run -it --rm --gpus --name autoware-ml --shm-size=64g -d -v $PWD/:/workspace -v $PWD/data:/workspace/data autoware-ml bash -c 'python tools/calibration_classification/train.py {config_file}'
@@ -243,9 +232,9 @@ The deployment system supports exporting models to ONNX and TensorRT formats wit
 
 ### 6.1. Deployment Configuration
 
-The deployment uses a **config-first approach** where all settings are defined in the deployment config file. The config has three main sections:
 
 #### Configuration Structure
+The config has four main sections:
 
 ```python
 # Export configuration - controls export behavior
@@ -271,6 +260,15 @@ backend_config = dict(
         precision_policy="auto",        # Precision policy (see below)
     ),
     model_inputs=[...],                 # Dynamic shape configuration
+)
+
+# Evaluation configuration - for model evaluation
+evaluation = dict(
+    enabled=False,                     # Enable evaluation by default
+    num_samples=100,                    # Number of samples to evaluate
+    verbose=False,                     # Enable detailed logging
+    onnx_path=None,                    # Optional: path to existing ONNX model
+    tensorrt_path=None,                # Optional: path to existing TensorRT engine
 )
 ```
 
@@ -328,57 +326,196 @@ In config file:
 **Note:** The checkpoint is used for verification. To skip verification, set `export.verify = False` in config.
 
 
-
-
-
-
 ### 6.4. Evaluate ONNX and TensorRT Models
 
-#### ONNX Model Evaluation
+#### Evaluate Exported Models
 
-```bash
-python tools/calibration_classification/evaluate_inference.py \
-    --onnx work_dirs/end2end.onnx \
-    --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
-    --info-pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl
-```
-
-#### TensorRT Model Evaluation
-
-```bash
-python tools/calibration_classification/evaluate_inference.py \
-    --tensorrt work_dirs/end2end.engine \
-    --model-cfg projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
-    --info-pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl
+```sh
+python projects/CalibrationStatusClassification/deploy/main.py \
+    projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
+    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
+    checkpoint.pth \
+    --evaluate \
+    --num-samples 100 \
+    --verbose
 ```
 
 #### Command Line Arguments
 
-- `--onnx`: Path to ONNX model file (mutually exclusive with `--tensorrt`)
-- `--tensorrt`: Path to TensorRT engine file (mutually exclusive with `--onnx`)
-- `--model-cfg`: Path to model config file
-- `--info-pkl`: Path to dataset info file
-- `--device`: Device to use for inference (`cpu` or `cuda`, default: `cpu`)
-- `--log-level`: Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, default: `INFO`)
+- `--evaluate`: Enable full model evaluation on multiple samples
+- `--num-samples`: Number of samples to evaluate (default: 10)
+- `--verbose`: Enable verbose logging during evaluation
 
-### 6.5. INT8 Quantization
+## 7. INT8 Quantization Guide
 
-Set the number of images you want for calibration. Note that you need to consider the size of your memory.
-For 32 GB memory, the maximum you can use is approximately: 1860 x 2880 x 5 x 4 Bytes / 32 GB
+INT8 quantization reduces model size and improves inference speed by converting 32-bit floating-point weights to 8-bit integers. This guide covers Post-Training Quantization (PTQ) using NVIDIA's ModelOpt tool.
 
-Therefore, please limit the calibration data using the indices parameter
+### 7.1. Prerequisites
 
-```python
-python tools/calibration_classification/toolkit.py  projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_train.pkl --data_root data/t4dataset --output_dir /vis --npz_output_path calibration_file.npz --indices 200
+Before starting quantization, ensure you have:
+
+1. **Trained model checkpoint** (e.g., `epoch_25.pth`)
+2. **ONNX model** exported using Section 6
+3. **Dataset info files** (from Section 2.1)
+
+---
+
+### 7.2. Generate Calibration Data
+
+Calibration data is used to determine optimal quantization parameters. Use representative samples from your training dataset.
+
+#### 7.2.1. Basic Usage
+
+```sh
+python tools/calibration_classification/toolkit.py \
+    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
+    --info_pkl data/t4dataset/calibration_info/t4dataset_gen2_base_infos_train.pkl \
+    --data_root data/t4dataset \
+    --npz_output_path calibration_file.npz \
+    --indices 200
 ```
 
+#### 7.2.2. Memory Requirements
+
+Calibration data is loaded entirely into GPU memory during quantization. Calculate required memory:
+For 32 GB memory, the maximum you can use is approximately: 32 GB / 1860 x 2880 x 5 x 4 Bytes, around 321 images.
+Use `--indices 200` to limit to first 200 samples.
 
 
-```python
-DOCKER_BUILDKIT=1 docker build -t autoware-ml-calib-opt -f projects/CalibrationStatusClassification/DockerfileOpt .
-docker run -it --rm --gpus all --shm-size=32g --name awml-opt -p 6006:6006 -v $PWD/:/workspace -v $PWD/data:/workspace/data autoware-ml-calib-opt
-# Access the optimization docker
-python3 -m modelopt.onnx.quantization --onnx_path=end2end.onnx --quantize_mode=int8 --calibration_data_path=calibration_file.npz
+### 7.3. Build Optimization Docker Environment
 
-# After getting the end2end.quant.onnx, you can evaluate with quant onnx or conver to int8 engine by following section 6.3
+The quantization requires NVIDIA ModelOpt, which is provided in a separate Docker image.
+
+```sh
+DOCKER_BUILDKIT=1 docker build -t autoware-ml-calib-opt \
+    -f projects/CalibrationStatusClassification/DockerfileOpt .
 ```
+
+**What's included:**
+- CUDA 12.6 + cuDNN
+- ONNX 1.16.2 + ONNXRuntime 1.23.0
+- NVIDIA ModelOpt 0.33.1
+
+### 7.4. Launch Optimization Container
+
+```sh
+docker run -it --rm --gpus all --shm-size=32g \
+    --name awml-opt -p 6006:6006 \
+    -v $PWD:/workspace \
+    -v $PWD/data:/workspace/data \
+    autoware-ml-calib-opt
+```
+
+Remember to put your calibration.npz to the workspace/data
+
+### 7.5. Run INT8 Quantization
+
+Inside the Docker container, run the quantization:
+
+```sh
+python3 -m modelopt.onnx.quantization \
+    --onnx_path=work_dirs/end2end.onnx \
+    --quantize_mode=int8 \
+    --calibration_data_path=calibration_file.npz
+```
+
+**Output**: `work_dirs/end2end.quant.onnx`
+
+
+### 7.6. Evaluate Quantized Model
+
+#### 7.6.1. Evaluate ONNX INT8 Model
+
+```sh
+python projects/CalibrationStatusClassification/deploy/main.py \
+    projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
+    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
+    epoch_25.pth \
+    --evaluate \
+    --num-samples 100
+```
+
+**Note**: Configure the deployment config to use the quantized ONNX model:
+```python
+runtime_io = dict(
+    onnx_file="work_dirs/end2end.quant.onnx",  # Point to quantized ONNX
+    # ...
+)
+```
+
+#### 7.6.2. Convert to TensorRT INT8 Engine
+
+For optimal performance, convert the quantized ONNX to TensorRT:
+
+**In deployment config** (`projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py`):
+```python
+export = dict(
+    mode="trt",  # Convert ONNX to TensorRT
+    verify=True,
+    device="cuda:0",
+    work_dir="/workspace/work_dirs",
+)
+
+runtime_io = dict(
+    onnx_file="work_dirs/end2end.quant.onnx",  # Use quantized ONNX
+    info_pkl="data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl",
+    sample_idx=0,
+)
+
+backend_config = dict(
+    type="tensorrt",
+    common_config=dict(
+        max_workspace_size=1 << 30,
+        precision_policy="strongly_typed",  # Preserve INT8 quantization
+    ),
+    # ... model_inputs configuration
+)
+```
+
+**Run conversion:**
+```sh
+python projects/CalibrationStatusClassification/deploy/main.py \
+    projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
+    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
+    epoch_25.pth  # For verification only
+```
+
+**Output**: `work_dirs/end2end.engine` (INT8 TensorRT engine)
+
+#### 7.6.3. Evaluate TensorRT INT8 Engine
+
+```sh
+python projects/CalibrationStatusClassification/deploy/main.py \
+    projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
+    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
+    epoch_25.pth \
+    --evaluate \
+    --num-samples 100
+```
+
+**Note**: The deployment config should point to the TensorRT engine:
+```python
+runtime_io = dict(
+    onnx_file="work_dirs/end2end.quant.onnx",
+    # ...
+)
+
+# TensorRT engine will be automatically loaded from work_dirs/end2end.engine
+```
+
+### 7.7. Expected Results
+
+**Typical performance improvements:**
+
+| Metric          | FP32 ONNX | INT8 ONNX | INT8 TensorRT |
+|-----------------|-----------|-----------|---------------|
+| Model Size      | 100%      | ~25%      | ~25%          |
+| Inference Speed | 1.0×      | 1.5-2.0×  | 2.5-4.0×      |
+| Accuracy Loss   | baseline  | <1%       | <1%           |
+| Memory Usage    | 100%      | ~40%      | ~30%          |
+
+**Note**: Actual results depend on:
+- Model architecture (ResNet18, etc.)
+- Input resolution
+- Hardware (GPU generation)
+- Calibration data quality

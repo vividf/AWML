@@ -181,7 +181,7 @@ class DeploymentConfig:
             raise ValueError("Missing 'runtime_io' section in deploy config.")
 
         # Validate export mode
-        valid_modes = ["onnx", "trt", "both"]
+        valid_modes = ["onnx", "trt", "both", "none"]
         mode = self.export_config.get("mode", "both")
         if mode not in valid_modes:
             raise ValueError(f"Invalid export mode '{mode}'. Must be one of {valid_modes}")
@@ -278,7 +278,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("deploy_cfg", help="Deploy config path")
     parser.add_argument("model_cfg", help="Model config path")
-    parser.add_argument("checkpoint", help="Model checkpoint path")
+    parser.add_argument(
+        "checkpoint", nargs="?", default=None, help="Model checkpoint path (optional when mode='none')"
+    )
 
     # Optional overrides
     parser.add_argument("--work-dir", help="Override output directory from config")
@@ -805,7 +807,7 @@ def evaluate_exported_model(
 
     # Evaluate samples
     for sample_idx in range(num_samples):
-        if sample_idx % 5 == 0:
+        if sample_idx % 100 == 0:
             logger.info(f"Processing sample {sample_idx + 1}/{num_samples}")
 
         try:
@@ -983,76 +985,90 @@ def main():
     mmengine.mkdir_or_exist(osp.abspath(work_dir))
     logger.info(f"Working directory: {work_dir}")
     logger.info(f"Device: {device}")
-    logger.info(f"Export mode: {config.export_config.get('mode', 'both')}")
+    export_mode = config.export_config.get("mode", "both")
+    logger.info(f"Export mode: {export_mode}")
+
+    # Check if eval-only mode
+    is_eval_only = export_mode == "none"
+
+    # Validate checkpoint requirement
+    if not is_eval_only and not args.checkpoint:
+        logger.error("Checkpoint is required when export mode is not 'none'")
+        return
 
     # Determine export paths
     onnx_path = None
     trt_path = None
 
-    if config.should_export_onnx:
-        onnx_settings = config.onnx_settings
-        onnx_path = osp.join(work_dir, onnx_settings["save_file"])
+    if not is_eval_only:
+        if config.should_export_onnx:
+            onnx_settings = config.onnx_settings
+            onnx_path = osp.join(work_dir, onnx_settings["save_file"])
 
-    if config.should_export_tensorrt:
-        # Use existing ONNX if provided, otherwise use the one we'll export
-        if existing_onnx and not config.should_export_onnx:
-            onnx_path = existing_onnx
-            if not osp.exists(onnx_path):
-                logger.error(f"Provided ONNX file does not exist: {onnx_path}")
+        if config.should_export_tensorrt:
+            # Use existing ONNX if provided, otherwise use the one we'll export
+            if existing_onnx and not config.should_export_onnx:
+                onnx_path = existing_onnx
+                if not osp.exists(onnx_path):
+                    logger.error(f"Provided ONNX file does not exist: {onnx_path}")
+                    return
+                logger.info(f"Using existing ONNX file: {onnx_path}")
+            elif not onnx_path:
+                # Need ONNX for TensorRT but neither export nor existing file specified
+                logger.error("TensorRT export requires ONNX file. Set mode='both' or provide onnx_file in config.")
                 return
-            logger.info(f"Using existing ONNX file: {onnx_path}")
-        elif not onnx_path:
-            # Need ONNX for TensorRT but neither export nor existing file specified
-            logger.error("TensorRT export requires ONNX file. Set mode='both' or provide onnx_file in config.")
-            return
 
-        # Set TensorRT output path
-        onnx_settings = config.onnx_settings
-        trt_file = onnx_settings["save_file"].replace(".onnx", ".engine")
-        trt_path = osp.join(work_dir, trt_file)
+            # Set TensorRT output path
+            onnx_settings = config.onnx_settings
+            trt_file = onnx_settings["save_file"].replace(".onnx", ".engine")
+            trt_path = osp.join(work_dir, trt_file)
 
-    # Load model
-    logger.info(f"Loading model from checkpoint: {args.checkpoint}")
-    device = torch.device(device)
-    model = get_model(model_cfg, args.checkpoint, device=device)
+        # Load model
+        logger.info(f"Loading model from checkpoint: {args.checkpoint}")
+        device = torch.device(device)
+        model = get_model(model_cfg, args.checkpoint, device=device)
 
-    # Load sample data
-    logger.info(f"Loading sample data from info.pkl: {info_pkl}")
-    input_tensor_calibrated = load_sample_data_from_info_pkl(info_pkl, model_cfg, 0.0, sample_idx, device=device)
-    input_tensor_miscalibrated = load_sample_data_from_info_pkl(info_pkl, model_cfg, 1.0, sample_idx, device=device)
-
-    # Export models
-    if config.should_export_onnx:
-        export_to_onnx(model, input_tensor_calibrated, onnx_path, config, logger)
-
-    if config.should_export_tensorrt:
-        logger.info("Converting ONNX to TensorRT...")
-
-        # Ensure CUDA device for TensorRT
-        if device.type != "cuda":
-            logger.warning("TensorRT requires CUDA device, switching to cuda")
-            device = torch.device("cuda")
-            input_tensor_calibrated = input_tensor_calibrated.to(device)
-            input_tensor_miscalibrated = input_tensor_miscalibrated.to(device)
-
-        success = export_to_tensorrt(onnx_path, trt_path, input_tensor_calibrated, config, logger)
-        if success:
-            logger.info(f"TensorRT conversion successful: {trt_path}")
-        else:
-            logger.error("TensorRT conversion failed")
-
-    # Run verification if requested
-    if config.should_verify:
-        logger.info(
-            "Running verification for miscalibrated and calibrated samples with an output array [SCORE_MISCALIBRATED, SCORE_CALIBRATED]..."
+        # Load sample data
+        logger.info(f"Loading sample data from info.pkl: {info_pkl}")
+        input_tensor_calibrated = load_sample_data_from_info_pkl(info_pkl, model_cfg, 0.0, sample_idx, device=device)
+        input_tensor_miscalibrated = load_sample_data_from_info_pkl(
+            info_pkl, model_cfg, 1.0, sample_idx, device=device
         )
-        input_tensors = {"0": input_tensor_miscalibrated, "1": input_tensor_calibrated}
 
-        # Only verify formats that were exported or provided
-        onnx_path_for_verify = onnx_path if (config.should_export_onnx or existing_onnx) else None
-        trt_path_for_verify = trt_path if config.should_export_tensorrt else None
+        # Export models
+        if config.should_export_onnx:
+            export_to_onnx(model, input_tensor_calibrated, onnx_path, config, logger)
 
-        run_verification(model, onnx_path_for_verify, trt_path_for_verify, input_tensors, logger)
+        if config.should_export_tensorrt:
+            logger.info("Converting ONNX to TensorRT...")
+
+            # Ensure CUDA device for TensorRT
+            if device.type != "cuda":
+                logger.warning("TensorRT requires CUDA device, switching to cuda")
+                device = torch.device("cuda")
+                input_tensor_calibrated = input_tensor_calibrated.to(device)
+                input_tensor_miscalibrated = input_tensor_miscalibrated.to(device)
+
+            success = export_to_tensorrt(onnx_path, trt_path, input_tensor_calibrated, config, logger)
+            if success:
+                logger.info(f"TensorRT conversion successful: {trt_path}")
+            else:
+                logger.error("TensorRT conversion failed")
+
+        # Run verification if requested
+        if config.should_verify:
+            logger.info(
+                "Running verification for miscalibrated and calibrated samples with an output array [SCORE_MISCALIBRATED, SCORE_CALIBRATED]..."
+            )
+            input_tensors = {"0": input_tensor_miscalibrated, "1": input_tensor_calibrated}
+
+            # Only verify formats that were exported or provided
+            onnx_path_for_verify = onnx_path if (config.should_export_onnx or existing_onnx) else None
+            trt_path_for_verify = trt_path if config.should_export_tensorrt else None
+
+            run_verification(model, onnx_path_for_verify, trt_path_for_verify, input_tensors, logger)
+    else:
+        logger.info("Evaluation-only mode: Skipping model loading and export")
 
     # Get evaluation settings from config and CLI
     eval_cfg = config.evaluation_config
@@ -1078,8 +1094,8 @@ def main():
                 logger.info(f"Using config-specified ONNX model: {eval_onnx_path}")
             else:
                 logger.warning(f"Config-specified ONNX model not found: {eval_onnx_path}")
-        elif config.should_export_onnx or existing_onnx:
-            # Auto-detect exported ONNX model
+        elif not is_eval_only and (config.should_export_onnx or existing_onnx):
+            # Auto-detect exported ONNX model (only if we just exported)
             if onnx_path and osp.exists(onnx_path):
                 models_to_evaluate.append(("onnx", onnx_path))
             else:
@@ -1094,8 +1110,8 @@ def main():
                 logger.info(f"Using config-specified TensorRT model: {eval_trt_path}")
             else:
                 logger.warning(f"Config-specified TensorRT model not found: {eval_trt_path}")
-        elif config.should_export_tensorrt:
-            # Auto-detect exported TensorRT model
+        elif not is_eval_only and config.should_export_tensorrt:
+            # Auto-detect exported TensorRT model (only if we just exported)
             if trt_path and osp.exists(trt_path):
                 models_to_evaluate.append(("tensorrt", trt_path))
             else:
@@ -1144,13 +1160,17 @@ def main():
     logger.info("Deployment completed successfully!")
 
     # Log what was exported
-    exported_formats = []
-    if config.should_export_onnx:
-        exported_formats.append("ONNX")
-    if config.should_export_tensorrt:
-        exported_formats.append("TensorRT")
+    if not is_eval_only:
+        exported_formats = []
+        if config.should_export_onnx:
+            exported_formats.append("ONNX")
+        if config.should_export_tensorrt:
+            exported_formats.append("TensorRT")
 
-    logger.info(f"Exported formats: {', '.join(exported_formats)}")
+        if exported_formats:
+            logger.info(f"Exported formats: {', '.join(exported_formats)}")
+    else:
+        logger.info("Evaluation-only mode: No models were exported")
 
 
 if __name__ == "__main__":
