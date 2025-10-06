@@ -163,7 +163,7 @@ def load_sample_data_from_info_pkl(
 
 
 class DeploymentConfig:
-    """Enhanced configuration container for deployment settings with validation."""
+    """Configuration container for deployment settings."""
 
     def __init__(self, deploy_cfg: Config):
         self.deploy_cfg = deploy_cfg
@@ -287,14 +287,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", help="Override device from config")
     parser.add_argument("--log-level", default="INFO", choices=list(logging._nameToLevel.keys()), help="Logging level")
     parser.add_argument("--info-pkl", help="Override info.pkl path from config")
-    parser.add_argument("--sample-idx", type=int, help="Override sample index from config")
-
-    # Evaluation mode
-    parser.add_argument("--evaluate", action="store_true", help="Run full evaluation on multiple samples")
-    parser.add_argument(
-        "--num-samples", type=int, default=10, help="Number of samples to evaluate (only with --evaluate)"
-    )
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging during evaluation")
 
     return parser.parse_args()
 
@@ -969,11 +961,10 @@ def main():
     logger.info(f"Loading model config from: {args.model_cfg}")
     model_cfg = Config.fromfile(args.model_cfg)
 
-    # Get settings from config with CLI overrides
-    work_dir = args.work_dir if args.work_dir else config.work_dir
-    device = args.device if args.device else config.device
-    info_pkl = args.info_pkl if args.info_pkl else config.runtime_io_config.get("info_pkl")
-    sample_idx = args.sample_idx if args.sample_idx is not None else config.runtime_io_config.get("sample_idx", 0)
+    work_dir = config.work_dir
+    device = config.device
+    info_pkl = config.runtime_io_config.get("info_pkl")
+    sample_idx = config.runtime_io_config.get("sample_idx", 0)
     existing_onnx = config.runtime_io_config.get("onnx_file")
 
     # Validate required parameters
@@ -1072,9 +1063,9 @@ def main():
 
     # Get evaluation settings from config and CLI
     eval_cfg = config.evaluation_config
-    should_evaluate = args.evaluate or eval_cfg.get("enabled", False)
-    num_samples = args.num_samples if args.num_samples != 10 else eval_cfg.get("num_samples", 10)
-    verbose_mode = args.verbose or eval_cfg.get("verbose", False)
+    should_evaluate = eval_cfg.get("enabled", False)
+    num_samples = eval_cfg.get("num_samples", 10)
+    verbose_mode = eval_cfg.get("verbose", False)
 
     # Run full evaluation if requested
     if should_evaluate:
