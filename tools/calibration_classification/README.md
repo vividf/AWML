@@ -283,38 +283,14 @@ Control TensorRT inference precision with the `precision_policy` parameter:
 | `fp32_tf32` | Tensor Cores for FP32 | Ampere+ GPUs, FP32 speedup |
 | `strongly_typed` | Enforces explicit type constraints, preserves QDQ (Quantize-Dequantize) nodes | INT8 quantized models from QAT or PTQ with explicit Q/DQ ops |
 
-### 6.2. Basic Usage
-
-#### Export to Both ONNX and TensorRT
-
-All settings come from the config file:
-
-```sh
-python projects/CalibrationStatusClassification/deploy/main.py \
-    projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
-    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
-    checkpoint.pth
-```
-
-#### Override Config Settings via CLI
-
-```sh
-python projects/CalibrationStatusClassification/deploy/main.py \
-    projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
-    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
-    checkpoint.pth \
-    --work-dir ./custom_output \
-    --device cuda:1 \
-    --info-pkl /path/to/custom/info.pkl \
-    --sample-idx 5
-```
-
 ### 6.3. Export Modes
 
-#### Export to ONNX Only
+#### Export from checkpoint to Both ONNX and TensorRT
+In config file, set `export.mode = "both"`.
+
+#### Export from checkpoint to ONNX Only
 
 In config file, set `export.mode = "onnx"`.
-
 
 #### Convert Existing ONNX to TensorRT
 
@@ -322,8 +298,15 @@ In config file:
 - Set `export.mode = "trt"`
 - Set `runtime_io.onnx_file = "/path/to/model.onnx"`
 
-
 **Note:** The checkpoint is used for verification. To skip verification, set `export.verify = False` in config.
+
+#### Export
+```sh
+python projects/CalibrationStatusClassification/deploy/main.py \
+    projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
+    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
+    checkpoint.pth
+```
 
 
 ### 6.4. Evaluate ONNX and TensorRT Models
@@ -334,32 +317,20 @@ In config file:
 python projects/CalibrationStatusClassification/deploy/main.py \
     projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
     projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
-    checkpoint.pth \
-    --verbose
+    checkpoint.pth
 ```
 
-#### Command Line Arguments
-- `--verbose`: Enable verbose logging during evaluation
 
 ## 7. INT8 Quantization Guide
 
 INT8 quantization reduces model size and improves inference speed by converting 32-bit floating-point weights to 8-bit integers. This guide covers Post-Training Quantization (PTQ) using NVIDIA's ModelOpt tool.
 
-### 7.1. Prerequisites
 
-Before starting quantization, ensure you have:
-
-1. **Trained model checkpoint** (e.g., `epoch_25.pth`)
-2. **ONNX model** exported using Section 6
-3. **Dataset info files** (from Section 2.1)
-
----
-
-### 7.2. Generate Calibration Data
+### 7.1. Generate Calibration Data
 
 Calibration data is used to determine optimal quantization parameters. Use representative samples from your training dataset.
 
-#### 7.2.1. Basic Usage
+#### 7.1.1. Basic Usage
 
 ```sh
 python tools/calibration_classification/toolkit.py \
@@ -375,6 +346,8 @@ python tools/calibration_classification/toolkit.py \
 Calibration data is loaded entirely into GPU memory during quantization. Calculate required memory:
 For 32 GB memory, the maximum you can use is approximately: 32 GB / 1860 x 2880 x 5 x 4 Bytes, around 321 images.
 Use `--indices 200` to limit to first 200 samples.
+
+Additionally, ensure sufficient disk storage is available on the target device for calibration file output.
 
 
 ### 7.3. Build Optimization Docker Environment
@@ -419,26 +392,7 @@ python3 -m modelopt.onnx.quantization \
 
 ### 7.6. Evaluate Quantized Model
 
-#### 7.6.1. Evaluate ONNX INT8 Model
-
-```sh
-python projects/CalibrationStatusClassification/deploy/main.py \
-    projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
-    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
-    epoch_25.pth \
-    --evaluate \
-    --num-samples 100
-```
-
-**Note**: Configure the deployment config to use the quantized ONNX model:
-```python
-runtime_io = dict(
-    onnx_file="work_dirs/end2end.quant.onnx",  # Point to quantized ONNX
-    # ...
-)
-```
-
-#### 7.6.2. Convert to TensorRT INT8 Engine
+#### 7.6.1. Convert to TensorRT INT8 Engine
 
 For optimal performance, convert the quantized ONNX to TensorRT:
 
@@ -472,45 +426,31 @@ backend_config = dict(
 python projects/CalibrationStatusClassification/deploy/main.py \
     projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
     projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
-    epoch_25.pth  # For verification only
+    epoch_25.pth
 ```
 
 **Output**: `work_dirs/end2end.engine` (INT8 TensorRT engine)
 
 #### 7.6.3. Evaluate TensorRT INT8 Engine
 
+In config file, set `export.mode = "none"` and `"evaluation.enabled=True"`.
+```python
+export = dict(
+    mode="none",  # Export mode: "onnx", "trt", "both", or "none"
+    ...
+)
+
+evaluation = dict(
+    enabled=True,
+    ...
+    onnx_model=None,
+    tensorrt_model="/workspace/work_dirs/end2end.engine",
+)
+```
+
+**Evaluate INT8 engine**
 ```sh
 python projects/CalibrationStatusClassification/deploy/main.py \
     projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
-    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
-    epoch_25.pth \
-    --evaluate \
-    --num-samples 100
+    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py
 ```
-
-**Note**: The deployment config should point to the TensorRT engine:
-```python
-runtime_io = dict(
-    onnx_file="work_dirs/end2end.quant.onnx",
-    # ...
-)
-
-# TensorRT engine will be automatically loaded from work_dirs/end2end.engine
-```
-
-### 7.7. Expected Results
-
-**Typical performance improvements:**
-
-| Metric          | FP32 ONNX | INT8 ONNX | INT8 TensorRT |
-|-----------------|-----------|-----------|---------------|
-| Model Size      | 100%      | ~25%      | ~25%          |
-| Inference Speed | 1.0×      | 1.5-2.0×  | 2.5-4.0×      |
-| Accuracy Loss   | baseline  | <1%       | <1%           |
-| Memory Usage    | 100%      | ~40%      | ~30%          |
-
-**Note**: Actual results depend on:
-- Model architecture (ResNet18, etc.)
-- Input resolution
-- Hardware (GPU generation)
-- Calibration data quality
