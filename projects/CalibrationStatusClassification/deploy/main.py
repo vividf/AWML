@@ -1085,37 +1085,31 @@ def main():
         # Determine which models to evaluate
         models_to_evaluate = []
 
-        # Check for ONNX model (config-specified or auto-detected)
+        # Get model paths from config
         eval_onnx_path = eval_cfg.get("onnx_model")
-        if eval_onnx_path:
-            # Use config-specified ONNX model
-            if osp.exists(eval_onnx_path):
-                models_to_evaluate.append(("onnx", eval_onnx_path))
-                logger.info(f"Using config-specified ONNX model: {eval_onnx_path}")
-            else:
-                logger.warning(f"Config-specified ONNX model not found: {eval_onnx_path}")
-        elif not is_eval_only and (config.should_export_onnx or existing_onnx):
-            # Auto-detect exported ONNX model (only if we just exported)
-            if onnx_path and osp.exists(onnx_path):
-                models_to_evaluate.append(("onnx", onnx_path))
-            else:
-                logger.warning(f"ONNX model not found at {onnx_path}, skipping ONNX evaluation")
-
-        # Check for TensorRT model (config-specified or auto-detected)
         eval_trt_path = eval_cfg.get("tensorrt_model")
-        if eval_trt_path:
-            # Use config-specified TensorRT model
-            if osp.exists(eval_trt_path):
-                models_to_evaluate.append(("tensorrt", eval_trt_path))
-                logger.info(f"Using config-specified TensorRT model: {eval_trt_path}")
-            else:
-                logger.warning(f"Config-specified TensorRT model not found: {eval_trt_path}")
-        elif not is_eval_only and config.should_export_tensorrt:
-            # Auto-detect exported TensorRT model (only if we just exported)
-            if trt_path and osp.exists(trt_path):
-                models_to_evaluate.append(("tensorrt", trt_path))
-            else:
-                logger.warning(f"TensorRT model not found at {trt_path}, skipping TensorRT evaluation")
+
+        # If both paths are None, skip evaluation (no auto-detection)
+        if eval_onnx_path is None and eval_trt_path is None:
+            logger.warning("Both onnx_model and tensorrt_model are None. Skipping evaluation.")
+            logger.warning("To enable evaluation, specify at least one model path in the config.")
+        else:
+            # Only evaluate models that are explicitly specified (not None)
+            if eval_onnx_path is not None:
+                # Evaluate ONNX model
+                if osp.exists(eval_onnx_path):
+                    models_to_evaluate.append(("onnx", eval_onnx_path))
+                    logger.info(f"Using config-specified ONNX model: {eval_onnx_path}")
+                else:
+                    logger.warning(f"Config-specified ONNX model not found: {eval_onnx_path}")
+
+            if eval_trt_path is not None:
+                # Evaluate TensorRT model
+                if osp.exists(eval_trt_path):
+                    models_to_evaluate.append(("tensorrt", eval_trt_path))
+                    logger.info(f"Using config-specified TensorRT model: {eval_trt_path}")
+                else:
+                    logger.warning(f"Config-specified TensorRT model not found: {eval_trt_path}")
 
         if not models_to_evaluate:
             logger.error(

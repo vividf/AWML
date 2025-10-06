@@ -335,15 +335,10 @@ python projects/CalibrationStatusClassification/deploy/main.py \
     projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
     projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
     checkpoint.pth \
-    --evaluate \
-    --num-samples 100 \
     --verbose
 ```
 
 #### Command Line Arguments
-
-- `--evaluate`: Enable full model evaluation on multiple samples
-- `--num-samples`: Number of samples to evaluate (default: 10)
 - `--verbose`: Enable verbose logging during evaluation
 
 ## 7. INT8 Quantization Guide
