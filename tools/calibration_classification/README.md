@@ -212,9 +212,7 @@ tensorboard --logdir work_dirs --bind_all
 ```
 
 ## 5. Evaluation
-### 5.1. PyTorch Model Evaluation
-
-- Evaluation
+PyTorch Model Evaluation
 
 ```sh
 python tools/calibration_classification/test.py {config_file} {checkpoint_file}
@@ -224,6 +222,7 @@ python tools/calibration_classification/test.py {config_file} {checkpoint_file}
 python tools/calibration_classification/test.py projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py  epoch_25.pth --out {output_file}
 ```
 
+For ONNX and TensorRT Evaluation check [Section 6.4](#64-evaluate-onnx-and-tensorrt-models).
 
 
 ## 6. Deployment
@@ -425,8 +424,7 @@ backend_config = dict(
 ```sh
 python projects/CalibrationStatusClassification/deploy/main.py \
     projects/CalibrationStatusClassification/configs/deploy/resnet18_5ch.py \
-    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py \
-    epoch_25.pth
+    projects/CalibrationStatusClassification/configs/t4dataset/resnet18_5ch_1xb16-50e_j6gen2.py
 ```
 
 **Output**: `work_dirs/end2end.engine` (INT8 TensorRT engine)

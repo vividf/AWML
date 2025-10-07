@@ -15,9 +15,9 @@ from autoware_ml.calibration_classification.datasets.transforms.calibration_clas
 )
 
 
-class CalibrationToolkit:
+class CalibrationClassifierToolkit:
     """
-    A comprehensive tool for processing LiDAR-camera calibration data.
+    A tool for processing LiDAR-camera calibration data.
     This class provides functionality to load calibration data from info.pkl files
     and optionally generate visualizations or save results as NPZ files.
     Attributes:
@@ -30,7 +30,7 @@ class CalibrationToolkit:
 
     def __init__(self, model_cfg: Config, data_root: Optional[str] = None, output_dir: Optional[str] = None):
         """
-        Initialize the CalibrationToolkit.
+        Initialize the CalibrationClassifierToolkit.
         Args:
             model_cfg: Model configuration
             data_root: Root directory for data files. If None, absolute paths are used.
@@ -40,7 +40,7 @@ class CalibrationToolkit:
         self.data_root = data_root
         self.output_dir = output_dir
         self.transform = None
-        self.logger = MMLogger.get_instance(name="calibration_toolkit")
+        self.logger = MMLogger.get_instance(name="calibration_classifier_toolkit")
         self.collected_results = []
         self._initialize_transform()
 
@@ -50,7 +50,6 @@ class CalibrationToolkit:
         if transform_config is None:
             raise ValueError("transform_config not found in model configuration")
 
-        # Only set projection_vis_dir if output_dir is provided (for visualization)
         projection_vis_dir = self.output_dir if self.output_dir else None
 
         self.transform = CalibrationClassificationTransform(
@@ -339,7 +338,7 @@ def main() -> None:
     model_cfg = Config.fromfile(args.model_cfg)
 
     # Initialize toolkit
-    toolkit = CalibrationToolkit(model_cfg=model_cfg, data_root=args.data_root, output_dir=args.output_dir)
+    toolkit = CalibrationClassifierToolkit(model_cfg=model_cfg, data_root=args.data_root, output_dir=args.output_dir)
 
     # Process indices argument
     processed_indices = None
