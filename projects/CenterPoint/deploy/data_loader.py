@@ -1,0 +1,349 @@
+"""
+CenterPoint DataLoader for deployment.
+
+This module implements the BaseDataLoader interface for CenterPoint 3D detection
+using MMDet3D's preprocessing pipeline.
+"""
+
+import os
+import pickle
+from typing import Any, Dict, Optional, Union
+
+import numpy as np
+import torch
+from mmengine.config import Config
+
+from autoware_ml.deployment.core import BaseDataLoader
+from autoware_ml.deployment.utils import build_test_pipeline
+
+
+class CenterPointDataLoader(BaseDataLoader):
+    """
+    DataLoader for CenterPoint 3D object detection.
+
+    This loader uses MMDet3D's preprocessing pipeline to ensure consistency
+    between training and deployment.
+
+    Attributes:
+        info_file: Path to info.pkl file containing dataset information
+        pipeline: MMDet3D preprocessing pipeline
+        data_infos: List of data information dictionaries
+    """
+
+    def __init__(
+        self,
+        info_file: str,
+        model_cfg: Config,
+        device: str = "cpu",
+        use_pipeline: bool = True,
+    ):
+        """
+        Initialize CenterPoint DataLoader.
+
+        Args:
+            info_file: Path to info.pkl file (e.g., centerpoint_infos_val.pkl)
+            model_cfg: Model configuration containing test pipeline
+            device: Device to load tensors on ('cpu', 'cuda', etc.)
+            use_pipeline: Whether to use MMDet3D pipeline (True) or simple preprocessing (False)
+
+        Raises:
+            FileNotFoundError: If info_file doesn't exist
+            ValueError: If info file format is invalid
+        """
+        super().__init__(
+            config={
+                "info_file": info_file,
+                "device": device,
+                "use_pipeline": use_pipeline,
+            }
+        )
+
+        # Validate info file
+        if not os.path.exists(info_file):
+            raise FileNotFoundError(f"Info file not found: {info_file}")
+
+        self.info_file = info_file
+        self.model_cfg = model_cfg
+        self.device = device
+        self.use_pipeline = use_pipeline
+
+        # Load info.pkl
+        self.data_infos = self._load_info_file()
+
+        # Build preprocessing pipeline
+        if self.use_pipeline:
+            self.pipeline = build_test_pipeline(model_cfg)
+        else:
+            self.pipeline = None
+
+    def _load_info_file(self) -> list:
+        """
+        Load and parse info.pkl file.
+
+        Returns:
+            List of data information dictionaries
+
+        Raises:
+            ValueError: If file format is invalid
+        """
+        try:
+            with open(self.info_file, "rb") as f:
+                data = pickle.load(f)
+        except Exception as e:
+            raise ValueError(f"Failed to load info file: {e}") from e
+
+        # Extract data_list
+        if isinstance(data, dict):
+            if "data_list" in data:
+                data_list = data["data_list"]
+            elif "infos" in data:
+                # Alternative key name
+                data_list = data["infos"]
+            else:
+                raise ValueError(
+                    f"Expected 'data_list' or 'infos' key in info file, " f"found keys: {list(data.keys())}"
+                )
+        elif isinstance(data, list):
+            data_list = data
+        else:
+            raise ValueError(f"Unexpected info file format: {type(data)}")
+
+        if not data_list:
+            raise ValueError("No samples found in info file")
+
+        return data_list
+
+    def load_sample(self, index: int) -> Dict[str, Any]:
+        """
+        Load a single sample with point cloud and annotations.
+
+        Args:
+            index: Sample index to load
+
+        Returns:
+            Dictionary containing:
+            - lidar_points: Dict with lidar_path
+            - gt_bboxes_3d: 3D bounding boxes (if available)
+            - gt_labels_3d: 3D labels (if available)
+            - Additional metadata
+
+        Raises:
+            IndexError: If index is out of range
+        """
+        if index >= len(self.data_infos):
+            raise IndexError(f"Sample index {index} out of range (0-{len(self.data_infos)-1})")
+
+        info = self.data_infos[index]
+
+        # Extract lidar points info
+        lidar_points = info.get("lidar_points", {})
+        if not lidar_points:
+            # Try alternative key
+            lidar_path = info.get("lidar_path", info.get("velodyne_path", ""))
+            lidar_points = {"lidar_path": lidar_path}
+
+        # Extract annotations (if available)
+        ann_info = info.get("ann_info", info.get("annos", {}))
+
+        sample = {
+            "lidar_points": lidar_points,
+            "sample_idx": info.get("sample_idx", index),
+        }
+
+        # Add ground truth if available
+        if ann_info:
+            sample["ann_info"] = ann_info
+            if "gt_bboxes_3d" in ann_info:
+                sample["gt_bboxes_3d"] = ann_info["gt_bboxes_3d"]
+            if "gt_labels_3d" in ann_info:
+                sample["gt_labels_3d"] = ann_info["gt_labels_3d"]
+
+        # Add camera info if available (for multi-modal models)
+        if "images" in info or "img_path" in info:
+            sample["images"] = info.get("images", {})
+            if "img_path" in info:
+                sample["img_path"] = info["img_path"]
+
+        return sample
+
+    def preprocess(self, sample: Dict[str, Any]) -> Union[Dict[str, torch.Tensor], torch.Tensor]:
+        """
+        Preprocess sample using MMDet3D pipeline.
+
+        Args:
+            sample: Raw sample data from load_sample()
+
+        Returns:
+            For voxel-based models (CenterPoint):
+            Dictionary containing:
+            - voxels: Voxel features (N, max_points, C)
+            - num_points: Number of points per voxel (N,)
+            - coors: Voxel coordinates (N, 4) where 4 = (batch_idx, z, y, x)
+
+            For point-based models:
+            Tensor of point features
+
+        Raises:
+            ValueError: If sample format is invalid
+        """
+        if self.use_pipeline:
+            return self._preprocess_with_pipeline(sample)
+        else:
+            return self._preprocess_simple(sample)
+
+    def _preprocess_with_pipeline(self, sample: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        """
+        Preprocess using MMDet3D pipeline (recommended).
+
+        This ensures consistency with training preprocessing.
+        """
+        # Apply pipeline
+        results = self.pipeline(sample)
+
+        # Extract voxel-based inputs (for CenterPoint)
+        # The exact keys depend on the voxelization method
+        inputs = {}
+
+        # Common keys for voxel-based models
+        voxel_keys = ["voxels", "num_points", "coors"]
+        for key in voxel_keys:
+            if key in results:
+                value = results[key]
+                if isinstance(value, torch.Tensor):
+                    inputs[key] = value.to(self.device)
+                else:
+                    inputs[key] = torch.from_numpy(value).to(self.device)
+
+        # Add batch dimension to coordinates if needed
+        if "coors" in inputs and inputs["coors"].shape[1] == 3:
+            # Add batch_idx column (always 0 for single sample)
+            batch_idx = torch.zeros((inputs["coors"].shape[0], 1), dtype=inputs["coors"].dtype, device=self.device)
+            inputs["coors"] = torch.cat([batch_idx, inputs["coors"]], dim=1)
+
+        # Alternative: for point-based models
+        if "points" in results and not inputs:
+            points = results["points"]
+            if isinstance(points, torch.Tensor):
+                inputs["points"] = points.to(self.device)
+            else:
+                inputs["points"] = torch.from_numpy(points).to(self.device)
+
+        if not inputs:
+            raise ValueError(f"No valid inputs found in pipeline results. " f"Available keys: {results.keys()}")
+
+        return inputs
+
+    def _preprocess_simple(self, sample: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        """
+        Simple preprocessing without MMDet3D pipeline.
+
+        This is a fallback option but may not match training preprocessing exactly.
+        For CenterPoint, this includes basic voxelization.
+        """
+        # Load point cloud
+        lidar_path = sample["lidar_points"]["lidar_path"]
+        points = self._load_point_cloud(lidar_path)
+
+        # Simple voxelization (placeholder - real implementation would be more complex)
+        # For actual deployment, using the pipeline is strongly recommended
+        voxel_size = self.model_cfg.get("voxel_size", [0.075, 0.075, 0.2])
+        point_cloud_range = self.model_cfg.get("point_cloud_range", [0, -40, -3, 70.4, 40, 1])
+
+        # This is a simplified version - real voxelization is more complex
+        # Using pipeline is recommended for production
+        return {"points": torch.from_numpy(points).to(self.device)}
+
+    def _load_point_cloud(self, lidar_path: str) -> np.ndarray:
+        """
+        Load point cloud from file.
+
+        Args:
+            lidar_path: Path to point cloud file (.bin or .pcd)
+
+        Returns:
+            Point cloud array (N, 4) where 4 = (x, y, z, intensity)
+        """
+        if lidar_path.endswith(".bin"):
+            # Load binary point cloud (KITTI/nuScenes format)
+            points = np.fromfile(lidar_path, dtype=np.float32).reshape(-1, 4)
+        elif lidar_path.endswith(".pcd"):
+            # Load PCD format (placeholder - would need pypcd or similar)
+            raise NotImplementedError("PCD format loading not implemented yet")
+        else:
+            raise ValueError(f"Unsupported point cloud format: {lidar_path}")
+
+        return points
+
+    def get_num_samples(self) -> int:
+        """
+        Get total number of samples.
+
+        Returns:
+            Number of samples in the dataset
+        """
+        return len(self.data_infos)
+
+    def validate_sample(self, sample: Dict[str, Any]) -> bool:
+        """
+        Validate sample structure.
+
+        Args:
+            sample: Sample to validate
+
+        Returns:
+            True if valid, False otherwise
+        """
+        # Check required keys
+        if "lidar_points" not in sample:
+            return False
+
+        # Validate lidar path exists
+        lidar_path = sample["lidar_points"].get("lidar_path")
+        if not lidar_path or not os.path.exists(lidar_path):
+            return False
+
+        return True
+
+    def get_ground_truth(self, index: int) -> Dict[str, Any]:
+        """
+        Get ground truth annotations for evaluation.
+
+        Args:
+            index: Sample index
+
+        Returns:
+            Dictionary containing:
+            - gt_bboxes_3d: 3D bounding boxes (N, 7) where 7 = (x, y, z, w, l, h, yaw)
+            - gt_labels_3d: 3D class labels (N,)
+            - sample_idx: Sample identifier
+        """
+        sample = self.load_sample(index)
+
+        gt_bboxes_3d = sample.get("gt_bboxes_3d", np.zeros((0, 7), dtype=np.float32))
+        gt_labels_3d = sample.get("gt_labels_3d", np.zeros((0,), dtype=np.int64))
+
+        # Convert to numpy if needed
+        if isinstance(gt_bboxes_3d, (list, tuple)):
+            gt_bboxes_3d = np.array(gt_bboxes_3d, dtype=np.float32)
+        if isinstance(gt_labels_3d, (list, tuple)):
+            gt_labels_3d = np.array(gt_labels_3d, dtype=np.int64)
+
+        return {
+            "gt_bboxes_3d": gt_bboxes_3d,
+            "gt_labels_3d": gt_labels_3d,
+            "sample_idx": sample.get("sample_idx", index),
+        }
+
+    def get_class_names(self) -> list:
+        """
+        Get class names from config.
+
+        Returns:
+            List of class names
+        """
+        # Try to get from model config
+        if hasattr(self.model_cfg, "class_names"):
+            return self.model_cfg.class_names
+
+        # Default for T4Dataset
+        return ["VEHICLE", "PEDESTRIAN", "CYCLIST"]
