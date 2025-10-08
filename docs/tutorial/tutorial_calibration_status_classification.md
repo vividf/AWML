@@ -74,4 +74,4 @@ python projects/CalibrationStatusClassification/deploy/main.py \
     checkpoint.pth
 ```
 
-For INT8 quantization and advanced deployment options, see [Deployment guide](/tools/calibration_classification/README.md#6-deployment).
+For advanced deployment options, see [Deployment guide](/tools/calibration_classification/README.md#6-deployment).
