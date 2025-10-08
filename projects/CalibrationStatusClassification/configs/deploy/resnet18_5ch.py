@@ -8,7 +8,7 @@
 # Export Configuration
 # ==============================================================================
 export = dict(
-    mode="both",  # Export mode: "onnx", "trt", "both", or "none"
+    mode="none",  # Export mode: "onnx", "trt", "both", or "none"
     # - "onnx": Export to ONNX only
     # - "trt": Convert to TensorRT only (requires onnx_file in runtime_io)
     # - "both": Export to ONNX then convert to TensorRT
@@ -38,11 +38,12 @@ evaluation = dict(
     enabled=True,  # Enable full model evaluation (set to True to run evaluation)
     num_samples=10,  # Number of samples to evaluate from info.pkl
     verbose=True,  # Enable verbose logging showing per-sample results
-    # Optional: Specify models to evaluate (if None, uses exported models from work_dir)
-    onnx_model="/workspace/work_dirs/end2end.onnx",  # Path to ONNX model file to evaluate (e.g., "/path/to/model.onnx")
-    tensorrt_model="/workspace/work_dirs/end2end.engine",  # Path to TensorRT engine file to evaluate (e.g., "/path/to/model.engine")
-    # Note: If models are None, will automatically detect and evaluate exported models
-    # Note: Command line args (--evaluate, --num-samples, --verbose) override these settings
+    # Specify models to evaluate
+    models=dict(
+        onnx="/workspace/work_dirs/end2end.onnx",  # Path to ONNX model file
+        tensorrt="/workspace/work_dirs/end2end.engine",  # Path to TensorRT engine file
+        # pytorch="/workspace/work_dirs/best_accuracy_top1_epoch_28.pth",  # Optional: PyTorch checkpoint
+    ),
 )
 
 # ==============================================================================

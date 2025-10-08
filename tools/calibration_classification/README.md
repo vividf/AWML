@@ -266,8 +266,10 @@ evaluation = dict(
     enabled=False,                     # Enable evaluation by default
     num_samples=100,                    # Number of samples to evaluate
     verbose=False,                     # Enable detailed logging
-    onnx_path=None,                    # Optional: path to existing ONNX model
-    tensorrt_path=None,                # Optional: path to existing TensorRT engine
+    models=dict(
+        onnx=None,                    # Optional: path to existing ONNX model
+        tensorrt=None,                # Optional: path to existing TensorRT engine
+    ),
 )
 ```
 
