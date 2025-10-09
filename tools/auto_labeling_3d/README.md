@@ -6,13 +6,13 @@ The pipeline of auto labeling for 3D detection.
 
 ## 1. Setup environment
 
-- Please pull docker image of `autoware-ml-base` by following [setting environemnt](/tools/setting_environment/)
+- Please follow the [installation tutorial](/docs/tutorial/tutorial_detection_3d.md)to set up the environment.
 - In addition, please follow the below setting up procedure.
 
 ### Set up environment for auto_labeling_3d
 
 - Build docker image.
-  - If you [build `AWML` image locally](/tools/setting_environment/README.md#tips), please add `--build-arg BASE_IMAGE=autoware-ml` or `--build-arg BASE_IMAGE=autoware-ml-ros2` to build script.
+  - If you build `AWML` image locally, please add `--build-arg BASE_IMAGE=autoware-ml` or `--build-arg BASE_IMAGE=autoware-ml-ros2` to build script.
 
 ```sh
 DOCKER_BUILDKIT=1 docker build -t auto_labeling_3d tools/auto_labeling_3d/
@@ -82,37 +82,102 @@ python tools/auto_labeling_3d/create_info_data/create_info_data.py --root-path .
 TBD
 ```
 
-## (TBD) 3. Filter objects which do not use for pseudo T4dataset
+## 3. Filter objects which do not use for pseudo T4dataset
+
+### Filter
 
 - Set a config to decide what you want to filter
   - Set threshold to filter objects with low confidence
 
 ```py
-filter_pipelines = ThresholdFilter(
-        info_path="./data/t4dataset/info/pseudo_infos_raw_centerpoint.pkl",
-        confidence_threshold=0.40,
-        use_label=["car", "track", "bus", "bike", "pedestrian"])
-```
+centerpoint_pipeline = [
+    dict(
+        type="ThresholdFilter",
+        confidence_thresholds={
+            "car": 0.35,
+            "truck": 0.35,
+            "bus": 0.35,
+            "bicycle": 0.35,
+            "pedestrian": 0.35,
+        },
+        use_label=["car", "truck", "bus", "bicycle", "pedestrian"],
+    ),
+]
 
-- If you want to ensemble model, you set a config as below.
-
-```py
-filter_pipelines = EnsembleModel([
-    ThresholdFilter(
-        info_path="./data/t4dataset/info/pseudo_infos_raw_centerpoint.pkl",
-        confidence_threshold=0.40,
-        use_label=["car", "track", "bus", "bike", "pedestrian"]),
-    ThresholdFilter(
-        info_path="./data/t4dataset/info/pseudo_infos_raw_bevfusion.pkl",
-        confidence_threshold=0.25,
-        use_label=["bike", "pedestrian"]),
-])
+filter_pipelines = dict(
+  type="Filter",
+  input=dict(
+          name="centerpoint",
+          info_path="./data/t4dataset/info/pseudo_infos_raw_centerpoint.pkl",
+          filter_pipeline=centerpoint_pipeline,
+  ),
+)
 ```
 
 - Make the info file to filter the objects which do not use for pseudo T4dataset
 
 ```sh
-python tools/auto_labeling_3d/filter_objects/filter_objects.py --config {config_file}
+python tools/auto_labeling_3d/filter_objects/filter_objects.py --config {config_file} --work-dir {path to output}
+```
+
+### Ensemble
+
+- If you want to ensemble model, you set a config as below.
+
+```py
+centerpoint_pipeline = [
+    dict(
+        type="ThresholdFilter",
+        confidence_thresholds={
+            "car": 0.35,
+            "truck": 0.35,
+            "bus": 0.35,
+            "bicycle": 0.35,
+            "pedestrian": 0.35,
+        },
+        use_label=["car", "truck", "bus", "bicycle", "pedestrian"],
+    ),
+]
+
+bevfusion_pipeline = [
+    dict(
+        type="ThresholdFilter",
+        confidence_thresholds={
+            "bicycle": 0.35,
+            "pedestrian": 0.35,
+        },
+        use_label=["bicycle", "pedestrian"],
+    ),
+]
+
+filter_pipelines = dict(
+    type="Ensemble",
+    config=dict(
+        type="NMSEnsembleModel",
+        ensemble_setting=dict(
+            weights=[1.0, 1.0],
+            iou_threshold=0.55,
+        ),
+    ),
+    inputs=[
+        dict(
+            name="centerpoint",
+            info_path="./data/t4dataset/info/pseudo_infos_raw_centerpoint.pkl",
+            filter_pipeline=centerpoint_pipeline,
+        ),
+        dict(
+            name="bevfusion",
+            info_path="./data/t4dataset/info/pseudo_infos_raw_bevfusion.pkl",
+            filter_pipeline=bevfusion_pipeline,
+        ),
+    ],
+)
+```
+
+- Make the info file to filter the objects which do not use for pseudo T4dataset and ensemble filtered results.
+
+```sh
+python tools/auto_labeling_3d/filter_objects/ensemble_infos.py --config {config_file} --work-dir {path to output}
 ```
 
 - As a result, the data is as below
