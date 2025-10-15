@@ -3,7 +3,7 @@
 import logging
 import os
 import time
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import onnxruntime as ort
@@ -86,12 +86,9 @@ class ONNXBackend(BaseBackend):
         # Check if ONNX model expects different batch size than input
         input_name = self._session.get_inputs()[0].name
         expected_shape = self._session.get_inputs()[0].shape
-        # Handle dynamic dimensions (can be strings like "batch_size" or integers)
-        expected_batch_size = None
-        if len(expected_shape) > 0:
-            batch_dim = expected_shape[0]
-            if isinstance(batch_dim, int) and batch_dim > 0:
-                expected_batch_size = batch_dim
+        
+        # Extract expected batch size (handle dynamic dimensions)
+        expected_batch_size = self._extract_batch_size(expected_shape)
         
         # Handle batch size mismatch for fixed batch size models
         if expected_batch_size is not None and input_array.shape[0] != expected_batch_size:
@@ -182,12 +179,9 @@ class ONNXBackend(BaseBackend):
                 # Retry inference with CPU
                 input_name = self._session.get_inputs()[0].name
                 expected_shape = self._session.get_inputs()[0].shape
-                # Handle dynamic dimensions (can be strings like "batch_size" or integers)
-                expected_batch_size = None
-                if len(expected_shape) > 0:
-                    batch_dim = expected_shape[0]
-                    if isinstance(batch_dim, int) and batch_dim > 0:
-                        expected_batch_size = batch_dim
+                
+                # Extract expected batch size (handle dynamic dimensions)
+                expected_batch_size = self._extract_batch_size(expected_shape)
                 
                 # Handle batch size mismatch for fixed batch size models (CPU fallback)
                 if expected_batch_size is not None and input_array.shape[0] != expected_batch_size:
@@ -279,6 +273,22 @@ class ONNXBackend(BaseBackend):
                 return output, latency_ms
             else:
                 raise
+
+    def _extract_batch_size(self, shape) -> Optional[int]:
+        """
+        Extract batch size from ONNX model input shape.
+        
+        Args:
+            shape: ONNX model input shape (can contain dynamic dimensions as strings)
+            
+        Returns:
+            Batch size as integer if fixed, None if dynamic
+        """
+        if not shape or len(shape) == 0:
+            return None
+        
+        batch_dim = shape[0]
+        return batch_dim if isinstance(batch_dim, int) and batch_dim > 0 else None
 
     def _sigmoid(self, x: np.ndarray) -> np.ndarray:
         """Apply sigmoid activation to numpy array."""
