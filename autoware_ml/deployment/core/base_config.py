@@ -135,6 +135,11 @@ class BaseDeploymentConfig:
         """Get ONNX configuration."""
         return self.deploy_cfg.get("onnx_config", {})
 
+    @property
+    def verification_config(self) -> Dict:
+        """Get verification configuration."""
+        return self.deploy_cfg.get("verification", {})
+
     def get_onnx_settings(self) -> Dict[str, Any]:
         """
         Get ONNX export settings.

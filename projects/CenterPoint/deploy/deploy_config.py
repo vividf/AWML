@@ -58,12 +58,12 @@ evaluation = dict(
     enabled=True,  # Enable evaluation
     num_samples=50,  # Number of samples to evaluate (3D is slower)
     verbose=False,  # Detailed per-sample output
-    # Backends to evaluate
-    models_to_evaluate=[
-        "pytorch",
-        # 'onnx',       # Enable after successful ONNX export
-        # 'tensorrt'    # Enable after successful TensorRT export
-    ],
+    # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)
+    models=dict(
+        # pytorch="work_dirs/centerpoint_deployment/checkpoint.pth",  # Optional: PyTorch checkpoint
+        # onnx="work_dirs/centerpoint_deployment",  # Path to ONNX model directory
+        # tensorrt="work_dirs/centerpoint_deployment",  # Path to TensorRT engine directory
+    ),
 )
 
 # Verification configuration

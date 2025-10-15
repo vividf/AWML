@@ -1,6 +1,6 @@
 dataset_version_config_root = "autoware_ml/configs/detection2d/dataset/t4dataset/"
 dataset_version_list = [
-    "db_gsm8_v2",
+    # "db_gsm8_v2",
     "db_jpntaxi_v1",
 ]
 

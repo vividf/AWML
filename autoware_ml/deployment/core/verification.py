@@ -67,14 +67,42 @@ def verify_model_outputs(
         # Verify ONNX
         if onnx_path:
             logger.info("\nVerifying ONNX model...")
-            onnx_success = _verify_backend(
-                ONNXBackend(onnx_path, device="cpu"),
+            onnx_backend = ONNXBackend(onnx_path, device=device)
+            onnx_success, onnx_output, onnx_latency = _verify_backend(
+                onnx_backend,
                 input_tensor,
                 pytorch_output,
                 tolerance,
                 "ONNX",
                 logger,
             )
+
+            # If ONNX backend fell back to CPU, update PyTorch backend, recompute reference, and re-compare
+            if onnx_backend.device == "cpu" and device.startswith("cuda"):
+                logger.warning("ONNX backend fell back to CPU, updating PyTorch backend for consistency...")
+                pytorch_backend.device = "cpu"
+                pytorch_backend._torch_device = torch.device("cpu")
+                pytorch_backend._model = pytorch_backend._model.cpu()
+                logger.info("PyTorch backend updated to use CPU")
+
+                logger.info("Re-running PyTorch inference on CPU...")
+                pytorch_output, pytorch_latency = pytorch_backend.infer(input_tensor)
+                logger.info(f"  PyTorch latency (CPU): {pytorch_latency:.2f} ms")
+                logger.info(f"  PyTorch output (CPU): {pytorch_output}")
+
+                # Recompute differences now that both are on CPU
+                max_diff = np.abs(pytorch_output - onnx_output).max()
+                mean_diff = np.abs(pytorch_output - onnx_output).mean()
+                logger.info(f"  Recomputed Max difference: {max_diff:.6f}")
+                logger.info(f"  Recomputed Mean difference: {mean_diff:.6f}")
+                onnx_success = max_diff < tolerance
+                if onnx_success:
+                    logger.info("  ONNX verification PASSED ✓ (after CPU fallback)")
+                else:
+                    logger.warning(
+                        f"  ONNX verification FAILED ✗ (after CPU fallback) (max diff: {max_diff:.6f} > tolerance: {tolerance:.6f})"
+                    )
+
             results[f"{sample_name}_onnx"] = onnx_success
 
         # Verify TensorRT
@@ -108,7 +136,7 @@ def _verify_backend(
     tolerance: float,
     backend_name: str,
     logger: logging.Logger,
-) -> bool:
+) -> tuple[bool, np.ndarray, float]:
     """
     Verify a single backend against reference output.
 
@@ -121,7 +149,7 @@ def _verify_backend(
         logger: Logger instance
 
     Returns:
-        True if verification passed
+        Tuple of (passed, output, latency_ms)
     """
     try:
         with backend:
@@ -139,16 +167,16 @@ def _verify_backend(
 
         if max_diff < tolerance:
             logger.info(f"  {backend_name} verification PASSED ✓")
-            return True
+            return True, output, latency
         else:
             logger.warning(
                 f"  {backend_name} verification FAILED ✗ " f"(max diff: {max_diff:.6f} > tolerance: {tolerance:.6f})"
             )
-            return False
+            return False, output, latency
 
     except Exception as e:
         logger.error(f"  {backend_name} verification failed with error: {e}")
-        return False
+        return False, None, 0.0
 
 
 def compare_outputs(

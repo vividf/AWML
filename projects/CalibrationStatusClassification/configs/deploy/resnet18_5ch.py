@@ -8,7 +8,7 @@
 # Export Configuration
 # ==============================================================================
 export = dict(
-    mode="none",  # Export mode: "onnx", "trt", "both", or "none"
+    mode="both",  # Export mode: "onnx", "trt", "both", or "none"
     # - "onnx": Export to ONNX only
     # - "trt": Convert to TensorRT only (requires onnx_file in runtime_io)
     # - "both": Export to ONNX then convert to TensorRT

@@ -1,7 +1,7 @@
 """
-YOLOX Evaluator for deployment.
+YOLOX_opt_elan Evaluator for deployment.
 
-This module implements evaluation for YOLOX 2D object detection models.
+This module implements evaluation for YOLOX_opt_elan object detection models.
 """
 
 import logging
@@ -14,23 +14,24 @@ from mmengine.config import Config
 from autoware_ml.deployment.backends import ONNXBackend, PyTorchBackend, TensorRTBackend
 from autoware_ml.deployment.core import BaseEvaluator
 
-from .data_loader import YOLOXDataLoader
+from .data_loader import YOLOXOptElanDataLoader
 
 # Constants
-LOG_INTERVAL = 100
+LOG_INTERVAL = 50  # Log more frequently for smaller datasets
 GPU_CLEANUP_INTERVAL = 10
 
 
-class YOLOXEvaluator(BaseEvaluator):
+class YOLOXOptElanEvaluator(BaseEvaluator):
     """
-    Evaluator for YOLOX 2D object detection.
+    Evaluator for YOLOX_opt_elan object detection.
 
-    Computes detection metrics including mAP, per-class AP, and latency statistics.
+    Computes detection metrics including mAP, per-class AP, and latency statistics
+    specifically for object detection task (8 classes).
     """
 
     def __init__(self, model_cfg: Config, class_names: List[str] = None):
         """
-        Initialize YOLOX evaluator.
+        Initialize YOLOX_opt_elan evaluator.
 
         Args:
             model_cfg: Model configuration
@@ -39,32 +40,56 @@ class YOLOXEvaluator(BaseEvaluator):
         super().__init__(config={})
         self.model_cfg = model_cfg
 
-        # Get class names
+        # Get class names - default to 8 object classes
         if class_names is not None:
             self.class_names = class_names
         elif hasattr(model_cfg, "class_names"):
             self.class_names = model_cfg.class_names
         elif "model" in model_cfg and "bbox_head" in model_cfg.model:
-            num_classes = model_cfg.model.bbox_head.get("num_classes", 80)
-            self.class_names = [f"class_{i}" for i in range(num_classes)]
+            num_classes = model_cfg.model.bbox_head.get("num_classes", 8)
+            # Default object class names
+            default_object_classes = [
+                "unknown",
+                "car",
+                "truck",
+                "bus",
+                "trailer",
+                "motorcycle",
+                "pedestrian",
+                "bicycle",
+            ]
+            if num_classes == 8:
+                self.class_names = default_object_classes
+            else:
+                self.class_names = [f"class_{i}" for i in range(num_classes)]
         else:
-            self.class_names = [f"class_{i}" for i in range(80)]  # COCO default
+            # Default to 8 object classes
+            self.class_names = [
+                "unknown",
+                "car",
+                "truck",
+                "bus",
+                "trailer",
+                "motorcycle",
+                "pedestrian",
+                "bicycle",
+            ]
 
     def evaluate(
         self,
         model_path: str,
-        data_loader: YOLOXDataLoader,
+        data_loader: YOLOXOptElanDataLoader,
         num_samples: int,
         backend: str = "pytorch",
         device: str = "cpu",
         verbose: bool = False,
     ) -> Dict[str, Any]:
         """
-        Run full evaluation on YOLOX model.
+        Run full evaluation on YOLOX_opt_elan model.
 
         Args:
             model_path: Path to model checkpoint/weights
-            data_loader: YOLOX DataLoader
+            data_loader: YOLOX_opt_elan DataLoader
             num_samples: Number of samples to evaluate
             backend: Backend to use ('pytorch', 'onnx', 'tensorrt')
             device: Device to run inference on
@@ -113,6 +138,11 @@ class YOLOXEvaluator(BaseEvaluator):
                 ground_truths = self._parse_ground_truths(gt_data)
                 all_ground_truths.append(ground_truths)
 
+                if verbose:
+                    logger.info(
+                        f"  Sample {idx}: {len(predictions)} predictions, " f"{len(ground_truths)} ground truths"
+                    )
+
                 # GPU cleanup for TensorRT
                 if backend == "tensorrt" and idx % GPU_CLEANUP_INTERVAL == 0:
                     torch.cuda.empty_cache()
@@ -127,7 +157,13 @@ class YOLOXEvaluator(BaseEvaluator):
         if backend == "pytorch":
             return PyTorchBackend(model_path, self.model_cfg, device)
         elif backend == "onnx":
-            return ONNXBackend(model_path, device)
+            # Get num_classes from model config for proper output filtering
+            num_classes = None
+            if hasattr(self.model_cfg, "model") and hasattr(self.model_cfg.model, "bbox_head"):
+                num_classes = self.model_cfg.model.bbox_head.get("num_classes", None)
+                if num_classes:
+                    logger.info(f"Using num_classes={num_classes} from config for ONNX output filtering")
+            return ONNXBackend(model_path, device, num_classes=num_classes)
         elif backend == "tensorrt":
             return TensorRTBackend(model_path, device)
         else:
@@ -237,7 +273,7 @@ class YOLOXEvaluator(BaseEvaluator):
             results: Results dictionary from evaluate()
         """
         print("\n" + "=" * 80)
-        print("YOLOX Evaluation Results")
+        print("YOLOX_opt_elan Object Detection - Evaluation Results")
         print("=" * 80)
 
         # Detection metrics
@@ -246,21 +282,26 @@ class YOLOXEvaluator(BaseEvaluator):
         print(f"  mAP @ IoU=0.50: {results['mAP_50']:.4f}")
         print(f"  mAP @ IoU=0.75: {results['mAP_75']:.4f}")
 
-        # Per-class AP
-        if "per_class_ap" in results and len(self.class_names) <= 20:
-            print(f"\nPer-Class AP:")
+        # Per-class AP (show all 8 object classes)
+        if "per_class_ap" in results:
+            print(f"\nPer-Class AP (Object Classes):")
             for class_id, ap in results["per_class_ap"].items():
                 class_name = self.class_names[class_id] if class_id < len(self.class_names) else f"class_{class_id}"
-                print(f"  {class_name}: {ap:.4f}")
+                print(f"  {class_name:25s}: {ap:.4f}")
 
         # Latency
         print(f"\nLatency Statistics:")
         latency = results["latency"]
-        print(f"  Mean: {latency['mean_ms']:.2f} ms")
-        print(f"  Std:  {latency['std_ms']:.2f} ms")
-        print(f"  Min:  {latency['min_ms']:.2f} ms")
-        print(f"  Max:  {latency['max_ms']:.2f} ms")
+        print(f"  Mean:   {latency['mean_ms']:.2f} ms")
+        print(f"  Std:    {latency['std_ms']:.2f} ms")
+        print(f"  Min:    {latency['min_ms']:.2f} ms")
+        print(f"  Max:    {latency['max_ms']:.2f} ms")
         print(f"  Median: {latency['median_ms']:.2f} ms")
+        # Optional percentiles (if computed)
+        if "p95_ms" in latency:
+            print(f"  P95:    {latency['p95_ms']:.2f} ms")
+        if "p99_ms" in latency:
+            print(f"  P99:    {latency['p99_ms']:.2f} ms")
 
         print(f"\nTotal Samples: {results['num_samples']}")
         print("=" * 80)

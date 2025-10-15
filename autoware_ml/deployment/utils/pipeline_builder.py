@@ -166,15 +166,65 @@ def _build_detection2d_pipeline(pipeline_cfg: List) -> Any:
         pipeline_cfg: List of transform configurations
 
     Returns:
-        mmdet.datasets.transforms.Compose object
+        Compose object for mmdet transforms
     """
-    try:
-        from mmdet.datasets.transforms import Compose
+    # Try multiple import locations for Compose (different mmdet versions)
+    import_errors = []
 
-        logger.info("Building 2D detection pipeline with mmdet.Compose")
+    # Try with init_default_scope (MMDet 3.x with mmengine)
+    try:
+        # Import mmdet first to register all transforms
+        import mmdet.datasets.transforms  # noqa: F401
+        from mmengine.dataset import Compose
+        from mmengine.registry import init_default_scope
+
+        # Set default scope to mmdet so Compose uses mmdet's TRANSFORMS registry
+        init_default_scope("mmdet")
+        logger.info("Building 2D detection pipeline with mmengine.dataset.Compose (default_scope='mmdet')")
+        return Compose(pipeline_cfg)
+    except (ImportError, Exception) as e:
+        import_errors.append(f"mmengine.dataset.Compose with init_default_scope: {e}")
+
+    # Try with mmcv.transforms after setting default scope
+    try:
+        # Import mmdet first to register all transforms
+        import mmdet.datasets.transforms  # noqa: F401
+        from mmcv.transforms import Compose
+        from mmengine.registry import init_default_scope
+
+        # Set default scope to mmdet
+        init_default_scope("mmdet")
+        logger.info("Building 2D detection pipeline with mmcv.transforms.Compose (default_scope='mmdet')")
+        return Compose(pipeline_cfg)
+    except (ImportError, Exception) as e:
+        import_errors.append(f"mmcv.transforms.Compose with init_default_scope: {e}")
+
+    # Try without init_default_scope (fallback for older versions)
+    try:
+        # Import mmdet first to register all transforms
+        import mmdet.datasets.transforms  # noqa: F401
+        from mmcv.transforms import Compose
+
+        logger.info("Building 2D detection pipeline with mmcv.transforms.Compose (no default_scope)")
+        return Compose(pipeline_cfg)
+    except (ImportError, Exception) as e:
+        import_errors.append(f"mmcv.transforms (no default_scope): {e}")
+
+    # Try mmdet.datasets.pipelines (very old versions)
+    try:
+        from mmdet.datasets.pipelines import Compose
+
+        logger.info("Building 2D detection pipeline with mmdet.datasets.pipelines.Compose (legacy)")
         return Compose(pipeline_cfg)
     except ImportError as e:
-        raise ImportError(f"Failed to import mmdet transforms: {e}. " "Please install mmdetection.") from e
+        import_errors.append(f"mmdet.datasets.pipelines: {e}")
+
+    # If all imports failed, raise error with details
+    error_msg = "Failed to import Compose from any known location. Tried:\n" + "\n".join(
+        f"  - {err}" for err in import_errors
+    )
+    error_msg += "\n\nPlease install mmdetection and mmcv/mmengine."
+    raise ImportError(error_msg)
 
 
 def _build_detection3d_pipeline(pipeline_cfg: List) -> Any:
@@ -185,15 +235,65 @@ def _build_detection3d_pipeline(pipeline_cfg: List) -> Any:
         pipeline_cfg: List of transform configurations
 
     Returns:
-        mmdet3d.datasets.transforms.Compose object
+        Compose object for mmdet3d transforms
     """
-    try:
-        from mmdet3d.datasets.transforms import Compose
+    # Try multiple import locations for Compose (different mmdet3d versions)
+    import_errors = []
 
-        logger.info("Building 3D detection pipeline with mmdet3d.Compose")
+    # Try with init_default_scope (MMDet3D 1.x+ with mmengine)
+    try:
+        # Import mmdet3d first to register all transforms
+        import mmdet3d.datasets.transforms  # noqa: F401
+        from mmengine.dataset import Compose
+        from mmengine.registry import init_default_scope
+
+        # Set default scope to mmdet3d so Compose uses mmdet3d's TRANSFORMS registry
+        init_default_scope("mmdet3d")
+        logger.info("Building 3D detection pipeline with mmengine.dataset.Compose (default_scope='mmdet3d')")
+        return Compose(pipeline_cfg)
+    except (ImportError, Exception) as e:
+        import_errors.append(f"mmengine.dataset.Compose with init_default_scope: {e}")
+
+    # Try with mmcv.transforms after setting default scope
+    try:
+        # Import mmdet3d first to register all transforms
+        import mmdet3d.datasets.transforms  # noqa: F401
+        from mmcv.transforms import Compose
+        from mmengine.registry import init_default_scope
+
+        # Set default scope to mmdet3d
+        init_default_scope("mmdet3d")
+        logger.info("Building 3D detection pipeline with mmcv.transforms.Compose (default_scope='mmdet3d')")
+        return Compose(pipeline_cfg)
+    except (ImportError, Exception) as e:
+        import_errors.append(f"mmcv.transforms.Compose with init_default_scope: {e}")
+
+    # Try without init_default_scope (fallback for older versions)
+    try:
+        # Import mmdet3d first to register all transforms
+        import mmdet3d.datasets.transforms  # noqa: F401
+        from mmcv.transforms import Compose
+
+        logger.info("Building 3D detection pipeline with mmcv.transforms.Compose (no default_scope)")
+        return Compose(pipeline_cfg)
+    except (ImportError, Exception) as e:
+        import_errors.append(f"mmcv.transforms (no default_scope): {e}")
+
+    # Try mmdet3d.datasets.pipelines (very old versions)
+    try:
+        from mmdet3d.datasets.pipelines import Compose
+
+        logger.info("Building 3D detection pipeline with mmdet3d.datasets.pipelines.Compose (legacy)")
         return Compose(pipeline_cfg)
     except ImportError as e:
-        raise ImportError(f"Failed to import mmdet3d transforms: {e}. " "Please install mmdetection3d.") from e
+        import_errors.append(f"mmdet3d.datasets.pipelines: {e}")
+
+    # If all imports failed, raise error with details
+    error_msg = "Failed to import Compose from any known location. Tried:\n" + "\n".join(
+        f"  - {err}" for err in import_errors
+    )
+    error_msg += "\n\nPlease install mmdetection3d and mmcv/mmengine."
+    raise ImportError(error_msg)
 
 
 def _build_classification_pipeline(pipeline_cfg: List) -> Any:
@@ -204,24 +304,71 @@ def _build_classification_pipeline(pipeline_cfg: List) -> Any:
         pipeline_cfg: List of transform configurations
 
     Returns:
-        mmpretrain.datasets.transforms.Compose object
+        Compose object for classification transforms
     """
+    # Try multiple import locations for Compose (different versions)
+    import_errors = []
+
+    # Try mmpretrain with init_default_scope (newer versions)
     try:
-        from mmpretrain.datasets.transforms import Compose
+        # Import mmpretrain first to register all transforms
+        import mmpretrain.datasets.transforms  # noqa: F401
+        from mmengine.dataset import Compose
+        from mmengine.registry import init_default_scope
 
-        logger.info("Building classification pipeline with mmpretrain.Compose")
+        # Set default scope to mmpretrain
+        init_default_scope("mmpretrain")
+        logger.info("Building classification pipeline with mmengine.dataset.Compose (default_scope='mmpretrain')")
         return Compose(pipeline_cfg)
-    except ImportError:
-        # Fallback to mmcls for older versions
-        try:
-            from mmcls.datasets.pipelines import Compose
+    except (ImportError, Exception) as e:
+        import_errors.append(f"mmengine.dataset.Compose with init_default_scope (mmpretrain): {e}")
 
-            logger.info("Building classification pipeline with mmcls.Compose (legacy)")
-            return Compose(pipeline_cfg)
-        except ImportError as e:
-            raise ImportError(
-                f"Failed to import classification transforms: {e}. " "Please install mmpretrain or mmcls."
-            ) from e
+    # Try mmcls with init_default_scope (older versions)
+    try:
+        # Import mmcls first to register all transforms
+        import mmcls.datasets.pipelines  # noqa: F401
+        from mmengine.dataset import Compose
+        from mmengine.registry import init_default_scope
+
+        # Set default scope to mmcls
+        init_default_scope("mmcls")
+        logger.info("Building classification pipeline with mmengine.dataset.Compose (default_scope='mmcls')")
+        return Compose(pipeline_cfg)
+    except (ImportError, Exception) as e:
+        import_errors.append(f"mmengine.dataset.Compose with init_default_scope (mmcls): {e}")
+
+    # Try without init_default_scope (fallback)
+    try:
+        # Try to import mmpretrain/mmcls first to register transforms
+        try:
+            import mmpretrain.datasets.transforms  # noqa: F401
+        except ImportError:
+            try:
+                import mmcls.datasets.pipelines  # noqa: F401
+            except ImportError:
+                pass
+        from mmcv.transforms import Compose
+
+        logger.info("Building classification pipeline with mmcv.transforms.Compose (no default_scope)")
+        return Compose(pipeline_cfg)
+    except (ImportError, Exception) as e:
+        import_errors.append(f"mmcv.transforms (no default_scope): {e}")
+
+    # Try mmcls for very old versions
+    try:
+        from mmcls.datasets.pipelines import Compose
+
+        logger.info("Building classification pipeline with mmcls.datasets.pipelines.Compose (legacy)")
+        return Compose(pipeline_cfg)
+    except ImportError as e:
+        import_errors.append(f"mmcls.datasets.pipelines: {e}")
+
+    # If all imports failed, raise error with details
+    error_msg = "Failed to import Compose from any known location. Tried:\n" + "\n".join(
+        f"  - {err}" for err in import_errors
+    )
+    error_msg += "\n\nPlease install mmpretrain/mmcls and mmcv/mmengine."
+    raise ImportError(error_msg)
 
 
 def _build_segmentation_pipeline(pipeline_cfg: List) -> Any:
@@ -232,15 +379,68 @@ def _build_segmentation_pipeline(pipeline_cfg: List) -> Any:
         pipeline_cfg: List of transform configurations
 
     Returns:
-        mmseg.datasets.transforms.Compose object
+        Compose object for segmentation transforms
     """
-    try:
-        from mmseg.datasets.transforms import Compose
+    # Try multiple import locations for Compose (different versions)
+    import_errors = []
 
-        logger.info("Building segmentation pipeline with mmseg.Compose")
+    # Try mmseg with init_default_scope (newer versions)
+    try:
+        # Import mmseg first to register all transforms
+        import mmseg.datasets.transforms  # noqa: F401
+        from mmengine.dataset import Compose
+        from mmengine.registry import init_default_scope
+
+        # Set default scope to mmseg
+        init_default_scope("mmseg")
+        logger.info("Building segmentation pipeline with mmengine.dataset.Compose (default_scope='mmseg')")
+        return Compose(pipeline_cfg)
+    except (ImportError, Exception) as e:
+        import_errors.append(f"mmengine.dataset.Compose with init_default_scope: {e}")
+
+    # Try with mmcv.transforms after setting default scope
+    try:
+        # Import mmseg first to register all transforms
+        import mmseg.datasets.transforms  # noqa: F401
+        from mmcv.transforms import Compose
+        from mmengine.registry import init_default_scope
+
+        # Set default scope to mmseg
+        init_default_scope("mmseg")
+        logger.info("Building segmentation pipeline with mmcv.transforms.Compose (default_scope='mmseg')")
+        return Compose(pipeline_cfg)
+    except (ImportError, Exception) as e:
+        import_errors.append(f"mmcv.transforms.Compose with init_default_scope: {e}")
+
+    # Try without init_default_scope (fallback for older versions)
+    try:
+        # Import mmseg first to register all transforms
+        try:
+            import mmseg.datasets.transforms  # noqa: F401
+        except ImportError:
+            pass
+        from mmcv.transforms import Compose
+
+        logger.info("Building segmentation pipeline with mmcv.transforms.Compose (no default_scope)")
+        return Compose(pipeline_cfg)
+    except (ImportError, Exception) as e:
+        import_errors.append(f"mmcv.transforms (no default_scope): {e}")
+
+    # Try mmseg.datasets.pipelines (older versions)
+    try:
+        from mmseg.datasets.pipelines import Compose
+
+        logger.info("Building segmentation pipeline with mmseg.datasets.pipelines.Compose (legacy)")
         return Compose(pipeline_cfg)
     except ImportError as e:
-        raise ImportError(f"Failed to import mmseg transforms: {e}. " "Please install mmsegmentation.") from e
+        import_errors.append(f"mmseg.datasets.pipelines: {e}")
+
+    # If all imports failed, raise error with details
+    error_msg = "Failed to import Compose from any known location. Tried:\n" + "\n".join(
+        f"  - {err}" for err in import_errors
+    )
+    error_msg += "\n\nPlease install mmsegmentation and mmcv/mmengine."
+    raise ImportError(error_msg)
 
 
 def validate_pipeline(pipeline: Any, sample_data: dict) -> bool:

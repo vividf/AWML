@@ -1,7 +1,7 @@
 """
-YOLOX DataLoader for deployment.
+YOLOX_opt_elan DataLoader for deployment.
 
-This module implements the BaseDataLoader interface for YOLOX 2D detection
+This module implements the BaseDataLoader interface for YOLOX_opt_elan object detection
 using MMDet's preprocessing pipeline.
 """
 
@@ -12,25 +12,24 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 from mmengine.config import Config
-from pycocotools.coco import COCO
 
 from autoware_ml.deployment.core import BaseDataLoader
 from autoware_ml.deployment.utils import build_test_pipeline
 
 
-class YOLOXDataLoader(BaseDataLoader):
+class YOLOXOptElanDataLoader(BaseDataLoader):
     """
-    DataLoader for YOLOX 2D object detection.
+    DataLoader for YOLOX_opt_elan object detection.
 
     This loader uses MMDet's preprocessing pipeline to ensure consistency
-    between training and deployment.
+    between training and deployment. It handles T4Dataset format annotations.
 
     Attributes:
-        ann_file: Path to COCO annotation file
+        ann_file: Path to T4Dataset format annotation file
         img_prefix: Path prefix for images
         pipeline: MMDet preprocessing pipeline
-        coco: COCO API instance for annotations
-        img_ids: List of image IDs
+        data_list: List of data samples
+        classes: List of class names
     """
 
     def __init__(
@@ -42,17 +41,17 @@ class YOLOXDataLoader(BaseDataLoader):
         use_pipeline: bool = True,
     ):
         """
-        Initialize YOLOX DataLoader.
+        Initialize YOLOX_opt_elan DataLoader.
 
         Args:
-            ann_file: Path to COCO format annotation file
-            img_prefix: Directory path containing images
+            ann_file: Path to T4Dataset annotation file (e.g., 2d_info_infos_val.json)
+            img_prefix: Directory path containing images (can be empty if full paths in annotations)
             model_cfg: Model configuration containing test pipeline
             device: Device to load tensors on ('cpu', 'cuda', etc.)
             use_pipeline: Whether to use MMDet pipeline (True) or simple preprocessing (False)
 
         Raises:
-            FileNotFoundError: If ann_file or img_prefix doesn't exist
+            FileNotFoundError: If ann_file doesn't exist
             ValueError: If annotation file is invalid
         """
         super().__init__(
@@ -67,7 +66,8 @@ class YOLOXDataLoader(BaseDataLoader):
         # Validate paths
         if not os.path.exists(ann_file):
             raise FileNotFoundError(f"Annotation file not found: {ann_file}")
-        if not os.path.exists(img_prefix):
+        # img_prefix can be empty for T4Dataset as full paths might be in annotations
+        if img_prefix and not os.path.exists(img_prefix):
             raise FileNotFoundError(f"Image directory not found: {img_prefix}")
 
         self.ann_file = ann_file
@@ -76,12 +76,15 @@ class YOLOXDataLoader(BaseDataLoader):
         self.device = device
         self.use_pipeline = use_pipeline
 
-        # Load COCO annotations
-        self.coco = COCO(ann_file)
-        self.img_ids = self.coco.getImgIds()
-        self.cat_ids = self.coco.getCatIds()
+        # Load T4Dataset format annotations
+        with open(ann_file, "r") as f:
+            ann_data = json.load(f)
 
-        # Build preprocessing pipeline
+        self.metainfo = ann_data.get("metainfo", {})
+        self.classes = self.metainfo.get("classes", [])
+        self.data_list = ann_data.get("data_list", [])
+
+        # Build preprocessing pipeline from model config
         if self.use_pipeline:
             self.pipeline = build_test_pipeline(model_cfg)
         else:
@@ -105,44 +108,44 @@ class YOLOXDataLoader(BaseDataLoader):
         Raises:
             IndexError: If index is out of range
         """
-        if index >= len(self.img_ids):
-            raise IndexError(f"Sample index {index} out of range (0-{len(self.img_ids)-1})")
+        if index >= len(self.data_list):
+            raise IndexError(f"Sample index {index} out of range (0-{len(self.data_list)-1})")
 
-        # Get image info
-        img_id = self.img_ids[index]
-        img_info = self.coco.loadImgs([img_id])[0]
+        # Get sample from T4Dataset data_list
+        data_info = self.data_list[index]
 
-        # Get annotations for this image
-        ann_ids = self.coco.getAnnIds(imgIds=[img_id])
-        ann_info = self.coco.loadAnns(ann_ids)
+        # T4Dataset format already contains all needed info
+        img_id = data_info.get("img_id", index)
+        img_path = data_info["img_path"]
 
-        # Convert to MMDet format
+        # Handle img_path - ensure it's absolute or relative to img_prefix
+        if not os.path.isabs(img_path) and self.img_prefix:
+            img_path = os.path.join(self.img_prefix, img_path)
+
+        # Get instances - T4Dataset format already has bbox and bbox_label
         instances = []
-        for ann in ann_info:
-            # Filter out invalid annotations
-            if ann.get("ignore", False):
-                continue
-            if ann.get("iscrowd", False):
+        for inst in data_info.get("instances", []):
+            if inst.get("ignore_flag", 0):
                 continue
 
-            # COCO bbox format: [x, y, width, height]
-            bbox = ann["bbox"]
-            if bbox[2] <= 0 or bbox[3] <= 0:
-                continue
+            # T4Dataset bbox format: [x1, y1, x2, y2], convert to [x, y, w, h]
+            bbox = inst["bbox"]
+            x1, y1, x2, y2 = bbox
+            bbox_xywh = [x1, y1, x2 - x1, y2 - y1]
 
             instances.append(
                 {
-                    "bbox": bbox,  # [x, y, w, h]
-                    "bbox_label": self.cat_ids.index(ann["category_id"]),  # Map to 0-based index
-                    "ignore_flag": 0,
+                    "bbox": bbox_xywh,
+                    "bbox_label": inst["bbox_label"],
+                    "ignore_flag": inst.get("ignore_flag", 0),
                 }
             )
 
         return {
             "img_id": img_id,
-            "img_path": os.path.join(self.img_prefix, img_info["file_name"]),
-            "height": img_info["height"],
-            "width": img_info["width"],
+            "img_path": img_path,
+            "height": data_info["height"],
+            "width": data_info["width"],
             "instances": instances,
         }
 
@@ -193,6 +196,11 @@ class YOLOXDataLoader(BaseDataLoader):
         if tensor.ndim == 3:
             tensor = tensor.unsqueeze(0)
 
+        # Convert to float32 if still in uint8 (ByteTensor)
+        # This is crucial for ONNX export and model inference
+        if tensor.dtype == torch.uint8:
+            tensor = tensor.float()
+
         return tensor.to(self.device)
 
     def _preprocess_simple(self, sample: Dict[str, Any]) -> torch.Tensor:
@@ -200,6 +208,7 @@ class YOLOXDataLoader(BaseDataLoader):
         Simple preprocessing without MMDet pipeline.
 
         This is a fallback option but may not match training preprocessing exactly.
+        Uses 960x960 input size for YOLOX_opt_elan.
         """
         import cv2
 
@@ -211,11 +220,12 @@ class YOLOXDataLoader(BaseDataLoader):
 
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        # Resize to model input size (e.g., 640x640 for YOLOX)
-        input_size = self.model_cfg.get("img_scale", (640, 640))
+        # Resize to model input size (960x960 for YOLOX_opt_elan)
+        input_size = (960, 960)
         img_resized = cv2.resize(img, input_size)
 
-        # Convert to float and normalize
+        # Pad to square (already square but keeping consistency)
+        # Normalize using standard ImageNet mean/std or keep as is
         img_float = img_resized.astype(np.float32)
 
         # Convert to tensor (H, W, C) -> (C, H, W)
@@ -233,7 +243,7 @@ class YOLOXDataLoader(BaseDataLoader):
         Returns:
             Number of images in the dataset
         """
-        return len(self.img_ids)
+        return len(self.data_list)
 
     def validate_sample(self, sample: Dict[str, Any]) -> bool:
         """
@@ -285,10 +295,9 @@ class YOLOXDataLoader(BaseDataLoader):
 
     def get_category_names(self) -> list:
         """
-        Get category names.
+        Get category names for detected objects.
 
         Returns:
             List of category names in order
         """
-        cats = self.coco.loadCats(self.cat_ids)
-        return [cat["name"] for cat in cats]
+        return self.classes

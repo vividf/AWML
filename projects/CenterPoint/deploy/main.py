@@ -176,8 +176,39 @@ def export_tensorrt(onnx_dir: str, config: BaseDeploymentConfig, logger: logging
     return None
 
 
+def get_models_to_evaluate(eval_config: dict, logger: logging.Logger) -> list:
+    """
+    Get list of models to evaluate from config.
+
+    Args:
+        eval_config: Evaluation configuration
+        logger: Logger instance
+
+    Returns:
+        List of tuples (backend_name, model_path)
+    """
+    models_config = eval_config.get("models", {})
+    models_to_evaluate = []
+
+    backend_mapping = {
+        "pytorch": "pytorch",
+        "onnx": "onnx",
+        "tensorrt": "tensorrt",
+    }
+
+    for backend_key, model_path in models_config.items():
+        backend_name = backend_mapping.get(backend_key.lower())
+        if backend_name and model_path:
+            if os.path.exists(model_path):
+                models_to_evaluate.append((backend_name, model_path))
+                logger.info(f"  - {backend_name}: {model_path}")
+            else:
+                logger.warning(f"  - {backend_name}: {model_path} (not found, skipping)")
+
+    return models_to_evaluate
+
+
 def run_evaluation(
-    model_paths: dict,
     data_loader: CenterPointDataLoader,
     config: BaseDeploymentConfig,
     model_cfg: Config,
@@ -194,23 +225,24 @@ def run_evaluation(
     logger.info("Running Evaluation")
     logger.info("=" * 80)
 
+    # Get models to evaluate from config
+    models_to_evaluate = get_models_to_evaluate(eval_config, logger)
+
+    if not models_to_evaluate:
+        logger.warning("No models found for evaluation")
+        return
+
     evaluator = CenterPointEvaluator(model_cfg)
 
     num_samples = eval_config.get("num_samples", 50)
     if num_samples == -1:
         num_samples = data_loader.get_num_samples()
 
-    models_to_eval = eval_config.get("models_to_evaluate", ["pytorch"])
-
     all_results = {}
 
-    for backend in models_to_eval:
-        if backend not in model_paths or model_paths[backend] is None:
-            logger.warning(f"Model for backend '{backend}' not available, skipping...")
-            continue
-
+    for backend, model_path in models_to_evaluate:
         results = evaluator.evaluate(
-            model_path=model_paths[backend],
+            model_path=model_path,
             data_loader=data_loader,
             num_samples=num_samples,
             backend=backend,
@@ -273,12 +305,9 @@ def main():
     )
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
-    # Track model paths
-    model_paths = {}
-
-    # Load PyTorch model if needed
+    # Load PyTorch model if needed for export
     pytorch_model = None
-    if config.export_config.mode != "none" or "pytorch" in config.evaluation_config.get("models_to_evaluate", []):
+    if config.export_config.mode != "none":
         if args.checkpoint:
             logger.info("\nLoading PyTorch model...")
             pytorch_model = load_pytorch_model(
@@ -288,10 +317,9 @@ def main():
                 replace_onnx_models=args.replace_onnx_models,
                 rot_y_axis_reference=args.rot_y_axis_reference,
             )
-            model_paths["pytorch"] = args.checkpoint
             logger.info("✅ PyTorch model loaded successfully")
         else:
-            logger.error("Checkpoint required for PyTorch model")
+            logger.error("Checkpoint required for PyTorch model when export mode is not 'none'")
             return
 
     # Export ONNX
@@ -299,21 +327,16 @@ def main():
     if config.export_config.should_export_onnx():
         onnx_opset = config.onnx_config.get("opset_version", 13)
         onnx_path = export_onnx(pytorch_model, data_loader, config, logger, onnx_opset_version=onnx_opset)
-        if onnx_path:
-            model_paths["onnx"] = onnx_path
     elif config.runtime_config.get("onnx_file"):
         onnx_path = config.runtime_config["onnx_file"]
-        model_paths["onnx"] = onnx_path
 
     # Export TensorRT
     trt_path = None
     if config.export_config.should_export_tensorrt() and onnx_path:
         trt_path = export_tensorrt(onnx_path, config, logger)
-        if trt_path:
-            model_paths["tensorrt"] = trt_path
 
     # Verification
-    if config.export_config.verify and len(model_paths) > 1:
+    if config.export_config.verify and pytorch_model and (onnx_path or trt_path):
         logger.info("\n" + "=" * 80)
         logger.info("Cross-Backend Verification")
         logger.info("=" * 80)
@@ -321,16 +344,11 @@ def main():
         logger.info("TODO: Implement 3D detection verification")
 
     # Evaluation
-    run_evaluation(model_paths, data_loader, config, model_cfg, logger)
+    run_evaluation(data_loader, config, model_cfg, logger)
 
     logger.info("\n" + "=" * 80)
     logger.info("Deployment Complete!")
     logger.info("=" * 80)
-
-    # Print summary
-    logger.info("\nGenerated Files:")
-    for backend, path in model_paths.items():
-        logger.info(f"  {backend.upper()}: {path}")
 
 
 if __name__ == "__main__":
