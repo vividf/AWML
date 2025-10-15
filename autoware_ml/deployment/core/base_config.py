@@ -148,15 +148,43 @@ class BaseDeploymentConfig:
             Dictionary containing ONNX export parameters
         """
         onnx_config = self.onnx_config
+        model_io = self.deploy_cfg.get("model_io", {})
+        
+        # Get batch size and dynamic axes from model_io
+        batch_size = model_io.get("batch_size", None)
+        dynamic_axes = model_io.get("dynamic_axes", None)
+        
+        # If batch_size is set to a number, disable dynamic_axes
+        if batch_size is not None and isinstance(batch_size, int):
+            dynamic_axes = None
+        
+        # Handle multiple inputs and outputs
+        input_names = [model_io.get("input_name", "input")]
+        output_names = [model_io.get("output_name", "output")]
+        
+        # Add additional inputs if specified
+        additional_inputs = model_io.get("additional_inputs", [])
+        for additional_input in additional_inputs:
+            if isinstance(additional_input, dict):
+                input_names.append(additional_input.get("name", "input"))
+        
+        # Add additional outputs if specified
+        additional_outputs = model_io.get("additional_outputs", [])
+        for additional_output in additional_outputs:
+            if isinstance(additional_output, str):
+                output_names.append(additional_output)
+        
         return {
             "opset_version": onnx_config.get("opset_version", 16),
             "do_constant_folding": onnx_config.get("do_constant_folding", True),
-            "input_names": onnx_config.get("input_names", ["input"]),
-            "output_names": onnx_config.get("output_names", ["output"]),
-            "dynamic_axes": onnx_config.get("dynamic_axes"),
+            "input_names": input_names,
+            "output_names": output_names,
+            "dynamic_axes": dynamic_axes,
             "export_params": onnx_config.get("export_params", True),
             "keep_initializers_as_inputs": onnx_config.get("keep_initializers_as_inputs", False),
             "save_file": onnx_config.get("save_file", "model.onnx"),
+            "decode_in_inference": onnx_config.get("decode_in_inference", True),
+            "batch_size": batch_size,
         }
 
     def get_tensorrt_settings(self) -> Dict[str, Any]:
@@ -172,6 +200,76 @@ class BaseDeploymentConfig:
             "policy_flags": self.backend_config.get_precision_flags(),
             "model_inputs": self.backend_config.model_inputs,
         }
+
+    def update_batch_size(self, batch_size: int) -> None:
+        """
+        Update batch size in backend config model_inputs.
+
+        Args:
+            batch_size: New batch size to set
+        """
+        if batch_size is not None:
+            # Check if model_inputs already has TensorRT-specific configuration
+            existing_model_inputs = self.backend_config.model_inputs
+            
+            # If model_inputs is None or empty, generate from model_io
+            if existing_model_inputs is None or len(existing_model_inputs) == 0:
+                # Get model_io configuration
+                model_io = self.deploy_cfg.get("model_io", {})
+                input_name = model_io.get("input_name", "input")
+                input_shape = model_io.get("input_shape", (3, 960, 960))
+                input_dtype = model_io.get("input_dtype", "float32")
+                
+                # Create model_inputs list
+                model_inputs = []
+                
+                # Add primary input
+                full_shape = (batch_size,) + input_shape
+                model_inputs.append(dict(
+                    name=input_name,
+                    shape=full_shape,
+                    dtype=input_dtype,
+                ))
+                
+                # Add additional inputs if specified
+                additional_inputs = model_io.get("additional_inputs", [])
+                for additional_input in additional_inputs:
+                    if isinstance(additional_input, dict):
+                        add_name = additional_input.get("name", "input")
+                        add_shape = additional_input.get("shape", (-1,))
+                        add_dtype = additional_input.get("dtype", "float32")
+                        
+                        # Handle dynamic shapes (e.g., (-1,) for variable length)
+                        if isinstance(add_shape, tuple) and len(add_shape) > 0 and add_shape[0] == -1:
+                            # Keep dynamic shape for variable length inputs
+                            full_add_shape = add_shape
+                        else:
+                            # Add batch dimension for fixed shapes
+                            full_add_shape = (batch_size,) + add_shape
+                        
+                        model_inputs.append(dict(
+                            name=add_name,
+                            shape=full_add_shape,
+                            dtype=add_dtype,
+                        ))
+                
+                # Update model_inputs in backend config
+                self.backend_config.model_inputs = model_inputs
+            else:
+                # If model_inputs already exists (e.g., TensorRT shape ranges), 
+                # update batch size in existing shapes if they are simple shapes
+                for model_input in existing_model_inputs:
+                    if isinstance(model_input, dict) and "shape" in model_input:
+                        # Simple shape format: {"name": "input", "shape": (batch, ...), "dtype": "float32"}
+                        if isinstance(model_input["shape"], tuple) and len(model_input["shape"]) > 0:
+                            # Update batch dimension (first dimension)
+                            shape = list(model_input["shape"])
+                            shape[0] = batch_size
+                            model_input["shape"] = tuple(shape)
+                    elif isinstance(model_input, dict) and "input_shapes" in model_input:
+                        # TensorRT shape ranges format: {"input_shapes": {"input": {"min_shape": [...], ...}}}
+                        # For TensorRT shape ranges, we don't modify batch size as it's handled by dynamic_axes
+                        pass
 
 
 def setup_logging(level: str = "INFO") -> logging.Logger:

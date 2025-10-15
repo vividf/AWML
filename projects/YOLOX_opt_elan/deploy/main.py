@@ -69,12 +69,26 @@ def export_onnx(
     logger.info("Exporting to ONNX")
     logger.info("=" * 80)
 
-    # Get sample input
-    sample_idx = config.runtime_config.get("sample_idx", 0)
-    input_tensor = data_loader.load_and_preprocess(sample_idx)
-
-    # Get ONNX settings
+    # Get ONNX settings first
     onnx_settings = config.get_onnx_settings()
+    
+    # Get sample input and create batch based on configuration
+    sample_idx = config.runtime_config.get("sample_idx", 0)
+    single_input = data_loader.load_and_preprocess(sample_idx)
+    
+    # Get batch size from configuration
+    batch_size = onnx_settings.get("batch_size", 1)
+    if batch_size is None:
+        # Use dynamic batch size (single sample)
+        input_tensor = single_input
+        logger.info(f"Using dynamic batch size (single sample)")
+    else:
+        # Use fixed batch size by repeating the same sample
+        input_tensor = single_input.repeat(batch_size, 1, 1, 1)
+        logger.info(f"Using fixed batch size: {batch_size}")
+        
+        # Update backend config with the batch size
+        config.update_batch_size(batch_size)
     output_path = os.path.join(config.export_config.work_dir, onnx_settings["save_file"])
 
     os.makedirs(config.export_config.work_dir, exist_ok=True)
@@ -140,6 +154,22 @@ def export_onnx(
     )
 
     logger.info(f"✅ ONNX export successful: {output_path}")
+
+    # Apply ONNX simplifier to remove redundant operations (matching Tier4 YOLOX)
+    try:
+        import onnx
+        from onnxsim import simplify
+        
+        logger.info("Applying ONNX simplifier to remove redundant operations...")
+        onnx_model = onnx.load(output_path)
+        model_simp, check = simplify(onnx_model)
+        assert check, "Simplified ONNX model could not be validated"
+        onnx.save(model_simp, output_path)
+        logger.info("✅ ONNX simplification successful")
+    except ImportError:
+        logger.warning("onnxsim not available, skipping simplification")
+    except Exception as e:
+        logger.warning(f"ONNX simplification failed: {e}")
 
     return output_path
 

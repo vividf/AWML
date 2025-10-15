@@ -75,6 +75,9 @@ class PyTorchBackend(BaseBackend):
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
+
+        # TODO(vividf): cleanup this code, too many if-else statements
+
         # Move input to correct device
         input_tensor = input_tensor.to(self._torch_device)
 

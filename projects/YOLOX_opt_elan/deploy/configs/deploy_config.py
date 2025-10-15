@@ -7,7 +7,7 @@ Modify according to your needs.
 
 # Export settings
 export = dict(
-    mode="both",  # 'onnx', 'trt', 'both', 'none'
+    mode="onnx",  # 'onnx', 'trt', 'both', 'none'
     verify=True,  # Enable cross-backend verification
     device="cuda:0",  # Device for export/inference (CPU for Docker testing)
     work_dir="work_dirs/yolox_opt_elan_deployment",
@@ -25,23 +25,43 @@ runtime_io = dict(
     # onnx_file='work_dirs/yolox_opt_elan_deployment/yolox_opt_elan.onnx',
 )
 
+# Model input/output configuration
+model_io = dict(
+    # Input configuration
+    input_name="images",
+    input_shape=(3, 960, 960),  # (C, H, W) - batch dimension will be added automatically
+    input_dtype="float32",
+    
+    # Output configuration  
+    output_name="output",
+    
+    # Batch size configuration
+    # Options:
+    # - int: Fixed batch size (e.g., 1, 6)
+    # - None: Dynamic batch size (uses dynamic_axes)
+    batch_size=6,  # Set to 6 to match old ONNX exactly, or None for dynamic
+    
+    # Dynamic axes (only used when batch_size=None)
+    # When batch_size is set to a number, this is automatically set to None
+    # When batch_size is None, this defines dynamic batch dimensions
+    dynamic_axes={
+        "images": {0: "batch_size"},
+        "output": {0: "batch_size"},
+    },
+)
+
 # ONNX configuration
 onnx_config = dict(
     opset_version=16,
     do_constant_folding=True,
-    input_names=["images"],
-    output_names=["output"],  # Match Tier4 output name
-    save_file="yolox_opt_elan.onnx",
     export_params=True,
-    dynamic_axes={
-        "images": {0: "batch_size"},  # Dynamic batch size
-        "output": {0: "batch_size"},  # Match output name
-    },
+    save_file="yolox_opt_elan.onnx",
     keep_initializers_as_inputs=False,
     # Decode in inference (Tier4-compatible format)
     # If True: output format is [batch, num_predictions, 4+1+num_classes]
     #   where: [bbox_reg(4), objectness(1), class_scores(num_classes)]
     # If False: output raw head outputs (cls_scores, bbox_preds, objectnesses)
+    # Set to False to match Tier4 YOLOX behavior exactly (no flatten operations)
     decode_in_inference=True,
 )
 
@@ -54,14 +74,9 @@ backend_config = dict(
         # TensorRT workspace size (bytes)
         max_workspace_size=1 << 30,  # 1 GB
     ),
-    # Specify input shapes for TensorRT (960x960 for YOLOX_opt_elan)
-    model_inputs=[
-        dict(
-            name="images",
-            shape=(1, 3, 960, 960),  # YOLOX_opt_elan uses 960x960 input
-            dtype="float32",
-        )
-    ],
+    # Model inputs will be generated automatically from model_io configuration
+    # This will be populated by the deployment pipeline based on model_io settings
+    model_inputs=None,  # Will be set automatically
 )
 
 # Evaluation configuration

@@ -52,6 +52,45 @@ evaluation = dict(
 codebase_config = dict(type="mmpretrain", task="Classification", model_type="end2end")
 
 # ==============================================================================
+# Model Input/Output Configuration
+# ==============================================================================
+model_io = dict(
+    # Input configuration
+    input_name="input",
+    input_shape=(5, 1860, 2880),  # (C, H, W) - batch dimension will be added automatically
+    input_dtype="float32",
+    
+    # Output configuration  
+    output_name="output",
+    
+    # Batch size configuration
+    # Options:
+    # - int: Fixed batch size (e.g., 1, 2)
+    # - None: Dynamic batch size (uses dynamic_axes)
+    batch_size=None,  # Dynamic batch size for flexible inference
+    
+    # Dynamic axes (only used when batch_size=None)
+    # When batch_size is set to a number, this is automatically set to None
+    # When batch_size is None, this defines dynamic batch dimensions
+    dynamic_axes={
+        "input": {0: "batch_size", 2: "height", 3: "width"},
+        "output": {0: "batch_size"},
+    },
+)
+
+# ==============================================================================
+# ONNX Export Configuration
+# ==============================================================================
+onnx_config = dict(
+    type="onnx",
+    export_params=True,
+    keep_initializers_as_inputs=False,
+    opset_version=16,
+    do_constant_folding=True,
+    save_file="end2end.onnx",
+)
+
+# ==============================================================================
 # TensorRT Backend Configuration
 # ==============================================================================
 backend_config = dict(
@@ -66,6 +105,7 @@ backend_config = dict(
         precision_policy="fp16",
     ),
     # Dynamic shape configuration for different input resolutions
+    # TensorRT needs shape ranges for optimization even with dynamic batch size
     model_inputs=[
         dict(
             input_shapes=dict(
@@ -77,23 +117,4 @@ backend_config = dict(
             )
         )
     ],
-)
-
-# ==============================================================================
-# ONNX Export Configuration
-# ==============================================================================
-onnx_config = dict(
-    type="onnx",
-    export_params=True,
-    keep_initializers_as_inputs=False,
-    opset_version=16,
-    do_constant_folding=True,
-    save_file="end2end.onnx",
-    input_names=["input"],
-    output_names=["output"],
-    dynamic_axes={
-        "input": {0: "batch_size", 2: "height", 3: "width"},
-        "output": {0: "batch_size"},
-    },
-    input_shape=None,
 )

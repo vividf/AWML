@@ -83,8 +83,22 @@ class ONNXBackend(BaseBackend):
 
         input_array = input_tensor.cpu().numpy()
 
-        # Prepare input dictionary
+        # Check if ONNX model expects different batch size than input
         input_name = self._session.get_inputs()[0].name
+        expected_shape = self._session.get_inputs()[0].shape
+        expected_batch_size = expected_shape[0] if expected_shape[0] > 0 else None
+        
+        # Handle batch size mismatch for fixed batch size models
+        if expected_batch_size is not None and input_array.shape[0] != expected_batch_size:
+            self._logger.info(f"ONNX model expects batch size {expected_batch_size}, input has batch size {input_array.shape[0]}")
+            if input_array.shape[0] == 1 and expected_batch_size > 1:
+                # Repeat single sample to match expected batch size
+                self._logger.info(f"Repeating single sample to batch size {expected_batch_size}")
+                input_array = np.repeat(input_array, expected_batch_size, axis=0)
+            else:
+                raise ValueError(f"Batch size mismatch: ONNX expects {expected_batch_size}, got {input_array.shape[0]}")
+
+        # Prepare input dictionary
         onnx_input = {input_name: input_array}
 
         try:
@@ -162,6 +176,15 @@ class ONNXBackend(BaseBackend):
 
                 # Retry inference with CPU
                 input_name = self._session.get_inputs()[0].name
+                expected_shape = self._session.get_inputs()[0].shape
+                expected_batch_size = expected_shape[0] if expected_shape[0] > 0 else None
+                
+                # Handle batch size mismatch for fixed batch size models (CPU fallback)
+                if expected_batch_size is not None and input_array.shape[0] != expected_batch_size:
+                    if input_array.shape[0] == 1 and expected_batch_size > 1:
+                        # Repeat single sample to match expected batch size
+                        input_array = np.repeat(input_array, expected_batch_size, axis=0)
+                
                 onnx_input = {input_name: input_array}
                 start_time = time.perf_counter()
                 outputs = self._session.run(None, onnx_input)
@@ -171,38 +194,85 @@ class ONNXBackend(BaseBackend):
 
                 # Handle multi-output models
                 if len(outputs) > 1:
-                    # Filter for class prediction outputs
-                    if all(len(out.shape) == 4 for out in outputs):
-                        if self.num_classes is not None:
-                            # Use num_classes from config
-                            detection_outputs = [out for out in outputs if out.shape[1] == self.num_classes]
+                    # Check if this looks like YOLOX raw head outputs (9 outputs: 3 cls + 3 bbox + 3 obj)
+                    if len(outputs) == 9:
+                        # Separate outputs by type based on channel count
+                        cls_outputs = [out for out in outputs if out.shape[1] == 8]  # 8 classes
+                        bbox_outputs = [out for out in outputs if out.shape[1] == 4]  # 4 bbox coords
+                        obj_outputs = [out for out in outputs if out.shape[1] == 1]  # 1 objectness
+                        
+                        if len(cls_outputs) == 3 and len(bbox_outputs) == 3 and len(obj_outputs) == 3:
+                            # This is YOLOX raw head outputs, convert to decoded format
+                            self._logger.info("Detected raw YOLOX head outputs, converting to decoded format")
+                            
+                            # Flatten each level and concatenate
+                            cls_flat = [np.reshape(out, (out.shape[0], out.shape[1], -1)) for out in cls_outputs]
+                            bbox_flat = [np.reshape(out, (out.shape[0], out.shape[1], -1)) for out in bbox_outputs]
+                            obj_flat = [np.reshape(out, (out.shape[0], out.shape[1], -1)) for out in obj_outputs]
+                            
+                            # Concatenate all levels
+                            cls_concat = np.concatenate(cls_flat, axis=2)
+                            bbox_concat = np.concatenate(bbox_flat, axis=2)
+                            obj_concat = np.concatenate(obj_flat, axis=2)
+                            
+                            # Apply sigmoid to objectness and cls_score (NOT to bbox_pred)
+                            obj_sigmoid = self._sigmoid(obj_concat)
+                            cls_sigmoid = self._sigmoid(cls_concat)
+                            
+                            # Concatenate: [bbox_pred(4), objectness(1), class_scores(8)]
+                            output = np.concatenate([bbox_concat, obj_sigmoid, cls_sigmoid], axis=1)
+                            
+                            # Transpose to match expected format: [batch, anchors, features]
+                            output = np.transpose(output, (0, 2, 1))
+                            
+                            self._logger.info(f"Converted raw outputs to decoded format: {output.shape}")
                         else:
                             # Fallback: use maximum channels
                             max_channels = max(out.shape[1] for out in outputs)
                             detection_outputs = [out for out in outputs if out.shape[1] == max_channels]
+                            if detection_outputs:
+                                flattened = [np.reshape(out, (out.shape[0], -1)) for out in detection_outputs]
+                                output = np.concatenate(flattened, axis=1)
+                            else:
+                                # Fallback: use all outputs
+                                flattened = [np.reshape(out, (out.shape[0], -1)) for out in outputs]
+                                output = np.concatenate(flattened, axis=1)
                     else:
-                        detection_outputs = [out for out in outputs if len(out.shape) == 4]
+                        # Filter for class prediction outputs
+                        if all(len(out.shape) == 4 for out in outputs):
+                            if self.num_classes is not None:
+                                # Use num_classes from config
+                                detection_outputs = [out for out in outputs if out.shape[1] == self.num_classes]
+                            else:
+                                # Fallback: use maximum channels
+                                max_channels = max(out.shape[1] for out in outputs)
+                                detection_outputs = [out for out in outputs if out.shape[1] == max_channels]
+                        else:
+                            detection_outputs = [out for out in outputs if len(out.shape) == 4]
 
-                    if detection_outputs:
-                        flattened = [np.reshape(out, (out.shape[0], -1)) for out in detection_outputs]
-                        output = np.concatenate(flattened, axis=1)
-                    else:
-                        # Fallback: use all outputs
-                        flattened = [np.reshape(out, (out.shape[0], -1)) for out in outputs]
-                        output = np.concatenate(flattened, axis=1)
+                        if detection_outputs:
+                            flattened = [np.reshape(out, (out.shape[0], -1)) for out in detection_outputs]
+                            output = np.concatenate(flattened, axis=1)
+                        else:
+                            # Fallback: use all outputs
+                            flattened = [np.reshape(out, (out.shape[0], -1)) for out in outputs]
+                            output = np.concatenate(flattened, axis=1)
                 else:
                     output = outputs[0]
 
-                    # Handle 3D output format (e.g., YOLOX wrapper output [batch, anchors, features])
-                    # Keep 3D format to match PyTorch backend format for verification
-                    if len(output.shape) == 3:
-                        self._logger.info(f"Keeping 3D output format {output.shape} to match PyTorch format")
-                        # Keep the 3D format (1, 18900, 13) - no flattening needed
-                        self._logger.info(f"Output shape maintained: {output.shape}")
+                # Handle 3D output format (e.g., YOLOX wrapper output [batch, anchors, features])
+                # Keep 3D format to match PyTorch backend format for verification
+                if len(output.shape) == 3:
+                    self._logger.info(f"Keeping 3D output format {output.shape} to match PyTorch format")
+                    self._logger.info(f"Output shape maintained: {output.shape}")
 
                 return output, latency_ms
             else:
                 raise
+
+    def _sigmoid(self, x: np.ndarray) -> np.ndarray:
+        """Apply sigmoid activation to numpy array."""
+        return 1 / (1 + np.exp(-np.clip(x, -500, 500)))  # Clip to prevent overflow
 
     def cleanup(self) -> None:
         """Clean up ONNX Runtime resources."""

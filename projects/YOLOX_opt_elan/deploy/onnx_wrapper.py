@@ -68,7 +68,10 @@ class YOLOXONNXWrapper(nn.Module):
             outputs.append(output)
 
         # Flatten and concatenate all levels
+        # Use static reshape to avoid Shape/Gather/Unsqueeze operations in ONNX
         # This matches Tier4 YOLOX yolo_head.py line 218-220
-        outputs = torch.cat([x.flatten(start_dim=2) for x in outputs], dim=2).permute(0, 2, 1)
+        batch_size = outputs[0].shape[0]
+        num_channels = outputs[0].shape[1]
+        outputs = torch.cat([x.reshape(batch_size, num_channels, -1) for x in outputs], dim=2).permute(0, 2, 1)
 
         return outputs
