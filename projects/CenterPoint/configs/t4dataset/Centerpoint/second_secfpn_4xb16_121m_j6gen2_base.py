@@ -41,13 +41,13 @@ eval_class_range = {
 
 # user setting
 data_root = "data/t4dataset/"
-info_directory_path = "info/user_name/"
-train_gpu_size = 4
-train_batch_size = 16
-test_batch_size = 2
-num_workers = 32
+info_directory_path = "info/"
+train_gpu_size = 1
+train_batch_size = 1
+test_batch_size = 1
+num_workers = 1
 val_interval = 1
-max_epochs = 30
+max_epochs = 1
 work_dir = "work_dirs/centerpoint/" + _base_.dataset_type + "/second_secfpn_4xb16_121m_j6gen2_base/"
 
 train_pipeline = [

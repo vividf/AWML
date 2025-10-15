@@ -26,9 +26,8 @@ sys.path.insert(0, str(project_root))
 
 from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
 from autoware_ml.deployment.core.base_config import parse_base_args
-
-from .data_loader import CenterPointDataLoader
-from .evaluator import CenterPointEvaluator
+from projects.CenterPoint.deploy.data_loader import CenterPointDataLoader
+from projects.CenterPoint.deploy.evaluator import CenterPointEvaluator
 
 
 def parse_args():

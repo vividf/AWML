@@ -9,14 +9,14 @@ Modify according to your needs.
 export = dict(
     mode="both",  # 'onnx', 'trt', 'both', 'none'
     verify=True,  # Enable cross-backend verification
-    device="cuda:0",  # Device for export/inference
+    device="cpu",  # Device for export/inference
     work_dir="work_dirs/centerpoint_deployment",
 )
 
 # Runtime I/O settings
 runtime_io = dict(
     # Path to info.pkl file
-    info_file="data/t4dataset/centerpoint_infos_val.pkl",
+    info_file="data/t4dataset/info/t4dataset_x2_infos_val.pkl",
     # Sample index for export (use first sample)
     sample_idx=0,
     # Optional: path to existing ONNX file (for eval-only mode)

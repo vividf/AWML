@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import torch
+from mmdet.apis import init_detector
 from mmengine.config import Config
 
 # Add project root to path
@@ -48,7 +49,6 @@ def load_pytorch_model(model_cfg: Config, checkpoint_path: str, device: str):
     Returns:
         Loaded model
     """
-    from mmdet.apis import init_detector
 
     model = init_detector(model_cfg, checkpoint_path, device=device)
     model.eval()
