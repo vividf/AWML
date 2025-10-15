@@ -86,7 +86,12 @@ class ONNXBackend(BaseBackend):
         # Check if ONNX model expects different batch size than input
         input_name = self._session.get_inputs()[0].name
         expected_shape = self._session.get_inputs()[0].shape
-        expected_batch_size = expected_shape[0] if expected_shape[0] > 0 else None
+        # Handle dynamic dimensions (can be strings like "batch_size" or integers)
+        expected_batch_size = None
+        if len(expected_shape) > 0:
+            batch_dim = expected_shape[0]
+            if isinstance(batch_dim, int) and batch_dim > 0:
+                expected_batch_size = batch_dim
         
         # Handle batch size mismatch for fixed batch size models
         if expected_batch_size is not None and input_array.shape[0] != expected_batch_size:
@@ -177,7 +182,12 @@ class ONNXBackend(BaseBackend):
                 # Retry inference with CPU
                 input_name = self._session.get_inputs()[0].name
                 expected_shape = self._session.get_inputs()[0].shape
-                expected_batch_size = expected_shape[0] if expected_shape[0] > 0 else None
+                # Handle dynamic dimensions (can be strings like "batch_size" or integers)
+                expected_batch_size = None
+                if len(expected_shape) > 0:
+                    batch_dim = expected_shape[0]
+                    if isinstance(batch_dim, int) and batch_dim > 0:
+                        expected_batch_size = batch_dim
                 
                 # Handle batch size mismatch for fixed batch size models (CPU fallback)
                 if expected_batch_size is not None and input_array.shape[0] != expected_batch_size:
