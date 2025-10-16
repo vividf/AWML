@@ -66,7 +66,9 @@ def compute_ap(
         ground_truths = [g for g in ground_truths if g["label"] == class_id]
 
     if len(ground_truths) == 0:
-        return 0.0 if len(predictions) > 0 else 1.0
+        # If no ground truths exist for this class, AP is undefined
+        # Return 0.0 regardless of predictions to avoid false positives
+        return 0.0
 
     if len(predictions) == 0:
         return 0.0
@@ -242,7 +244,9 @@ def compute_3d_ap(
         ground_truths = [g for g in ground_truths if g["label"] == class_id]
 
     if len(ground_truths) == 0:
-        return 0.0 if len(predictions) > 0 else 1.0
+        # If no ground truths exist for this class, AP is undefined
+        # Return 0.0 regardless of predictions to avoid false positives
+        return 0.0
 
     if len(predictions) == 0:
         return 0.0

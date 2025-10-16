@@ -245,8 +245,10 @@ class PyTorchBackend(BaseBackend):
                     level_output = torch.cat([bbox_pred, objectness.sigmoid(), cls_score.sigmoid()], 1)
                     outputs.append(level_output)
 
-                # Flatten and concatenate all levels
-                outputs = torch.cat([x.flatten(start_dim=2) for x in outputs], dim=2).permute(0, 2, 1)
+                # Flatten and concatenate all levels (matching ONNX wrapper logic exactly)
+                batch_size = outputs[0].shape[0]
+                num_channels = outputs[0].shape[1]
+                outputs = torch.cat([x.reshape(batch_size, num_channels, -1) for x in outputs], dim=2).permute(0, 2, 1)
 
                 # Keep the 3D format (1, 18900, 13) to match ONNX/TensorRT format
                 output = outputs

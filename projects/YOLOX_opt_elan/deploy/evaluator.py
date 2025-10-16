@@ -182,6 +182,15 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         """
         predictions = []
 
+        # Debug logging for output analysis
+        print(f"DEBUG: Raw output type: {type(output)}")
+        print(f"DEBUG: Raw output shape: {output.shape}")
+        print(f"DEBUG: Raw output dtype: {output.dtype}")
+        if hasattr(output, 'min') and hasattr(output, 'max'):
+            print(f"DEBUG: Raw output min/max: {output.min():.6f} / {output.max():.6f}")
+        if output.size < 50:  # Only print small arrays
+            print(f"DEBUG: Raw output content: {output}")
+
         # YOLOX output format: [N, 7] where 7 = [x1, y1, x2, y2, obj_conf, cls_conf, cls_id]
         # or can be dict with 'bboxes', 'scores', 'labels'
 
@@ -190,14 +199,18 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             bboxes = output.get("bboxes", np.array([]))
             scores = output.get("scores", np.array([]))
             labels = output.get("labels", np.array([]))
+            print(f"DEBUG: Dict format - bboxes: {bboxes.shape}, scores: {scores.shape}, labels: {labels.shape}")
         else:
             # Array format: assume shape [N, 7]
             if len(output.shape) == 2 and output.shape[1] >= 7:
                 bboxes = output[:, :4]  # [x1, y1, x2, y2]
                 scores = output[:, 4] * output[:, 5]  # obj_conf * cls_conf
                 labels = output[:, 6].astype(int)
+                print(f"DEBUG: Array format - bboxes: {bboxes.shape}, scores: {scores.shape}, labels: {labels.shape}")
+                print(f"DEBUG: Score range: {scores.min():.6f} - {scores.max():.6f}")
             else:
                 # No detections
+                print(f"DEBUG: Output shape {output.shape} doesn't match expected format, returning empty predictions")
                 return predictions
 
         # Convert to [x, y, w, h] format
@@ -212,6 +225,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     }
                 )
 
+        print(f"DEBUG: Parsed {len(predictions)} predictions")
         return predictions
 
     def _parse_ground_truths(self, gt_data: Dict) -> List[Dict]:

@@ -154,11 +154,9 @@ class ONNXBackend(BaseBackend):
                 output = outputs[0]
 
                 # Handle 3D output format (e.g., YOLOX wrapper output [batch, anchors, features])
-                # Flatten to match PyTorch backend format for verification
+                # Keep 3D format to match PyTorch backend format for verification
                 if len(output.shape) == 3:
-                    self._logger.info(f"Flattening 3D output {output.shape} to match PyTorch format")
-                    output = output.reshape(output.shape[0], -1)  # Flatten to [batch, anchors*features]
-                    self._logger.info(f"Flattened output shape: {output.shape}")
+                    self._logger.info(f"ONNX 3D output shape: {output.shape} - keeping 3D format to match PyTorch")
 
             return output, latency_ms
         except Exception as e:
