@@ -7,7 +7,7 @@ Modify according to your needs.
 
 # Export settings
 export = dict(
-    mode="onnx",  # 'onnx', 'trt', 'both', 'none'
+    mode="none",  # 'onnx', 'trt', 'both', 'none'
     verify=True,  # Enable cross-backend verification
     device="cuda:0",  # Device for export/inference (CPU for Docker testing)
     work_dir="work_dirs/yolox_opt_elan_deployment",
@@ -16,7 +16,7 @@ export = dict(
 # Runtime I/O settings
 runtime_io = dict(
     # Path to T4Dataset annotation file
-    ann_file="data/t4dataset/2d_info/2d_info_infos_val.json",
+    ann_file="data/t4dataset/2d_info/yolox_infos_val.json",
     # Path to images directory (can be empty if full paths are in annotations)
     img_prefix="",
     # Sample index for export (use first sample)
@@ -39,7 +39,7 @@ model_io = dict(
     # Options:
     # - int: Fixed batch size (e.g., 1, 6)
     # - None: Dynamic batch size (uses dynamic_axes)
-    batch_size=6,  # Set to 6 to match old ONNX exactly, or None for dynamic
+    batch_size=1,  # Set to 6 to match old ONNX exactly, or None for dynamic
     
     # Dynamic axes (only used when batch_size=None)
     # When batch_size is set to a number, this is automatically set to None
@@ -81,14 +81,14 @@ backend_config = dict(
 
 # Evaluation configuration
 evaluation = dict(
-    enabled=False,  # Enable evaluation
-    num_samples=10,  # Number of samples to evaluate (set to -1 for all)
+    enabled=True,  # Enable evaluation
+    num_samples=-1,  # Number of samples to evaluate (set to -1 for all)
     verbose=False,  # Detailed per-sample output
     # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)
     models=dict(
         onnx="/workspace/work_dirs/yolox_opt_elan_deployment/yolox_opt_elan.onnx",  # Path to ONNX model file
         tensorrt="/workspace/work_dirs/yolox_opt_elan_deployment/yolox_opt_elan.engine",  # Path to TensorRT engine file
-        # pytorch="work_dirs/old_yolox_elan/yolox_epoch24.pth",  # Optional: PyTorch checkpoint
+        pytorch="work_dirs/old_yolox_elan/yolox_epoch24.pth",  # PyTorch checkpoint for comparison
     ),
 )
 

@@ -7,7 +7,7 @@ using MMDet's preprocessing pipeline.
 
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -128,14 +128,13 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
             if inst.get("ignore_flag", 0):
                 continue
 
-            # T4Dataset bbox format: [x1, y1, x2, y2], convert to [x, y, w, h]
+            # T4Dataset bbox format: [x1, y1, x2, y2], keep as [x1, y1, x2, y2] to match PackDetInputs
             bbox = inst["bbox"]
-            x1, y1, x2, y2 = bbox
-            bbox_xywh = [x1, y1, x2 - x1, y2 - y1]
+            # Keep original format [x1, y1, x2, y2] to match PackDetInputs behavior
 
             instances.append(
                 {
-                    "bbox": bbox_xywh,
+                    "bbox": bbox,
                     "bbox_label": inst["bbox_label"],
                     "ignore_flag": inst.get("ignore_flag", 0),
                 }
@@ -147,6 +146,7 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
             "height": data_info["height"],
             "width": data_info["width"],
             "instances": instances,
+            "scale_factor": self._calculate_scale_factor(data_info["height"], data_info["width"]),
         }
 
     def preprocess(self, sample: Dict[str, Any]) -> torch.Tensor:
@@ -202,6 +202,26 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
             tensor = tensor.float()
 
         return tensor.to(self.device)
+
+    def _calculate_scale_factor(self, orig_height: int, orig_width: int) -> List[float]:
+        """
+        Calculate scale factor for coordinate transformation.
+        
+        This matches MMDetection's Resize transform behavior.
+        """
+        # Model input size is 960x960 for YOLOX_opt_elan
+        target_size = (960, 960)
+        
+        # Calculate scale factors (same as MMDetection Resize with keep_ratio=True)
+        scale_w = target_size[1] / orig_width
+        scale_h = target_size[0] / orig_height
+        
+        # Use the smaller scale to maintain aspect ratio
+        scale = min(scale_w, scale_h)
+        
+        # Return scale factor in format [scale_w, scale_h, scale_w, scale_h]
+        # This matches MMDetection's PackDetInputs format
+        return [scale, scale, scale, scale]
 
     def _preprocess_simple(self, sample: Dict[str, Any]) -> torch.Tensor:
         """
@@ -290,6 +310,7 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
                 "img_id": sample["img_id"],
                 "height": sample["height"],
                 "width": sample["width"],
+                "scale_factor": sample["scale_factor"],
             },
         }
 
