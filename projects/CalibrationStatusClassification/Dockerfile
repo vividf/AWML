@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
 
 # Install pip dependencies
 RUN python3 -m pip --no-cache-dir install \
-  onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ \
+  onnxruntime-gpu==1.22 \
   onnxsim \
   pycuda \
   tensorrt-cu12==${TRT_VERSION} \

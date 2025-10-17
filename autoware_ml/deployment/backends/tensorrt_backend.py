@@ -117,14 +117,6 @@ class TensorRTBackend(BaseBackend):
 
             latency_ms = end.time_since(start)
 
-            # Debug logging for output analysis
-            print(f"DEBUG: TensorRT output shape: {output_array.shape}")
-            print(f"DEBUG: TensorRT output dtype: {output_array.dtype}")
-            print(f"DEBUG: TensorRT output min/max: {output_array.min():.6f} / {output_array.max():.6f}")
-            print(f"DEBUG: TensorRT output mean/std: {output_array.mean():.6f} / {output_array.std():.6f}")
-            if output_array.size < 100:  # Only print small arrays
-                print(f"DEBUG: TensorRT output content: {output_array}")
-
             return output_array, latency_ms
 
         finally:
