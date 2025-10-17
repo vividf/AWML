@@ -68,6 +68,7 @@ onnx_config = dict(
     save_file="centerpoint.onnx",
     export_params=True,
     keep_initializers_as_inputs=False,
+    simplify=True,
 )
 
 # ==============================================================================

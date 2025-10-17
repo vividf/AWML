@@ -7,8 +7,8 @@ Modify according to your needs.
 
 # Export settings
 export = dict(
-    mode="none",  # 'onnx', 'trt', 'both', 'none'
-    verify=True,  # Enable cross-backend verification
+    mode="onnx",  # 'onnx', 'trt', 'both', 'none'
+    verify=False,  # Enable cross-backend verification
     device="cuda:0",  # Device for export/inference (CPU for Docker testing)
     work_dir="work_dirs/yolox_opt_elan_deployment",
 )
@@ -57,12 +57,7 @@ onnx_config = dict(
     export_params=True,
     save_file="yolox_opt_elan.onnx",
     keep_initializers_as_inputs=False,
-    # Decode in inference (Tier4-compatible format)
-    # If True: output format is [batch, num_predictions, 4+1+num_classes]
-    #   where: [bbox_reg(4), objectness(1), class_scores(num_classes)]
-    # If False: output raw head outputs (cls_scores, bbox_preds, objectnesses)
-    # Set to False to match Tier4 YOLOX behavior exactly (no flatten operations)
-    decode_in_inference=True,
+    simplify=True,
 )
 
 # Backend configuration
@@ -81,7 +76,7 @@ backend_config = dict(
 
 # Evaluation configuration
 evaluation = dict(
-    enabled=True,  # Enable evaluation
+    enabled=False,  # Enable evaluation
     num_samples=-1,  # Number of samples to evaluate (set to -1 for all)
     verbose=False,  # Detailed per-sample output
     # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)

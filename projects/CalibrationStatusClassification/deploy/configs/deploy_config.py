@@ -88,6 +88,7 @@ onnx_config = dict(
     opset_version=16,
     do_constant_folding=True,
     save_file="end2end.onnx",
+    simplify=True,
 )
 
 # ==============================================================================

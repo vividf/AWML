@@ -93,10 +93,6 @@ def export_onnx(
 
     os.makedirs(config.export_config.work_dir, exist_ok=True)
 
-    # Replace activation functions for ONNX export (matching Tier4 YOLOX)
-    # This ensures ReLU6 -> ReLU in ONNX (avoiding Clip operations)
-    logger.info("Replacing activation functions for ONNX compatibility...")
-
     # Replace ReLU6 with ReLU (Tier4 YOLOX does this at export_onnx.py line 87)
     def replace_relu6_with_relu(module):
         """Recursively replace all ReLU6 with ReLU in the module."""
@@ -108,33 +104,20 @@ def export_onnx(
                 replace_relu6_with_relu(child)
 
     replace_relu6_with_relu(model)
-    logger.info("  ✓ Replaced all ReLU6 with ReLU (matching Tier4 YOLOX)")
 
-    # Check if we should include decoding in ONNX export
-    decode_in_inference = onnx_settings.get("decode_in_inference", True)
+    # Get number of classes from model config
+    num_classes = model_cfg.model.bbox_head.num_classes
 
-    if decode_in_inference:
-        logger.info("Using ONNX wrapper for Tier4-compatible format")
-
-        # Get number of classes from model config
-        num_classes = model_cfg.model.bbox_head.num_classes
-
-        # Wrap model to output Tier4 format
-        wrapped_model = YOLOXONNXWrapper(
-            model=model,
-            num_classes=num_classes,
-        )
-        wrapped_model.eval()
-        export_model = wrapped_model
-        output_names = ["output"]  # Single output to match Tier4
-        output_channels = 4 + 1 + num_classes  # bbox(4) + objectness(1) + classes
-        logger.info(f"Output format: [batch_size, num_predictions, {output_channels}]")
-        logger.info(f"  where {output_channels} = [bbox_reg(4), objectness(1), class_scores({num_classes})]")
-        logger.info(f"  Note: bbox_reg are raw outputs (NOT decoded coordinates)")
-    else:
-        logger.info("Exporting raw model outputs (no decoding)")
-        export_model = model
-        output_names = onnx_settings["output_names"]
+    # Wrap model to output Tier4 format
+    wrapped_model = YOLOXONNXWrapper(
+        model=model,
+        num_classes=num_classes,
+    )
+    wrapped_model.eval()
+    export_model = wrapped_model
+    output_names = ["output"]  # Single output to match Tier4
+    output_channels = 4 + 1 + num_classes  # bbox(4) + objectness(1) + classes
+    logger.info(f"Output format: [batch_size, num_predictions, {output_channels}]")
 
     # Export
     logger.info(f"Input shape: {input_tensor.shape}")
@@ -156,7 +139,7 @@ def export_onnx(
     logger.info(f"✅ ONNX export successful: {output_path}")
 
     # Apply ONNX simplifier to remove redundant operations (matching Tier4 YOLOX)
-    try:
+    if onnx_settings.get("simplify", True):
         import onnx
         from onnxsim import simplify
         
@@ -166,10 +149,6 @@ def export_onnx(
         assert check, "Simplified ONNX model could not be validated"
         onnx.save(model_simp, output_path)
         logger.info("✅ ONNX simplification successful")
-    except ImportError:
-        logger.warning("onnxsim not available, skipping simplification")
-    except Exception as e:
-        logger.warning(f"ONNX simplification failed: {e}")
 
     return output_path
 
@@ -255,16 +234,9 @@ def export_tensorrt(onnx_path: str, config: BaseDeploymentConfig, logger: loggin
 
         config_trt.add_optimization_profile(profile)
 
-    # Set workspace size (API changed in TensorRT 8.4+)
     workspace_size = trt_settings["max_workspace_size"]
-    if hasattr(config_trt, "max_workspace_size"):
-        # TensorRT < 8.4
-        config_trt.max_workspace_size = workspace_size
-        logger.info(f"Set max_workspace_size to {workspace_size} bytes (TensorRT < 8.4)")
-    else:
-        # TensorRT >= 8.4
-        config_trt.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_size)
-        logger.info(f"Set WORKSPACE memory pool limit to {workspace_size} bytes (TensorRT >= 8.4)")
+    config_trt.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_size)
+    logger.info(f"Set WORKSPACE memory pool limit to {workspace_size} bytes")
 
     # Set precision
     precision_flags = trt_settings["policy_flags"]
@@ -275,26 +247,15 @@ def export_tensorrt(onnx_path: str, config: BaseDeploymentConfig, logger: loggin
         config_trt.set_flag(trt.BuilderFlag.TF32)
         logger.info("Enabled TF32 precision")
 
-    # Build engine (API changed in TensorRT 8.5+)
     logger.info("Building TensorRT engine (this may take a while)...")
-    if hasattr(builder, "build_serialized_network"):
-        # TensorRT >= 8.5: build_serialized_network returns serialized engine directly
-        serialized_engine = builder.build_serialized_network(network, config_trt)
-        if serialized_engine is None:
-            logger.error("Failed to build TensorRT engine")
-            return None
-        # Save directly
-        with open(output_path, "wb") as f:
-            f.write(serialized_engine)
-    else:
-        # TensorRT < 8.5: build_engine returns engine object
-        engine = builder.build_engine(network, config_trt)
-        if engine is None:
-            logger.error("Failed to build TensorRT engine")
-            return None
-        # Serialize and save
-        with open(output_path, "wb") as f:
-            f.write(engine.serialize())
+    serialized_engine = builder.build_serialized_network(network, config_trt)
+    if serialized_engine is None:
+        logger.error("Failed to build TensorRT engine")
+        return None
+    
+    # Save engine
+    with open(output_path, "wb") as f:
+        f.write(serialized_engine)
 
     logger.info(f"✅ TensorRT export successful: {output_path}")
 
