@@ -138,26 +138,39 @@ class CenterPointEvaluator(BaseEvaluator):
         Parse model output to prediction format.
 
         Args:
-            output: Raw model output (can be dict or array)
+            output: Raw model output (can be dict, array, or list)
 
         Returns:
             List of prediction dicts with 'bbox_3d', 'label', 'score'
         """
         predictions = []
 
-        # CenterPoint output can be dict or tensor
+        # CenterPoint output can be dict, array, or list
         if isinstance(output, dict):
             # Dict format: {'boxes_3d', 'scores_3d', 'labels_3d'}
             boxes_3d = output.get("boxes_3d", output.get("bboxes_3d", np.array([])))
             scores = output.get("scores_3d", output.get("scores", np.array([])))
             labels = output.get("labels_3d", output.get("labels", np.array([])))
-        else:
-            # Tensor/array format: need to parse based on model structure
-            # This is model-specific, adjust as needed
+        elif isinstance(output, np.ndarray):
+            # Array format: [num_detections, 9] where 9 = [bbox_3d(7), score(1), label(1)]
+            if len(output.shape) == 2 and output.shape[1] == 9:
+                boxes_3d = output[:, :7]  # First 7 columns are 3D bbox
+                scores = output[:, 7]    # 8th column is score
+                labels = output[:, 8]    # 9th column is label
+            else:
+                # Unknown array format
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Unknown array format: {output.shape}")
+                return predictions
+        elif isinstance(output, list):
+            # List format: [heatmap, reg, height, dim, rot, vel] from raw head outputs
             logger = logging.getLogger(__name__)
-            logger.warning("Output is not dict format, attempting to parse...")
-
-            # Placeholder: assume no predictions
+            logger.warning("Raw head outputs detected, skipping prediction parsing")
+            return predictions
+        else:
+            # Unknown format
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Unknown output format: {type(output)}")
             return predictions
 
         # Convert to prediction format

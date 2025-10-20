@@ -339,8 +339,34 @@ def main():
         logger.info("\n" + "=" * 80)
         logger.info("Cross-Backend Verification")
         logger.info("=" * 80)
-        logger.warning("Verification for 3D detection needs custom implementation")
-        logger.info("TODO: Implement 3D detection verification")
+        
+        # Create verification inputs
+        verification_inputs = {}
+        num_verify_samples = config.verification_config.get("num_verify_samples", 5)
+        
+        for i in range(min(num_verify_samples, data_loader.get_num_samples())):
+            sample = data_loader.load_sample(i)
+            input_data = data_loader.preprocess(sample)
+            verification_inputs[f"sample_{i}"] = input_data
+        
+        # Run verification
+        from autoware_ml.deployment.core.verification import verify_model_outputs
+        
+        verification_results = verify_model_outputs(
+            pytorch_model=pytorch_model,
+            test_inputs=verification_inputs,
+            onnx_path=onnx_path,
+            tensorrt_path=trt_path,
+            device=config.export_config.device,
+            tolerance=config.verification_config.get("tolerance", 1e-2),
+            logger=logger,
+        )
+        
+        # Print verification results
+        logger.info("\nVerification Results:")
+        for backend, passed in verification_results.items():
+            status = "✓ PASSED" if passed else "✗ FAILED"
+            logger.info(f"  {backend}: {status}")
 
     # Evaluation
     run_evaluation(data_loader, config, model_cfg, logger)

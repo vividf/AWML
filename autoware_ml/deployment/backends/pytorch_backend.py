@@ -83,7 +83,12 @@ class PyTorchBackend(BaseBackend):
         if self._model is None:
             return 'unknown'
         
-        # Check for detection model attributes
+        # Check for 3D detection model attributes (CenterPoint)
+        if (hasattr(self._model, 'pts_bbox_head') and 
+            hasattr(self._model, 'pts_voxel_encoder')):
+            return 'detector3d'
+        
+        # Check for 2D detection model attributes (YOLOX)
         if (hasattr(self._model, 'bbox_head') and 
             hasattr(self._model, 'extract_feat')):
             return 'detector'
@@ -160,7 +165,12 @@ class PyTorchBackend(BaseBackend):
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
         # Move input to correct device
-        input_tensor = input_tensor.to(self._torch_device)
+        if isinstance(input_tensor, dict):
+            # Handle dictionary inputs (e.g., for 3D detection with points)
+            input_tensor = {k: v.to(self._torch_device) if isinstance(v, torch.Tensor) else v 
+                          for k, v in input_tensor.items()}
+        else:
+            input_tensor = input_tensor.to(self._torch_device)
 
         # Run inference with timing
         with torch.no_grad():
@@ -172,9 +182,14 @@ class PyTorchBackend(BaseBackend):
             else:
                 # Standard pipeline - for evaluation
                 if self._model_type == 'detector':
-                    # Detection model - use MMDetection pipeline
+                    # 2D Detection model - use MMDetection pipeline
                     batch_data_samples = self._create_dummy_data_samples(input_tensor)
                     results = self._model.predict(input_tensor, batch_data_samples, rescale=True)
+                    output_array = self._extract_predictions_from_results(results)
+                elif self._model_type == 'detector3d':
+                    # 3D Detection model - use MMDet3D pipeline
+                    batch_data_samples = self._create_dummy_data_samples(input_tensor)
+                    results = self._model.predict(input_tensor, batch_data_samples)
                     output_array = self._extract_predictions_from_results(results)
                 elif self._model_type == 'classifier':
                     # Classification model - use MMPretrain pipeline
@@ -221,6 +236,21 @@ class PyTorchBackend(BaseBackend):
                 data_samples.append(data_sample)
             
             return data_samples
+        elif self._model_type == 'detector3d':
+            # 3D Detection model - use MMDet3D Det3DDataSample
+            from mmdet3d.structures import Det3DDataSample
+            
+            data_samples = []
+            
+            for i in range(batch_size):
+                data_sample = Det3DDataSample()
+                data_sample.set_metainfo({
+                    'sample_idx': i,
+                    'pts_filename': f'sample_{i}.bin',
+                })
+                data_samples.append(data_sample)
+            
+            return data_samples
         else:
             # Classification model - use MMPretrain DataSample
             data_samples = []
@@ -242,7 +272,7 @@ class PyTorchBackend(BaseBackend):
         """
         # Check if this is a detection model or classification model
         if self._model_type == 'detector':
-            # Detection model - get raw head outputs
+            # 2D Detection model - get raw head outputs
             feat = self._model.extract_feat(input_tensor)
             cls_scores, bbox_preds, objectnesses = self._model.bbox_head(feat)
             
@@ -259,6 +289,111 @@ class PyTorchBackend(BaseBackend):
             outputs = torch.cat([x.reshape(batch_size, num_channels, -1) for x in outputs], dim=2).permute(0, 2, 1)
 
             return outputs.cpu().numpy()
+        elif self._model_type == 'detector3d':
+            # 3D Detection model - get raw head outputs
+            # For CenterPoint, we need to handle voxel-based inputs or points
+            if isinstance(input_tensor, dict):
+                # Check if we have voxels or points
+                if 'voxels' in input_tensor:
+                    # Handle voxel-based inputs (voxels, num_points, coors)
+                    voxels = input_tensor['voxels']
+                    num_points = input_tensor['num_points']
+                    coors = input_tensor['coors']
+                    
+                    # Extract features through voxel encoder
+                    voxel_features = self._model.pts_voxel_encoder(voxels, num_points, coors)
+                    
+                    # Process through middle encoder
+                    batch_size = coors[-1, 0] + 1
+                    spatial_features = self._model.pts_middle_encoder(voxel_features, coors, batch_size)
+                    
+                    # Extract backbone features
+                    backbone_features = self._model.pts_backbone(spatial_features)
+                    
+                    # Extract neck features
+                    neck_features = self._model.pts_neck(backbone_features)
+                    
+                    # Get raw head outputs
+                    head_outputs = self._model.pts_bbox_head(neck_features)
+                    
+                    # Return raw head outputs as list of tensors
+                    return [output.cpu().numpy() for output in head_outputs[0]]
+                elif 'points' in input_tensor:
+                    # Handle points input - use data_preprocessor to voxelize
+                    points = input_tensor['points']
+                    # For raw output, we need to manually voxelize
+                    # This is simplified - for production, use proper voxelization
+                    from mmdet3d.structures import Det3DDataSample
+                    data_samples = [Det3DDataSample()]
+                    
+                    # Use model's data_preprocessor
+                    if hasattr(self._model, 'data_preprocessor'):
+                        batch_inputs = self._model.data_preprocessor(
+                            {'inputs': {'points': [points]}, 'data_samples': data_samples}
+                        )
+                        
+                        # Extract voxel_dict from inputs
+                        if 'voxels' in batch_inputs['inputs']:
+                            voxel_dict = batch_inputs['inputs']['voxels']
+                            
+                            # Now process with voxel encoder
+                            # Check if it's ONNX version (only takes features) or standard version
+                            if hasattr(self._model.pts_voxel_encoder, 'get_input_features'):
+                                # Use get_input_features for ONNX models
+                                input_features = self._model.pts_voxel_encoder.get_input_features(
+                                    voxel_dict['voxels'], 
+                                    voxel_dict['num_points'], 
+                                    voxel_dict['coors']
+                                )
+                                voxel_features = self._model.pts_voxel_encoder(input_features)
+                                # Squeeze middle dimension for ONNX models
+                                if voxel_features.dim() == 3:
+                                    voxel_features = voxel_features.squeeze(1)
+                            else:
+                                # Standard model
+                                voxel_features = self._model.pts_voxel_encoder(
+                                    voxel_dict['voxels'], 
+                                    voxel_dict['num_points'], 
+                                    voxel_dict['coors']
+                                )
+                            
+                            # Process through middle encoder
+                            batch_size = voxel_dict['coors'][-1, 0] + 1
+                            spatial_features = self._model.pts_middle_encoder(
+                                voxel_features, voxel_dict['coors'], batch_size
+                            )
+                            
+                            # Extract backbone features
+                            backbone_features = self._model.pts_backbone(spatial_features)
+                            
+                            # Extract neck features
+                            neck_features = self._model.pts_neck(backbone_features)
+                            
+                            # Get raw head outputs
+                            head_outputs = self._model.pts_bbox_head(neck_features)
+                            
+                            # Return raw head outputs as list of tensors
+                            return [output.cpu().numpy() for output in head_outputs[0]]
+                    
+                    # Fallback: return points as is
+                    return [points.cpu().numpy()]
+                else:
+                    raise ValueError(f"Unknown input format for 3D detection: {input_tensor.keys()}")
+            else:
+                # Handle tensor inputs directly
+                # For 3D detection models, we need to process through the full pipeline
+                # This is a simplified version - real implementation would be more complex
+                if hasattr(self._model, 'pts_voxel_encoder'):
+                    # Simulate voxel processing
+                    voxel_features = self._model.pts_voxel_encoder(input_tensor)
+                    spatial_features = self._model.pts_middle_encoder(voxel_features, torch.zeros(1, 4), 1)
+                    backbone_features = self._model.pts_backbone(spatial_features)
+                    neck_features = self._model.pts_neck(backbone_features)
+                    head_outputs = self._model.pts_bbox_head(neck_features)
+                    return [output.cpu().numpy() for output in head_outputs[0]]
+                else:
+                    # Fallback for models without voxel encoder
+                    return [input_tensor.cpu().numpy()]
         else:
             # Classification model - get raw logits (before softmax)
             feat = self._model.extract_feat(input_tensor)
@@ -287,9 +422,25 @@ class PyTorchBackend(BaseBackend):
         all_predictions = []
         
         for result in results:
-            # Check if this is a detection result or classification result
-            if hasattr(result, 'pred_instances') and result.pred_instances is not None:
-                # Detection model result
+            # Check if this is a detection result, 3D detection result, or classification result
+            if hasattr(result, 'pred_instances_3d') and result.pred_instances_3d is not None:
+                # 3D Detection model result
+                pred_instances_3d = result.pred_instances_3d
+                
+                # Extract 3D bboxes, scores, labels
+                bboxes_3d = pred_instances_3d.bboxes_3d.cpu().numpy() if pred_instances_3d.bboxes_3d is not None else np.array([])
+                scores = pred_instances_3d.scores.cpu().numpy() if pred_instances_3d.scores is not None else np.array([])
+                labels = pred_instances_3d.labels.cpu().numpy() if pred_instances_3d.labels is not None else np.array([])
+                
+                # Combine into single array: [bboxes_3d(7), scores(1), labels(1)]
+                if len(bboxes_3d) > 0:
+                    predictions = np.column_stack([bboxes_3d, scores, labels])
+                else:
+                    predictions = np.array([]).reshape(0, 9)  # 7 (3D bbox) + 1 (score) + 1 (label)
+                
+                all_predictions.append(predictions)
+            elif hasattr(result, 'pred_instances') and result.pred_instances is not None:
+                # 2D Detection model result
                 pred_instances = result.pred_instances
                 
                 # Extract bboxes, scores, labels

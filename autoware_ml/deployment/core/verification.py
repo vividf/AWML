@@ -5,6 +5,7 @@ Provides utilities for verifying exported models against reference PyTorch outpu
 """
 
 import logging
+import os
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -52,6 +53,7 @@ def verify_model_outputs(
     # Determine if we need raw output based on model type
     # Both detection models (like YOLOX) and classification models need raw_output=True for ONNX verification
     # Detection models need it for bbox_head outputs, classification models need it for raw logits
+    # 3D detection models (CenterPoint) need special handling for voxel-based inputs
     model_type = type(pytorch_model).__name__.lower()
     use_raw_output = True  # Always use raw output for verification to match ONNX format
     
@@ -70,10 +72,17 @@ def verify_model_outputs(
         logger.info(f"  PyTorch latency: {pytorch_latency:.2f} ms")
         logger.info(f"  PyTorch output: {pytorch_output}")
 
-        # Verify ONNX
+        # Verify ONNX - 使用統一的 ONNXBackend
         if onnx_path:
             logger.info("\nVerifying ONNX model...")
-            onnx_backend = ONNXBackend(onnx_path, device=device)
+            
+            # ONNXBackend 自動檢測是否為 CenterPoint
+            onnx_backend = ONNXBackend(
+                onnx_path, 
+                device=device, 
+                pytorch_model=pytorch_model  # 傳遞 PyTorch 模型用於 CenterPoint
+            )
+            
             onnx_success, onnx_output, onnx_latency = _verify_backend(
                 onnx_backend,
                 input_tensor,
@@ -84,7 +93,7 @@ def verify_model_outputs(
             )
 
             # If ONNX backend fell back to CPU, update PyTorch backend, recompute reference, and re-compare
-            if onnx_backend.device == "cpu" and device.startswith("cuda"):
+            if hasattr(onnx_backend, '_session') and onnx_backend.device == "cpu" and device.startswith("cuda"):
                 logger.warning("ONNX backend fell back to CPU, updating PyTorch backend for consistency...")
                 pytorch_backend.device = "cpu"
                 pytorch_backend._torch_device = torch.device("cpu")
@@ -97,8 +106,8 @@ def verify_model_outputs(
                 logger.info(f"  PyTorch output (CPU): {pytorch_output}")
 
                 # Recompute differences now that both are on CPU
-                max_diff = np.abs(pytorch_output - onnx_output).max()
-                mean_diff = np.abs(pytorch_output - onnx_output).mean()
+                max_diff = _compute_max_difference(pytorch_output, onnx_output)
+                mean_diff = _compute_mean_difference(pytorch_output, onnx_output)
                 logger.info(f"  Recomputed Max difference: {max_diff:.6f}")
                 logger.info(f"  Recomputed Mean difference: {mean_diff:.6f}")
                 onnx_success = max_diff < tolerance
@@ -165,8 +174,26 @@ def _verify_backend(
         logger.info(f"  {backend_name} output: {output}")
 
         # Compare outputs
-        max_diff = np.abs(reference_output - output).max()
-        mean_diff = np.abs(reference_output - output).mean()
+        # Handle different output formats
+        if isinstance(output, list) and isinstance(reference_output, list):
+            # Both are lists (e.g., CenterPoint head outputs)
+            max_diff = 0.0
+            mean_diff = 0.0
+            total_elements = 0
+            
+            for ref_out, out in zip(reference_output, output):
+                if isinstance(ref_out, np.ndarray) and isinstance(out, np.ndarray):
+                    diff = np.abs(ref_out - out)
+                    max_diff = max(max_diff, diff.max())
+                    mean_diff += diff.sum()
+                    total_elements += diff.size
+            
+            if total_elements > 0:
+                mean_diff /= total_elements
+        else:
+            # Standard array comparison
+            max_diff = np.abs(reference_output - output).max()
+            mean_diff = np.abs(reference_output - output).mean()
 
         logger.info(f"  Max difference: {max_diff:.6f}")
         logger.info(f"  Mean difference: {mean_diff:.6f}")
@@ -185,6 +212,62 @@ def _verify_backend(
         return False, None, 0.0
 
 
+def _compute_max_difference(output1, output2) -> float:
+    """
+    Compute maximum difference between two outputs.
+    
+    Args:
+        output1: First output (reference)
+        output2: Second output (to compare)
+        
+    Returns:
+        Maximum absolute difference
+    """
+    # Handle different output formats
+    if isinstance(output1, list) and isinstance(output2, list):
+        # Both are lists (e.g., CenterPoint head outputs)
+        max_diff = 0.0
+        
+        for ref_out, out in zip(output1, output2):
+            if isinstance(ref_out, np.ndarray) and isinstance(out, np.ndarray):
+                diff = np.abs(ref_out - out)
+                max_diff = max(max_diff, diff.max())
+        
+        return max_diff
+    else:
+        # Standard array comparison
+        return np.abs(output1 - output2).max()
+
+
+def _compute_mean_difference(output1, output2) -> float:
+    """
+    Compute mean difference between two outputs.
+    
+    Args:
+        output1: First output (reference)
+        output2: Second output (to compare)
+        
+    Returns:
+        Mean absolute difference
+    """
+    # Handle different output formats
+    if isinstance(output1, list) and isinstance(output2, list):
+        # Both are lists (e.g., CenterPoint head outputs)
+        mean_diff = 0.0
+        total_elements = 0
+        
+        for ref_out, out in zip(output1, output2):
+            if isinstance(ref_out, np.ndarray) and isinstance(out, np.ndarray):
+                diff = np.abs(ref_out - out)
+                mean_diff += diff.sum()
+                total_elements += diff.size
+        
+        return mean_diff / total_elements if total_elements > 0 else 0.0
+    else:
+        # Standard array comparison
+        return np.abs(output1 - output2).mean()
+
+
 def compare_outputs(
     output1: np.ndarray,
     output2: np.ndarray,
@@ -196,17 +279,16 @@ def compare_outputs(
     Args:
         output1: First output array
         output2: Second output array
-        tolerance: Tolerance for comparison
+        tolerance: Maximum allowed difference
 
     Returns:
-        Dictionary with comparison statistics
+        Dictionary with difference statistics
     """
-    diff = np.abs(output1 - output2)
+    max_diff = _compute_max_difference(output1, output2)
+    mean_diff = _compute_mean_difference(output1, output2)
 
     return {
-        "max_diff": float(np.max(diff)),
-        "mean_diff": float(np.mean(diff)),
-        "median_diff": float(np.median(diff)),
-        "std_diff": float(np.std(diff)),
-        "passed": float(np.max(diff)) < tolerance,
+        "max_difference": max_diff,
+        "mean_difference": mean_diff,
+        "passed": max_diff < tolerance,
     }

@@ -141,6 +141,12 @@ class CenterPointDataLoader(BaseDataLoader):
             # Try alternative key
             lidar_path = info.get("lidar_path", info.get("velodyne_path", ""))
             lidar_points = {"lidar_path": lidar_path}
+        
+        # Add data_root to lidar_path if it's relative
+        if 'lidar_path' in lidar_points and not lidar_points['lidar_path'].startswith('/'):
+            # Get data_root from model config
+            data_root = getattr(self.model_cfg, 'data_root', 'data/t4dataset/')
+            lidar_points['lidar_path'] = data_root + lidar_points['lidar_path']
 
         # Extract annotations (if available)
         ann_info = info.get("ann_info", info.get("annos", {}))
@@ -148,6 +154,7 @@ class CenterPointDataLoader(BaseDataLoader):
         sample = {
             "lidar_points": lidar_points,
             "sample_idx": info.get("sample_idx", index),
+            "timestamp": info.get("timestamp", 0),  # Add timestamp for pipeline
         }
 
         # Add ground truth if available
@@ -204,15 +211,28 @@ class CenterPointDataLoader(BaseDataLoader):
         # The exact keys depend on the voxelization method
         inputs = {}
 
-        # Common keys for voxel-based models
-        voxel_keys = ["voxels", "num_points", "coors"]
-        for key in voxel_keys:
-            if key in results:
-                value = results[key]
-                if isinstance(value, torch.Tensor):
-                    inputs[key] = value.to(self.device)
-                else:
-                    inputs[key] = torch.from_numpy(value).to(self.device)
+        # Check if results have 'inputs' key (new MMDet3D format)
+        if 'inputs' in results:
+            pipeline_inputs = results['inputs']
+            # Common keys for voxel-based models
+            voxel_keys = ["voxels", "num_points", "coors"]
+            for key in voxel_keys:
+                if key in pipeline_inputs:
+                    value = pipeline_inputs[key]
+                    if isinstance(value, torch.Tensor):
+                        inputs[key] = value.to(self.device)
+                    else:
+                        inputs[key] = torch.from_numpy(value).to(self.device)
+        else:
+            # Old format: check directly in results
+            voxel_keys = ["voxels", "num_points", "coors"]
+            for key in voxel_keys:
+                if key in results:
+                    value = results[key]
+                    if isinstance(value, torch.Tensor):
+                        inputs[key] = value.to(self.device)
+                    else:
+                        inputs[key] = torch.from_numpy(value).to(self.device)
 
         # Add batch dimension to coordinates if needed
         if "coors" in inputs and inputs["coors"].shape[1] == 3:
@@ -220,7 +240,15 @@ class CenterPointDataLoader(BaseDataLoader):
             batch_idx = torch.zeros((inputs["coors"].shape[0], 1), dtype=inputs["coors"].dtype, device=self.device)
             inputs["coors"] = torch.cat([batch_idx, inputs["coors"]], dim=1)
 
-        # Alternative: for point-based models
+        # Check for points in inputs dict (new MMDet3D format)
+        if 'inputs' in results and 'points' in results['inputs']:
+            points = results['inputs']['points']
+            if isinstance(points, torch.Tensor):
+                inputs["points"] = points.to(self.device)
+            else:
+                inputs["points"] = torch.from_numpy(points).to(self.device)
+        
+        # Alternative: for point-based models (old format)
         if "points" in results and not inputs:
             points = results["points"]
             if isinstance(points, torch.Tensor):
