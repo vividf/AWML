@@ -12,15 +12,13 @@ from .base_backend import BaseBackend
 
 class PyTorchBackend(BaseBackend):
     """
-    PyTorch inference backend.
+    PyTorch inference backend using standard MMDetection pipeline.
 
-    Runs inference using native PyTorch models.
-    Supports two initialization modes:
-    1. Direct model instance (for verification)
-    2. Model path with config (for evaluation)
+    This backend follows the same inference flow as test.py, ensuring
+    consistency with MMDetection's standard evaluation pipeline.
     """
 
-    def __init__(self, model: Union[torch.nn.Module, str], model_cfg: Optional[object] = None, device: str = "cpu"):
+    def __init__(self, model: Union[torch.nn.Module, str], model_cfg: Optional[object] = None, device: str = "cpu", raw_output: bool = False, original_image_size: Optional[Tuple[int, int]] = None):
         """
         Initialize PyTorch backend.
 
@@ -28,11 +26,17 @@ class PyTorchBackend(BaseBackend):
             model: PyTorch model instance or path to checkpoint
             model_cfg: Model configuration (required if model is a path)
             device: Device to run inference on
+            raw_output: If True, return raw head outputs (for ONNX verification)
+                       If False, return post-processed results (standard MMDetection)
+            original_image_size: Original image size (height, width) for scale factor calculation
+                                Defaults to (1080, 1440) for T4 dataset
         """
         super().__init__(model_path="", device=device)
         self._torch_device = torch.device(device)
         self.model_cfg = model_cfg
         self._logger = logging.getLogger(__name__)
+        self.raw_output = raw_output
+        self.original_image_size = original_image_size or (1080, 1440)  # Default to T4 dataset size
 
         if isinstance(model, str):
             # Model path provided - load it
@@ -44,6 +48,9 @@ class PyTorchBackend(BaseBackend):
             self._model = model
             self._model.to(self._torch_device)
             self._model.eval()
+        
+        # Cache model type for performance
+        self._model_type = self._determine_model_type()
 
     def load_model(self) -> None:
         """Load model from checkpoint if not already loaded."""
@@ -61,6 +68,26 @@ class PyTorchBackend(BaseBackend):
 
         self._model = init_detector(self.model_cfg, self.model_path, device=self.device)
         self._model.eval()
+        
+        # Update cached model type after loading
+        self._model_type = self._determine_model_type()
+
+    def _determine_model_type(self) -> str:
+        """Determine model type once during initialization."""
+        if self._model is None:
+            return 'unknown'
+        
+        # Check for detection model attributes
+        if (hasattr(self._model, 'bbox_head') and 
+            hasattr(self._model, 'extract_feat')):
+            return 'detector'
+        
+        # Check for classification model attributes
+        if (hasattr(self._model, 'head') and 
+            hasattr(self._model, 'extract_feat')):
+            return 'classifier'
+        
+        return 'unknown'
 
     def infer(self, input_tensor: torch.Tensor) -> Tuple[np.ndarray, float]:
         """
@@ -81,187 +108,97 @@ class PyTorchBackend(BaseBackend):
         # Run inference with timing
         with torch.no_grad():
             start_time = time.perf_counter()
-            output = self._model(input_tensor)
+            
+            if self.raw_output:
+                # Raw output mode - for ONNX verification
+                output_array = self._get_raw_output(input_tensor)
+            else:
+                # Standard pipeline - for evaluation
+                if self._model_type == 'detector':
+                    # Detection model - use MMDetection pipeline
+                    batch_data_samples = self._create_dummy_data_samples(input_tensor)
+                    results = self._model.predict(input_tensor, batch_data_samples, rescale=True)
+                    output_array = self._extract_predictions_from_results(results)
+                elif self._model_type == 'classifier':
+                    # Classification model - use MMPretrain pipeline
+                    batch_data_samples = self._create_dummy_data_samples(input_tensor)
+                    results = self._model.predict(input_tensor, batch_data_samples)
+                    output_array = self._extract_predictions_from_results(results)
+                else:
+                    raise ValueError(f"Unsupported model type: {self._model_type}. "
+                                   f"Model class: {type(self._model)}")
+            
             end_time = time.perf_counter()
 
         latency_ms = (end_time - start_time) * 1000
-
-        # Process output based on model type and format
-        output = self._process_model_output(output, input_tensor)
-        
-        # Convert to numpy array
-        output_array = self._convert_to_numpy(output)
         
         return output_array, latency_ms
 
-    def _process_model_output(self, output: Union[torch.Tensor, object], input_tensor: torch.Tensor) -> torch.Tensor:
+    def _create_dummy_data_samples(self, input_tensor: torch.Tensor):
+        """Create dummy data samples for model pipeline."""
+        batch_size = input_tensor.shape[0]
+        
+        if self._model_type == 'detector':
+            # Detection model - use MMDetection DetDataSample
+            from mmdet.structures import DetDataSample
+            
+            data_samples = []
+            
+            # Get model input size (typically 960x960 for YOLOX)
+            model_input_h, model_input_w = input_tensor.shape[2:]
+            
+            # Use configured original image size
+            ori_h, ori_w = self.original_image_size
+            
+            # Calculate scale factors using the same logic as data_loader
+            # This matches MMDetection's Resize transform with keep_ratio=True
+            scale_w = model_input_w / ori_w
+            scale_h = model_input_h / ori_h
+            
+            # Use the smaller scale to maintain aspect ratio (same as data_loader)
+            scale = min(scale_w, scale_h)
+            
+            for i in range(batch_size):
+                data_sample = DetDataSample()
+                data_sample.set_metainfo({
+                    'img_shape': (model_input_h, model_input_w),  # Model input size
+                    'ori_shape': (ori_h, ori_w),  # Original image size
+                    'scale_factor': (scale, scale),  # Use 2-element format like MMDetection
+                    'batch_input_shape': (model_input_h, model_input_w)
+                })
+                data_samples.append(data_sample)
+            
+            return data_samples
+        else:
+            # Classification model - use MMPretrain DataSample
+            from mmpretrain.structures import DataSample
+            
+            data_samples = []
+            for i in range(batch_size):
+                data_sample = DataSample()
+                data_sample.set_metainfo({
+                    'img_shape': input_tensor.shape[2:],  # Model input size
+                })
+                data_samples.append(data_sample)
+            
+            return data_samples
+
+    def _get_raw_output(self, input_tensor: torch.Tensor) -> np.ndarray:
         """
-        Process model output based on its type and format.
+        Get raw head outputs matching ONNX wrapper format.
         
         Args:
-            output: Raw model output
-            input_tensor: Input tensor used for inference
+            input_tensor: Input tensor for inference
             
         Returns:
-            Processed tensor output
+            numpy array with raw outputs
         """
-        print("########################################################")
-        print("output", type(output))
-        
-        # Handle tuple/list outputs
-        if isinstance(output, (tuple, list)):
-            print("Extract output from tuple/list")
-            # print tuple information 
-            print("tuple information", len(output), len(output[0]), len(output[1]), len(output[2]))
-            
-            # 詳細查看每個檢測層的形狀
-            if len(output) == 3:  # YOLOX 輸出格式
-                cls_scores, bbox_preds, objectnesses = output
-                print("\n=== YOLOX 檢測層形狀分析 ===")
-                print(f"檢測層數量: {len(cls_scores)}")
-                
-                for i, (cls_score, bbox_pred, objectness) in enumerate(zip(cls_scores, bbox_preds, objectnesses)):
-                    print(f"\n檢測層 {i+1} (P{i+3}層):")
-                    print(f"  cls_scores[{i}].shape:   {cls_score.shape}")
-                    print(f"  bbox_preds[{i}].shape:   {bbox_pred.shape}")
-                    print(f"  objectnesses[{i}].shape: {objectness.shape}")
-                    
-                    # 計算該層的 anchor 數量
-                    if len(cls_score.shape) == 4:  # [batch, channels, height, width]
-                        batch_size, channels, height, width = cls_score.shape
-                        anchors_per_layer = height * width
-                        print(f"  anchor 數量: {anchors_per_layer} ({height}x{width})")
-                
-                # 計算總 anchor 數量
-                total_anchors = sum(cls_score.shape[-2] * cls_score.shape[-1] for cls_score in cls_scores)
-                print(f"\n總 anchor 數量: {total_anchors}")
-                print(f"預期最終輸出形狀: [batch_size, {total_anchors}, 13]")
-                print("其中 13 = bbox_reg(4) + objectness(1) + class_scores(8)")
-            
-            output = output[0] if len(output) == 1 else output[0]
-
-        # Handle different output formats
-        if hasattr(output, "pred_instances"):
-            print("Extract 2D predictions")
-            output = self._extract_2d_predictions(output)
-        elif hasattr(output, "pred_instances_3d"):
-            print("Extract 3D predictions")
-            output = self._extract_3d_predictions(output)
-        elif hasattr(output, "output"):
-            print("Extract output")
-            output = output.output
-        elif isinstance(output, dict) and "output" in output:
-            print("Extract output from dict")
-            output = output["output"]
-        elif isinstance(output, list):
-            print("Extract output from list")
-            output = self._process_list_output(output)
-
-        # Special handling for YOLOX models
-        if self._is_yolox_model() and self._needs_raw_output_extraction(output):
-            print("Extract yolox raw output")
-            output = self._extract_yolox_raw_output(input_tensor)
-        
-        return output
-
-    def _extract_2d_predictions(self, output: object) -> torch.Tensor:
-        """Extract 2D detection predictions from DetDataSample."""
-        pred_instances = output.pred_instances
-        tensors_to_concat = []
-        
-        # Extract bboxes
-        if hasattr(pred_instances, "bboxes") and pred_instances.bboxes is not None:
-            bboxes = self._convert_to_tensor(pred_instances.bboxes)
-            tensors_to_concat.append(bboxes)
-        
-        # Extract scores
-        if hasattr(pred_instances, "scores") and pred_instances.scores is not None:
-            scores = self._convert_to_tensor(pred_instances.scores)
-            if scores.ndim == 1:
-                scores = scores.unsqueeze(-1)
-            tensors_to_concat.append(scores)
-        
-        # Extract labels
-        if hasattr(pred_instances, "labels") and pred_instances.labels is not None:
-            labels = self._convert_to_tensor(pred_instances.labels)
-            if labels.ndim == 1:
-                labels = labels.unsqueeze(-1)
-            tensors_to_concat.append(labels)
-        
-        # Concatenate or return empty tensor
-        if tensors_to_concat:
-            return torch.cat(tensors_to_concat, dim=-1) if len(tensors_to_concat) > 1 else tensors_to_concat[0]
-        else:
-            return torch.zeros((0, 6))  # [num_boxes, (x1, y1, x2, y2, score, label)]
-
-    def _extract_3d_predictions(self, output: object) -> torch.Tensor:
-        """Extract 3D detection predictions from DetDataSample."""
-        pred_instances_3d = output.pred_instances_3d
-        tensors_to_concat = []
-        
-        if hasattr(pred_instances_3d, "bboxes_3d") and pred_instances_3d.bboxes_3d is not None:
-            bboxes_3d = pred_instances_3d.bboxes_3d.tensor
-            tensors_to_concat.append(bboxes_3d)
-        
-        if hasattr(pred_instances_3d, "scores_3d") and pred_instances_3d.scores_3d is not None:
-            scores_3d = pred_instances_3d.scores_3d
-            tensors_to_concat.append(scores_3d.unsqueeze(-1) if scores_3d.ndim == 1 else scores_3d)
-        
-        if hasattr(pred_instances_3d, "labels_3d") and pred_instances_3d.labels_3d is not None:
-            labels_3d = pred_instances_3d.labels_3d
-            tensors_to_concat.append(labels_3d.unsqueeze(-1) if labels_3d.ndim == 1 else labels_3d)
-        
-        if tensors_to_concat:
-            return torch.cat(tensors_to_concat, dim=-1) if len(tensors_to_concat) > 1 else tensors_to_concat[0]
-        else:
-            return torch.zeros((0, 10))  # Empty 3D predictions
-
-    def _process_list_output(self, output: list) -> torch.Tensor:
-        """Process list-type outputs (e.g., multi-scale detection outputs)."""
-        if len(output) > 0 and all(isinstance(o, torch.Tensor) for o in output):
-            # Multi-scale detection outputs - concatenate along the anchor dimension
-            return torch.cat([o.flatten(1) for o in output], dim=1)
-        else:
-            return torch.zeros((1, 0)) if len(output) == 0 else output[0]
-
-    def _convert_to_tensor(self, data: Union[list, np.ndarray, torch.Tensor]) -> torch.Tensor:
-        """Convert various data types to torch.Tensor."""
-        if isinstance(data, torch.Tensor):
-            return data
-        
-        if isinstance(data, list):
-            if len(data) == 0:
-                return torch.zeros(0)
-            elif isinstance(data[0], torch.Tensor):
-                return torch.stack(data)
-            else:
-                return torch.tensor(data)
-        
-        if isinstance(data, np.ndarray):
-            return torch.from_numpy(data)
-        
-        raise ValueError(f"Unexpected data type: {type(data)}")
-
-    def _is_yolox_model(self) -> bool:
-        """Check if the model is a YOLOX model."""
-        return (hasattr(self._model, "bbox_head") and 
-                hasattr(self._model.bbox_head, "num_classes"))
-
-    def _needs_raw_output_extraction(self, output: Union[torch.Tensor, object]) -> bool:
-        """Check if raw output extraction is needed for YOLOX models."""
-        return (hasattr(output, "pred_instances") or isinstance(output, torch.Tensor))
-
-    def _extract_yolox_raw_output(self, input_tensor: torch.Tensor) -> torch.Tensor:
-        """Extract raw YOLOX head outputs to match ONNX wrapper format."""
-        with torch.no_grad():
-            # Extract features
+        # Check if this is a detection model or classification model
+        if self._model_type == 'detector':
+            # Detection model - get raw head outputs
             feat = self._model.extract_feat(input_tensor)
-            print("feat", len(feat))
-            # Get head outputs: (cls_scores, bbox_preds, objectnesses)
             cls_scores, bbox_preds, objectnesses = self._model.bbox_head(feat)
-            print("cls_scores", len(cls_scores))
-            print("bbox_preds", len(bbox_preds))
-            print("objectnesses", len(objectnesses))
+            
             # Process each detection level (matching ONNX wrapper logic)
             outputs = []
             for cls_score, bbox_pred, objectness in zip(cls_scores, bbox_preds, objectnesses):
@@ -274,16 +211,69 @@ class PyTorchBackend(BaseBackend):
             num_channels = outputs[0].shape[1]
             outputs = torch.cat([x.reshape(batch_size, num_channels, -1) for x in outputs], dim=2).permute(0, 2, 1)
 
-            return outputs
-
-    def _convert_to_numpy(self, output: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
-        """Convert tensor output to numpy array."""
-        if isinstance(output, torch.Tensor):
-            return output.cpu().numpy()
-        elif isinstance(output, np.ndarray):
-            return output
+            return outputs.cpu().numpy()
         else:
-            raise ValueError(f"Unexpected output type: {type(output)}")
+            # Classification model - get raw logits (before softmax)
+            feat = self._model.extract_feat(input_tensor)
+            if isinstance(feat, tuple):
+                feat = feat[0]  # Take the first element if it's a tuple
+            raw_logits = self._model.head(feat)
+            return raw_logits.cpu().numpy()
+
+    def _extract_predictions_from_results(self, results) -> np.ndarray:
+        """
+        Extract predictions from model results format.
+        
+        Args:
+            results: List of DetDataSample/ClsDataSample objects from model.predict()
+            
+        Returns:
+            numpy array containing predictions
+        """
+        if not results:
+            return np.array([])
+        
+        # Handle single image case
+        if not isinstance(results, list):
+            results = [results]
+        
+        all_predictions = []
+        
+        for result in results:
+            # Check if this is a detection result or classification result
+            if hasattr(result, 'pred_instances') and result.pred_instances is not None:
+                # Detection model result
+                pred_instances = result.pred_instances
+                
+                # Extract bboxes, scores, labels
+                bboxes = pred_instances.bboxes.cpu().numpy() if pred_instances.bboxes is not None else np.array([])
+                scores = pred_instances.scores.cpu().numpy() if pred_instances.scores is not None else np.array([])
+                labels = pred_instances.labels.cpu().numpy() if pred_instances.labels is not None else np.array([])
+                
+                # Combine into single array: [bboxes(4), scores(1), labels(1)]
+                if len(bboxes) > 0:
+                    predictions = np.column_stack([bboxes, scores, labels])
+                else:
+                    predictions = np.array([]).reshape(0, 6)
+                
+                all_predictions.append(predictions)
+            elif hasattr(result, 'pred_score') and result.pred_score is not None:
+                # Classification model result
+                pred_score = result.pred_score.cpu().numpy()
+                pred_label = result.pred_label.cpu().numpy()
+                
+                # For classification, we return the raw logits/scores
+                # Shape: [num_classes] for single image
+                all_predictions.append(pred_score)
+            else:
+                # No predictions
+                all_predictions.append(np.array([]).reshape(0, 6))
+        
+        # Stack all predictions
+        if all_predictions:
+            return np.vstack(all_predictions) if len(all_predictions) > 1 else all_predictions[0]
+        else:
+            return np.array([]).reshape(0, 6)
 
     def cleanup(self) -> None:
         """Clean up PyTorch resources."""

@@ -230,7 +230,42 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             print(f"DEBUG: Dict format - bboxes: {bboxes.shape}, scores: {scores.shape}, labels: {labels.shape}")
         else:
             # Array format - handle both 2D and 3D outputs
-            if len(output.shape) == 3 and output.shape[2] >= 13:
+            if len(output.shape) == 2 and output.shape[1] == 6:
+                # 2D format: [num_detections, 6] - Standard MMDetection PyTorch output
+                # Format: [x1, y1, x2, y2, score, label]
+                print(f"DEBUG: 2D format detected - Standard MMDetection output")
+                
+                if len(output) == 0:
+                    return predictions
+                
+                bboxes = output[:, :4]  # [x1, y1, x2, y2]
+                scores = output[:, 4]   # scores
+                labels = output[:, 5]   # labels
+                
+                print(f"DEBUG: 2D format - bboxes: {bboxes.shape}, scores: {scores.shape}, labels: {labels.shape}")
+                
+                # For 2D format, we already have final predictions, just need to filter by score
+                score_thr = 0.3  # Default score threshold
+                if len(scores) > 0:
+                    valid_mask = scores >= score_thr
+                    bboxes = bboxes[valid_mask]
+                    scores = scores[valid_mask]
+                    labels = labels[valid_mask]
+                    print(f"DEBUG: After score filtering (thr={score_thr}): {len(scores)} predictions")
+                
+                # Keep in [x1, y1, x2, y2] format for evaluation (MMDetection format)
+                if len(bboxes) > 0:
+                    for i in range(len(bboxes)):
+                        predictions.append({
+                            'bbox': [float(bboxes[i, 0]), float(bboxes[i, 1]), float(bboxes[i, 2]), float(bboxes[i, 3])],
+                            'label': int(labels[i]),
+                            'score': float(scores[i])
+                        })
+                
+                print(f"DEBUG: Final 2D predictions: {len(predictions)}")
+                return predictions
+                
+            elif len(output.shape) == 3 and output.shape[2] >= 13:
                 # 3D format: [batch, num_anchors, features] - TensorRT/ONNX wrapper output
                 # Format: [bbox_reg(4), objectness(1), class_scores(8)]
                 batch_output = output[0]  # Take first batch

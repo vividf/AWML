@@ -49,7 +49,13 @@ def verify_model_outputs(
     logger.info("Running verification...")
     logger.info("=" * 60)
 
-    pytorch_backend = PyTorchBackend(pytorch_model, device=device)
+    # Determine if we need raw output based on model type
+    # Both detection models (like YOLOX) and classification models need raw_output=True for ONNX verification
+    # Detection models need it for bbox_head outputs, classification models need it for raw logits
+    model_type = type(pytorch_model).__name__.lower()
+    use_raw_output = True  # Always use raw output for verification to match ONNX format
+    
+    pytorch_backend = PyTorchBackend(pytorch_model, device=device, raw_output=use_raw_output)
     pytorch_backend.load_model()
 
     # Verify each backend
