@@ -143,7 +143,7 @@ def export_onnx(
         logger.info(f"Output directory: {output_dir}")
 
         # Export using model's method
-        model.save_onnx(save_dir=output_dir, onnx_opset_version=onnx_opset_version)
+        model.save_onnx(save_dir=output_dir, onnx_opset_version=onnx_opset_version, data_loader=data_loader)
 
         logger.info(f"✅ ONNX export successful: {output_dir}")
         return output_dir

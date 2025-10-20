@@ -372,8 +372,51 @@ class PyTorchBackend(BaseBackend):
                             # Get raw head outputs
                             head_outputs = self._model.pts_bbox_head(neck_features)
                             
-                            # Return raw head outputs as list of tensors
-                            return [output.cpu().numpy() for output in head_outputs[0]]
+                            # Check if using CenterHeadONNX (returns tuple of tensors directly)
+                            # or standard CenterHead (returns tuple -> list -> dict)
+                            if isinstance(head_outputs, tuple) and len(head_outputs) > 0:
+                                first_elem = head_outputs[0]
+                                if isinstance(first_elem, torch.Tensor):
+                                    # CenterHeadONNX: returns tuple of tensors
+                                    # Order depends on rot_y_axis_reference flag:
+                                    #   True: (heatmap, reg, height, dim, rot, vel)
+                                    #   False: order from output_names
+                                    # We need to reorder to match PyTorch standard order: [reg, height, dim, rot, vel, heatmap]
+                                    if len(head_outputs) == 6:
+                                        # Reorder from ONNX export order (heatmap, reg, height, dim, rot, vel)
+                                        # to PyTorch standard order (reg, height, dim, rot, vel, heatmap)
+                                        reordered = [
+                                            head_outputs[1],  # reg
+                                            head_outputs[2],  # height
+                                            head_outputs[3],  # dim
+                                            head_outputs[4],  # rot
+                                            head_outputs[5],  # vel
+                                            head_outputs[0],  # heatmap
+                                        ]
+                                        return [output.cpu().numpy() for output in reordered]
+                                    else:
+                                        # Fallback: return as is
+                                        return [output.cpu().numpy() for output in head_outputs]
+                                else:
+                                    # Standard CenterHead: returns tuple -> list -> dict
+                                    head_list = head_outputs[0]
+                                    if isinstance(head_list, (list, tuple)) and len(head_list) > 0:
+                                        head_dict = head_list[0]
+                                        if isinstance(head_dict, dict):
+                                            # Extract tensors from dict in the correct order
+                                            # CenterPoint head outputs should be in order: ['reg', 'height', 'dim', 'rot', 'vel', 'heatmap']
+                                            output_names = ['reg', 'height', 'dim', 'rot', 'vel', 'heatmap']
+                                            return [head_dict[name].cpu().numpy() for name in output_names if name in head_dict]
+                                        else:
+                                            return [head_dict.cpu().numpy()]
+                                    elif isinstance(head_list, dict):
+                                        # Extract tensors from dict in the correct order
+                                        output_names = ['reg', 'height', 'dim', 'rot', 'vel', 'heatmap']
+                                        return [head_list[name].cpu().numpy() for name in output_names if name in head_list]
+                                    else:
+                                        return [output.cpu().numpy() for output in head_list]
+                            else:
+                                return [output.cpu().numpy() for output in head_outputs]
                     
                     # Fallback: return points as is
                     return [points.cpu().numpy()]

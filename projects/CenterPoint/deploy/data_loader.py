@@ -146,7 +146,11 @@ class CenterPointDataLoader(BaseDataLoader):
         if 'lidar_path' in lidar_points and not lidar_points['lidar_path'].startswith('/'):
             # Get data_root from model config
             data_root = getattr(self.model_cfg, 'data_root', 'data/t4dataset/')
-            lidar_points['lidar_path'] = data_root + lidar_points['lidar_path']
+            if not data_root.endswith('/'):
+                data_root += '/'
+            # Check if path already starts with data_root to avoid duplication
+            if not lidar_points['lidar_path'].startswith(data_root):
+                lidar_points['lidar_path'] = data_root + lidar_points['lidar_path']
 
         # Extract annotations (if available)
         ann_info = info.get("ann_info", info.get("annos", {}))

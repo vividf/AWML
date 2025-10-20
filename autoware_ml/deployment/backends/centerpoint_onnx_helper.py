@@ -111,9 +111,59 @@ class CenterPointONNXHelper:
         coors_tensor = torch.from_numpy(coors).long()
         
         # Use PyTorch model's voxel encoder to get input features
-        input_features = self.pytorch_model.pts_voxel_encoder.get_input_features(
-            voxels_tensor, num_points_tensor, coors_tensor
-        )
+        # Check if the model has get_input_features method (ONNX version)
+        if hasattr(self.pytorch_model.pts_voxel_encoder, 'get_input_features'):
+            input_features = self.pytorch_model.pts_voxel_encoder.get_input_features(
+                voxels_tensor, num_points_tensor, coors_tensor
+            )
+        else:
+            # For standard PillarFeatureNet, we need to manually create input features
+            # This implements the same logic as PillarFeatureNetONNX.get_input_features
+            features_ls = [voxels_tensor]
+            
+            # Get voxel encoder configuration
+            voxel_encoder = self.pytorch_model.pts_voxel_encoder
+            
+            # Find distance of x, y, and z from cluster center
+            if hasattr(voxel_encoder, '_with_cluster_center') and voxel_encoder._with_cluster_center:
+                points_mean = voxels_tensor[:, :, :3].sum(dim=1, keepdim=True) / num_points_tensor.type_as(voxels_tensor).view(-1, 1, 1)
+                f_cluster = voxels_tensor[:, :, :3] - points_mean
+                features_ls.append(f_cluster)
+            
+            # Find distance of x, y, and z from pillar center
+            if hasattr(voxel_encoder, '_with_voxel_center') and voxel_encoder._with_voxel_center:
+                dtype = voxels_tensor.dtype
+                if hasattr(voxel_encoder, 'legacy') and not voxel_encoder.legacy:
+                    f_center = torch.zeros_like(voxels_tensor[:, :, :3])
+                    f_center[:, :, 0] = voxels_tensor[:, :, 0] - (coors_tensor[:, 3].to(dtype).unsqueeze(1) * voxel_encoder.vx + voxel_encoder.x_offset)
+                    f_center[:, :, 1] = voxels_tensor[:, :, 1] - (coors_tensor[:, 2].to(dtype).unsqueeze(1) * voxel_encoder.vy + voxel_encoder.y_offset)
+                    f_center[:, :, 2] = voxels_tensor[:, :, 2] - (coors_tensor[:, 1].to(dtype).unsqueeze(1) * voxel_encoder.vz + voxel_encoder.z_offset)
+                else:
+                    f_center = voxels_tensor[:, :, :3]
+                    f_center[:, :, 0] = f_center[:, :, 0] - (
+                        coors_tensor[:, 3].type_as(voxels_tensor).unsqueeze(1) * voxel_encoder.vx + voxel_encoder.x_offset
+                    )
+                    f_center[:, :, 1] = f_center[:, :, 1] - (
+                        coors_tensor[:, 2].type_as(voxels_tensor).unsqueeze(1) * voxel_encoder.vy + voxel_encoder.y_offset
+                    )
+                    f_center[:, :, 2] = f_center[:, :, 2] - (
+                        coors_tensor[:, 1].type_as(voxels_tensor).unsqueeze(1) * voxel_encoder.vz + voxel_encoder.z_offset
+                    )
+                features_ls.append(f_center)
+            
+            if hasattr(voxel_encoder, '_with_distance') and voxel_encoder._with_distance:
+                points_dist = torch.norm(voxels_tensor[:, :, :3], 2, 2, keepdim=True)
+                features_ls.append(points_dist)
+            
+            # Combine together feature decorations
+            input_features = torch.cat(features_ls, dim=-1)
+            
+            # Apply mask for empty pillars
+            from mmdet3d.models.voxel_encoders.utils import get_paddings_indicator
+            voxel_count = input_features.shape[1]
+            mask = get_paddings_indicator(num_points_tensor, voxel_count, axis=0)
+            mask = torch.unsqueeze(mask, -1).type_as(input_features)
+            input_features *= mask
         
         return input_features.cpu().numpy()
     
@@ -176,6 +226,34 @@ class CenterPointONNXHelper:
         # Return preprocessed data for backbone/neck/head ONNX
         return {"spatial_features": spatial_features}
     
+    def infer(self, input_data: Dict[str, Any]) -> Tuple[list, float]:
+        """
+        Run inference using CenterPoint ONNX models.
+        
+        Args:
+            input_data: Dictionary containing 'points' tensor
+            
+        Returns:
+            Tuple of (outputs, latency)
+        """
+        start_time = time.time()
+        
+        # Preprocess input data
+        preprocessed_data = self.preprocess_for_onnx(input_data)
+        
+        # Run backbone/neck/head ONNX inference
+        onnx_outputs = self.backbone_head_session.run(
+            None,  # Use all outputs
+            {"spatial_features": preprocessed_data["spatial_features"]}
+        )
+        
+        # Postprocess outputs
+        processed_outputs = self.postprocess_from_onnx(onnx_outputs)
+        
+        latency = time.time() - start_time
+        
+        return processed_outputs, latency
+    
     def postprocess_from_onnx(self, onnx_outputs: list) -> list:
         """
         Postprocess ONNX outputs to match PyTorch format.
@@ -186,9 +264,27 @@ class CenterPointONNXHelper:
         Returns:
             Processed outputs matching PyTorch format
         """
-        # For CenterPoint, ONNX outputs should already match PyTorch format
-        # This method can be extended for additional postprocessing if needed
-        return onnx_outputs
+        # ONNX outputs are in order: ['heatmap', 'reg', 'height', 'dim', 'rot', 'vel']
+        # PyTorch outputs are in order: ['reg', 'height', 'dim', 'rot', 'vel', 'heatmap']
+        # We need to reorder ONNX outputs to match PyTorch order
+        
+        if len(onnx_outputs) != 6:
+            logger.warning(f"Expected 6 ONNX outputs, got {len(onnx_outputs)}")
+            return onnx_outputs
+        
+        # Reorder ONNX outputs to match PyTorch order
+        # ONNX: [heatmap, reg, height, dim, rot, vel]
+        # PyTorch: [reg, height, dim, rot, vel, heatmap]
+        reordered_outputs = [
+            onnx_outputs[1],  # reg
+            onnx_outputs[2],  # height  
+            onnx_outputs[3],  # dim
+            onnx_outputs[4],  # rot
+            onnx_outputs[5],  # vel
+            onnx_outputs[0],  # heatmap
+        ]
+        
+        return reordered_outputs
 
 
 def is_centerpoint_onnx(onnx_path: str) -> bool:

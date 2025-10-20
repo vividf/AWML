@@ -8,7 +8,7 @@ Modify according to your needs.
 # Export settings
 export = dict(
     mode="onnx",  # 'onnx', 'trt', 'both', 'none'
-    verify=False,  # Enable cross-backend verification
+    verify=True,  # Enable cross-backend verification
     device="cuda:0",  # Device for export/inference (CPU for Docker testing)
     work_dir="work_dirs/yolox_opt_elan_deployment",
 )

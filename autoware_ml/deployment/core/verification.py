@@ -70,7 +70,13 @@ def verify_model_outputs(
         logger.info("Running PyTorch inference...")
         pytorch_output, pytorch_latency = pytorch_backend.infer(input_tensor)
         logger.info(f"  PyTorch latency: {pytorch_latency:.2f} ms")
-        logger.info(f"  PyTorch output: {pytorch_output}")
+        logger.info(f"  PyTorch output type: {type(pytorch_output)}")
+        if isinstance(pytorch_output, list):
+            logger.info(f"  PyTorch output: {len(pytorch_output)} outputs")
+            for i, out in enumerate(pytorch_output):
+                logger.info(f"  PyTorch output[{i}] shape: {out.shape}")
+        else:
+            logger.info(f"  PyTorch output: {pytorch_output}")
 
         # Verify ONNX - 使用統一的 ONNXBackend
         if onnx_path:
@@ -147,7 +153,7 @@ def verify_model_outputs(
 def _verify_backend(
     backend: BaseBackend,
     input_tensor: torch.Tensor,
-    reference_output: np.ndarray,
+    reference_output,  # Can be np.ndarray or list of np.ndarray
     tolerance: float,
     backend_name: str,
     logger: logging.Logger,
@@ -183,10 +189,15 @@ def _verify_backend(
             
             for ref_out, out in zip(reference_output, output):
                 if isinstance(ref_out, np.ndarray) and isinstance(out, np.ndarray):
+                    if ref_out.shape != out.shape:
+                        logger.error(f"Shape mismatch: ref {ref_out.shape} vs out {out.shape}")
+                        # Set max_diff to inf to fail verification
+                        max_diff = np.inf
+                        continue
                     diff = np.abs(ref_out - out)
-                    max_diff = max(max_diff, diff.max())
-                    mean_diff += diff.sum()
-                    total_elements += diff.size
+                    max_diff = max(max_diff, float(diff.max()))
+                    mean_diff += float(diff.sum())
+                    total_elements += int(diff.size)
             
             if total_elements > 0:
                 mean_diff /= total_elements

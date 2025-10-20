@@ -9,7 +9,7 @@ Modify according to your needs.
 export = dict(
     mode="both",  # 'onnx', 'trt', 'both', 'none'
     verify=True,  # Enable cross-backend verification
-    device="cpu",  # Device for export/inference
+    device="cuda:0",  # Device for export/inference
     work_dir="work_dirs/centerpoint_deployment",
 )
 
@@ -78,7 +78,7 @@ backend_config = dict(
     common_config=dict(
         # Precision policy for TensorRT
         # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
-        precision_policy="fp16",
+        precision_policy="auto",
         # TensorRT workspace size (bytes)
         max_workspace_size=2 << 30,  # 2 GB (3D models need more memory)
     ),
