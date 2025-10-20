@@ -18,7 +18,7 @@ class PyTorchBackend(BaseBackend):
     consistency with MMDetection's standard evaluation pipeline.
     """
 
-    def __init__(self, model: Union[torch.nn.Module, str], model_cfg: Optional[object] = None, device: str = "cpu", raw_output: bool = False, original_image_size: Optional[Tuple[int, int]] = None):
+    def __init__(self, model: Union[torch.nn.Module, str], model_cfg: Optional[object] = None, device: str = "cpu", raw_output: bool = False, original_image_size: Optional[Tuple[int, int]] = None, scale_factor_config: Optional[dict] = None):
         """
         Initialize PyTorch backend.
 
@@ -30,6 +30,8 @@ class PyTorchBackend(BaseBackend):
                        If False, return post-processed results (standard MMDetection)
             original_image_size: Original image size (height, width) for scale factor calculation
                                 Defaults to (1080, 1440) for T4 dataset
+            scale_factor_config: Configuration for scale factor calculation
+                                Default: {'keep_ratio': True, 'method': 'min'}
         """
         super().__init__(model_path="", device=device)
         self._torch_device = torch.device(device)
@@ -37,6 +39,10 @@ class PyTorchBackend(BaseBackend):
         self._logger = logging.getLogger(__name__)
         self.raw_output = raw_output
         self.original_image_size = original_image_size or (1080, 1440)  # Default to T4 dataset size
+        self.scale_factor_config = scale_factor_config or {
+            'keep_ratio': True,
+            'method': 'min'  # 'min', 'max', 'average'
+        }
 
         if isinstance(model, str):
             # Model path provided - load it
@@ -88,6 +94,57 @@ class PyTorchBackend(BaseBackend):
             return 'classifier'
         
         return 'unknown'
+
+    def _calculate_scale_factor(self, model_input_h: int, model_input_w: int, ori_h: int, ori_w: int) -> Tuple[float, float]:
+        """
+        Calculate scale factor based on configuration.
+        
+        Args:
+            model_input_h: Model input height
+            model_input_w: Model input width
+            ori_h: Original image height
+            ori_w: Original image width
+            
+        Returns:
+            Tuple of (scale_h, scale_w)
+        """
+        scale_w = model_input_w / ori_w
+        scale_h = model_input_h / ori_h
+        
+        if self.scale_factor_config['keep_ratio']:
+            method = self.scale_factor_config['method']
+            if method == 'min':
+                scale = min(scale_w, scale_h)
+            elif method == 'max':
+                scale = max(scale_w, scale_h)
+            elif method == 'average':
+                scale = (scale_w + scale_h) / 2
+            else:
+                self._logger.warning(f"Unknown scale method '{method}', using 'min'")
+                scale = min(scale_w, scale_h)
+            return (scale, scale)
+        else:
+            return (scale_h, scale_w)
+
+    def _create_base_data_sample(self, input_tensor: torch.Tensor, batch_idx: int):
+        """
+        Create base data sample with common metainfo.
+        
+        Args:
+            input_tensor: Input tensor
+            batch_idx: Batch index
+            
+        Returns:
+            Base data sample with common metainfo
+        """
+        from mmpretrain.structures import DataSample
+        
+        data_sample = DataSample()
+        data_sample.set_metainfo({
+            'img_shape': input_tensor.shape[2:],  # Model input size
+            'batch_idx': batch_idx
+        })
+        return data_sample
 
     def infer(self, input_tensor: torch.Tensor) -> Tuple[np.ndarray, float]:
         """
@@ -150,20 +207,15 @@ class PyTorchBackend(BaseBackend):
             # Use configured original image size
             ori_h, ori_w = self.original_image_size
             
-            # Calculate scale factors using the same logic as data_loader
-            # This matches MMDetection's Resize transform with keep_ratio=True
-            scale_w = model_input_w / ori_w
-            scale_h = model_input_h / ori_h
-            
-            # Use the smaller scale to maintain aspect ratio (same as data_loader)
-            scale = min(scale_w, scale_h)
+            # Calculate scale factors using configured method
+            scale_h, scale_w = self._calculate_scale_factor(model_input_h, model_input_w, ori_h, ori_w)
             
             for i in range(batch_size):
                 data_sample = DetDataSample()
                 data_sample.set_metainfo({
                     'img_shape': (model_input_h, model_input_w),  # Model input size
                     'ori_shape': (ori_h, ori_w),  # Original image size
-                    'scale_factor': (scale, scale),  # Use 2-element format like MMDetection
+                    'scale_factor': (scale_h, scale_w),  # Use calculated scale factors
                     'batch_input_shape': (model_input_h, model_input_w)
                 })
                 data_samples.append(data_sample)
@@ -171,14 +223,9 @@ class PyTorchBackend(BaseBackend):
             return data_samples
         else:
             # Classification model - use MMPretrain DataSample
-            from mmpretrain.structures import DataSample
-            
             data_samples = []
             for i in range(batch_size):
-                data_sample = DataSample()
-                data_sample.set_metainfo({
-                    'img_shape': input_tensor.shape[2:],  # Model input size
-                })
+                data_sample = self._create_base_data_sample(input_tensor, i)
                 data_samples.append(data_sample)
             
             return data_samples
