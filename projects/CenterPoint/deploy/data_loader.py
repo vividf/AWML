@@ -146,11 +146,16 @@ class CenterPointDataLoader(BaseDataLoader):
         if 'lidar_path' in lidar_points and not lidar_points['lidar_path'].startswith('/'):
             # Get data_root from model config
             data_root = getattr(self.model_cfg, 'data_root', 'data/t4dataset/')
-            lidar_points['lidar_path'] = data_root + lidar_points['lidar_path']
+            # Ensure data_root ends with '/'
+            if not data_root.endswith('/'):
+                data_root += '/'
+            # Check if the path already starts with data_root to avoid duplication
+            if not lidar_points['lidar_path'].startswith(data_root):
+                lidar_points['lidar_path'] = data_root + lidar_points['lidar_path']
 
         # Extract annotations (if available)
-        ann_info = info.get("ann_info", info.get("annos", {}))
-
+        instances = info.get("instances", [])
+        
         sample = {
             "lidar_points": lidar_points,
             "sample_idx": info.get("sample_idx", index),
@@ -158,12 +163,21 @@ class CenterPointDataLoader(BaseDataLoader):
         }
 
         # Add ground truth if available
-        if ann_info:
-            sample["ann_info"] = ann_info
-            if "gt_bboxes_3d" in ann_info:
-                sample["gt_bboxes_3d"] = ann_info["gt_bboxes_3d"]
-            if "gt_labels_3d" in ann_info:
-                sample["gt_labels_3d"] = ann_info["gt_labels_3d"]
+        if instances:
+            # Extract 3D bounding boxes and labels from instances
+            gt_bboxes_3d = []
+            gt_labels_3d = []
+            
+            for instance in instances:
+                if "bbox_3d" in instance and "bbox_label_3d" in instance:
+                    # Check if bbox is valid
+                    if instance.get("bbox_3d_isvalid", True):
+                        gt_bboxes_3d.append(instance["bbox_3d"])
+                        gt_labels_3d.append(instance["bbox_label_3d"])
+            
+            if gt_bboxes_3d:
+                sample["gt_bboxes_3d"] = np.array(gt_bboxes_3d, dtype=np.float32)
+                sample["gt_labels_3d"] = np.array(gt_labels_3d, dtype=np.int64)
 
         # Add camera info if available (for multi-modal models)
         if "images" in info or "img_path" in info:

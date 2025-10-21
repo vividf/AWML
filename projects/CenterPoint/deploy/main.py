@@ -64,7 +64,7 @@ def load_pytorch_model(
         rot_y_axis_reference: Whether to use y-axis rotation reference
 
     Returns:
-        Loaded model
+        Tuple of (loaded model, modified model config)
     """
     from mmdet3d.apis import init_model
     from mmengine.registry import MODELS
@@ -86,10 +86,13 @@ def load_pytorch_model(
         model_config.device = device
 
         # Update voxel encoder
+        logger.info(f"Original voxel encoder type: {model_config.pts_voxel_encoder.type}")
         if model_config.pts_voxel_encoder.type == "PillarFeatureNet":
             model_config.pts_voxel_encoder.type = "PillarFeatureNetONNX"
+            logger.info(f"Updated voxel encoder type to: {model_config.pts_voxel_encoder.type}")
         elif model_config.pts_voxel_encoder.type == "BackwardPillarFeatureNet":
             model_config.pts_voxel_encoder.type = "BackwardPillarFeatureNetONNX"
+            logger.info(f"Updated voxel encoder type to: {model_config.pts_voxel_encoder.type}")
 
         # Update bbox head
         model_config.pts_bbox_head.type = "CenterHeadONNX"
@@ -111,7 +114,17 @@ def load_pytorch_model(
 
     model.eval()
 
-    return model
+    # Create a new config with the modified model config
+    modified_cfg = model_cfg.copy()
+    # Deep copy the model config to ensure all nested objects are copied
+    import copy
+    modified_cfg.model = copy.deepcopy(model_config)
+    
+    # Debug: Verify the modified config
+    print(f"Modified config model type: {modified_cfg.model.type}")
+    print(f"Modified config voxel encoder type: {modified_cfg.model.pts_voxel_encoder.type}")
+
+    return model, modified_cfg
 
 
 def export_onnx(
@@ -259,11 +272,28 @@ def get_models_to_evaluate(eval_config: dict, logger: logging.Logger) -> list:
     for backend_key, model_path in models_config.items():
         backend_name = backend_mapping.get(backend_key.lower())
         if backend_name and model_path:
-            if os.path.exists(model_path):
+            # Check if path exists and is valid for the backend
+            is_valid = False
+            
+            if backend_name == "pytorch":
+                # PyTorch: check if checkpoint file exists
+                is_valid = os.path.exists(model_path) and os.path.isfile(model_path)
+            elif backend_name == "onnx":
+                # ONNX: check if directory exists and contains ONNX files
+                if os.path.exists(model_path) and os.path.isdir(model_path):
+                    onnx_files = [f for f in os.listdir(model_path) if f.endswith('.onnx')]
+                    is_valid = len(onnx_files) > 0
+            elif backend_name == "tensorrt":
+                # TensorRT: check if directory exists and contains engine files
+                if os.path.exists(model_path) and os.path.isdir(model_path):
+                    engine_files = [f for f in os.listdir(model_path) if f.endswith('.engine')]
+                    is_valid = len(engine_files) > 0
+            
+            if is_valid:
                 models_to_evaluate.append((backend_name, model_path))
                 logger.info(f"  - {backend_name}: {model_path}")
             else:
-                logger.warning(f"  - {backend_name}: {model_path} (not found, skipping)")
+                logger.warning(f"  - {backend_name}: {model_path} (not found or invalid, skipping)")
 
     return models_to_evaluate
 
@@ -292,6 +322,10 @@ def run_evaluation(
         logger.warning("No models found for evaluation")
         return
 
+    # Debug: Check the model config passed to evaluator
+    logger.info(f"Evaluator model type: {model_cfg.model.type}")
+    logger.info(f"Evaluator voxel encoder type: {model_cfg.model.pts_voxel_encoder.type}")
+    
     evaluator = CenterPointEvaluator(model_cfg)
 
     num_samples = eval_config.get("num_samples", 50)
@@ -323,8 +357,12 @@ def run_evaluation(
 
         for backend, results in all_results.items():
             logger.info(f"\n{backend.upper()}:")
-            logger.info(f"  Total Predictions: {results['total_predictions']}")
-            logger.info(f"  Latency: {results['latency']['mean_ms']:.2f} ± {results['latency']['std_ms']:.2f} ms")
+            if results:  # Check if results is not empty
+                logger.info(f"  Total Predictions: {results.get('total_predictions', 0)}")
+                if 'latency' in results:
+                    logger.info(f"  Latency: {results['latency']['mean_ms']:.2f} ± {results['latency']['std_ms']:.2f} ms")
+            else:
+                logger.info("  No results available")
 
 
 def main():
@@ -367,10 +405,11 @@ def main():
 
     # Load PyTorch model if needed for export
     pytorch_model = None
+    onnx_compatible_model_cfg = model_cfg  # Keep original config for evaluation
     if config.export_config.mode != "none":
         if args.checkpoint:
             logger.info("\nLoading PyTorch model...")
-            pytorch_model = load_pytorch_model(
+            pytorch_model, onnx_compatible_model_cfg = load_pytorch_model(
                 model_cfg,
                 args.checkpoint,
                 config.export_config.device,
@@ -430,7 +469,7 @@ def main():
             logger.info(f"  {backend}: {status}")
 
     # Evaluation
-    run_evaluation(data_loader, config, model_cfg, logger)
+    run_evaluation(data_loader, config, onnx_compatible_model_cfg, logger)
 
     logger.info("\n" + "=" * 80)
     logger.info("Deployment Complete!")

@@ -7,7 +7,7 @@ Modify according to your needs.
 
 # Export settings
 export = dict(
-    mode="both",  # 'onnx', 'trt', 'both', 'none'
+    mode="none",  # 'onnx', 'trt', 'both', 'none'
     verify=True,  # Enable cross-backend verification
     device="cuda:0",  # Device for export/inference
     work_dir="work_dirs/centerpoint_deployment",
@@ -16,7 +16,7 @@ export = dict(
 # Runtime I/O settings
 runtime_io = dict(
     # Path to info.pkl file
-    info_file="data/t4dataset/info/t4dataset_x2_infos_val.pkl",
+    info_file="data/t4dataset/info/t4dataset_j6gen2_infos_val.pkl",
     # Sample index for export (use first sample)
     sample_idx=0,
     # Optional: path to existing ONNX file (for eval-only mode)
@@ -90,13 +90,13 @@ backend_config = dict(
 # Evaluation configuration
 evaluation = dict(
     enabled=True,  # Enable evaluation
-    num_samples=50,  # Number of samples to evaluate (3D is slower)
-    verbose=False,  # Detailed per-sample output
+    num_samples=10,  # Number of samples to evaluate (3D is slower)
+    verbose=True,  # Detailed per-sample output for debugging
     # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)
     models=dict(
-        # pytorch="work_dirs/centerpoint_deployment/checkpoint.pth",  # Optional: PyTorch checkpoint
-        # onnx="work_dirs/centerpoint_deployment",  # Path to ONNX model directory
-        # tensorrt="work_dirs/centerpoint_deployment",  # Path to TensorRT engine directory
+        pytorch="work_dirs/centerpoint/best_checkpoint.pth",  # PyTorch checkpoint
+        onnx="work_dirs/centerpoint_deployment",  # Path to ONNX model directory
+        tensorrt="work_dirs/centerpoint_deployment/tensorrt",  # Path to TensorRT engine directory
     ),
 )
 

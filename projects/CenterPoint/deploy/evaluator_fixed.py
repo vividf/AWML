@@ -90,14 +90,6 @@ class CenterPointEvaluator(BaseEvaluator):
         if inference_backend is None:
             logger.error(f"Failed to create {backend} backend")
             return {}
-        
-        # Load model (only for non-PyTorch backends)
-        if backend != "pytorch":
-            try:
-                inference_backend.load_model()
-            except Exception as e:
-                logger.error(f"Failed to load {backend} model: {e}")
-                return {}
 
         # Run evaluation
         predictions_list = []
@@ -110,7 +102,7 @@ class CenterPointEvaluator(BaseEvaluator):
                     logger.info(f"Processing sample {i+1}/{num_samples}")
 
                 # Get sample data
-                sample = data_loader.load_sample(i)
+                sample = data_loader.get_sample(i)
                 input_data = data_loader.preprocess(sample)
 
                 # Run inference
@@ -151,10 +143,7 @@ class CenterPointEvaluator(BaseEvaluator):
         """Create backend instance."""
         try:
             if backend == "pytorch":
-                # For 3D detection, we need to load the model directly
-                from mmdet3d.apis import init_model
-                model = init_model(self.model_cfg, model_path, device=device)
-                return model
+                return PyTorchBackend(model_path, device=device)
             elif backend == "onnx":
                 return ONNXBackend(model_path, device=device)
             elif backend == "tensorrt":
@@ -166,7 +155,7 @@ class CenterPointEvaluator(BaseEvaluator):
             logger.error(f"Failed to create {backend} backend: {e}")
             return None
 
-    def _run_pytorch_inference(self, model, input_data: Dict, sample: Dict) -> tuple:
+    def _run_pytorch_inference(self, backend, input_data: Dict, sample: Dict) -> tuple:
         """Run PyTorch inference with proper data format."""
         from mmengine.dataset import pseudo_collate
         from mmdet3d.structures import Det3DDataSample
@@ -210,7 +199,7 @@ class CenterPointEvaluator(BaseEvaluator):
             }])
             
             # Run test_step
-            outputs = model.test_step(batch_data)
+            outputs = backend.model.test_step(batch_data)
         
         if end_time:
             end_time.record()
@@ -279,32 +268,7 @@ class CenterPointEvaluator(BaseEvaluator):
                     
                     print(f"DEBUG: Parsed {len(predictions)} predictions from Det3DDataSample")
                     
-            # Check if it's TensorRT format (List[Dict[str, torch.Tensor]])
-            elif isinstance(output[0], dict) and len(output) == 6:
-                print("INFO:projects.CenterPoint.deploy.evaluator:TensorRT format detected, parsing CenterPoint predictions...")
-                # TensorRT format: List[Dict[str, torch.Tensor]] with 6 head outputs
-                # Expected keys: heatmap, reg, height, dim, rot, vel
-                head_outputs = {}
-                for item in output:
-                    for key, value in item.items():
-                        head_outputs[key] = value
-                
-                print(f"DEBUG: TensorRT head outputs keys: {list(head_outputs.keys())}")
-                for key, value in head_outputs.items():
-                    print(f"DEBUG: TensorRT {key} shape: {value.shape}")
-                
-                # Parse CenterPoint head outputs
-                predictions = self._parse_centerpoint_head_outputs(
-                    head_outputs.get('heatmap', torch.zeros(1, 5, 200, 200)),
-                    head_outputs.get('reg', torch.zeros(1, 2, 200, 200)),
-                    head_outputs.get('height', torch.zeros(1, 1, 200, 200)),
-                    head_outputs.get('dim', torch.zeros(1, 3, 200, 200)),
-                    head_outputs.get('rot', torch.zeros(1, 2, 200, 200)),
-                    head_outputs.get('vel', torch.zeros(1, 2, 200, 200)),
-                    sample
-                )
-                    
-            # Check if it's raw head outputs format (ONNX)
+            # Check if it's raw head outputs format (ONNX/TensorRT)
             elif isinstance(output[0], (list, tuple)) and len(output[0]) == 6:
                 print("INFO:projects.CenterPoint.deploy.evaluator:Raw head outputs detected, parsing CenterPoint predictions...")
                 # Raw head outputs: [heatmap, reg, height, dim, rot, vel]
@@ -361,47 +325,13 @@ class CenterPointEvaluator(BaseEvaluator):
                 # Find peaks in heatmap
                 heatmap_class = heatmap[b, c]
                 
-                # Debug heatmap values
-                print(f"DEBUG: Class {c} heatmap - min: {heatmap_class.min():.6f}, max: {heatmap_class.max():.6f}, mean: {heatmap_class.mean():.6f}")
-                
-                # Apply sigmoid to convert logits to probabilities
-                import torch
-                heatmap_class_tensor = torch.from_numpy(heatmap_class)
-                heatmap_class_prob = torch.sigmoid(heatmap_class_tensor).numpy()
-                
-                print(f"DEBUG: Class {c} heatmap after sigmoid - min: {heatmap_class_prob.min():.6f}, max: {heatmap_class_prob.max():.6f}, mean: {heatmap_class_prob.mean():.6f}")
-                
-                # Use a very low threshold to catch any detections
-                threshold = 0.0001  # Very low threshold to catch any detections
-                peaks = np.where(heatmap_class_prob > threshold)
-                
-                print(f"DEBUG: Class {c} - peaks found: {len(peaks[0])} with threshold {threshold}")
-                
-                # If no peaks found, try even lower threshold
-                if len(peaks[0]) == 0:
-                    threshold = 0.00001  # Even lower threshold
-                    peaks = np.where(heatmap_class_prob > threshold)
-                    print(f"DEBUG: Class {c} - peaks found with lower threshold: {len(peaks[0])}")
-                
-                # If still no peaks, try top-k approach
-                if len(peaks[0]) == 0:
-                    # Get top 10 highest values
-                    flat_heatmap = heatmap_class_prob.flatten()
-                    top_indices = np.argsort(flat_heatmap)[-10:]  # Top 10
-                    top_values = flat_heatmap[top_indices]
-                    print(f"DEBUG: Class {c} - top 10 values: {top_values}")
-                    
-                    # Use top 5 as detections
-                    if len(top_indices) > 0:
-                        # Convert flat indices back to 2D coordinates
-                        y_indices = top_indices // heatmap_class_prob.shape[1]
-                        x_indices = top_indices % heatmap_class_prob.shape[1]
-                        peaks = (y_indices, x_indices)
-                        print(f"DEBUG: Class {c} - using top-k approach, peaks: {len(peaks[0])}")
+                # Simple threshold-based detection
+                threshold = 0.1
+                peaks = np.where(heatmap_class > threshold)
                 
                 for i in range(len(peaks[0])):
                     y_idx, x_idx = peaks[0][i], peaks[1][i]
-                    score = heatmap_class_prob[y_idx, x_idx]  # Use probability score
+                    score = heatmap_class[y_idx, x_idx]
                     
                     # Convert grid coordinates to 3D coordinates
                     x = x_idx * voxel_size[0] + point_cloud_range[0]
@@ -576,9 +506,6 @@ class CenterPointEvaluator(BaseEvaluator):
             for sample_idx, (predictions, ground_truths) in enumerate(zip(predictions_list, ground_truths_list)):
                 img_id = f"sample_{sample_idx}"
                 
-                # Debug: Check if we have predictions and ground truths for this sample
-                print(f"DEBUG: Processing sample {sample_idx} - predictions: {len(predictions)}, ground truths: {len(ground_truths)}")
-                
                 # Group predictions by class
                 for pred in predictions:
                     class_name = class_names[pred['label']]
@@ -613,22 +540,6 @@ class CenterPointEvaluator(BaseEvaluator):
                 pred_count = sum(len(pred_by_class[class_name][img_id]) for img_id in pred_by_class[class_name])
                 gt_count = sum(len(gt_by_class[class_name][img_id]) for img_id in gt_by_class[class_name])
                 print(f"DEBUG: {class_name} - pred count: {pred_count}, gt count: {gt_count}")
-            
-            # Ensure all classes have all sample IDs
-            all_sample_ids = set()
-            for class_name in class_names:
-                all_sample_ids.update(pred_by_class[class_name].keys())
-                all_sample_ids.update(gt_by_class[class_name].keys())
-            
-            print(f"DEBUG: All sample IDs: {sorted(all_sample_ids)}")
-            
-            # Add empty entries for missing sample IDs
-            for class_name in class_names:
-                for sample_id in all_sample_ids:
-                    if sample_id not in pred_by_class[class_name]:
-                        pred_by_class[class_name][sample_id] = []
-                    if sample_id not in gt_by_class[class_name]:
-                        gt_by_class[class_name][sample_id] = []
             
             # Compute 3D mAP metrics using eval_map_recall
             map_results = eval_map_recall(

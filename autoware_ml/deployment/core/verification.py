@@ -216,9 +216,17 @@ def _verify_backend(
 
         logger.info(f"  {backend_name} latency: {latency:.2f} ms")
         logger.info(f"  {backend_name} output type: {type(output)}")
-        logger.info(f"  {backend_name} output length: {len(output)}")
+        if output is not None:
+            logger.info(f"  {backend_name} output length: {len(output)}")
+        else:
+            logger.info(f"  {backend_name} output: None")
 
         # Compare outputs
+        # Handle None outputs
+        if output is None or reference_output is None:
+            logger.error(f"  {backend_name} verification FAILED: None output detected")
+            return False, None, 0.0
+        
         # Handle different output formats
         if isinstance(output, list) and isinstance(reference_output, list):
             # Both are lists (e.g., CenterPoint head outputs)
@@ -268,6 +276,10 @@ def _compute_max_difference(output1, output2) -> float:
     Returns:
         Maximum absolute difference
     """
+    # Handle None outputs
+    if output1 is None or output2 is None:
+        return float('inf')
+    
     # Handle different output formats
     if isinstance(output1, list) and isinstance(output2, list):
         # Both are lists (e.g., CenterPoint head outputs)
@@ -295,6 +307,10 @@ def _compute_mean_difference(output1, output2) -> float:
     Returns:
         Mean absolute difference
     """
+    # Handle None outputs
+    if output1 is None or output2 is None:
+        return float('inf')
+    
     # Handle different output formats
     if isinstance(output1, list) and isinstance(output2, list):
         # Both are lists (e.g., CenterPoint head outputs)
