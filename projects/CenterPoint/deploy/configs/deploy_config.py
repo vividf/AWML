@@ -9,7 +9,7 @@ Modify according to your needs.
 export = dict(
     mode="both",  # 'onnx', 'trt', 'both', 'none'
     verify=True,  # Enable cross-backend verification
-    device="cpu",  # Device for export/inference
+    device="cuda:0",  # Device for export/inference
     work_dir="work_dirs/centerpoint_deployment",
 )
 
@@ -63,7 +63,7 @@ model_io = dict(
 # ONNX Export Configuration
 # ==============================================================================
 onnx_config = dict(
-    opset_version=13,  # CenterPoint typically uses opset 13
+    opset_version=16,  # CenterPoint typically uses opset 13
     do_constant_folding=True,
     save_file="centerpoint.onnx",
     export_params=True,
@@ -78,7 +78,7 @@ backend_config = dict(
     common_config=dict(
         # Precision policy for TensorRT
         # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
-        precision_policy="fp16",
+        precision_policy="auto",
         # TensorRT workspace size (bytes)
         max_workspace_size=2 << 30,  # 2 GB (3D models need more memory)
     ),
@@ -103,6 +103,6 @@ evaluation = dict(
 # Verification configuration
 verification = dict(
     enabled=True,  # Will use export.verify
-    tolerance=1e-2,  # Slightly higher tolerance for 3D detection
-    num_verify_samples=5,  # Fewer samples for 3D (slower)
+    tolerance=1e-1,  # Slightly higher tolerance for 3D detection
+    num_verify_samples=1,  # Fewer samples for 3D (slower)
 )

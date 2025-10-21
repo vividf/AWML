@@ -70,7 +70,9 @@ def verify_model_outputs(
         logger.info("Running PyTorch inference...")
         pytorch_output, pytorch_latency = pytorch_backend.infer(input_tensor)
         logger.info(f"  PyTorch latency: {pytorch_latency:.2f} ms")
-        logger.info(f"  PyTorch output: {pytorch_output}")
+        # logger.info(f"  PyTorch output: {pytorch_output}")
+        logger.info(f"  PyTorch output type: {type(pytorch_output)}")
+        logger.info(f"  PyTorch output length: {len(pytorch_output)}")
 
         # Verify ONNX - 使用統一的 ONNXBackend
         if onnx_path:
@@ -91,6 +93,10 @@ def verify_model_outputs(
                 "ONNX",
                 logger,
             )
+
+            # Compute differences for device consistency analysis
+            max_diff = _compute_max_difference(pytorch_output, onnx_output)
+            mean_diff = _compute_mean_difference(pytorch_output, onnx_output)
 
             # If ONNX backend fell back to CPU, update PyTorch backend, recompute reference, and re-compare
             if hasattr(onnx_backend, '_session') and onnx_backend.device == "cpu" and device.startswith("cuda"):
@@ -117,6 +123,18 @@ def verify_model_outputs(
                     logger.warning(
                         f"  ONNX verification FAILED ✗ (after CPU fallback) (max diff: {max_diff:.6f} > tolerance: {tolerance:.6f})"
                     )
+            else:
+                # Check if there's a device mismatch that wasn't caught
+                pytorch_device = pytorch_backend.device
+                onnx_device = onnx_backend.device
+                logger.info(f"Device consistency check: PyTorch={pytorch_device}, ONNX={onnx_device}")
+                
+                # If PyTorch is on CUDA but ONNX reports CUDA but has large differences, 
+                # there might be a hidden device mismatch
+                if pytorch_device.startswith("cuda") and onnx_device == "cuda" and max_diff > tolerance * 10:
+                    logger.warning(f"Large numerical difference ({max_diff:.6f}) detected despite both backends reporting CUDA")
+                    logger.warning("This may indicate a hidden device mismatch or ONNX Runtime CUDA issues")
+                    logger.warning("Consider forcing CPU mode for more consistent results")
 
             results[f"{sample_name}_onnx"] = onnx_success
 
@@ -171,7 +189,8 @@ def _verify_backend(
             output, latency = backend.infer(input_tensor)
 
         logger.info(f"  {backend_name} latency: {latency:.2f} ms")
-        logger.info(f"  {backend_name} output: {output}")
+        logger.info(f"  {backend_name} output type: {type(output)}")
+        logger.info(f"  {backend_name} output length: {len(output)}")
 
         # Compare outputs
         # Handle different output formats

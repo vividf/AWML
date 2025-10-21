@@ -9,6 +9,8 @@ import torch
 
 from .base_backend import BaseBackend
 
+logger = logging.getLogger(__name__)
+
 
 class PyTorchBackend(BaseBackend):
     """
@@ -68,6 +70,15 @@ class PyTorchBackend(BaseBackend):
 
         if self.model_cfg is None:
             raise RuntimeError("Model config required when loading from checkpoint")
+
+        # Set numerical consistency for reproducible results
+        torch.set_grad_enabled(False)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        
+        # Disable TF32 for numerical consistency with ONNX Runtime
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
 
         # Load model using MMDet API
         from mmdet.apis import init_detector
@@ -316,8 +327,24 @@ class PyTorchBackend(BaseBackend):
                     # Get raw head outputs
                     head_outputs = self._model.pts_bbox_head(neck_features)
                     
-                    # Return raw head outputs as list of tensors
-                    return [output.cpu().numpy() for output in head_outputs[0]]
+                    # For CenterPoint ONNX compatibility, return individual outputs as list
+                    # This matches the ONNX head output format (heatmap, reg, height, dim, rot, vel)
+                    logger.info(f"Checking head type: {type(self._model.pts_bbox_head)}")
+                    logger.info(f"Has output_names: {hasattr(self._model.pts_bbox_head, 'output_names')}")
+                    if hasattr(self._model.pts_bbox_head, 'output_names'):
+                        logger.info(f"Output names: {self._model.pts_bbox_head.output_names}")
+                        # ONNX version - return individual outputs as list
+                        return [output.cpu().numpy() for output in head_outputs[0]]
+                    else:
+                        logger.info("Using standard version - converting dict to list format")
+                        # Standard version - convert dict to list format to match ONNX
+                        # head_outputs is Tuple[List[Dict[str, Tensor]]]
+                        # We need to extract individual tensors in the same order as ONNX
+                        task_output = head_outputs[0][0]  # Get first task output dict
+                        logger.info(f"Task output keys: {list(task_output.keys())}")
+                        # Extract tensors in ONNX order: heatmap, reg, height, dim, rot, vel
+                        output_order = ['heatmap', 'reg', 'height', 'dim', 'rot', 'vel']
+                        return [task_output[key].cpu().numpy() for key in output_order if key in task_output]
                 elif 'points' in input_tensor:
                     # Handle points input - use data_preprocessor to voxelize
                     points = input_tensor['points']
@@ -372,8 +399,21 @@ class PyTorchBackend(BaseBackend):
                             # Get raw head outputs
                             head_outputs = self._model.pts_bbox_head(neck_features)
                             
-                            # Return raw head outputs as list of tensors
-                            return [output.cpu().numpy() for output in head_outputs[0]]
+                            # TODO(vividf): can we clean this up?
+                            # For CenterPoint ONNX compatibility, return individual outputs as list
+                            # This matches the ONNX head output format (heatmap, reg, height, dim, rot, vel)
+                            if hasattr(self._model.pts_bbox_head, 'output_names'):
+                                # ONNX version - return individual outputs as list
+                                # head_outputs is a tuple of 6 tensors (heatmap, reg, height, dim, rot, vel)
+                                return [output.cpu().numpy() for output in head_outputs]
+                            else:
+                                # Standard version - convert dict to list format to match ONNX
+                                # head_outputs is Tuple[List[Dict[str, Tensor]]]
+                                # We need to extract individual tensors in the same order as ONNX
+                                task_output = head_outputs[0][0]  # Get first task output dict
+                                # Extract tensors in ONNX order: heatmap, reg, height, dim, rot, vel
+                                output_order = ['heatmap', 'reg', 'height', 'dim', 'rot', 'vel']
+                                return [task_output[key].cpu().numpy() for key in output_order if key in task_output]
                     
                     # Fallback: return points as is
                     return [points.cpu().numpy()]

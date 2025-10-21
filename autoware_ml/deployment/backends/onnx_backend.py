@@ -96,7 +96,12 @@ class ONNXBackend(BaseBackend):
         # For CenterPoint, we use the backbone/neck/head session as the main session
         self._session = self.centerpoint_helper.backbone_head_session
         self._model = self._session  # For is_loaded check
+        
+        # Update device based on actual ONNX execution providers
+        self.device = self.centerpoint_helper.actual_device
+        
         self._logger.info(f"CenterPoint ONNX model loaded successfully: {self.model_path}")
+        self._logger.info(f"Actual execution device: {self.device}")
 
     def infer(self, input_tensor) -> Tuple[np.ndarray, float]:
         """

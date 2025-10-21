@@ -49,27 +49,67 @@ class CenterPointONNXHelper:
     def _init_sessions(self):
         """Initialize ONNX Runtime sessions."""
         try:
+            # Create session options with disabled graph optimization for numerical consistency
+            so = ort.SessionOptions()
+            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+            so.log_severity_level = 1  # Enable detailed logging to debug memcpy issues
+            
             # Set execution providers
-            if self.device == "cuda":
+            if self.device.startswith("cuda"):
+                # # CUDA provider settings for numerical consistency and performance
+                # cuda_provider_options = {
+                #     "device_id": 0,
+                #     "arena_extend_strategy": "kNextPowerOfTwo",
+                #     "cudnn_conv_algo_search": "HEURISTIC",  # Fixed algorithm search
+                #     "do_copy_in_default_stream": True,
+                #     "enable_cuda_graph": False,  # Disable CUDA Graph due to partitioning issues
+                #     "cudnn_conv1d_pad_to_nc1d": True,  # Optimize conv1d padding
+                #     "cudnn_conv_use_max_workspace": True,  # Use max workspace for better performance
+                #     # Note: enable_cuda_graph_capture is not supported in this ONNX Runtime version
+                #     # Note: enable_tf32 is not supported in this ONNX Runtime version
+                #     # Note: user_compute_stream is not supported in this ONNX Runtime version
+                # }
+                # providers = [
+                #     ("CUDAExecutionProvider", cuda_provider_options),
+                #     "CPUExecutionProvider"
+                # ]
+                # logger.info("Attempting to use CUDA acceleration (will fallback to CPU if needed)...")
                 providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
             else:
                 providers = ["CPUExecutionProvider"]
+                logger.info("Using CPU for ONNX inference")
             
             # Initialize voxel encoder session
             self.voxel_encoder_session = ort.InferenceSession(
                 self.voxel_encoder_path, 
+                sess_options=so,
                 providers=providers
             )
             
             # Initialize backbone head session
             self.backbone_head_session = ort.InferenceSession(
                 self.backbone_head_path, 
+                sess_options=so,
                 providers=providers
             )
             
-            logger.info(f"CenterPoint ONNX sessions initialized on {self.device}")
+            # Check which providers are actually being used
+            voxel_providers = self.voxel_encoder_session.get_providers()
+            backbone_providers = self.backbone_head_session.get_providers()
+            
+            # logger.info(f"CenterPoint ONNX sessions initialized")
+            # logger.info(f"Voxel encoder providers: {voxel_providers}")
+            # logger.info(f"Backbone head providers: {backbone_providers}")
             logger.info(f"Voxel encoder: {self.voxel_encoder_path}")
             logger.info(f"Backbone head: {self.backbone_head_path}")
+            
+            # Update device based on actual providers used
+            if "CUDAExecutionProvider" in voxel_providers and "CUDAExecutionProvider" in backbone_providers:
+                self.actual_device = "cuda"
+                logger.info("Successfully using CUDA execution providers")
+            else:
+                self.actual_device = "cpu"
+                logger.warning("Fell back to CPU execution providers")
             
         except Exception as e:
             logger.error(f"Failed to initialize ONNX sessions: {e}")
@@ -80,8 +120,10 @@ class CenterPointONNXHelper:
         if self.pytorch_model is None:
             raise ValueError("PyTorch model is required for voxelization")
         
-        # Convert to torch tensor
+        # Convert to torch tensor and move to the same device as the model
         points_tensor = torch.from_numpy(points).float()
+        if hasattr(self.pytorch_model, '_torch_device'):
+            points_tensor = points_tensor.to(self.pytorch_model._torch_device)
         
         # Use PyTorch model's data_preprocessor for voxelization
         from mmdet3d.structures import Det3DDataSample
@@ -93,7 +135,7 @@ class CenterPointONNXHelper:
         
         voxel_dict = batch_inputs['inputs']['voxels']
         
-        # Convert to numpy
+        # Convert to numpy - keep on same device as PyTorch model for consistency
         voxels = voxel_dict['voxels'].cpu().numpy()
         num_points = voxel_dict['num_points'].cpu().numpy()
         coors = voxel_dict['coors'].cpu().numpy()
