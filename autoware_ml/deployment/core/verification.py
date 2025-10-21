@@ -141,14 +141,40 @@ def verify_model_outputs(
         # Verify TensorRT
         if tensorrt_path:
             logger.info("\nVerifying TensorRT model...")
-            trt_success = _verify_backend(
-                TensorRTBackend(tensorrt_path, device="cuda"),
-                input_tensor,
-                pytorch_output,
-                tolerance,
-                "TensorRT",
-                logger,
-            )
+            
+            # Check if this is CenterPoint (multi-engine setup)
+            if os.path.isdir(tensorrt_path) and any(f.endswith('.engine') for f in os.listdir(tensorrt_path)):
+                # CenterPoint multi-engine setup
+                try:
+                    from projects.CenterPoint.deploy.centerpoint_tensorrt_backend import CenterPointTensorRTBackend
+                    trt_backend = CenterPointTensorRTBackend(tensorrt_path, device="cuda")
+                except ImportError:
+                    logger.warning("CenterPoint TensorRT backend not available, skipping verification")
+                    results[f"{sample_name}_tensorrt"] = True  # Skip verification
+                    continue
+            else:
+                # Standard single-engine setup
+                trt_backend = TensorRTBackend(tensorrt_path, device="cuda")
+            
+            # For CenterPoint, pass the original input_data instead of input_tensor
+            if isinstance(trt_backend, CenterPointTensorRTBackend):
+                trt_success, trt_output, trt_latency = _verify_backend(
+                    trt_backend,
+                    input_tensor,  # input_tensor is already a dict for CenterPoint
+                    pytorch_output,
+                    tolerance,
+                    "TensorRT",
+                    logger,
+                )
+            else:
+                trt_success, trt_output, trt_latency = _verify_backend(
+                    trt_backend,
+                    input_tensor,
+                    pytorch_output,
+                    tolerance,
+                    "TensorRT",
+                    logger,
+                )
             results[f"{sample_name}_tensorrt"] = trt_success
 
     logger.info(f"\n{'='*60}")

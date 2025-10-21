@@ -155,10 +155,11 @@ def export_onnx(
 
 def export_tensorrt(onnx_dir: str, config: BaseDeploymentConfig, logger: logging.Logger) -> str:
     """
-    Export ONNX model to TensorRT.
+    Export ONNX models to TensorRT engines.
 
-    Note: For CenterPoint with multiple ONNX files, this would need to handle
-    each component separately.
+    CenterPoint generates two ONNX files:
+    1. pts_voxel_encoder.onnx - voxel feature extraction
+    2. pts_backbone_neck_head.onnx - backbone, neck, and head processing
 
     Returns:
         Path to exported TensorRT engine directory
@@ -167,12 +168,72 @@ def export_tensorrt(onnx_dir: str, config: BaseDeploymentConfig, logger: logging
     logger.info("Exporting to TensorRT")
     logger.info("=" * 80)
 
-    logger.warning("TensorRT export for CenterPoint requires handling multiple ONNX files")
-    logger.warning("This is a placeholder - implement multi-file TensorRT build if needed")
+    # Create TensorRT output directory
+    trt_dir = os.path.join(onnx_dir, "tensorrt")
+    os.makedirs(trt_dir, exist_ok=True)
 
-    # TODO: Implement TensorRT export for multi-file ONNX models
+    # Import TensorRT exporter
+    from autoware_ml.deployment.exporters.tensorrt_exporter import TensorRTExporter
 
-    return None
+    # Get TensorRT configuration
+    trt_config = config.backend_config.common_config.copy()
+    
+    # Define the ONNX files to convert
+    onnx_files = [
+        ("pts_voxel_encoder.onnx", "pts_voxel_encoder.engine"),
+        ("pts_backbone_neck_head.onnx", "pts_backbone_neck_head.engine")
+    ]
+
+    success_count = 0
+    total_count = len(onnx_files)
+
+    for onnx_file, trt_file in onnx_files:
+        onnx_path = os.path.join(onnx_dir, onnx_file)
+        trt_path = os.path.join(trt_dir, trt_file)
+
+        if not os.path.exists(onnx_path):
+            logger.warning(f"ONNX file not found: {onnx_path}")
+            continue
+
+        logger.info(f"Converting {onnx_file} to TensorRT...")
+        
+        # Create TensorRT exporter
+        exporter = TensorRTExporter(trt_config, logger)
+        
+        # Create dummy sample input for shape configuration
+        # For CenterPoint, we need different sample inputs for each component
+        if "voxel_encoder" in onnx_file:
+            # Voxel encoder input: (num_voxels, num_max_points, point_dim)
+            # Use realistic voxel counts for T4Dataset - actual shape is (num_voxels, 32, 11)
+            sample_input = torch.randn(10000, 32, 11, device=config.export_config.device)
+        else:
+            # Backbone/neck/head input: (batch_size, channels, height, width)
+            # Use realistic spatial feature dimensions - actual shape is (batch_size, 32, H, W)
+            sample_input = torch.randn(1, 32, 200, 200, device=config.export_config.device)
+
+        # Export to TensorRT
+        success = exporter.export(
+            model=None,  # Not used for TensorRT
+            sample_input=sample_input,
+            output_path=trt_path,
+            onnx_path=onnx_path
+        )
+
+        if success:
+            logger.info(f"✅ TensorRT engine saved: {trt_path}")
+            success_count += 1
+        else:
+            logger.error(f"❌ Failed to convert {onnx_file} to TensorRT")
+
+    if success_count == total_count:
+        logger.info(f"✅ All TensorRT engines exported successfully to: {trt_dir}")
+        return trt_dir
+    elif success_count > 0:
+        logger.warning(f"⚠️  Partial success: {success_count}/{total_count} engines exported")
+        return trt_dir
+    else:
+        logger.error("❌ All TensorRT exports failed")
+        return None
 
 
 def get_models_to_evaluate(eval_config: dict, logger: logging.Logger) -> list:

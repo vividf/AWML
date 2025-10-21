@@ -15,6 +15,7 @@ from autoware_ml.deployment.backends import ONNXBackend, PyTorchBackend, TensorR
 from autoware_ml.deployment.core import BaseEvaluator
 
 from .data_loader import CenterPointDataLoader
+from .centerpoint_tensorrt_backend import CenterPointTensorRTBackend
 
 # Constants
 LOG_INTERVAL = 50
@@ -129,7 +130,7 @@ class CenterPointEvaluator(BaseEvaluator):
         elif backend == "onnx":
             return ONNXBackend(model_path, device)
         elif backend == "tensorrt":
-            return TensorRTBackend(model_path, device)
+            return CenterPointTensorRTBackend(model_path, device)
         else:
             raise ValueError(f"Unknown backend: {backend}")
 

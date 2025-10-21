@@ -4,9 +4,10 @@ Complete deployment pipeline for CenterPoint 3D object detection.
 
 ## Features
 
-- ✅ Export to ONNX (TensorRT support coming soon)
+- ✅ Export to ONNX and TensorRT
 - ✅ Full evaluation with 3D detection metrics
 - ✅ Latency benchmarking
+- ✅ Cross-backend verification
 - ✅ Uses MMDet3D pipeline for consistency with training
 - ✅ Modernized from legacy DeploymentRunner
 
@@ -26,7 +27,7 @@ data/t4dataset/
 ### 2. Export and Evaluate
 
 ```bash
-# Export to ONNX with evaluation
+# Export to ONNX and TensorRT with evaluation
 python projects/CenterPoint/deploy/main.py \
     projects/CenterPoint/deploy/deploy_config.py \
     projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
@@ -51,7 +52,7 @@ python projects/CenterPoint/deploy/main.py \
 
 ```python
 export = dict(
-    mode='onnx',      # 'onnx', 'trt' (coming soon), 'both', 'none'
+    mode='both',      # 'onnx', 'trt', 'both', 'none'
     verify=True,      # Cross-backend verification
     device='cuda:0',  # Device
     work_dir='work_dirs/centerpoint_deployment'
@@ -73,16 +74,90 @@ evaluation = dict(
 
 ```python
 onnx_config = dict(
-    opset_version=13,  # CenterPoint uses opset 13
-    input_names=['voxels', 'num_points', 'coors'],
-    output_names=['reg', 'height', 'dim', 'rot', 'vel', 'hm'],
-    dynamic_axes={
-        'voxels': {0: 'num_voxels'},
-        'num_points': {0: 'num_voxels'},
-        'coors': {0: 'num_voxels'}
-    }
+    opset_version=16,
+    do_constant_folding=True,
+    save_file="centerpoint.onnx",
+    export_params=True,
+    keep_initializers_as_inputs=False,
+    simplify=True,
 )
 ```
+
+### TensorRT Settings
+
+```python
+backend_config = dict(
+    common_config=dict(
+        # Precision policy for TensorRT
+        # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
+        precision_policy="auto",
+        # TensorRT workspace size (bytes)
+        max_workspace_size=2 << 30,  # 2 GB (3D models need more memory)
+    ),
+)
+```
+
+### Verification Settings
+
+```python
+verification = dict(
+    enabled=True,  # Will use export.verify
+    tolerance=1e-1,  # Slightly higher tolerance for 3D detection
+    num_verify_samples=1,  # Fewer samples for 3D (slower)
+)
+```
+
+## TensorRT Architecture
+
+CenterPoint uses a multi-engine TensorRT setup:
+
+1. **pts_voxel_encoder.engine** - Voxel feature extraction
+2. **pts_backbone_neck_head.engine** - Backbone, neck, and head processing
+
+The TensorRT backend automatically handles the pipeline between these engines, including:
+- Voxel encoder inference
+- Middle encoder processing (PyTorch)
+- Backbone/neck/head inference
+- Output formatting
+
+## Output Structure
+
+After deployment, you'll find:
+
+```
+work_dirs/centerpoint_deployment/
+├── pts_voxel_encoder.onnx
+├── pts_backbone_neck_head.onnx
+└── tensorrt/
+    ├── pts_voxel_encoder.engine
+    └── pts_backbone_neck_head.engine
+```
+
+## Troubleshooting
+
+### TensorRT Build Issues
+
+If TensorRT engine building fails:
+
+1. **Memory Issues**: Increase `max_workspace_size` in config
+2. **Shape Issues**: Check input shapes match your data
+3. **Precision Issues**: Try different `precision_policy` settings
+
+### Verification Failures
+
+If cross-backend verification fails:
+
+1. **Tolerance**: Increase `tolerance` in verification config
+2. **Samples**: Reduce `num_verify_samples` for faster testing
+3. **Device**: Ensure all backends use the same device
+
+### Performance Issues
+
+For better TensorRT performance:
+
+1. **Precision**: Use `fp16` for faster inference
+2. **Batch Size**: Optimize for your typical batch sizes
+3. **Profiling**: Use TensorRT profiling tools for optimization
 
 ### Important Flags
 

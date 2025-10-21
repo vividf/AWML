@@ -145,10 +145,29 @@ class TensorRTExporter(BaseExporter):
                 self.logger.info(f"Setting input shapes - min: {min_shape}, " f"opt: {opt_shape}, max: {max_shape}")
                 profile.set_shape(input_name, min_shape, opt_shape, max_shape)
         else:
-            # Default shapes based on input tensor
+            # For CenterPoint models, we need to handle dynamic inputs properly
             input_shape = list(sample_input.shape)
-            self.logger.info(f"Using default input shape: {input_shape}")
-            profile.set_shape("input", input_shape, input_shape, input_shape)
+            
+            # Determine if this is a voxel encoder or backbone input based on shape
+            if len(input_shape) == 3 and input_shape[1] == 32:  # voxel encoder: (num_voxels, 32, 11)
+                # Voxel encoder input: input_features
+                min_shape = [1000, 32, 11]    # Minimum voxels
+                opt_shape = [10000, 32, 11]  # Optimal voxels  
+                max_shape = [50000, 32, 11]   # Maximum voxels
+                input_name = "input_features"
+            elif len(input_shape) == 4 and input_shape[1] == 32:  # backbone input: (batch, 32, height, width)
+                # Backbone input: spatial_features - use dynamic dimensions for H, W
+                min_shape = [1, 32, 100, 100]
+                opt_shape = [1, 32, 200, 200] 
+                max_shape = [1, 32, 400, 400]
+                input_name = "spatial_features"
+            else:
+                # Default fallback
+                min_shape = opt_shape = max_shape = input_shape
+                input_name = "input"
+            
+            self.logger.info(f"Setting {input_name} shapes - min: {min_shape}, opt: {opt_shape}, max: {max_shape}")
+            profile.set_shape(input_name, min_shape, opt_shape, max_shape)
 
     def _log_parser_errors(self, parser: trt.OnnxParser) -> None:
         """Log TensorRT parser errors."""
