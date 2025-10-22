@@ -91,6 +91,15 @@ class CenterPointEvaluator(BaseEvaluator):
             logger.error(f"Failed to create {backend} backend")
             return {}
         
+        # Store reference to pytorch_model if available (for consistent ONNX/TensorRT decoding)
+        if hasattr(inference_backend, 'pytorch_model'):
+            self.pytorch_model = inference_backend.pytorch_model
+            logger.info(f"Stored PyTorch model reference for {backend} decoding")
+        elif backend == "pytorch":
+            self.pytorch_model = inference_backend
+        else:
+            self.pytorch_model = None
+        
         # Load model (only for non-PyTorch backends)
         if backend != "pytorch":
             try:
@@ -546,10 +555,120 @@ class CenterPointEvaluator(BaseEvaluator):
         
         return predictions
 
+    def _parse_with_pytorch_model(self, heatmap, reg, height, dim, rot, vel, sample):
+        """Use PyTorch model's complete forward pass for consistent results."""
+        import torch
+        
+        print("INFO: Using complete PyTorch model forward pass for ONNX/TensorRT post-processing")
+        
+        # Instead of using ONNX head outputs + PyTorch decoder,
+        # use ONNX outputs up to middle encoder, then run PyTorch for backbone+head
+        # This ensures 100% consistency with PyTorch evaluation
+        
+        # For now, fall back to manual parsing
+        # TODO: Implement hybrid approach later
+        print("WARNING: PyTorch model integration not yet implemented, falling back to manual parsing")
+        return None
+    
+    def _parse_with_pytorch_decoder(self, heatmap, reg, height, dim, rot, vel, sample):
+        """Use PyTorch model's predict_by_feat for consistent decoding."""
+        import torch
+        
+        print("INFO: Using PyTorch model's predict_by_feat for ONNX/TensorRT post-processing")
+        
+        # Convert to torch tensors if needed
+        if isinstance(heatmap, np.ndarray):
+            heatmap = torch.from_numpy(heatmap)
+        if isinstance(reg, np.ndarray):
+            reg = torch.from_numpy(reg)
+        if isinstance(height, np.ndarray):
+            height = torch.from_numpy(height)
+        if isinstance(dim, np.ndarray):
+            dim = torch.from_numpy(dim)
+        if isinstance(rot, np.ndarray):
+            rot = torch.from_numpy(rot)
+        if isinstance(vel, np.ndarray):
+            vel = torch.from_numpy(vel)
+        
+        # Move to same device as model
+        device = next(self.pytorch_model.parameters()).device
+        heatmap = heatmap.to(device)
+        reg = reg.to(device) if reg is not None else None
+        height = height.to(device)
+        dim = dim.to(device)
+        rot = rot.to(device)
+        vel = vel.to(device) if vel is not None else None
+        
+        # Prepare head outputs in mmdet3d format: Tuple[List[dict]]
+        # The head outputs should be in dict format with keys: 'heatmap', 'reg', 'height', 'dim', 'rot', 'vel'
+        preds_dict = {
+            'heatmap': heatmap,
+            'reg': reg,
+            'height': height,
+            'dim': dim,
+            'rot': rot,
+            'vel': vel
+        }
+        preds_dicts = ([preds_dict],)  # Tuple[List[dict]] format for single task
+        
+        # Prepare batch_input_metas from sample
+        metainfo = sample.get('metainfo', {})
+        # Add required fields for predict_by_feat
+        if 'box_type_3d' not in metainfo:
+            # Default to LiDARInstance3DBoxes (same as CenterPoint default)
+            from mmdet3d.structures import LiDARInstance3DBoxes
+            metainfo['box_type_3d'] = LiDARInstance3DBoxes
+        batch_input_metas = [metainfo]
+        
+        # Call predict_by_feat to get final predictions
+        print(f"DEBUG: Calling predict_by_feat with preds_dicts type: {type(preds_dicts)}")
+        print(f"DEBUG: preds_dicts[0] keys: {list(preds_dicts[0][0].keys())}")
+        
+        with torch.no_grad():
+            predictions_list = self.pytorch_model.pts_bbox_head.predict_by_feat(
+                preds_dicts=preds_dicts,
+                batch_input_metas=batch_input_metas
+            )
+        
+        # predictions_list is List[InstanceData]
+        # Each InstanceData has: bboxes_3d, scores_3d, labels_3d
+        predictions = []
+        for pred_instances in predictions_list:
+            bboxes_3d = pred_instances.bboxes_3d.tensor.cpu().numpy()  # [N, 9]
+            scores_3d = pred_instances.scores_3d.cpu().numpy()  # [N]
+            labels_3d = pred_instances.labels_3d.cpu().numpy()  # [N]
+            
+            print(f"DEBUG: PyTorch predict_by_feat - bboxes shape: {bboxes_3d.shape}, scores shape: {scores_3d.shape}")
+            if len(bboxes_3d) > 0:
+                print(f"DEBUG: PyTorch predict_by_feat - first bbox: {bboxes_3d[0]}")
+            
+            for i in range(len(bboxes_3d)):
+                bbox_3d = bboxes_3d[i][:7]  # [x, y, z, w, l, h, yaw] - already in correct format
+                score = scores_3d[i]
+                label = labels_3d[i]
+                
+                predictions.append({
+                    'bbox_3d': bbox_3d.tolist(),
+                    'score': float(score),
+                    'label': int(label)
+                })
+        
+        print(f"DEBUG: PyTorch predict_by_feat produced {len(predictions)} predictions")
+        return predictions
+
     def _parse_centerpoint_head_outputs(self, heatmap, reg, height, dim, rot, vel, sample):
-        """Parse CenterPoint head outputs using the same logic as PyTorch's CenterPointBBoxCoder."""
+        """Parse CenterPoint head outputs using PyTorch's CenterPointBBoxCoder for consistency."""
         import torch
         import numpy as np
+        
+        # Use PyTorch model's predict_by_feat for consistent post-processing
+        if hasattr(self, 'pytorch_model') and self.pytorch_model is not None:
+            try:
+                return self._parse_with_pytorch_decoder(heatmap, reg, height, dim, rot, vel, sample)
+            except Exception as e:
+                print(f"WARNING: Failed to use PyTorch predict_by_feat: {e}, falling back to manual parsing")
+                import traceback
+                traceback.print_exc()
         
         # Convert to torch tensors for consistency with PyTorch
         if isinstance(heatmap, np.ndarray):
