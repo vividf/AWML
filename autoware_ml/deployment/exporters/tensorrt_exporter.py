@@ -157,9 +157,10 @@ class TensorRTExporter(BaseExporter):
                 input_name = "input_features"
             elif len(input_shape) == 4 and input_shape[1] == 32:  # backbone input: (batch, 32, height, width)
                 # Backbone input: spatial_features - use dynamic dimensions for H, W
+                # NOTE: Actual evaluation data can produce up to 760x760, so use 800x800 for max_shape
                 min_shape = [1, 32, 100, 100]
                 opt_shape = [1, 32, 200, 200] 
-                max_shape = [1, 32, 400, 400]
+                max_shape = [1, 32, 800, 800]  # Increased from 400x400 to support actual data
                 input_name = "spatial_features"
             else:
                 # Default fallback

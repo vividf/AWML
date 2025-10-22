@@ -107,10 +107,20 @@ class CenterPointTensorRTBackend(BaseBackend):
 
         # Handle different input formats
         if isinstance(input_data, dict):
+            # Debug: Check input_data keys
+            print(f"DEBUG: TensorRT input_data keys: {list(input_data.keys())}")
+            
             # Full pipeline input
             # Check if input_data contains 'voxels' or 'points'
             if 'voxels' in input_data:
                 # Full pipeline input with voxels
+                # Debug: Check if coors is present and valid
+                if 'coors' in input_data:
+                    coors = input_data['coors']
+                    print(f"DEBUG: Input contains coors - shape: {coors.shape}, range: [{coors.min()}, {coors.max()}]")
+                else:
+                    print(f"WARNING: Input contains voxels but no coors!")
+                
                 voxel_features = self._run_voxel_encoder(input_data)
                 voxel_features_processed = self._process_middle_encoder(voxel_features, input_data)
                 detection_results = self._run_backbone_neck_head(voxel_features_processed)
@@ -223,7 +233,13 @@ class CenterPointTensorRTBackend(BaseBackend):
             cuda.memcpy_dtoh_async(output_array, d_output, stream)
             stream.synchronize()
 
-            return torch.from_numpy(output_array)
+            voxel_features = torch.from_numpy(output_array)
+            
+            # Debug: Check voxel encoder output
+            print(f"DEBUG: TensorRT Voxel encoder output shape: {voxel_features.shape}")
+            print(f"DEBUG: TensorRT Voxel encoder output - min: {voxel_features.min():.4f}, max: {voxel_features.max():.4f}, mean: {voxel_features.mean():.4f}")
+            
+            return voxel_features
 
         finally:
             # Cleanup GPU memory
@@ -260,9 +276,16 @@ class CenterPointTensorRTBackend(BaseBackend):
         # Ensure coors is on the correct device
         coors = coors.to(device)
         
+        # Debug: Check coors
+        print(f"DEBUG: Coors shape before middle encoder: {coors.shape}, dtype: {coors.dtype}")
+        print(f"DEBUG: Coors range: [{coors.min().item()}, {coors.max().item()}]")
+        print(f"DEBUG: Batch size from coors: {int(coors[-1, 0].item()) + 1 if len(coors) > 0 else 0}")
+        
         # Process voxel features (shape: [num_voxels, 1, feature_dim] or [num_voxels, feature_dim])
+        print(f"DEBUG: Voxel features shape before processing: {voxel_features.shape}")
         if voxel_features.dim() == 3:
             voxel_features = voxel_features.squeeze(1)  # Remove middle dimension if present
+            print(f"DEBUG: Voxel features shape after squeeze: {voxel_features.shape}")
         
         # Convert to torch tensor if numpy
         if isinstance(voxel_features, np.ndarray):
@@ -273,6 +296,10 @@ class CenterPointTensorRTBackend(BaseBackend):
             spatial_features = self.pytorch_model.pts_middle_encoder(
                 voxel_features, coors, batch_size
             )
+        
+        # Debug: Check spatial features
+        print(f"DEBUG: Middle encoder output shape: {spatial_features.shape}")
+        print(f"DEBUG: Middle encoder output - min: {spatial_features.min():.4f}, max: {spatial_features.max():.4f}, mean: {spatial_features.mean():.4f}")
         
         return spatial_features
 

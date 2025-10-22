@@ -7,9 +7,9 @@ Modify according to your needs.
 
 # Export settings
 export = dict(
-    mode="onnx",  # 'onnx', 'trt', 'both', 'none'
-    verify=True,  # Enable cross-backend verification
-    device="cpu",  # Device for export/inference
+    mode="none",  # Skip export (already done)
+    verify=False,  # Disable verification
+    device="cuda",  # Use CUDA
     work_dir="work_dirs/centerpoint_deployment",
 )
 
@@ -94,9 +94,9 @@ evaluation = dict(
     verbose=True,  # Detailed per-sample output for debugging
     # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)
     models=dict(
-        pytorch="work_dirs/centerpoint/best_checkpoint.pth",  # PyTorch checkpoint
+        # pytorch="work_dirs/centerpoint/best_checkpoint.pth",  # PyTorch checkpoint (skip to save memory)
         onnx="work_dirs/centerpoint_deployment",  # Path to ONNX model directory
-        # tensorrt="work_dirs/centerpoint_deployment/tensorrt",  # Path to TensorRT engine directory
+        tensorrt="work_dirs/centerpoint_deployment/tensorrt",  # Path to TensorRT engine directory (compare with ONNX)
     ),
 )
 

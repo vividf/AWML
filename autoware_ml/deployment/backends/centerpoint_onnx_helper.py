@@ -241,8 +241,16 @@ class CenterPointONNXHelper:
         if voxel_features.ndim == 3:
             voxel_features = voxel_features.squeeze(1)
         
+        # Debug: Check voxel encoder output
+        print(f"DEBUG: ONNX Voxel encoder output shape: {voxel_features.shape}")
+        print(f"DEBUG: ONNX Voxel encoder output - min: {voxel_features.min():.4f}, max: {voxel_features.max():.4f}, mean: {voxel_features.mean():.4f}")
+        
         # Step 4: Process through middle encoder using PyTorch model
         spatial_features = self._process_middle_encoder(voxel_features, coors)
+        
+        # Debug: Check middle encoder output
+        print(f"DEBUG: ONNX Middle encoder output shape: {spatial_features.shape}")
+        print(f"DEBUG: ONNX Middle encoder output - min: {spatial_features.min():.4f}, max: {spatial_features.max():.4f}, mean: {spatial_features.mean():.4f}")
         
         # Return preprocessed data for backbone/neck/head ONNX
         return {"spatial_features": spatial_features}

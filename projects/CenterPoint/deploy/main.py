@@ -228,6 +228,7 @@ def export_tensorrt(onnx_dir: str, config: BaseDeploymentConfig, logger: logging
         else:
             # Backbone/neck/head input: (batch_size, channels, height, width)
             # Use realistic spatial feature dimensions - actual shape is (batch_size, 32, H, W)
+            # NOTE: Actual evaluation data can produce up to 760x760, so use 800x800 for max_shape
             sample_input = torch.randn(1, 32, 200, 200, device=config.export_config.device)
 
         # Export to TensorRT

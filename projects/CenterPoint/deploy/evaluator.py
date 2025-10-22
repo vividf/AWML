@@ -125,6 +125,9 @@ class CenterPointEvaluator(BaseEvaluator):
                 # Run inference
                 if backend == "pytorch":
                     output, latency = self._run_pytorch_inference(inference_backend, input_data, sample)
+                elif backend == "tensorrt":
+                    # TensorRT also needs special preprocessing to ensure voxels/coors are included
+                    output, latency = self._run_tensorrt_inference(inference_backend, input_data, sample)
                 else:
                     output, latency = inference_backend.infer(input_data)
 
@@ -362,6 +365,100 @@ class CenterPointEvaluator(BaseEvaluator):
             
             raise e
 
+    def _run_tensorrt_inference(self, backend, input_data: Dict, sample: Dict) -> tuple:
+        """Run TensorRT inference with proper voxelized data format."""
+        import time
+        
+        # TensorRT backend needs voxelized data (voxels, coors, num_points)
+        # Use PyTorch model's voxelization if available
+        if hasattr(backend, 'pytorch_model') and backend.pytorch_model is not None:
+            # Get lidar points
+            if 'points' in input_data:
+                points = input_data['points']
+            else:
+                raise ValueError("TensorRT inference requires 'points' in input_data")
+            
+            # Use mmcv's Voxelization to voxelize points
+            from mmcv.ops import Voxelization
+            
+            start_time = time.time()
+            
+            # Get voxelization config from model config
+            # Default CenterPoint voxelization config
+            voxel_size = [0.32, 0.32, 8.0]
+            point_cloud_range = [-121.6, -121.6, -3.0, 121.6, 121.6, 5.0]
+            max_num_points = 32  # max points per voxel
+            max_voxels = (30000, 40000)  # (train, test)
+            
+            # Create voxelization layer
+            voxel_layer = Voxelization(
+                voxel_size=voxel_size,
+                point_cloud_range=point_cloud_range,
+                max_num_points=max_num_points,
+                max_voxels=max_voxels[1]  # Use test max_voxels
+            )
+            
+            # Convert points to CPU for voxelization (mmcv ops may require CPU)
+            if isinstance(points, torch.Tensor):
+                points_cpu = points.cpu()
+            else:
+                points_cpu = torch.from_numpy(points)
+            
+            # Voxelize
+            voxels, coors, num_points = voxel_layer(points_cpu)
+            
+            # Convert voxels to 11 dimensions using PyTorch model's get_input_features
+            # This is what ONNX does - not simple zero padding!
+            device = next(backend.pytorch_model.parameters()).device
+            voxels_torch = voxels.to(device)
+            coors_torch = coors.to(device)
+            num_points_torch = num_points.to(device)
+            
+            # Add batch_idx to coors (mmcv returns [N, 3], need [N, 4])
+            batch_idx = torch.zeros((coors_torch.shape[0], 1), dtype=coors_torch.dtype, device=device)
+            coors_torch = torch.cat([batch_idx, coors_torch], dim=1)
+            
+            # Use PyTorch model's get_input_features to get 11-dim features
+            with torch.no_grad():
+                if hasattr(backend.pytorch_model.pts_voxel_encoder, 'get_input_features'):
+                    voxels_11d = backend.pytorch_model.pts_voxel_encoder.get_input_features(
+                        voxels_torch,
+                        num_points_torch,
+                        coors_torch
+                    )
+                    print(f"DEBUG: TensorRT got 11-dim features from get_input_features: {voxels_11d.shape}")
+                else:
+                    # Fallback: zero padding (not ideal)
+                    print(f"WARNING: get_input_features not available, using zero padding")
+                    pad_size = 11 - voxels_torch.shape[2]
+                    padding = torch.zeros(voxels_torch.shape[0], voxels_torch.shape[1], pad_size, 
+                                        dtype=voxels_torch.dtype, device=device)
+                    voxels_11d = torch.cat([voxels_torch, padding], dim=2)
+            
+            # Convert back to original device for TensorRT
+            # coors_torch already has batch_idx added
+            voxels = voxels_11d
+            coors = coors_torch
+            num_points = num_points_torch
+            
+            # Prepare voxelized input data
+            voxelized_input = {
+                'voxels': voxels,
+                'coors': coors,
+                'num_points': num_points
+            }
+            
+            print(f"DEBUG: Voxelized data - voxels: {voxels.shape}, coors: {coors.shape}, coors range: [{coors.min()}, {coors.max()}]")
+            
+            # Run TensorRT inference
+            output, latency = backend.infer(voxelized_input)
+            
+            return output, latency
+        else:
+            # Fallback to direct inference (will use dummy coors)
+            print(f"WARNING: PyTorch model not available for voxelization, using fallback")
+            return backend.infer(input_data)
+    
     def _run_pytorch_inference(self, model, input_data: Dict, sample: Dict) -> tuple:
         """Run PyTorch inference with proper data format."""
         from mmengine.dataset import pseudo_collate
@@ -623,6 +720,13 @@ class CenterPointEvaluator(BaseEvaluator):
         # Call predict_by_feat to get final predictions
         print(f"DEBUG: Calling predict_by_feat with preds_dicts type: {type(preds_dicts)}")
         print(f"DEBUG: preds_dicts[0] keys: {list(preds_dicts[0][0].keys())}")
+        
+        # Debug head outputs
+        for key, value in preds_dict.items():
+            if value is not None and hasattr(value, 'shape'):
+                print(f"DEBUG: {key} shape: {value.shape}, min: {value.min():.4f}, max: {value.max():.4f}, mean: {value.mean():.4f}")
+            else:
+                print(f"DEBUG: {key}: {value}")
         
         with torch.no_grad():
             predictions_list = self.pytorch_model.pts_bbox_head.predict_by_feat(
