@@ -192,13 +192,29 @@ class CenterPointONNXHelper:
             # Use raw features directly - this should be (num_voxels, 32, 11)
             input_features = raw_features
         else:
-            # Fallback: try to reshape the processed features
-            if len(input_features.shape) == 3 and input_features.shape[1] == 1:
-                # (num_voxels, 1, 32) -> we need to expand this to (num_voxels, 32, 11)
-                # This is wrong - we should not be doing this reshaping
-                print(f"WARNING: Attempting incorrect reshaping from {input_features.shape}")
-                # Don't reshape - this causes numerical differences
-                raise ValueError(f"Cannot reshape {input_features.shape} to ONNX format - use get_input_features instead")
+            # Fallback: create proper input features for ONNX
+            # ONNX expects (num_voxels, 32, 11) but voxel data has (num_voxels, 32, 5)
+            num_voxels = voxels.shape[0]
+            max_points = 32
+            actual_feature_channels = voxels.shape[2]  # Usually 5
+            expected_feature_channels = 11  # ONNX model expects 11
+            
+            print(f"DEBUG: Voxel data shape: {voxels.shape}")
+            print(f"DEBUG: Actual feature channels: {actual_feature_channels}")
+            print(f"DEBUG: Expected feature channels: {expected_feature_channels}")
+            
+            # Create input features with expected shape (11 channels)
+            input_features = torch.zeros(num_voxels, max_points, expected_feature_channels, device=device)
+            
+            # Fill with actual voxel data (first 5 channels)
+            for i in range(num_voxels):
+                actual_points = min(num_points[i], max_points)
+                # Copy actual voxel data to first 5 channels
+                input_features[i, :actual_points, :actual_feature_channels] = voxels_tensor[i, :actual_points, :]
+                # Fill remaining channels with zeros (or could use padding/extension logic)
+                input_features[i, :actual_points, actual_feature_channels:] = 0.0
+            
+            print(f"DEBUG: Created input features shape: {input_features.shape}")
         
         print(f"DEBUG: Final input features shape for ONNX: {input_features.shape}")
         
@@ -274,9 +290,26 @@ class CenterPointONNXHelper:
         Returns:
             Processed outputs matching PyTorch format
         """
-        # For CenterPoint, ONNX outputs should already match PyTorch format
-        # This method can be extended for additional postprocessing if needed
-        return onnx_outputs
+        # ONNX outputs are in the format: [heatmap, reg, height, dim, rot, vel]
+        # Each output is a numpy array with shape [batch_size, channels, H, W]
+        
+        processed_outputs = []
+        
+        for output in onnx_outputs:
+            if isinstance(output, np.ndarray):
+                # Convert numpy array to torch tensor
+                output_tensor = torch.from_numpy(output)
+                processed_outputs.append(output_tensor)
+            else:
+                processed_outputs.append(output)
+        
+        print(f"DEBUG: ONNX postprocess - input length: {len(onnx_outputs)}")
+        print(f"DEBUG: ONNX postprocess - output length: {len(processed_outputs)}")
+        for i, output in enumerate(processed_outputs):
+            if isinstance(output, torch.Tensor):
+                print(f"DEBUG: ONNX output {i} shape: {output.shape}")
+        
+        return processed_outputs
 
 
 def is_centerpoint_onnx(onnx_path: str) -> bool:

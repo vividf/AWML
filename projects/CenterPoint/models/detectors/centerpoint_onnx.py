@@ -1,6 +1,7 @@
 import os
 from typing import Callable, Dict, List, Tuple
 
+import numpy as np
 import torch
 from mmdet3d.models.detectors.centerpoint import CenterPoint
 from mmdet3d.registry import MODELS
@@ -54,27 +55,82 @@ class CenterPointONNX(CenterPoint):
         self._logger = MMLogger.get_current_instance()
         self._logger.info("Running CenterPointONNX!")
 
-    def _get_random_inputs(self):
+    def _get_real_inputs(self, data_loader=None, sample_idx=0):
         """
-        Generate random inputs and preprocess it to feed it to onnx.
+        Generate real inputs from data loader instead of random inputs.
+        This ensures ONNX export uses realistic data distribution.
         """
-        # Input channels - create tensors directly on the target device
-        points = [
-            torch.rand(1000, self._point_channels, device=self._torch_device),
-            # torch.rand(1000, self._point_channels, device=self._torch_device),
-        ]
-        # We only need lidar pointclouds for CenterPoint.
-        return {"points": points, "data_samples": None}
+        if data_loader is None:
+            # Fallback to random inputs if no data loader provided
+            return self._get_random_inputs()
+        
+        try:
+            # Get real sample from data loader
+            sample = data_loader.load_sample(sample_idx)
+            
+            # Check if sample has lidar_points
+            if 'lidar_points' in sample:
+                lidar_path = sample['lidar_points'].get('lidar_path')
+                if lidar_path and os.path.exists(lidar_path):
+                    # Load point cloud from file
+                    points = self._load_point_cloud(lidar_path)
+                    # Convert to torch tensor
+                    points = torch.from_numpy(points).to(self._torch_device)
+                    # Convert to list format expected by voxelize
+                    points = [points]
+                    return {"points": points, "data_samples": None}
+                else:
+                    self._logger.warning(f"Lidar path not found or file doesn't exist: {lidar_path}")
+            else:
+                self._logger.warning(f"Sample doesn't contain lidar_points: {sample.keys()}")
+            
+            # Fallback to random inputs if real data loading fails
+            self._logger.warning("Failed to load real data, falling back to random inputs")
+            return self._get_random_inputs()
+            
+        except Exception as e:
+            self._logger.warning(f"Failed to load real data, falling back to random inputs: {e}")
+            return self._get_random_inputs()
+    
+    def _load_point_cloud(self, lidar_path: str) -> np.ndarray:
+        """
+        Load point cloud from file.
+        
+        Args:
+            lidar_path: Path to point cloud file (.bin or .pcd)
+            
+        Returns:
+            Point cloud array (N, 5) where 5 = (x, y, z, intensity, ring_id)
+        """
+        if lidar_path.endswith(".bin"):
+            # Load binary point cloud (KITTI/nuScenes format)
+            # T4 dataset has 5 features: x, y, z, intensity, ring_id
+            points = np.fromfile(lidar_path, dtype=np.float32).reshape(-1, 5)
+            
+            # Don't pad here - let the voxelization process handle feature expansion
+            # The voxelization process will add cluster_center (+3) and voxel_center (+3) features
+            # So 5 + 3 + 3 = 11 features total
+            
+        elif lidar_path.endswith(".pcd"):
+            # Load PCD format (placeholder - would need pypcd or similar)
+            raise NotImplementedError("PCD format loading not implemented yet")
+        else:
+            raise ValueError(f"Unsupported point cloud format: {lidar_path}")
+        
+        return points
 
-    def _extract_random_features(self):
+    def _extract_features(self, data_loader=None, sample_idx=0):
+        """
+        Extract features using real data if available, otherwise fallback to random data.
+        """
         assert self.data_preprocessor is not None and hasattr(self.data_preprocessor, "voxelize")
 
         # Ensure data preprocessor is on the correct device
         if hasattr(self.data_preprocessor, 'to'):
             self.data_preprocessor.to(self._torch_device)
 
-        # Get inputs
-        inputs = self._get_random_inputs()
+        # Get inputs (real data if available, otherwise random)
+        inputs = self._get_real_inputs(data_loader, sample_idx)
         voxel_dict = self.data_preprocessor.voxelize(points=inputs["points"], data_samples=inputs["data_samples"])
         
         # Ensure all voxel tensors are on the correct device
@@ -93,17 +149,20 @@ class CenterPointONNX(CenterPoint):
         save_dir: str,
         verbose=False,
         onnx_opset_version=13,
+        data_loader=None,
+        sample_idx=0,
     ):
         """Save onnx model
         Args:
-            batch_dict (dict[str, any])
             save_dir (str): directory path to save onnx models
             verbose (bool, optional)
             onnx_opset_version (int, optional)
+            data_loader: Optional data loader to use real data for export
+            sample_idx: Index of sample to use for export
         """
         print_log(f"Running onnx_opset_version: {onnx_opset_version}")
-        # Get features
-        input_features, voxel_dict = self._extract_random_features()
+        # Get features using real data if available
+        input_features, voxel_dict = self._extract_features(data_loader, sample_idx)
 
         # === pts_voxel_encoder ===
         pth_onnx_pve = os.path.join(save_dir, "pts_voxel_encoder.onnx")

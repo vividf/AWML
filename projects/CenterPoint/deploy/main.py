@@ -154,9 +154,15 @@ def export_onnx(
     if hasattr(model, "save_onnx"):
         logger.info(f"Using model's built-in save_onnx method")
         logger.info(f"Output directory: {output_dir}")
+        logger.info(f"Using real data for ONNX export (sample_idx=0)")
 
-        # Export using model's method
-        model.save_onnx(save_dir=output_dir, onnx_opset_version=onnx_opset_version)
+        # Export using model's method with real data
+        model.save_onnx(
+            save_dir=output_dir, 
+            onnx_opset_version=onnx_opset_version,
+            data_loader=data_loader,
+            sample_idx=0
+        )
 
         logger.info(f"✅ ONNX export successful: {output_dir}")
         return output_dir
