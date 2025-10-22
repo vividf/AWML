@@ -20,21 +20,25 @@ class CenterPointTensorRTBackend(BaseBackend):
     Handles the multi-engine setup for CenterPoint:
     1. pts_voxel_encoder.trt - voxel feature extraction
     2. pts_backbone_neck_head.trt - backbone, neck, and head processing
+    
+    Note: Middle encoder is not converted to TensorRT and runs in PyTorch.
     """
 
-    def __init__(self, model_path: str, device: str = "cuda:0"):
+    def __init__(self, model_path: str, device: str = "cuda:0", pytorch_model=None):
         """
         Initialize CenterPoint TensorRT backend.
 
         Args:
             model_path: Path to directory containing TensorRT engines
             device: CUDA device to use (ignored, TensorRT uses current CUDA context)
+            pytorch_model: PyTorch model for middle encoder (required)
         """
         super().__init__(model_path, device)
         self._engines = {}
         self._contexts = {}
         self._logger = trt.Logger(trt.Logger.WARNING)
         self._is_loaded = False
+        self.pytorch_model = pytorch_model
 
     def load_model(self) -> None:
         """Load TensorRT engines for both components."""
@@ -231,35 +235,46 @@ class CenterPointTensorRTBackend(BaseBackend):
 
     def _process_middle_encoder(self, voxel_features: torch.Tensor, input_data) -> torch.Tensor:
         """
-        Process voxel features through middle encoder.
+        Process voxel features through middle encoder using PyTorch model.
         
-        Note: This is a placeholder implementation. In practice, you would need
-        to implement the middle encoder logic or convert it to TensorRT as well.
+        Note: Middle encoder is not converted to TensorRT and runs in PyTorch.
+        This is necessary because it uses sparse convolutions which are not well-supported in TensorRT.
         """
+        if self.pytorch_model is None:
+            raise ValueError("PyTorch model is required for middle encoder processing")
+        
+        # Ensure voxel_features is on the correct device
+        device = next(self.pytorch_model.parameters()).device
+        voxel_features = voxel_features.to(device)
+        
         # Handle both dict and tensor inputs
         if isinstance(input_data, dict):
             coors = input_data["coors"]
-            batch_size = coors[-1, 0] + 1 if len(coors) > 0 else 1
+            batch_size = int(coors[-1, 0].item()) + 1 if len(coors) > 0 else 1
         else:
             # Single tensor input - use batch size 1 for verification
             batch_size = 1
+            # Create dummy coors for middle encoder
+            coors = torch.zeros(voxel_features.shape[0], 4, dtype=torch.int32, device=device)
         
-        # Placeholder: reshape and process voxel features
-        # In reality, this would involve sparse convolution operations
-        voxel_features = voxel_features.squeeze(1)  # Remove point dimension
+        # Ensure coors is on the correct device
+        coors = coors.to(device)
         
-        # Create a dummy feature map with proper dimensions
-        # Use the actual voxel_features shape to avoid negative dimensions
-        if len(voxel_features.shape) == 2:  # (num_voxels, features)
-            # Create spatial feature map with proper dimensions
-            # For verification, use a reasonable spatial size
-            spatial_size = 200
-            dummy_features = torch.randn(batch_size, 32, spatial_size, spatial_size, device=voxel_features.device)
-        else:
-            # If voxel_features already has spatial dimensions, use them
-            dummy_features = voxel_features
+        # Process voxel features (shape: [num_voxels, 1, feature_dim] or [num_voxels, feature_dim])
+        if voxel_features.dim() == 3:
+            voxel_features = voxel_features.squeeze(1)  # Remove middle dimension if present
         
-        return dummy_features
+        # Convert to torch tensor if numpy
+        if isinstance(voxel_features, np.ndarray):
+            voxel_features = torch.from_numpy(voxel_features).to(device)
+        
+        # Run PyTorch middle encoder
+        with torch.no_grad():
+            spatial_features = self.pytorch_model.pts_middle_encoder(
+                voxel_features, coors, batch_size
+            )
+        
+        return spatial_features
 
     def _run_backbone_neck_head(self, features: torch.Tensor) -> List[Dict[str, torch.Tensor]]:
         """Run backbone, neck, and head inference."""

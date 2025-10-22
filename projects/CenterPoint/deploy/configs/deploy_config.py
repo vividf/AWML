@@ -89,14 +89,14 @@ backend_config = dict(
 
 # Evaluation configuration
 evaluation = dict(
-    enabled=False,  # Enable evaluation
+    enabled=True,  # Enable evaluation
     num_samples=1,  # Number of samples to evaluate (3D is slower)
     verbose=True,  # Detailed per-sample output for debugging
     # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)
     models=dict(
         pytorch="work_dirs/centerpoint/best_checkpoint.pth",  # PyTorch checkpoint
         onnx="work_dirs/centerpoint_deployment",  # Path to ONNX model directory
-        tensorrt="work_dirs/centerpoint_deployment/tensorrt",  # Path to TensorRT engine directory
+        # tensorrt="work_dirs/centerpoint_deployment/tensorrt",  # Path to TensorRT engine directory
     ),
 )
 

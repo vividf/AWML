@@ -409,12 +409,25 @@ def main():
     )
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
-    # Load PyTorch model if needed for export
+    # Load PyTorch model if needed for export or evaluation
     pytorch_model = None
     onnx_compatible_model_cfg = model_cfg  # Keep original config for evaluation
-    if config.export_config.mode != "none":
+    
+    # Check if we need ONNX-compatible config for evaluation
+    eval_config = config.evaluation_config
+    needs_onnx_config = False
+    if eval_config.get("enabled", False):
+        models_to_eval = eval_config.get("models", {})
+        # Check if ONNX or TensorRT evaluation is requested
+        if models_to_eval.get("onnx") or models_to_eval.get("tensorrt"):
+            needs_onnx_config = True
+    
+    # Load model if needed for export OR if ONNX/TensorRT evaluation is requested
+    if config.export_config.mode != "none" or needs_onnx_config:
         if args.checkpoint:
             logger.info("\nLoading PyTorch model...")
+            if needs_onnx_config and args.replace_onnx_models:
+                logger.info("Loading with ONNX-compatible configuration for evaluation")
             pytorch_model, onnx_compatible_model_cfg = load_pytorch_model(
                 model_cfg,
                 args.checkpoint,
@@ -424,8 +437,13 @@ def main():
             )
             logger.info("✅ PyTorch model loaded successfully")
         else:
-            logger.error("Checkpoint required for PyTorch model when export mode is not 'none'")
-            return
+            if config.export_config.mode != "none":
+                logger.error("Checkpoint required for PyTorch model when export mode is not 'none'")
+                return
+            elif needs_onnx_config:
+                logger.error("Checkpoint required for ONNX/TensorRT evaluation")
+                logger.error("Please provide --checkpoint argument")
+                return
 
     # Export ONNX
     onnx_path = None

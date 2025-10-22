@@ -161,6 +161,7 @@ class CenterPointEvaluator(BaseEvaluator):
         try:
             if backend == "pytorch":
                 # For 3D detection, we need to load the model directly
+                # PyTorch evaluation should use STANDARD config, not ONNX config!
                 # Ensure device is properly set to CPU if CUDA is not available
                 if device == "cuda" and not torch.cuda.is_available():
                     logger.warning("CUDA not available, falling back to CPU")
@@ -168,29 +169,82 @@ class CenterPointEvaluator(BaseEvaluator):
                 device_obj = torch.device(device) if isinstance(device, str) else device
                 
                 # Use lower-level model loading to avoid CUDA checks in init_model
-                model = self._load_pytorch_model_directly(model_path, device_obj, logger)
+                # Convert ONNX config back to standard config for PyTorch evaluation
+                model = self._load_pytorch_model_directly(
+                    model_path, 
+                    device_obj, 
+                    logger, 
+                    use_standard_config=True  # Convert to standard config
+                )
                 return model
             elif backend == "onnx":
                 # For CenterPoint ONNX, we need the PyTorch model for voxelization
+                # IMPORTANT: Use the ONNX-compatible model config (self.model_cfg should already be ONNX version)
                 # Ensure device is properly set to CPU if CUDA is not available
                 if device == "cuda" and not torch.cuda.is_available():
                     logger.warning("CUDA not available, falling back to CPU")
                     device = "cpu"
                 device_obj = torch.device(device) if isinstance(device, str) else device
                 
-                # Use lower-level model loading to avoid CUDA checks in init_model
-                pytorch_model = self._load_pytorch_model_directly(
-                    model_path.replace('centerpoint_deployment', 'centerpoint/best_checkpoint.pth'), 
-                    device_obj, 
-                    logger
-                )
+                # Check if model_cfg is already ONNX version
+                if self.model_cfg.model.type == "CenterPointONNX":
+                    logger.info("Using ONNX-compatible model config for ONNX backend")
+                    # Find the checkpoint path - try to infer from model_path
+                    # Typically: work_dirs/centerpoint_deployment -> work_dirs/centerpoint/best_checkpoint.pth
+                    import os
+                    checkpoint_path = model_path.replace('centerpoint_deployment', 'centerpoint/best_checkpoint.pth')
+                    if not os.path.exists(checkpoint_path):
+                        # Try alternative paths
+                        checkpoint_path = model_path.replace('_deployment', '/best_checkpoint.pth')
+                    
+                    # IMPORTANT: ONNX backend needs ONNX config, so use_standard_config=False
+                    pytorch_model = self._load_pytorch_model_directly(
+                        checkpoint_path, 
+                        device_obj, 
+                        logger,
+                        use_standard_config=False  # Keep ONNX config for ONNX backend
+                    )
+                else:
+                    logger.error("Model config is not ONNX-compatible!")
+                    logger.error("Please use --replace-onnx-models flag when running deployment")
+                    logger.error(f"Current model type: {self.model_cfg.model.type}")
+                    logger.error("Expected model type: CenterPointONNX")
+                    raise ValueError(
+                        "ONNX evaluation requires ONNX-compatible model config. "
+                        "Please ensure the model config has been updated to use CenterPointONNX."
+                    )
+                
                 return ONNXBackend(model_path, device=device, pytorch_model=pytorch_model)
             elif backend == "tensorrt":
                 # TensorRT requires CUDA, so skip if not available
                 if device == "cuda" and not torch.cuda.is_available():
                     logger.warning("CUDA not available, skipping TensorRT backend")
                     return None
-                return CenterPointTensorRTBackend(model_path, device=device)
+                
+                # TensorRT backend needs PyTorch model for middle encoder
+                # Load PyTorch model if config is ONNX-compatible
+                if self.model_cfg.model.type == "CenterPointONNX":
+                    logger.info("Loading PyTorch model for TensorRT middle encoder")
+                    import os
+                    checkpoint_path = model_path.replace('centerpoint_deployment/tensorrt', 'centerpoint/best_checkpoint.pth')
+                    checkpoint_path = checkpoint_path.replace('/tensorrt', '')  # Handle different path formats
+                    if not os.path.exists(checkpoint_path):
+                        # Try alternative paths
+                        checkpoint_path = model_path.replace('_deployment/tensorrt', '/best_checkpoint.pth')
+                    
+                    device_obj = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+                    # IMPORTANT: TensorRT backend needs ONNX config, so use_standard_config=False
+                    pytorch_model = self._load_pytorch_model_directly(
+                        checkpoint_path, 
+                        device_obj, 
+                        logger,
+                        use_standard_config=False  # Keep ONNX config for TensorRT backend
+                    )
+                    return CenterPointTensorRTBackend(model_path, device=device, pytorch_model=pytorch_model)
+                else:
+                    logger.error("TensorRT evaluation requires ONNX-compatible model config")
+                    logger.error("Please use --replace-onnx-models flag when running deployment")
+                    raise ValueError("TensorRT evaluation requires ONNX-compatible model config")
             else:
                 logger.error(f"Unsupported backend: {backend}")
                 return None
@@ -198,25 +252,70 @@ class CenterPointEvaluator(BaseEvaluator):
             logger.error(f"Failed to create {backend} backend: {e}")
             return None
 
-    def _load_pytorch_model_directly(self, checkpoint_path: str, device: torch.device, logger) -> Any:
-        """Load PyTorch model directly without using init_model to avoid CUDA checks."""
+    def _load_pytorch_model_directly(self, checkpoint_path: str, device: torch.device, logger, use_standard_config: bool = False) -> Any:
+        """
+        Load PyTorch model directly without using init_model to avoid CUDA checks.
+        
+        Args:
+            checkpoint_path: Path to checkpoint file
+            device: Device to load model on
+            logger: Logger instance
+            use_standard_config: If True, convert ONNX config back to standard config for PyTorch evaluation
+        """
         try:
             from mmengine.registry import MODELS, init_default_scope
             from mmengine.runner import load_checkpoint
+            import copy as copy_module
             
             # Initialize mmdet3d scope
             init_default_scope("mmdet3d")
             
-            # Get model config
-            model_config = self.model_cfg.model.copy()
+            # Get model config - use deepcopy to avoid modifying shared nested objects
+            model_config = copy_module.deepcopy(self.model_cfg.model)
             
-            # Ensure device is set in model config for ONNX models
-            if hasattr(model_config, 'device'):
-                model_config.device = str(device)
-                logger.info(f"Set model config device to: {model_config.device}")
+            # For PyTorch evaluation, convert ONNX config back to standard config
+            if use_standard_config and model_config.type == "CenterPointONNX":
+                logger.info("Converting ONNX-compatible config to standard config for PyTorch evaluation")
+                # Convert model types back to standard versions
+                model_config.type = "CenterPoint"
+                
+                # Remove ONNX-specific parameters from model config
+                if hasattr(model_config, 'point_channels'):
+                    delattr(model_config, 'point_channels')
+                    logger.info("  Removed ONNX-specific parameter: point_channels")
+                if hasattr(model_config, 'device'):
+                    delattr(model_config, 'device')
+                    logger.info("  Removed ONNX-specific parameter: device")
+                
+                # Convert voxel encoder
+                if model_config.pts_voxel_encoder.type == "PillarFeatureNetONNX":
+                    model_config.pts_voxel_encoder.type = "PillarFeatureNet"
+                    logger.info("  Converted voxel encoder: PillarFeatureNetONNX -> PillarFeatureNet")
+                elif model_config.pts_voxel_encoder.type == "BackwardPillarFeatureNetONNX":
+                    model_config.pts_voxel_encoder.type = "BackwardPillarFeatureNet"
+                    logger.info("  Converted voxel encoder: BackwardPillarFeatureNetONNX -> BackwardPillarFeatureNet")
+                
+                # Convert bbox head
+                if model_config.pts_bbox_head.type == "CenterHeadONNX":
+                    model_config.pts_bbox_head.type = "CenterHead"
+                    logger.info("  Converted bbox head: CenterHeadONNX -> CenterHead")
+                    # Remove ONNX-specific parameters from bbox head
+                    if hasattr(model_config.pts_bbox_head, 'rot_y_axis_reference'):
+                        delattr(model_config.pts_bbox_head, 'rot_y_axis_reference')
+                        logger.info("  Removed ONNX-specific parameter: rot_y_axis_reference")
+                    
+                if hasattr(model_config.pts_bbox_head, 'separate_head') and model_config.pts_bbox_head.separate_head.type == "SeparateHeadONNX":
+                    model_config.pts_bbox_head.separate_head.type = "SeparateHead"
+                    logger.info("  Converted separate head: SeparateHeadONNX -> SeparateHead")
+            else:
+                # For ONNX models, ensure device is set
+                if hasattr(model_config, 'device'):
+                    model_config.device = str(device)
+                    logger.info(f"Set model config device to: {model_config.device}")
             
             # Build model using MODELS registry
             logger.info(f"Building model with device: {device}")
+            logger.info(f"Model type: {model_config.type}")
             model = MODELS.build(model_config)
             model.to(device)
             
@@ -237,17 +336,22 @@ class CenterPointEvaluator(BaseEvaluator):
             import traceback
             traceback.print_exc()
             
-            # Fallback to init_model if direct loading fails
-            try:
-                from mmdet3d.apis import init_model
-                logger.info("Falling back to init_model...")
-                model = init_model(self.model_cfg, checkpoint_path, device=device)
-                return model
-            except Exception as fallback_e:
-                logger.error(f"Fallback to init_model also failed: {fallback_e}")
-                import traceback
-                traceback.print_exc()
-                raise e
+            # Fallback to init_model if direct loading fails (only for CUDA)
+            # Note: init_model doesn't work well with CPU, so skip fallback for CPU
+            if str(device).startswith('cuda'):
+                try:
+                    from mmdet3d.apis import init_model
+                    logger.info("Falling back to init_model...")
+                    model = init_model(self.model_cfg, checkpoint_path, device=device)
+                    return model
+                except Exception as fallback_e:
+                    logger.error(f"Fallback to init_model also failed: {fallback_e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                logger.error("Direct model loading failed and fallback is disabled for CPU mode")
+            
+            raise e
 
     def _run_pytorch_inference(self, model, input_data: Dict, sample: Dict) -> tuple:
         """Run PyTorch inference with proper data format."""
@@ -410,11 +514,20 @@ class CenterPointEvaluator(BaseEvaluator):
                     heatmap, reg, height, dim, rot, vel, sample
                 )
             
-            # Check if it's ONNX format (list of torch tensors)
-            elif isinstance(output[0], torch.Tensor) and len(output) == 6:
+            # Check if it's ONNX format (list of numpy arrays or torch tensors)
+            elif isinstance(output[0], (torch.Tensor, np.ndarray)) and len(output) == 6:
                 print("INFO:projects.CenterPoint.deploy.evaluator:ONNX head outputs detected, parsing CenterPoint predictions...")
                 # ONNX outputs: [heatmap, reg, height, dim, rot, vel]
                 heatmap, reg, height, dim, rot, vel = output
+                
+                # Convert numpy arrays to torch tensors if needed
+                if isinstance(heatmap, np.ndarray):
+                    heatmap = torch.from_numpy(heatmap)
+                    reg = torch.from_numpy(reg)
+                    height = torch.from_numpy(height)
+                    dim = torch.from_numpy(dim)
+                    rot = torch.from_numpy(rot)
+                    vel = torch.from_numpy(vel)
                 
                 print(f"DEBUG: ONNX output shapes - heatmap: {heatmap.shape}, reg: {reg.shape}, height: {height.shape}, dim: {dim.shape}, rot: {rot.shape}, vel: {vel.shape}")
                 
@@ -539,17 +652,23 @@ class CenterPointEvaluator(BaseEvaluator):
                 if i < 3:
                     print(f"DEBUG: Prediction {i} - cls: {cls}, score: {score:.6f}, y: {y_idx}, x: {x_idx}")
                 
+                # Get regression offsets (IMPORTANT: reg provides fine-grained position adjustments)
+                reg_x = reg[b, 0, y_idx, x_idx].item() if reg.shape[1] > 0 else 0.0
+                reg_y = reg[b, 1, y_idx, x_idx].item() if reg.shape[1] > 1 else 0.0
+                
                 # Convert grid coordinates to 3D coordinates (same as PyTorch CenterPointBBoxCoder)
-                # PyTorch uses: (xs + 0.5) * out_size_factor * voxel_size[0] + pc_range[0]
-                out_size_factor = 4  # CenterPoint typically uses out_size_factor=4
-                x = (x_idx + 0.5) * out_size_factor * voxel_size[0] + point_cloud_range[0]
-                y = (y_idx + 0.5) * out_size_factor * voxel_size[1] + point_cloud_range[1]
+                # PyTorch uses: (xs + reg_x) * out_size_factor * voxel_size[0] + pc_range[0]
+                # Get out_size_factor from model config
+                out_size_factor = getattr(self.model_cfg.model.pts_bbox_head, 'out_size_factor', 1)
+                x = (x_idx + reg_x) * out_size_factor * voxel_size[0] + point_cloud_range[0]
+                y = (y_idx + reg_y) * out_size_factor * voxel_size[1] + point_cloud_range[1]
                 z = height[b, 0, y_idx, x_idx].item() if height.shape[1] > 0 else 0.0
                 
                 # Get dimensions (ONNX already swapped dim order: [1, 0, 2] -> [width, length, height])
-                w = dim[b, 0, y_idx, x_idx].item() if dim.shape[1] > 0 else 1.0
-                l = dim[b, 1, y_idx, x_idx].item() if dim.shape[1] > 1 else 1.0
-                h = dim[b, 2, y_idx, x_idx].item() if dim.shape[1] > 2 else 1.0
+                # IMPORTANT: CenterPoint outputs log(dim), need to apply exp() to recover actual dimensions
+                w = np.exp(dim[b, 0, y_idx, x_idx].item()) if dim.shape[1] > 0 else 1.0
+                l = np.exp(dim[b, 1, y_idx, x_idx].item()) if dim.shape[1] > 1 else 1.0
+                h = np.exp(dim[b, 2, y_idx, x_idx].item()) if dim.shape[1] > 2 else 1.0
                 
                 # Get rotation (ONNX already swapped rot order: [1, 0] -> [cos, sin])
                 if rot.shape[1] >= 2:
@@ -559,17 +678,22 @@ class CenterPointEvaluator(BaseEvaluator):
                 else:
                     yaw = 0.0
                 
-                # Apply coordinate transformation for ONNX/TensorRT outputs
-                # ONNX/TensorRT uses --rot-y-axis-reference which applies these transformations:
-                # 1. Switch width and length: bbox[:, [3, 4]] = bbox[:, [4, 3]]
-                # 2. Change rotation: bbox[:, 6] = -bbox[:, 6] - np.pi / 2
+                # IMPORTANT: Only apply coordinate transformation if rot_y_axis_reference=True
+                # Check if model uses y-axis reference (from model config)
+                rot_y_axis_reference = getattr(self.model_cfg.model.pts_bbox_head, 'rot_y_axis_reference', False)
                 
-                # 1. Switch width and length (same as PyTorch)
-                w_converted = l  # Switch w and l
-                l_converted = w
-                
-                # 2. Change rotation to clockwise y-axis (same as PyTorch)
-                yaw_converted = -yaw - np.pi / 2
+                if rot_y_axis_reference:
+                    # Apply transformations for y-axis reference models:
+                    # 1. Switch width and length: bbox[:, [3, 4]] = bbox[:, [4, 3]]
+                    # 2. Change rotation: bbox[:, 6] = -bbox[:, 6] - np.pi / 2
+                    w_converted = l  # Switch w and l
+                    l_converted = w
+                    yaw_converted = -yaw - np.pi / 2
+                else:
+                    # No transformation needed - ONNX already outputs in correct format
+                    w_converted = w
+                    l_converted = l
+                    yaw_converted = yaw
                 
                 # Keep predictions in ego coordinates to match Ground Truth coordinate system
                 bbox_ego = np.array([x, y, z, w_converted, l_converted, h, yaw_converted])

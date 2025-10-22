@@ -147,7 +147,8 @@ def verify_model_outputs(
                 # CenterPoint multi-engine setup
                 try:
                     from projects.CenterPoint.deploy.centerpoint_tensorrt_backend import CenterPointTensorRTBackend
-                    trt_backend = CenterPointTensorRTBackend(tensorrt_path, device="cuda")
+                    # Pass PyTorch model for middle encoder
+                    trt_backend = CenterPointTensorRTBackend(tensorrt_path, device="cuda", pytorch_model=pytorch_model)
                 except ImportError:
                     logger.warning("CenterPoint TensorRT backend not available, skipping verification")
                     results[f"{sample_name}_tensorrt"] = True  # Skip verification
