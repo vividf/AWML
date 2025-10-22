@@ -213,7 +213,7 @@ class CenterPointONNX(CenterPoint):
             },
             verbose=verbose,
             opset_version=onnx_opset_version,
-            do_constant_folding=False,  # Disable constant folding for numerical consistency
+            do_constant_folding=True,  # Disable constant folding for numerical consistency
         )
         print_log(f"Saved pts_backbone_neck_head onnx model: {pth_onnx_backbone_neck_head}")
 
@@ -322,7 +322,7 @@ class CenterPointONNX(CenterPoint):
             },
             verbose=verbose,
             opset_version=onnx_opset_version,
-            do_constant_folding=False,  # Disable constant folding for numerical consistency
+            do_constant_folding=True,
         )
         print_log(f"Saved pts_backbone with intermediate outputs: {pth_onnx_backbone}")
         

@@ -143,7 +143,20 @@ class CenterPointONNXHelper:
         return voxels, num_points, coors
     
     def _get_input_features(self, voxels: np.ndarray, num_points: np.ndarray, coors: np.ndarray) -> np.ndarray:
-        """Get input features for voxel encoder using PyTorch model."""
+        """
+        Get input features for ONNX voxel encoder using PyTorch model.
+        
+        This method prepares the raw input features (NOT processed features) that the
+        ONNX voxel encoder expects. The ONNX voxel encoder will then process these features.
+        
+        Args:
+            voxels: Voxel data (num_voxels, max_points, point_features)
+            num_points: Number of points per voxel (num_voxels,)
+            coors: Voxel coordinates (num_voxels, 4)
+            
+        Returns:
+            Raw input features for ONNX voxel encoder (num_voxels, max_points, feature_channels)
+        """
         if self.pytorch_model is None:
             raise ValueError("PyTorch model is required for input feature generation")
         
@@ -153,70 +166,24 @@ class CenterPointONNXHelper:
         num_points_tensor = torch.from_numpy(num_points).long().to(device)
         coors_tensor = torch.from_numpy(coors).long().to(device)
         
-        # Use PyTorch model's voxel encoder to get input features
-        # Check if it's ONNX version (only takes features) or standard version
+        # Get RAW input features (not processed features)
+        # This is what the ONNX voxel encoder expects as input
         if hasattr(self.pytorch_model.pts_voxel_encoder, 'get_input_features'):
-            # Use get_input_features for ONNX models
+            # Use get_input_features for ONNX models to get raw features
+            # DO NOT call forward() - that would give processed features
             input_features = self.pytorch_model.pts_voxel_encoder.get_input_features(
                 voxels_tensor, 
                 num_points_tensor, 
                 coors_tensor
             )
-            # Then call forward with just the features
-            input_features = self.pytorch_model.pts_voxel_encoder(input_features)
+            logger.info(f"Got raw input features from PyTorch model: shape {input_features.shape}")
         else:
-            # Standard model
-            input_features = self.pytorch_model.pts_voxel_encoder(
-                voxels_tensor, num_points_tensor, coors_tensor
+            # Standard model doesn't have get_input_features
+            # We need to manually construct the input features
+            raise NotImplementedError(
+                "Standard voxel encoder not supported for ONNX inference. "
+                "Please use CenterPointONNX with PillarFeatureNetONNX."
             )
-        
-        # Debug: Check output shape
-        print(f"DEBUG: PyTorch voxel encoder output shape: {input_features.shape}")
-        
-        # The issue is that PyTorch outputs (20752, 1, 32) but ONNX expects (20752, 32, 11)
-        # We need to understand what these dimensions represent:
-        # - PyTorch: (num_voxels, 1, 32) where 32 is the feature dimension
-        # - ONNX: (num_voxels, 32, 11) where 32 is max_points and 11 is feature_channels
-        
-        # The correct approach is to NOT reshape, but use the raw features from get_input_features
-        # Let's check what get_input_features actually returns
-        if hasattr(self.pytorch_model.pts_voxel_encoder, 'get_input_features'):
-            # Get the raw input features (before PFN processing)
-            raw_features = self.pytorch_model.pts_voxel_encoder.get_input_features(
-                voxels_tensor, 
-                num_points_tensor, 
-                coors_tensor
-            )
-            print(f"DEBUG: Raw input features shape: {raw_features.shape}")
-            
-            # Use raw features directly - this should be (num_voxels, 32, 11)
-            input_features = raw_features
-        else:
-            # Fallback: create proper input features for ONNX
-            # ONNX expects (num_voxels, 32, 11) but voxel data has (num_voxels, 32, 5)
-            num_voxels = voxels.shape[0]
-            max_points = 32
-            actual_feature_channels = voxels.shape[2]  # Usually 5
-            expected_feature_channels = 11  # ONNX model expects 11
-            
-            print(f"DEBUG: Voxel data shape: {voxels.shape}")
-            print(f"DEBUG: Actual feature channels: {actual_feature_channels}")
-            print(f"DEBUG: Expected feature channels: {expected_feature_channels}")
-            
-            # Create input features with expected shape (11 channels)
-            input_features = torch.zeros(num_voxels, max_points, expected_feature_channels, device=device)
-            
-            # Fill with actual voxel data (first 5 channels)
-            for i in range(num_voxels):
-                actual_points = min(num_points[i], max_points)
-                # Copy actual voxel data to first 5 channels
-                input_features[i, :actual_points, :actual_feature_channels] = voxels_tensor[i, :actual_points, :]
-                # Fill remaining channels with zeros (or could use padding/extension logic)
-                input_features[i, :actual_points, actual_feature_channels:] = 0.0
-            
-            print(f"DEBUG: Created input features shape: {input_features.shape}")
-        
-        print(f"DEBUG: Final input features shape for ONNX: {input_features.shape}")
         
         return input_features.detach().cpu().numpy()
     
@@ -288,26 +255,30 @@ class CenterPointONNXHelper:
             onnx_outputs: Raw outputs from backbone/neck/head ONNX
             
         Returns:
-            Processed outputs matching PyTorch format
+            Processed outputs as numpy arrays (for verification compatibility)
         """
         # ONNX outputs are in the format: [heatmap, reg, height, dim, rot, vel]
         # Each output is a numpy array with shape [batch_size, channels, H, W]
         
+        # Keep outputs as numpy arrays for verification compatibility
+        # The verification code expects numpy arrays for comparison
         processed_outputs = []
         
         for output in onnx_outputs:
             if isinstance(output, np.ndarray):
-                # Convert numpy array to torch tensor
-                output_tensor = torch.from_numpy(output)
-                processed_outputs.append(output_tensor)
-            else:
+                # Keep as numpy array for verification
                 processed_outputs.append(output)
+            else:
+                # Convert to numpy if needed
+                if hasattr(output, 'numpy'):
+                    processed_outputs.append(output.numpy())
+                else:
+                    processed_outputs.append(np.array(output))
         
-        print(f"DEBUG: ONNX postprocess - input length: {len(onnx_outputs)}")
-        print(f"DEBUG: ONNX postprocess - output length: {len(processed_outputs)}")
+        logger.info(f"ONNX postprocess - output length: {len(processed_outputs)}")
         for i, output in enumerate(processed_outputs):
-            if isinstance(output, torch.Tensor):
-                print(f"DEBUG: ONNX output {i} shape: {output.shape}")
+            if isinstance(output, np.ndarray):
+                logger.info(f"  Output[{i}] shape: {output.shape}, dtype: {output.dtype}")
         
         return processed_outputs
 

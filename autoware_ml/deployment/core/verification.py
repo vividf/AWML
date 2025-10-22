@@ -217,7 +217,7 @@ def _verify_backend(
         logger.info(f"  {backend_name} latency: {latency:.2f} ms")
         logger.info(f"  {backend_name} output type: {type(output)}")
         if output is not None:
-            logger.info(f"  {backend_name} output length: {len(output)}")
+            logger.info(f"  {backend_name} output length: {len(output) if hasattr(output, '__len__') else 'N/A'}")
         else:
             logger.info(f"  {backend_name} output: None")
 
@@ -227,6 +227,39 @@ def _verify_backend(
             logger.error(f"  {backend_name} verification FAILED: None output detected")
             return False, None, 0.0
         
+        # Handle empty list outputs
+        if isinstance(output, list) and len(output) == 0:
+            logger.error(f"  {backend_name} verification FAILED: Empty output list")
+            return False, None, 0.0
+        if isinstance(reference_output, list) and len(reference_output) == 0:
+            logger.error(f"  {backend_name} verification FAILED: Empty reference output list")
+            return False, None, 0.0
+        
+        # Log detailed output information for debugging
+        logger.info(f"  Reference output details:")
+        if isinstance(reference_output, list):
+            for i, out in enumerate(reference_output):
+                if isinstance(out, np.ndarray):
+                    logger.info(f"    Output[{i}] shape: {out.shape}, dtype: {out.dtype}")
+                    logger.info(f"    Output[{i}] range: [{out.min():.6f}, {out.max():.6f}]")
+                    logger.info(f"    Output[{i}] mean: {out.mean():.6f}, std: {out.std():.6f}")
+        elif isinstance(reference_output, np.ndarray):
+            logger.info(f"    Shape: {reference_output.shape}, dtype: {reference_output.dtype}")
+            logger.info(f"    Range: [{reference_output.min():.6f}, {reference_output.max():.6f}]")
+            logger.info(f"    Mean: {reference_output.mean():.6f}, std: {reference_output.std():.6f}")
+        
+        logger.info(f"  {backend_name} output details:")
+        if isinstance(output, list):
+            for i, out in enumerate(output):
+                if isinstance(out, np.ndarray):
+                    logger.info(f"    Output[{i}] shape: {out.shape}, dtype: {out.dtype}")
+                    logger.info(f"    Output[{i}] range: [{out.min():.6f}, {out.max():.6f}]")
+                    logger.info(f"    Output[{i}] mean: {out.mean():.6f}, std: {out.std():.6f}")
+        elif isinstance(output, np.ndarray):
+            logger.info(f"    Shape: {output.shape}, dtype: {output.dtype}")
+            logger.info(f"    Range: [{output.min():.6f}, {output.max():.6f}]")
+            logger.info(f"    Mean: {output.mean():.6f}, std: {output.std():.6f}")
+        
         # Handle different output formats
         if isinstance(output, list) and isinstance(reference_output, list):
             # Both are lists (e.g., CenterPoint head outputs)
@@ -234,22 +267,28 @@ def _verify_backend(
             mean_diff = 0.0
             total_elements = 0
             
-            for ref_out, out in zip(reference_output, output):
+            logger.info(f"  Computing differences for {len(output)} outputs...")
+            for i, (ref_out, out) in enumerate(zip(reference_output, output)):
                 if isinstance(ref_out, np.ndarray) and isinstance(out, np.ndarray):
                     diff = np.abs(ref_out - out)
-                    max_diff = max(max_diff, diff.max())
+                    output_max_diff = diff.max()
+                    output_mean_diff = diff.mean()
+                    max_diff = max(max_diff, output_max_diff)
                     mean_diff += diff.sum()
                     total_elements += diff.size
+                    logger.info(f"    Output[{i}] - max_diff: {output_max_diff:.6f}, mean_diff: {output_mean_diff:.6f}")
             
             if total_elements > 0:
                 mean_diff /= total_elements
+            else:
+                logger.warning(f"  No elements found for comparison!")
         else:
             # Standard array comparison
             max_diff = np.abs(reference_output - output).max()
             mean_diff = np.abs(reference_output - output).mean()
 
-        logger.info(f"  Max difference: {max_diff:.6f}")
-        logger.info(f"  Mean difference: {mean_diff:.6f}")
+        logger.info(f"  Overall Max difference: {max_diff:.6f}")
+        logger.info(f"  Overall Mean difference: {mean_diff:.6f}")
 
         if max_diff < tolerance:
             logger.info(f"  {backend_name} verification PASSED ✓")

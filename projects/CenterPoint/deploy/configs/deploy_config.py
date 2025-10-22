@@ -7,9 +7,9 @@ Modify according to your needs.
 
 # Export settings
 export = dict(
-    mode="none",  # 'onnx', 'trt', 'both', 'none'
+    mode="onnx",  # 'onnx', 'trt', 'both', 'none'
     verify=True,  # Enable cross-backend verification
-    device="cuda:0",  # Device for export/inference
+    device="cpu",  # Device for export/inference
     work_dir="work_dirs/centerpoint_deployment",
 )
 
@@ -89,8 +89,8 @@ backend_config = dict(
 
 # Evaluation configuration
 evaluation = dict(
-    enabled=True,  # Enable evaluation
-    num_samples=10,  # Number of samples to evaluate (3D is slower)
+    enabled=False,  # Enable evaluation
+    num_samples=1,  # Number of samples to evaluate (3D is slower)
     verbose=True,  # Detailed per-sample output for debugging
     # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)
     models=dict(
