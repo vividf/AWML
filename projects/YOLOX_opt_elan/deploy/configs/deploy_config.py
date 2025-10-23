@@ -7,7 +7,7 @@ Modify according to your needs.
 
 # Export settings
 export = dict(
-    mode="onnx",  # 'onnx', 'trt', 'both', 'none'
+    mode="both",  # 'onnx', 'trt', 'both', 'none'
     verify=True,  # Enable cross-backend verification
     device="cuda:0",  # Device for export/inference (CPU for Docker testing)
     work_dir="work_dirs/yolox_opt_elan_deployment",
@@ -76,8 +76,8 @@ backend_config = dict(
 
 # Evaluation configuration
 evaluation = dict(
-    enabled=False,  # Enable evaluation
-    num_samples=-1,  # Number of samples to evaluate (set to -1 for all)
+    enabled=True,  # Enable evaluation
+    num_samples=1,  # Number of samples to evaluate (set to -1 for all)
     verbose=False,  # Detailed per-sample output
     # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)
     models=dict(

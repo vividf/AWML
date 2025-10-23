@@ -190,6 +190,7 @@ def main():
                 tensorrt_path=verify_trt,
                 device=device,
                 logger=logger,
+                model_type="CalibrationStatusClassification",  # Explicitly specify model type
             )
 
             # Check if all verifications passed

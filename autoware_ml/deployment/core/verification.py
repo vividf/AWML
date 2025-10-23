@@ -13,6 +13,12 @@ import torch
 
 from ..backends import BaseBackend, ONNXBackend, PyTorchBackend, TensorRTBackend
 
+# Try to import CenterPoint-specific backend (optional)
+try:
+    from projects.CenterPoint.deploy.centerpoint_tensorrt_backend import CenterPointTensorRTBackend
+except ImportError:
+    CenterPointTensorRTBackend = None
+
 DEFAULT_TOLERANCE = 1e-3
 
 
@@ -24,6 +30,7 @@ def verify_model_outputs(
     device: str = "cpu",
     tolerance: float = DEFAULT_TOLERANCE,
     logger: logging.Logger = None,
+    model_type: str = "auto",  # "auto", "CenterPoint", "YOLOX", etc.
 ) -> Dict[str, bool]:
     """
     Verify exported models against PyTorch reference.
@@ -36,6 +43,7 @@ def verify_model_outputs(
         device: Device for PyTorch inference
         tolerance: Maximum allowed difference
         logger: Optional logger instance
+        model_type: Model type ("auto", "CenterPoint", "YOLOX", etc.)
 
     Returns:
         Dictionary with verification results for each backend
@@ -142,23 +150,39 @@ def verify_model_outputs(
         if tensorrt_path:
             logger.info("\nVerifying TensorRT model...")
             
-            # Check if this is CenterPoint (multi-engine setup)
-            if os.path.isdir(tensorrt_path) and any(f.endswith('.engine') for f in os.listdir(tensorrt_path)):
+            # Determine backend type based on model_type parameter
+            use_centerpoint_backend = False
+            
+            if model_type == "auto":
+                # Auto-detect: check if CenterPoint backend is available and path structure suggests multi-engine
+                use_centerpoint_backend = (
+                    CenterPointTensorRTBackend is not None and 
+                    os.path.isdir(tensorrt_path) and 
+                    any(f.endswith('.engine') for f in os.listdir(tensorrt_path))
+                )
+            elif model_type == "CenterPoint":
+                # Explicitly CenterPoint model
+                use_centerpoint_backend = CenterPointTensorRTBackend is not None
+            else:
+                # YOLOX, other models - use standard backend
+                use_centerpoint_backend = False
+            
+            if use_centerpoint_backend:
                 # CenterPoint multi-engine setup
                 try:
-                    from projects.CenterPoint.deploy.centerpoint_tensorrt_backend import CenterPointTensorRTBackend
                     # Pass PyTorch model for middle encoder
                     trt_backend = CenterPointTensorRTBackend(tensorrt_path, device="cuda", pytorch_model=pytorch_model)
-                except ImportError:
-                    logger.warning("CenterPoint TensorRT backend not available, skipping verification")
-                    results[f"{sample_name}_tensorrt"] = True  # Skip verification
-                    continue
+                    logger.info("Using CenterPoint TensorRT backend (multi-engine)")
+                except Exception as e:
+                    logger.warning(f"Failed to create CenterPoint TensorRT backend: {e}, falling back to standard backend")
+                    trt_backend = TensorRTBackend(tensorrt_path, device="cuda")
             else:
                 # Standard single-engine setup
                 trt_backend = TensorRTBackend(tensorrt_path, device="cuda")
+                logger.info("Using standard TensorRT backend (single-engine)")
             
             # For CenterPoint, pass the original input_data instead of input_tensor
-            if isinstance(trt_backend, CenterPointTensorRTBackend):
+            if CenterPointTensorRTBackend is not None and isinstance(trt_backend, CenterPointTensorRTBackend):
                 trt_success, trt_output, trt_latency = _verify_backend(
                     trt_backend,
                     input_tensor,  # input_tensor is already a dict for CenterPoint

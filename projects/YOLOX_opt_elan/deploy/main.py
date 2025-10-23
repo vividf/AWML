@@ -440,6 +440,7 @@ def main():
             device=config.export_config.device,
             tolerance=config.verification_config.get("tolerance", 1e-3),
             logger=logger,
+            model_type="YOLOX",  # Explicitly specify YOLOX
         )
 
         # Check if all verifications passed

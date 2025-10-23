@@ -485,6 +485,7 @@ def main():
             device=config.export_config.device,
             tolerance=config.verification_config.get("tolerance", 1e-2),
             logger=logger,
+            model_type="CenterPoint",  # Explicitly specify CenterPoint
         )
         
         # Print verification results
