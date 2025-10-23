@@ -696,6 +696,29 @@ class CenterPointEvaluator(BaseEvaluator):
         rot = rot.to(device)
         vel = vel.to(device) if vel is not None else None
         
+        # IMPORTANT: If model was exported with rot_y_axis_reference=True,
+        # we need to convert ONNX outputs back to standard format before passing to predict_by_feat
+        rot_y_axis_reference = getattr(self.model_cfg.model.pts_bbox_head, 'rot_y_axis_reference', False)
+        
+        if rot_y_axis_reference:
+            print(f"INFO: Detected rot_y_axis_reference=True, converting outputs to standard format")
+            
+            # 1. Convert dim from [w, l, h] back to [l, w, h]
+            # ONNX output: dim[:, [0, 1, 2]] = [w, l, h]
+            # Standard: dim[:, [0, 1, 2]] = [l, w, h]
+            # So we need to swap channels 0 and 1
+            dim = dim[:, [1, 0, 2], :, :]  # [w, l, h] -> [l, w, h]
+            
+            # 2. Convert rot from [-cos(x), -sin(y)] back to [sin(y), cos(x)]
+            # ONNX output: rot[:, [0, 1]] = [-cos(x), -sin(y)]
+            # Standard: rot[:, [0, 1]] = [sin(y), cos(x)]
+            # Step 1: Negate to get [cos(x), sin(y)]
+            rot = rot * (-1.0)
+            # Step 2: Swap channels to get [sin(y), cos(x)]
+            rot = rot[:, [1, 0], :, :]
+            
+            print(f"INFO: Converted dim [w,l,h]->[l,w,h] and rot [-cos,-sin]->[sin,cos]")
+        
         # Prepare head outputs in mmdet3d format: Tuple[List[dict]]
         # The head outputs should be in dict format with keys: 'heatmap', 'reg', 'height', 'dim', 'rot', 'vel'
         preds_dict = {

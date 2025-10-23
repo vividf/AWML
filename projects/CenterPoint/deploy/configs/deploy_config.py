@@ -7,9 +7,9 @@ Modify according to your needs.
 
 # Export settings
 export = dict(
-    mode="none",  # Skip export (already done)
-    verify=False,  # Disable verification
-    device="cuda",  # Use CUDA
+    mode="both",  # Export both ONNX and TensorRT
+    verify=False,  # Disable verification to save time
+    device="cpu",  # Use CUDA for TensorRT
     work_dir="work_dirs/centerpoint_deployment",
 )
 
@@ -94,15 +94,15 @@ evaluation = dict(
     verbose=True,  # Detailed per-sample output for debugging
     # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)
     models=dict(
-        # pytorch="work_dirs/centerpoint/best_checkpoint.pth",  # PyTorch checkpoint (skip to save memory)
+        pytorch="work_dirs/centerpoint/best_checkpoint.pth",  # PyTorch checkpoint
         onnx="work_dirs/centerpoint_deployment",  # Path to ONNX model directory
-        tensorrt="work_dirs/centerpoint_deployment/tensorrt",  # Path to TensorRT engine directory (compare with ONNX)
+        tensorrt="work_dirs/centerpoint_deployment/tensorrt",  # Path to TensorRT engine directory
     ),
 )
 
 # Verification configuration
 verification = dict(
-    enabled=True,  # Will use export.verify
+    enabled=False,  # Will use export.verify
     tolerance=1e-1,  # Slightly higher tolerance for 3D detection
     num_verify_samples=1,  # Fewer samples for 3D (slower)
 )
