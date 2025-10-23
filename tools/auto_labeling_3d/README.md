@@ -4,6 +4,58 @@ The pipeline of auto labeling for 3D detection.
 
 - [Support priority](https://github.com/tier4/AWML/blob/main/docs/design/autoware_ml_design.md#support-priority): Tier S
 
+```mermaid
+graph LR
+    NADATA[(non-annotated T4Dataset)]
+
+    subgraph "Model A inference"
+        INFERENCE_A[create_info]
+    end
+
+    subgraph "Model B inference"
+        INFERENCE_B[create_info]
+    end
+
+    subgraph "Model C inference"
+        INFERENCE_C[create_info]
+    end
+
+    subgraph "Ensemble"
+        ENSEMBLE[filter_objects]
+    end
+
+    subgraph "Temporal ID Consistency"
+        TRACKING[attach_tracking_id]
+    end
+
+    subgraph "Convert to T4Dataset"
+        CONVERT[create_pseudo_dataset]
+    end
+
+    DATA[(pseudo-label T4Dataset)]
+
+    NADATA --> INFERENCE_A
+    NADATA --> INFERENCE_B
+    NADATA --> INFERENCE_C
+
+    INFERENCE_A --> ENSEMBLE
+    INFERENCE_B --> ENSEMBLE
+    INFERENCE_C --> ENSEMBLE
+
+    ENSEMBLE --> TRACKING
+    TRACKING --> CONVERT
+    CONVERT --> DATA
+
+    click INFERENCE_A "https://github.com/tier4/AWML/tree/main/tools/auto_labeling_3d#2-create-info-file-from-non-annotated-t4dataset"
+    click INFERENCE_B "https://github.com/tier4/AWML/tree/main/tools/auto_labeling_3d#2-create-info-file-from-non-annotated-t4dataset"
+    click INFERENCE_C "https://github.com/tier4/AWML/tree/main/tools/auto_labeling_3d#2-create-info-file-from-non-annotated-t4dataset"
+    click ENSEMBLE "https://github.com/tier4/AWML/tree/main/tools/auto_labeling_3d#3-filter-objects-which-do-not-use-for-pseudo-t4dataset"
+    click TRACKING "https://github.com/tier4/AWML/tree/main/tools/auto_labeling_3d#4-attach-tracking-id-to-info-file"
+    click CONVERT "https://github.com/tier4/AWML/tree/main/tools/auto_labeling_3d#5-create-pseudo-t4dataset"
+```
+
+![Auto Labeling 3D Process Flow](docs/auto_labeling_3d_process_flow.drawio.svg)
+
 ## 1. Setup environment
 
 - Please follow the [installation tutorial](/docs/tutorial/tutorial_detection_3d.md) to set up the environment.
