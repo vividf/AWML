@@ -38,7 +38,6 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
         img_prefix: str,
         model_cfg: Config,
         device: str = "cpu",
-        use_pipeline: bool = True,
     ):
         """
         Initialize YOLOX_opt_elan DataLoader.
@@ -48,7 +47,6 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
             img_prefix: Directory path containing images (can be empty if full paths in annotations)
             model_cfg: Model configuration containing test pipeline
             device: Device to load tensors on ('cpu', 'cuda', etc.)
-            use_pipeline: Whether to use MMDet pipeline (True) or simple preprocessing (False)
 
         Raises:
             FileNotFoundError: If ann_file doesn't exist
@@ -59,7 +57,6 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
                 "ann_file": ann_file,
                 "img_prefix": img_prefix,
                 "device": device,
-                "use_pipeline": use_pipeline,
             }
         )
 
@@ -74,8 +71,6 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
         self.img_prefix = img_prefix
         self.model_cfg = model_cfg
         self.device = device
-        self.use_pipeline = use_pipeline
-
         # Load T4Dataset format annotations
         with open(ann_file, "r") as f:
             ann_data = json.load(f)
@@ -85,10 +80,7 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
         self.data_list = ann_data.get("data_list", [])
 
         # Build preprocessing pipeline from model config
-        if self.use_pipeline:
-            self.pipeline = build_test_pipeline(model_cfg)
-        else:
-            self.pipeline = None
+        self.pipeline = build_test_pipeline(model_cfg)
 
     def load_sample(self, index: int) -> Dict[str, Any]:
         """
@@ -151,24 +143,6 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
 
     def preprocess(self, sample: Dict[str, Any]) -> torch.Tensor:
         """
-        Preprocess sample using MMDet pipeline or simple preprocessing.
-
-        Args:
-            sample: Raw sample data from load_sample()
-
-        Returns:
-            Preprocessed tensor with shape (1, C, H, W) for batch size 1
-
-        Raises:
-            ValueError: If sample format is invalid
-        """
-        if self.use_pipeline:
-            return self._preprocess_with_pipeline(sample)
-        else:
-            return self._preprocess_simple(sample)
-
-    def _preprocess_with_pipeline(self, sample: Dict[str, Any]) -> torch.Tensor:
-        """
         Preprocess using MMDet pipeline (recommended).
 
         This ensures consistency with training preprocessing.
@@ -223,38 +197,6 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
         # This matches MMDetection's PackDetInputs format
         return [scale, scale, scale, scale]
 
-    def _preprocess_simple(self, sample: Dict[str, Any]) -> torch.Tensor:
-        """
-        Simple preprocessing without MMDet pipeline.
-
-        This is a fallback option but may not match training preprocessing exactly.
-        Uses 960x960 input size for YOLOX_opt_elan.
-        """
-        import cv2
-
-        # Load image
-        img_path = sample["img_path"]
-        img = cv2.imread(img_path)
-        if img is None:
-            raise ValueError(f"Failed to load image: {img_path}")
-
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-        # Resize to model input size (960x960 for YOLOX_opt_elan)
-        input_size = (960, 960)
-        img_resized = cv2.resize(img, input_size)
-
-        # Pad to square (already square but keeping consistency)
-        # Normalize using standard ImageNet mean/std or keep as is
-        img_float = img_resized.astype(np.float32)
-
-        # Convert to tensor (H, W, C) -> (C, H, W)
-        tensor = torch.from_numpy(img_float).permute(2, 0, 1)
-
-        # Add batch dimension
-        tensor = tensor.unsqueeze(0)
-
-        return tensor.to(self.device)
 
     def get_num_samples(self) -> int:
         """

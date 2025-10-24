@@ -35,7 +35,6 @@ class CenterPointDataLoader(BaseDataLoader):
         info_file: str,
         model_cfg: Config,
         device: str = "cpu",
-        use_pipeline: bool = True,
     ):
         """
         Initialize CenterPoint DataLoader.
@@ -44,7 +43,6 @@ class CenterPointDataLoader(BaseDataLoader):
             info_file: Path to info.pkl file (e.g., centerpoint_infos_val.pkl)
             model_cfg: Model configuration containing test pipeline
             device: Device to load tensors on ('cpu', 'cuda', etc.)
-            use_pipeline: Whether to use MMDet3D pipeline (True) or simple preprocessing (False)
 
         Raises:
             FileNotFoundError: If info_file doesn't exist
@@ -54,7 +52,6 @@ class CenterPointDataLoader(BaseDataLoader):
             config={
                 "info_file": info_file,
                 "device": device,
-                "use_pipeline": use_pipeline,
             }
         )
 
@@ -65,16 +62,12 @@ class CenterPointDataLoader(BaseDataLoader):
         self.info_file = info_file
         self.model_cfg = model_cfg
         self.device = device
-        self.use_pipeline = use_pipeline
 
         # Load info.pkl
         self.data_infos = self._load_info_file()
 
         # Build preprocessing pipeline
-        if self.use_pipeline:
-            self.pipeline = build_test_pipeline(model_cfg)
-        else:
-            self.pipeline = None
+        self.pipeline = build_test_pipeline(model_cfg)
 
     def _load_info_file(self) -> list:
         """
@@ -189,31 +182,6 @@ class CenterPointDataLoader(BaseDataLoader):
 
     def preprocess(self, sample: Dict[str, Any]) -> Union[Dict[str, torch.Tensor], torch.Tensor]:
         """
-        Preprocess sample using MMDet3D pipeline.
-
-        Args:
-            sample: Raw sample data from load_sample()
-
-        Returns:
-            For voxel-based models (CenterPoint):
-            Dictionary containing:
-            - voxels: Voxel features (N, max_points, C)
-            - num_points: Number of points per voxel (N,)
-            - coors: Voxel coordinates (N, 4) where 4 = (batch_idx, z, y, x)
-
-            For point-based models:
-            Tensor of point features
-
-        Raises:
-            ValueError: If sample format is invalid
-        """
-        if self.use_pipeline:
-            return self._preprocess_with_pipeline(sample)
-        else:
-            return self._preprocess_simple(sample)
-
-    def _preprocess_with_pipeline(self, sample: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        """
         Preprocess using MMDet3D pipeline (recommended).
 
         This ensures consistency with training preprocessing.
@@ -275,25 +243,8 @@ class CenterPointDataLoader(BaseDataLoader):
 
         return inputs
 
-    def _preprocess_simple(self, sample: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        """
-        Simple preprocessing without MMDet3D pipeline.
 
-        This is a fallback option but may not match training preprocessing exactly.
-        For CenterPoint, this includes basic voxelization.
-        """
-        # Load point cloud
-        lidar_path = sample["lidar_points"]["lidar_path"]
-        points = self._load_point_cloud(lidar_path)
 
-        # Simple voxelization (placeholder - real implementation would be more complex)
-        # For actual deployment, using the pipeline is strongly recommended
-        voxel_size = self.model_cfg.get("voxel_size", [0.075, 0.075, 0.2])
-        point_cloud_range = self.model_cfg.get("point_cloud_range", [0, -40, -3, 70.4, 40, 1])
-
-        # This is a simplified version - real voxelization is more complex
-        # Using pipeline is recommended for production
-        return {"points": torch.from_numpy(points).to(self.device)}
 
     def _load_point_cloud(self, lidar_path: str) -> np.ndarray:
         """
