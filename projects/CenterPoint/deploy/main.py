@@ -11,6 +11,7 @@ replacing the old DeploymentRunner approach.
 """
 
 import argparse
+import copy
 import logging
 import os
 import sys
@@ -66,8 +67,8 @@ def load_pytorch_model(
     Returns:
         Tuple of (loaded model, modified model config)
     """
-    from mmdet3d.apis import init_model
     from mmengine.registry import MODELS
+    from mmengine.runner import load_checkpoint
 
     # Initialize mmdet3d scope
     init_default_scope("mmdet3d")
@@ -75,24 +76,18 @@ def load_pytorch_model(
     # Get model config
     model_config = model_cfg.model.copy()
 
-    # TODO(vividf): remove this
     # Replace with ONNX models if requested
     if replace_onnx_models:
-        print("Replacing model components with ONNX-compatible versions")
-
         # Update model type
         model_config.type = "CenterPointONNX"
         model_config.point_channels = model_config.pts_voxel_encoder.in_channels
         model_config.device = device
 
         # Update voxel encoder
-        print(f"Original voxel encoder type: {model_config.pts_voxel_encoder.type}")
         if model_config.pts_voxel_encoder.type == "PillarFeatureNet":
             model_config.pts_voxel_encoder.type = "PillarFeatureNetONNX"
-            print(f"Updated voxel encoder type to: {model_config.pts_voxel_encoder.type}")
         elif model_config.pts_voxel_encoder.type == "BackwardPillarFeatureNet":
             model_config.pts_voxel_encoder.type = "BackwardPillarFeatureNetONNX"
-            print(f"Updated voxel encoder type to: {model_config.pts_voxel_encoder.type}")
 
         # Update bbox head
         model_config.pts_bbox_head.type = "CenterHeadONNX"
@@ -103,26 +98,15 @@ def load_pytorch_model(
         if hasattr(model_config.pts_backbone, "type") and model_config.pts_backbone.type == "ConvNeXt_PC":
             model_config.pts_backbone.with_cp = False
 
-    # Build model
+    # Build and load model
     model = MODELS.build(model_config)
     model.to(device)
-
-    # Load checkpoint
-    from mmengine.runner import load_checkpoint
-
     load_checkpoint(model, checkpoint_path, map_location=device)
-
     model.eval()
 
     # Create a new config with the modified model config
     modified_cfg = model_cfg.copy()
-    # Deep copy the model config to ensure all nested objects are copied
-    import copy
     modified_cfg.model = copy.deepcopy(model_config)
-    
-    # Debug: Verify the modified config
-    print(f"Modified config model type: {modified_cfg.model.type}")
-    print(f"Modified config voxel encoder type: {modified_cfg.model.pts_voxel_encoder.type}")
 
     return model, modified_cfg
 
@@ -434,7 +418,6 @@ def main():
     # Prepare model configurations
     # - original_model_cfg: for PyTorch evaluation (no ONNX modifications)
     # - onnx_model_cfg: for ONNX/TensorRT evaluation and export (with ONNX modifications)
-    import copy
     original_model_cfg = copy.deepcopy(model_cfg)  # Deep copy to keep original intact
     onnx_model_cfg = model_cfg  # Will be replaced if ONNX models are loaded
     pytorch_model = None

@@ -41,11 +41,6 @@ class CenterPointEvaluator(BaseEvaluator):
         """
         super().__init__(config={})
         self.model_cfg = model_cfg
-        
-        # Debug: Check the model config in evaluator
-        logger = logging.getLogger(__name__)
-        logger.info(f"Evaluator init model type: {self.model_cfg.model.type}")
-        logger.info(f"Evaluator init voxel encoder type: {self.model_cfg.model.pts_voxel_encoder.type}")
 
         # Get class names
         if class_names is not None:
@@ -134,15 +129,6 @@ class CenterPointEvaluator(BaseEvaluator):
                 # Parse predictions and ground truths
                 predictions = self._parse_predictions(output, sample)
                 ground_truths = self._parse_ground_truths(sample)
-                
-                # Debug PyTorch heatmap values
-                if hasattr(output, '__iter__') and len(output) > 0:
-                    if hasattr(output[0], 'pred_instances_3d'):
-                        pred_instances = output[0].pred_instances_3d
-                        if hasattr(pred_instances, 'scores') and len(pred_instances.scores) > 0:
-                            scores = pred_instances.scores
-                            print(f"DEBUG: PyTorch prediction scores - min: {scores.min():.6f}, max: {scores.max():.6f}, mean: {scores.mean():.6f}")
-                            print(f"DEBUG: PyTorch prediction count: {len(scores)}")
 
                 predictions_list.append(predictions)
                 ground_truths_list.append(ground_truths)
@@ -296,7 +282,7 @@ class CenterPointEvaluator(BaseEvaluator):
             # Add cfg attribute to model (required by inference_detector)
             model.cfg = self.model_cfg
             
-            # Load checkpoint
+            # Load checkpointoriginal_model_cfg
             logger.info(f"Loading checkpoint from: {checkpoint_path}")
             load_checkpoint(model, checkpoint_path, map_location=device)
             
@@ -388,10 +374,8 @@ class CenterPointEvaluator(BaseEvaluator):
                         num_points_torch,
                         coors_torch
                     )
-                    print(f"DEBUG: TensorRT got 11-dim features from get_input_features: {voxels_11d.shape}")
                 else:
-                    # Fallback: zero padding (not ideal)
-                    print(f"WARNING: get_input_features not available, using zero padding")
+                    # Fallback: zero padding
                     pad_size = 11 - voxels_torch.shape[2]
                     padding = torch.zeros(voxels_torch.shape[0], voxels_torch.shape[1], pad_size, 
                                         dtype=voxels_torch.dtype, device=device)
@@ -410,15 +394,11 @@ class CenterPointEvaluator(BaseEvaluator):
                 'num_points': num_points
             }
             
-            print(f"DEBUG: Voxelized data - voxels: {voxels.shape}, coors: {coors.shape}, coors range: [{coors.min()}, {coors.max()}]")
-            
             # Run TensorRT inference
             output, latency = backend.infer(voxelized_input)
-            
             return output, latency
         else:
-            # Fallback to direct inference (will use dummy coors)
-            print(f"WARNING: PyTorch model not available for voxelization, using fallback")
+            # Fallback to direct inference
             return backend.infer(input_data)
     
     def _run_pytorch_inference(self, model, input_data: Dict, sample: Dict) -> tuple:
@@ -436,14 +416,7 @@ class CenterPointEvaluator(BaseEvaluator):
             voxels = input_data['voxels']
             num_points = input_data['num_points'] 
             coors = input_data['coors']
-        else:
-            # Convert from points format
-            points = input_data['points']
-            # Create dummy voxels for verification
-            voxels = torch.randn(1000, 32, 11)  # Dummy voxels
-            num_points = torch.randint(1, 33, (1000,))  # Dummy num_points
-            coors = torch.randint(0, 100, (1000, 3))  # Dummy coors
-        
+
         # Create data sample
         data_sample = Det3DDataSample()
         data_sample.set_metainfo(sample.get('metainfo', {}))
@@ -483,80 +456,45 @@ class CenterPointEvaluator(BaseEvaluator):
         """Parse model output into prediction format."""
         predictions = []
         
-        # Debug output
-        print(f"DEBUG: Raw output type: {type(output)}")
-        
         # Convert tuple to list if needed
         if isinstance(output, tuple):
             output = list(output)
-        
-        if isinstance(output, list):
-            print(f"DEBUG: List output length: {len(output)}")
-            if len(output) > 0:
-                print(f"DEBUG: Item 0 type: {type(output[0])}")
-                if hasattr(output[0], '__dict__'):
-                    print(f"DEBUG: Item 0 attributes: {list(output[0].__dict__.keys())}")
         
         # Handle different output formats
         if isinstance(output, list) and len(output) > 0:
             # Check if it's Det3DDataSample format (PyTorch)
             if hasattr(output[0], 'pred_instances_3d'):
-                print("INFO:projects.CenterPoint.deploy.evaluator:Raw head outputs detected, parsing CenterPoint predictions...")
                 data_sample = output[0]
-                
-                # Extract predictions from Det3DDataSample
                 pred_instances = data_sample.pred_instances_3d
-                print(f"DEBUG: pred_instances attributes: {list(pred_instances.__dict__.keys())}")
                 
                 if hasattr(pred_instances, 'bboxes_3d') and hasattr(pred_instances, 'scores_3d') and hasattr(pred_instances, 'labels_3d'):
                     bboxes_3d = pred_instances.bboxes_3d
                     scores_3d = pred_instances.scores_3d
                     labels_3d = pred_instances.labels_3d
                     
-                    print(f"DEBUG: Det3DDataSample - bboxes_3d shape: {bboxes_3d.shape}, scores shape: {scores_3d.shape}, labels shape: {labels_3d.shape}")
-                    
                     # Convert to numpy for processing
                     bboxes_np = bboxes_3d.cpu().numpy()
                     scores_np = scores_3d.cpu().numpy()
                     labels_np = labels_3d.cpu().numpy()
                     
-                    print(f"DEBUG: PyTorch bbox format - first bbox: {bboxes_np[0]}")
-                    print(f"DEBUG: PyTorch bbox range - x: {bboxes_np[:, 0].min():.2f} to {bboxes_np[:, 0].max():.2f}")
-                    print(f"DEBUG: PyTorch bbox range - y: {bboxes_np[:, 1].min():.2f} to {bboxes_np[:, 1].max():.2f}")
-                    print(f"DEBUG: PyTorch bbox range - z: {bboxes_np[:, 2].min():.2f} to {bboxes_np[:, 2].max():.2f}")
-                    print(f"DEBUG: PyTorch labels: {np.unique(labels_np)}")
-                    print(f"DEBUG: PyTorch scores range: {scores_np.min():.3f} to {scores_np.max():.3f}")
-                    
                     # Parse each prediction
                     for i in range(len(bboxes_np)):
                         bbox_3d = bboxes_np[i]  # [x, y, z, w, l, h, yaw, vx, vy]
-                        score = scores_np[i]
-                        label = labels_np[i]
-                        
-                        # Keep predictions in ego coordinates to match Ground Truth coordinate system
                         bbox_ego = bbox_3d[:7]  # [x, y, z, w, l, h, yaw]
                         
                         predictions.append({
-                            'bbox_3d': bbox_ego.tolist(),  # [x, y, z, w, l, h, yaw] in ego coordinate (same as GT)
-                            'score': float(score),
-                            'label': int(label)
+                            'bbox_3d': bbox_ego.tolist(),
+                            'score': float(scores_np[i]),
+                            'label': int(labels_np[i])
                         })
-                    
-                    print(f"DEBUG: Parsed {len(predictions)} predictions from Det3DDataSample")
                     
             # Check if it's TensorRT format (List[Dict[str, torch.Tensor]])
             elif isinstance(output[0], dict) and len(output) == 6:
-                print("INFO:projects.CenterPoint.deploy.evaluator:TensorRT format detected, parsing CenterPoint predictions...")
                 # TensorRT format: List[Dict[str, torch.Tensor]] with 6 head outputs
-                # Expected keys: heatmap, reg, height, dim, rot, vel
                 head_outputs = {}
                 for item in output:
                     for key, value in item.items():
                         head_outputs[key] = value
-                
-                print(f"DEBUG: TensorRT head outputs keys: {list(head_outputs.keys())}")
-                for key, value in head_outputs.items():
-                    print(f"DEBUG: TensorRT {key} shape: {value.shape}")
                 
                 # Parse CenterPoint head outputs
                 predictions = self._parse_centerpoint_head_outputs(
@@ -571,20 +509,14 @@ class CenterPointEvaluator(BaseEvaluator):
                     
             # Check if it's raw head outputs format (ONNX)
             elif isinstance(output[0], (list, tuple)) and len(output[0]) == 6:
-                print("INFO:projects.CenterPoint.deploy.evaluator:Raw head outputs detected, parsing CenterPoint predictions...")
                 # Raw head outputs: [heatmap, reg, height, dim, rot, vel]
                 heatmap, reg, height, dim, rot, vel = output[0]
-                
-                print(f"DEBUG: Raw output shapes - heatmap: {heatmap.shape}, reg: {reg.shape}, height: {height.shape}, dim: {dim.shape}, rot: {rot.shape}, vel: {vel.shape}")
-                
-                # Parse CenterPoint head outputs
                 predictions = self._parse_centerpoint_head_outputs(
                     heatmap, reg, height, dim, rot, vel, sample
                 )
             
             # Check if it's ONNX format (list of numpy arrays or torch tensors)
             elif isinstance(output[0], (torch.Tensor, np.ndarray)) and len(output) == 6:
-                print("INFO:projects.CenterPoint.deploy.evaluator:ONNX head outputs detected, parsing CenterPoint predictions...")
                 # ONNX outputs: [heatmap, reg, height, dim, rot, vel]
                 heatmap, reg, height, dim, rot, vel = output
                 
@@ -596,8 +528,6 @@ class CenterPointEvaluator(BaseEvaluator):
                     dim = torch.from_numpy(dim)
                     rot = torch.from_numpy(rot)
                     vel = torch.from_numpy(vel)
-                
-                print(f"DEBUG: ONNX output shapes - heatmap: {heatmap.shape}, reg: {reg.shape}, height: {height.shape}, dim: {dim.shape}, rot: {rot.shape}, vel: {vel.shape}")
                 
                 # Parse CenterPoint head outputs
                 predictions = self._parse_centerpoint_head_outputs(
@@ -614,39 +544,18 @@ class CenterPointEvaluator(BaseEvaluator):
         
         return predictions
 
-    def _parse_with_pytorch_model(self, heatmap, reg, height, dim, rot, vel, sample):
-        """Use PyTorch model's complete forward pass for consistent results."""
-        import torch
-        
-        print("INFO: Using complete PyTorch model forward pass for ONNX/TensorRT post-processing")
-        
-        # Instead of using ONNX head outputs + PyTorch decoder,
-        # use ONNX outputs up to middle encoder, then run PyTorch for backbone+head
-        # This ensures 100% consistency with PyTorch evaluation
-        
-        # For now, fall back to manual parsing
-        # TODO: Implement hybrid approach later
-        print("WARNING: PyTorch model integration not yet implemented, falling back to manual parsing")
-        return None
     
     def _parse_with_pytorch_decoder(self, heatmap, reg, height, dim, rot, vel, sample):
         """Use PyTorch model's predict_by_feat for consistent decoding."""
         import torch
         
-        print("INFO: Using PyTorch model's predict_by_feat for ONNX/TensorRT post-processing")
-        
         # Convert to torch tensors if needed
         if isinstance(heatmap, np.ndarray):
             heatmap = torch.from_numpy(heatmap)
-        if isinstance(reg, np.ndarray):
             reg = torch.from_numpy(reg)
-        if isinstance(height, np.ndarray):
             height = torch.from_numpy(height)
-        if isinstance(dim, np.ndarray):
             dim = torch.from_numpy(dim)
-        if isinstance(rot, np.ndarray):
             rot = torch.from_numpy(rot)
-        if isinstance(vel, np.ndarray):
             vel = torch.from_numpy(vel)
         
         # Move to same device as model
@@ -658,28 +567,16 @@ class CenterPointEvaluator(BaseEvaluator):
         rot = rot.to(device)
         vel = vel.to(device) if vel is not None else None
         
-        # IMPORTANT: If model was exported with rot_y_axis_reference=True,
-        # we need to convert ONNX outputs back to standard format before passing to predict_by_feat
+        # Convert ONNX outputs back to standard format if needed
         rot_y_axis_reference = getattr(self.model_cfg.model.pts_bbox_head, 'rot_y_axis_reference', False)
         
         if rot_y_axis_reference:
-            print(f"INFO: Detected rot_y_axis_reference=True, converting outputs to standard format")
+            # Convert dim from [w, l, h] back to [l, w, h]
+            dim = dim[:, [1, 0, 2], :, :]
             
-            # 1. Convert dim from [w, l, h] back to [l, w, h]
-            # ONNX output: dim[:, [0, 1, 2]] = [w, l, h]
-            # Standard: dim[:, [0, 1, 2]] = [l, w, h]
-            # So we need to swap channels 0 and 1
-            dim = dim[:, [1, 0, 2], :, :]  # [w, l, h] -> [l, w, h]
-            
-            # 2. Convert rot from [-cos(x), -sin(y)] back to [sin(y), cos(x)]
-            # ONNX output: rot[:, [0, 1]] = [-cos(x), -sin(y)]
-            # Standard: rot[:, [0, 1]] = [sin(y), cos(x)]
-            # Step 1: Negate to get [cos(x), sin(y)]
+            # Convert rot from [-cos(x), -sin(y)] back to [sin(y), cos(x)]
             rot = rot * (-1.0)
-            # Step 2: Swap channels to get [sin(y), cos(x)]
             rot = rot[:, [1, 0], :, :]
-            
-            print(f"INFO: Converted dim [w,l,h]->[l,w,h] and rot [-cos,-sin]->[sin,cos]")
         
         # Prepare head outputs in mmdet3d format: Tuple[List[dict]]
         # The head outputs should be in dict format with keys: 'heatmap', 'reg', 'height', 'dim', 'rot', 'vel'
@@ -695,54 +592,32 @@ class CenterPointEvaluator(BaseEvaluator):
         
         # Prepare batch_input_metas from sample
         metainfo = sample.get('metainfo', {})
-        # Add required fields for predict_by_feat
         if 'box_type_3d' not in metainfo:
-            # Default to LiDARInstance3DBoxes (same as CenterPoint default)
             from mmdet3d.structures import LiDARInstance3DBoxes
             metainfo['box_type_3d'] = LiDARInstance3DBoxes
         batch_input_metas = [metainfo]
         
         # Call predict_by_feat to get final predictions
-        print(f"DEBUG: Calling predict_by_feat with preds_dicts type: {type(preds_dicts)}")
-        print(f"DEBUG: preds_dicts[0] keys: {list(preds_dicts[0][0].keys())}")
-        
-        # Debug head outputs
-        for key, value in preds_dict.items():
-            if value is not None and hasattr(value, 'shape'):
-                print(f"DEBUG: {key} shape: {value.shape}, min: {value.min():.4f}, max: {value.max():.4f}, mean: {value.mean():.4f}")
-            else:
-                print(f"DEBUG: {key}: {value}")
-        
         with torch.no_grad():
             predictions_list = self.pytorch_model.pts_bbox_head.predict_by_feat(
                 preds_dicts=preds_dicts,
                 batch_input_metas=batch_input_metas
             )
         
-        # predictions_list is List[InstanceData]
-        # Each InstanceData has: bboxes_3d, scores_3d, labels_3d
+        # Parse predictions
         predictions = []
         for pred_instances in predictions_list:
-            bboxes_3d = pred_instances.bboxes_3d.tensor.cpu().numpy()  # [N, 9]
-            scores_3d = pred_instances.scores_3d.cpu().numpy()  # [N]
-            labels_3d = pred_instances.labels_3d.cpu().numpy()  # [N]
-            
-            print(f"DEBUG: PyTorch predict_by_feat - bboxes shape: {bboxes_3d.shape}, scores shape: {scores_3d.shape}")
-            if len(bboxes_3d) > 0:
-                print(f"DEBUG: PyTorch predict_by_feat - first bbox: {bboxes_3d[0]}")
+            bboxes_3d = pred_instances.bboxes_3d.tensor.cpu().numpy()
+            scores_3d = pred_instances.scores_3d.cpu().numpy()
+            labels_3d = pred_instances.labels_3d.cpu().numpy()
             
             for i in range(len(bboxes_3d)):
-                bbox_3d = bboxes_3d[i][:7]  # [x, y, z, w, l, h, yaw] - already in correct format
-                score = scores_3d[i]
-                label = labels_3d[i]
-                
                 predictions.append({
-                    'bbox_3d': bbox_3d.tolist(),
-                    'score': float(score),
-                    'label': int(label)
+                    'bbox_3d': bboxes_3d[i][:7].tolist(),
+                    'score': float(scores_3d[i]),
+                    'label': int(labels_3d[i])
                 })
         
-        print(f"DEBUG: PyTorch predict_by_feat produced {len(predictions)} predictions")
         return predictions
 
     def _parse_centerpoint_head_outputs(self, heatmap, reg, height, dim, rot, vel, sample):
