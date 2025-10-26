@@ -102,17 +102,3 @@ class BaseDataLoader(ABC):
         """
         tensors = [self.load_and_preprocess(idx) for idx in indices]
         return torch.stack(tensors)
-
-    def validate_sample(self, sample: Dict[str, Any]) -> bool:
-        """
-        Validate that a sample has the expected structure.
-
-        Override this method in task-specific loaders to add validation.
-
-        Args:
-            sample: Sample to validate
-
-        Returns:
-            True if valid, False otherwise
-        """
-        return True

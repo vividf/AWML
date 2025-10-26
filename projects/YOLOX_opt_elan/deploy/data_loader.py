@@ -207,25 +207,6 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
         """
         return len(self.data_list)
 
-    def validate_sample(self, sample: Dict[str, Any]) -> bool:
-        """
-        Validate sample structure.
-
-        Args:
-            sample: Sample to validate
-
-        Returns:
-            True if valid, False otherwise
-        """
-        required_keys = ["img_id", "img_path", "height", "width", "instances"]
-        if not all(key in sample for key in required_keys):
-            return False
-
-        # Validate image file exists
-        if not os.path.exists(sample["img_path"]):
-            return False
-
-        return True
 
     def get_ground_truth(self, index: int) -> Dict[str, Any]:
         """

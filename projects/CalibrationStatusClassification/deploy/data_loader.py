@@ -169,15 +169,3 @@ class CalibrationDataLoader(BaseDataLoader):
         """
         return len(self._samples_list)
 
-    def validate_sample(self, sample: Dict[str, Any]) -> bool:
-        """
-        Validate sample structure.
-
-        Args:
-            sample: Sample to validate
-
-        Returns:
-            True if valid
-        """
-        required_keys = ["image", "lidar_points"]
-        return all(key in sample for key in required_keys)

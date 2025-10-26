@@ -621,204 +621,64 @@ class CenterPointEvaluator(BaseEvaluator):
         return predictions
 
     def _parse_centerpoint_head_outputs(self, heatmap, reg, height, dim, rot, vel, sample):
-        """Parse CenterPoint head outputs using PyTorch's CenterPointBBoxCoder for consistency."""
-        import torch
-        import numpy as np
+        """
+        Parse CenterPoint head outputs using PyTorch's predict_by_feat for consistency.
+        
+        This method delegates all post-processing to the PyTorch model's implementation,
+        ensuring consistent results between PyTorch, ONNX, and TensorRT backends.
+        
+        The manual parsing fallback has been removed to enforce consistency and simplify
+        maintenance. All decoding logic (top-K selection, coordinate transformation, NMS,
+        score filtering, etc.) is handled by PyTorch's CenterPointBBoxCoder.
+        
+        Args:
+            heatmap: Heatmap predictions [B, num_classes, H, W]
+            reg: Regression offsets [B, 2, H, W]
+            height: Height predictions [B, 1, H, W]
+            dim: Dimension predictions [B, 3, H, W]
+            rot: Rotation predictions [B, 2, H, W]
+            vel: Velocity predictions [B, 2, H, W]
+            sample: Sample data containing metadata
+            
+        Returns:
+            List of predictions with bbox_3d, score, and label
+            
+        Raises:
+            RuntimeError: If PyTorch model is not available or decoding fails
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Verify PyTorch model is available
+        if not hasattr(self, 'pytorch_model') or self.pytorch_model is None:
+            raise RuntimeError(
+                "CenterPoint decoding requires PyTorch model for consistent post-processing.\n"
+                "The pytorch_model attribute is None or not available.\n"
+                "This typically means the backend was not properly initialized with a PyTorch model reference.\n"
+                "All backends (ONNX, TensorRT) should pass pytorch_model during initialization."
+            )
         
         # Use PyTorch model's predict_by_feat for consistent post-processing
-        if hasattr(self, 'pytorch_model') and self.pytorch_model is not None:
-            try:
-                return self._parse_with_pytorch_decoder(heatmap, reg, height, dim, rot, vel, sample)
-            except Exception as e:
-                print(f"WARNING: Failed to use PyTorch predict_by_feat: {e}, falling back to manual parsing")
-                import traceback
-                traceback.print_exc()
-        
-        # Convert to torch tensors for consistency with PyTorch
-        if isinstance(heatmap, np.ndarray):
-            heatmap = torch.from_numpy(heatmap)
-        if isinstance(reg, np.ndarray):
-            reg = torch.from_numpy(reg)
-        if isinstance(height, np.ndarray):
-            height = torch.from_numpy(height)
-        if isinstance(dim, np.ndarray):
-            dim = torch.from_numpy(dim)
-        if isinstance(rot, np.ndarray):
-            rot = torch.from_numpy(rot)
-        if isinstance(vel, np.ndarray):
-            vel = torch.from_numpy(vel)
-        
-        batch_size, num_classes, H, W = heatmap.shape
-        print(f"DEBUG: Parsing CenterPoint outputs - batch_size: {batch_size}, num_classes: {num_classes}, H: {H}, W: {W}")
-        
-        predictions = []
-        
-        # Get point cloud range from sample
-        point_cloud_range = sample.get('metainfo', {}).get('point_cloud_range', [-121.6, -121.6, -3.0, 121.6, 121.6, 5.0])
-        voxel_size = sample.get('metainfo', {}).get('voxel_size', [0.32, 0.32, 8.0])
-        
-        # Debug coordinate transformation parameters
-        print(f"DEBUG: point_cloud_range: {point_cloud_range}")
-        print(f"DEBUG: voxel_size: {voxel_size}")
-        
-        # Debug: Check if this is ONNX/TensorRT backend
-        backend_type = "Unknown"
-        if hasattr(self, '_current_backend'):
-            backend_type = str(type(self._current_backend))
-        print(f"DEBUG: Backend type: {backend_type}")
-        
-        # Use the same logic as PyTorch's CenterPointBBoxCoder._topk
-        # PyTorch uses a two-stage top-K selection process
-        max_num = 100  # Same as PyTorch's default max_num
-        
-        for b in range(batch_size):
-            # Apply sigmoid to get probabilities (same as PyTorch)
-            heatmap_prob = torch.sigmoid(heatmap[b])  # [num_classes, H, W]
-            
-            # Debug heatmap value distribution
-            print(f"DEBUG: Heatmap value analysis:")
-            print(f"  Raw heatmap - min: {heatmap[b].min():.6f}, max: {heatmap[b].max():.6f}, mean: {heatmap[b].mean():.6f}")
-            print(f"  Sigmoid heatmap - min: {heatmap_prob.min():.6f}, max: {heatmap_prob.max():.6f}, mean: {heatmap_prob.mean():.6f}")
-            
-            # Check if high values are concentrated at boundaries
-            boundary_mask = torch.zeros_like(heatmap_prob[0])
-            boundary_mask[0, :] = 1  # top boundary
-            boundary_mask[-1, :] = 1  # bottom boundary  
-            boundary_mask[:, 0] = 1  # left boundary
-            boundary_mask[:, -1] = 1  # right boundary
-            
-            boundary_values = heatmap_prob[0][boundary_mask.bool()]
-            interior_values = heatmap_prob[0][~boundary_mask.bool()]
-            
-            print(f"  Boundary values - min: {boundary_values.min():.6f}, max: {boundary_values.max():.6f}, mean: {boundary_values.mean():.6f}")
-            print(f"  Interior values - min: {interior_values.min():.6f}, max: {interior_values.max():.6f}, mean: {interior_values.mean():.6f}")
-            print(f"  Boundary count: {len(boundary_values)}, Interior count: {len(interior_values)}")
-            
-            # Stage 1: Get top-K for each class
-            # Flatten heatmap: [num_classes, H, W] -> [num_classes, H*W]
-            heatmap_flat = heatmap_prob.view(num_classes, -1)  # [num_classes, H*W]
-            
-            # Get top-K scores and indices for each class
-            topk_scores_per_class, topk_inds_per_class = torch.topk(heatmap_flat, max_num)  # [num_classes, max_num]
-            
-            # Convert flat indices back to y, x coordinates for each class
-            topk_inds_2d = topk_inds_per_class % (H * W)  # [num_classes, max_num]
-            topk_ys_per_class = (topk_inds_2d.float() / W).int().float()  # [num_classes, max_num]
-            topk_xs_per_class = (topk_inds_2d % W).int().float()  # [num_classes, max_num]
-            
-            # Stage 2: Get top-K across all classes (same as PyTorch)
-            # Flatten all scores: [num_classes, max_num] -> [num_classes * max_num]
-            all_scores = topk_scores_per_class.view(-1)  # [num_classes * max_num]
-            
-            # Get top-K across all classes
-            topk_score, topk_ind = torch.topk(all_scores, max_num)  # [max_num]
-            
-            # Convert global indices back to class indices
-            topk_clses = (topk_ind / max_num).int()  # [max_num]
-            
-            # Gather the corresponding y, x coordinates
-            topk_ys = torch.gather(topk_ys_per_class.view(-1), 0, topk_ind)  # [max_num]
-            topk_xs = torch.gather(topk_xs_per_class.view(-1), 0, topk_ind)  # [max_num]
-            
-            print(f"DEBUG: Selected top {len(topk_score)} predictions across all classes")
-            print(f"DEBUG: Score range: {topk_score.min():.6f} to {topk_score.max():.6f}")
-            print(f"DEBUG: Class distribution: {torch.bincount(topk_clses).tolist()}")
-            
-            # Process each selected prediction
-            for i in range(len(topk_score)):
-                score = topk_score[i].item()
-                cls = topk_clses[i].item()
-                y_idx = int(topk_ys[i].item())
-                x_idx = int(topk_xs[i].item())
-                
-                # Debug first few predictions
-                if i < 3:
-                    print(f"DEBUG: Prediction {i} - cls: {cls}, score: {score:.6f}, y: {y_idx}, x: {x_idx}")
-                
-                # Get regression offsets (IMPORTANT: reg provides fine-grained position adjustments)
-                reg_x = reg[b, 0, y_idx, x_idx].item() if reg.shape[1] > 0 else 0.0
-                reg_y = reg[b, 1, y_idx, x_idx].item() if reg.shape[1] > 1 else 0.0
-                
-                # Convert grid coordinates to 3D coordinates (same as PyTorch CenterPointBBoxCoder)
-                # PyTorch uses: (xs + reg_x) * out_size_factor * voxel_size[0] + pc_range[0]
-                # Get out_size_factor from model config
-                out_size_factor = getattr(self.model_cfg.model.pts_bbox_head, 'out_size_factor', 1)
-                x = (x_idx + reg_x) * out_size_factor * voxel_size[0] + point_cloud_range[0]
-                y = (y_idx + reg_y) * out_size_factor * voxel_size[1] + point_cloud_range[1]
-                z = height[b, 0, y_idx, x_idx].item() if height.shape[1] > 0 else 0.0
-                
-                # Get dimensions (ONNX already swapped dim order: [1, 0, 2] -> [width, length, height])
-                # IMPORTANT: CenterPoint outputs log(dim), need to apply exp() to recover actual dimensions
-                w = np.exp(dim[b, 0, y_idx, x_idx].item()) if dim.shape[1] > 0 else 1.0
-                l = np.exp(dim[b, 1, y_idx, x_idx].item()) if dim.shape[1] > 1 else 1.0
-                h = np.exp(dim[b, 2, y_idx, x_idx].item()) if dim.shape[1] > 2 else 1.0
-                
-                # Get rotation (ONNX already swapped rot order: [1, 0] -> [cos, sin])
-                if rot.shape[1] >= 2:
-                    rot_sin = rot[b, 1, y_idx, x_idx].item()  # sin (was originally at index 0)
-                    rot_cos = rot[b, 0, y_idx, x_idx].item()  # cos (was originally at index 1)
-                    yaw = np.arctan2(rot_sin, rot_cos)
-                else:
-                    yaw = 0.0
-                
-                # IMPORTANT: Only apply coordinate transformation if rot_y_axis_reference=True
-                # Check if model uses y-axis reference (from model config)
-                rot_y_axis_reference = getattr(self.model_cfg.model.pts_bbox_head, 'rot_y_axis_reference', False)
-                
-                if rot_y_axis_reference:
-                    # Apply transformations for y-axis reference models:
-                    # 1. Switch width and length: bbox[:, [3, 4]] = bbox[:, [4, 3]]
-                    # 2. Change rotation: bbox[:, 6] = -bbox[:, 6] - np.pi / 2
-                    w_converted = l  # Switch w and l
-                    l_converted = w
-                    yaw_converted = -yaw - np.pi / 2
-                else:
-                    # No transformation needed - ONNX already outputs in correct format
-                    w_converted = w
-                    l_converted = l
-                    yaw_converted = yaw
-                
-                # Keep predictions in ego coordinates to match Ground Truth coordinate system
-                bbox_ego = np.array([x, y, z, w_converted, l_converted, h, yaw_converted])
-                
-                # Debug first few predictions
-                if i < 3:
-                    print(f"DEBUG: Prediction {i} - bbox: {bbox_ego}")
-                
-                predictions.append({
-                    'bbox_3d': bbox_ego.tolist(),  # [x, y, z, w, l, h, yaw] in ego coordinate (same as GT)
-                    'score': float(score),
-                    'label': int(cls)
-                })
-        
-        print(f"DEBUG: Parsed {len(predictions)} predictions from CenterPoint head outputs")
-        
-        # Debug prediction statistics
-        if len(predictions) > 0:
-            scores = [p['score'] for p in predictions]
-            labels = [p['label'] for p in predictions]
-            bboxes = [p['bbox_3d'] for p in predictions]
-            
-            print(f"DEBUG: ONNX/TensorRT scores range: {min(scores):.3f} to {max(scores):.3f}")
-            print(f"DEBUG: ONNX/TensorRT labels: {sorted(set(labels))}")
-            
-            # Debug bbox spatial ranges
-            bboxes_np = np.array(bboxes)
-            print(f"DEBUG: ONNX/TensorRT bbox range - x: {bboxes_np[:, 0].min():.2f} to {bboxes_np[:, 0].max():.2f}")
-            print(f"DEBUG: ONNX/TensorRT bbox range - y: {bboxes_np[:, 1].min():.2f} to {bboxes_np[:, 1].max():.2f}")
-            print(f"DEBUG: ONNX/TensorRT bbox range - z: {bboxes_np[:, 2].min():.2f} to {bboxes_np[:, 2].max():.2f}")
-            print(f"DEBUG: ONNX/TensorRT bbox range - w: {bboxes_np[:, 3].min():.2f} to {bboxes_np[:, 3].max():.2f}")
-            print(f"DEBUG: ONNX/TensorRT bbox range - l: {bboxes_np[:, 4].min():.2f} to {bboxes_np[:, 4].max():.2f}")
-            print(f"DEBUG: ONNX/TensorRT bbox range - h: {bboxes_np[:, 5].min():.2f} to {bboxes_np[:, 5].max():.2f}")
-            print(f"DEBUG: ONNX/TensorRT bbox range - yaw: {bboxes_np[:, 6].min():.2f} to {bboxes_np[:, 6].max():.2f}")
-            print(f"DEBUG: ONNX/TensorRT bbox format - first bbox: {bboxes_np[0]}")
-            
-            # Count predictions by class
-            from collections import Counter
-            label_counts = Counter(labels)
-            print(f"DEBUG: ONNX/TensorRT prediction counts by class: {dict(label_counts)}")
-        
-        return predictions
+        try:
+            logger.info("✅ Using PyTorch decoder (predict_by_feat) for consistent post-processing")
+            return self._parse_with_pytorch_decoder(heatmap, reg, height, dim, rot, vel, sample)
+        except Exception as e:
+            logger.error(f"❌ Failed to use PyTorch predict_by_feat: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(
+                f"Failed to decode CenterPoint outputs using PyTorch predict_by_feat: {e}\n\n"
+                "This may indicate:\n"
+                "  1. Incompatible tensor shapes or formats between ONNX/TensorRT and PyTorch\n"
+                "  2. Missing or incorrect metadata in sample (point_cloud_range, voxel_size, etc.)\n"
+                "  3. Model configuration mismatch between backends\n"
+                "  4. Memory issues on GPU\n\n"
+                "Please check the error traceback above for details.\n"
+                "You may need to verify that:\n"
+                "  - ONNX/TensorRT outputs match PyTorch head output format\n"
+                "  - Sample metadata contains all required fields\n"
+                "  - Model config is consistent across all backends"
+            ) from e
 
 
     def _parse_ground_truths(self, sample: Dict) -> List[Dict]:
@@ -855,6 +715,7 @@ class CenterPointEvaluator(BaseEvaluator):
         
         return ground_truths
 
+    # TODO(vividf): use autoware_perception_eval in the future
     def _compute_metrics(
         self,
         predictions_list: List[List[Dict]],
@@ -936,157 +797,6 @@ class CenterPointEvaluator(BaseEvaluator):
             }
 
         return results
-
-    def _compute_mmdet3d_map(
-        self,
-        predictions_list: List[List[Dict]],
-        ground_truths_list: List[List[Dict]],
-        num_classes: int,
-    ) -> Dict[str, Any]:
-        """Compute mAP using mmdet3d's eval_map_recall function."""
-        try:
-            from mmdet3d.evaluation import eval_map_recall
-            from mmdet3d.structures import LiDARInstance3DBoxes
-            import numpy as np
-            import torch
-            
-            # Convert to mmdet3d format
-            # eval_map_recall expects:
-            # pred: {class_name: {img_id: [(bbox, score), ...]}}
-            # gt: {class_name: {img_id: [bbox, ...]}}
-            class_names = ['car', 'truck', 'bus', 'bicycle', 'pedestrian']
-            
-            # Initialize data structures
-            pred_by_class = {}
-            gt_by_class = {}
-            
-            for class_name in class_names:
-                pred_by_class[class_name] = {}
-                gt_by_class[class_name] = {}
-            
-            # Process each sample
-            for sample_idx, (predictions, ground_truths) in enumerate(zip(predictions_list, ground_truths_list)):
-                img_id = f"sample_{sample_idx}"
-                
-                # Debug: Check if we have predictions and ground truths for this sample
-                print(f"DEBUG: Processing sample {sample_idx} - predictions: {len(predictions)}, ground truths: {len(ground_truths)}")
-                
-                # Group predictions by class
-                for pred in predictions:
-                    class_name = class_names[pred['label']]
-                    if img_id not in pred_by_class[class_name]:
-                        pred_by_class[class_name][img_id] = []
-                    
-                    # Convert bbox to LiDARInstance3DBoxes format
-                    bbox_3d = pred['bbox_3d']  # [x, y, z, w, l, h, yaw]
-                    # Create a single bbox tensor
-                    bbox_tensor = torch.tensor([bbox_3d], dtype=torch.float32)
-                    bbox_obj = LiDARInstance3DBoxes(bbox_tensor)
-                    
-                    pred_by_class[class_name][img_id].append((bbox_obj, pred['score']))
-                
-                # Group ground truths by class
-                for gt in ground_truths:
-                    class_name = class_names[gt['label']]
-                    if img_id not in gt_by_class[class_name]:
-                        gt_by_class[class_name][img_id] = []
-                    
-                    # Convert bbox to LiDARInstance3DBoxes format
-                    bbox_3d = gt['bbox_3d']  # [x, y, z, w, l, h, yaw]
-                    bbox_tensor = torch.tensor([bbox_3d], dtype=torch.float32)
-                    bbox_obj = LiDARInstance3DBoxes(bbox_tensor)
-                    
-                    gt_by_class[class_name][img_id].append(bbox_obj)
-            
-            # Debug: Print input to eval_map
-            print(f"DEBUG: eval_map input - pred_by_class keys: {list(pred_by_class.keys())}")
-            print(f"DEBUG: eval_map input - gt_by_class keys: {list(gt_by_class.keys())}")
-            for class_name in class_names:
-                pred_count = sum(len(pred_by_class[class_name][img_id]) for img_id in pred_by_class[class_name])
-                gt_count = sum(len(gt_by_class[class_name][img_id]) for img_id in gt_by_class[class_name])
-                print(f"DEBUG: {class_name} - pred count: {pred_count}, gt count: {gt_count}")
-            
-            # Ensure all classes have all sample IDs
-            all_sample_ids = set()
-            for class_name in class_names:
-                all_sample_ids.update(pred_by_class[class_name].keys())
-                all_sample_ids.update(gt_by_class[class_name].keys())
-            
-            print(f"DEBUG: All sample IDs: {sorted(all_sample_ids)}")
-            
-            # Add empty entries for missing sample IDs
-            for class_name in class_names:
-                for sample_id in all_sample_ids:
-                    if sample_id not in pred_by_class[class_name]:
-                        pred_by_class[class_name][sample_id] = []
-                    if sample_id not in gt_by_class[class_name]:
-                        gt_by_class[class_name][sample_id] = []
-            
-            # Compute 3D mAP metrics using eval_map_recall
-            map_results = eval_map_recall(
-                pred_by_class,
-                gt_by_class,
-                ovthresh=[0.5],  # IoU threshold for 3D detection
-            )
-            
-            # Debug: Print eval_map_recall results
-            print(f"DEBUG: eval_map_recall results type: {type(map_results)}")
-            print(f"DEBUG: eval_map_recall results: {map_results}")
-            
-            # Extract results
-            # eval_map_recall returns (recall, precision, ap) for each IoU threshold
-            recall, precision, ap = map_results
-            
-            print(f"DEBUG: recall type: {type(recall)}, value: {recall}")
-            print(f"DEBUG: precision type: {type(precision)}, value: {precision}")
-            print(f"DEBUG: ap type: {type(ap)}, value: {ap}")
-            
-            # Extract mAP@0.5 (first IoU threshold)
-            map_50 = 0.0
-            per_class_ap = {}
-            
-            for class_name in class_names:
-                if class_name in ap[0]:  # ap[0] is for IoU=0.5
-                    class_ap = ap[0][class_name]
-                    if isinstance(class_ap, np.ndarray):
-                        per_class_ap[class_name] = float(class_ap.mean()) if len(class_ap) > 0 else 0.0
-                    else:
-                        per_class_ap[class_name] = float(class_ap)
-                    map_50 += per_class_ap[class_name]
-                else:
-                    per_class_ap[class_name] = 0.0
-            
-            # Average mAP across all classes
-            map_50 = map_50 / len(class_names) if len(class_names) > 0 else 0.0
-            
-            return {
-                "mAP": map_50,
-                "mAP_50": map_50,
-                "NDS": map_50,  # Simplified - real NDS needs more complex computation
-                "mATE": 0.0,
-                "mASE": 0.0,
-                "mAOE": 0.0,
-                "mAVE": 0.0,
-                "mAAE": 0.0,
-                "per_class_ap": per_class_ap,
-            }
-            
-        except Exception as e:
-            print(f"Error computing mmdet3d metrics: {e}")
-            import traceback
-            traceback.print_exc()
-            # Return zero metrics as fallback
-            return {
-                "mAP": 0.0,
-                "mAP_50": 0.0,
-                "NDS": 0.0,
-                "mATE": 0.0,
-                "mASE": 0.0,
-                "mAOE": 0.0,
-                "mAVE": 0.0,
-                "mAAE": 0.0,
-                "per_class_ap": {f"class_{i}": 0.0 for i in range(num_classes)},
-            }
 
     def print_results(self, results: Dict[str, Any]) -> None:
         """

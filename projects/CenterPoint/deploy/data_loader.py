@@ -276,26 +276,6 @@ class CenterPointDataLoader(BaseDataLoader):
         """
         return len(self.data_infos)
 
-    def validate_sample(self, sample: Dict[str, Any]) -> bool:
-        """
-        Validate sample structure.
-
-        Args:
-            sample: Sample to validate
-
-        Returns:
-            True if valid, False otherwise
-        """
-        # Check required keys
-        if "lidar_points" not in sample:
-            return False
-
-        # Validate lidar path exists
-        lidar_path = sample["lidar_points"].get("lidar_path")
-        if not lidar_path or not os.path.exists(lidar_path):
-            return False
-
-        return True
 
     def get_ground_truth(self, index: int) -> Dict[str, Any]:
         """
