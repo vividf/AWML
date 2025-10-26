@@ -181,12 +181,11 @@ class CenterPointEvaluator(BaseEvaluator):
                 device_obj = torch.device(device) if isinstance(device, str) else device
                 
                 # Use lower-level model loading to avoid CUDA checks in init_model
-                # Convert ONNX config back to standard config for PyTorch evaluation
+                # PyTorch evaluation should receive original config (no conversion needed)
                 model = self._load_pytorch_model_directly(
                     model_path, 
                     device_obj, 
-                    logger, 
-                    use_standard_config=True  # Convert to standard config
+                    logger
                 )
                 return model
             elif backend == "onnx":
@@ -198,7 +197,7 @@ class CenterPointEvaluator(BaseEvaluator):
                     device = "cpu"
                 device_obj = torch.device(device) if isinstance(device, str) else device
                 
-                # Check if model_cfg is already ONNX version
+                # ONNX evaluation should receive ONNX-compatible config (no conversion needed)
                 if self.model_cfg.model.type == "CenterPointONNX":
                     logger.info("Using ONNX-compatible model config for ONNX backend")
                     # Find the checkpoint path - try to infer from model_path
@@ -209,12 +208,10 @@ class CenterPointEvaluator(BaseEvaluator):
                         # Try alternative paths
                         checkpoint_path = model_path.replace('_deployment', '/best_checkpoint.pth')
                     
-                    # IMPORTANT: ONNX backend needs ONNX config, so use_standard_config=False
                     pytorch_model = self._load_pytorch_model_directly(
                         checkpoint_path, 
                         device_obj, 
-                        logger,
-                        use_standard_config=False  # Keep ONNX config for ONNX backend
+                        logger
                     )
                 else:
                     logger.error("Model config is not ONNX-compatible!")
@@ -234,9 +231,9 @@ class CenterPointEvaluator(BaseEvaluator):
                     return None
                 
                 # TensorRT backend needs PyTorch model for middle encoder
-                # Load PyTorch model if config is ONNX-compatible
+                # TensorRT evaluation should receive ONNX-compatible config (no conversion needed)
                 if self.model_cfg.model.type == "CenterPointONNX":
-                    logger.info("Loading PyTorch model for TensorRT middle encoder")
+                    logger.info("Using ONNX-compatible model config for TensorRT backend")
                     import os
                     checkpoint_path = model_path.replace('centerpoint_deployment/tensorrt', 'centerpoint/best_checkpoint.pth')
                     checkpoint_path = checkpoint_path.replace('/tensorrt', '')  # Handle different path formats
@@ -245,12 +242,10 @@ class CenterPointEvaluator(BaseEvaluator):
                         checkpoint_path = model_path.replace('_deployment/tensorrt', '/best_checkpoint.pth')
                     
                     device_obj = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-                    # IMPORTANT: TensorRT backend needs ONNX config, so use_standard_config=False
                     pytorch_model = self._load_pytorch_model_directly(
                         checkpoint_path, 
                         device_obj, 
-                        logger,
-                        use_standard_config=False  # Keep ONNX config for TensorRT backend
+                        logger
                     )
                     return CenterPointTensorRTBackend(model_path, device=device, pytorch_model=pytorch_model)
                 else:
@@ -264,15 +259,17 @@ class CenterPointEvaluator(BaseEvaluator):
             logger.error(f"Failed to create {backend} backend: {e}")
             return None
 
-    def _load_pytorch_model_directly(self, checkpoint_path: str, device: torch.device, logger, use_standard_config: bool = False) -> Any:
+    def _load_pytorch_model_directly(self, checkpoint_path: str, device: torch.device, logger) -> Any:
         """
         Load PyTorch model directly without using init_model to avoid CUDA checks.
+        
+        The model config should already be in the correct format (original or ONNX-compatible)
+        based on the backend being evaluated.
         
         Args:
             checkpoint_path: Path to checkpoint file
             device: Device to load model on
             logger: Logger instance
-            use_standard_config: If True, convert ONNX config back to standard config for PyTorch evaluation
         """
         try:
             from mmengine.registry import MODELS, init_default_scope
@@ -285,45 +282,10 @@ class CenterPointEvaluator(BaseEvaluator):
             # Get model config - use deepcopy to avoid modifying shared nested objects
             model_config = copy_module.deepcopy(self.model_cfg.model)
             
-            # For PyTorch evaluation, convert ONNX config back to standard config
-            if use_standard_config and model_config.type == "CenterPointONNX":
-                logger.info("Converting ONNX-compatible config to standard config for PyTorch evaluation")
-                # Convert model types back to standard versions
-                model_config.type = "CenterPoint"
-                
-                # Remove ONNX-specific parameters from model config
-                if hasattr(model_config, 'point_channels'):
-                    delattr(model_config, 'point_channels')
-                    logger.info("  Removed ONNX-specific parameter: point_channels")
-                if hasattr(model_config, 'device'):
-                    delattr(model_config, 'device')
-                    logger.info("  Removed ONNX-specific parameter: device")
-                
-                # Convert voxel encoder
-                if model_config.pts_voxel_encoder.type == "PillarFeatureNetONNX":
-                    model_config.pts_voxel_encoder.type = "PillarFeatureNet"
-                    logger.info("  Converted voxel encoder: PillarFeatureNetONNX -> PillarFeatureNet")
-                elif model_config.pts_voxel_encoder.type == "BackwardPillarFeatureNetONNX":
-                    model_config.pts_voxel_encoder.type = "BackwardPillarFeatureNet"
-                    logger.info("  Converted voxel encoder: BackwardPillarFeatureNetONNX -> BackwardPillarFeatureNet")
-                
-                # Convert bbox head
-                if model_config.pts_bbox_head.type == "CenterHeadONNX":
-                    model_config.pts_bbox_head.type = "CenterHead"
-                    logger.info("  Converted bbox head: CenterHeadONNX -> CenterHead")
-                    # Remove ONNX-specific parameters from bbox head
-                    if hasattr(model_config.pts_bbox_head, 'rot_y_axis_reference'):
-                        delattr(model_config.pts_bbox_head, 'rot_y_axis_reference')
-                        logger.info("  Removed ONNX-specific parameter: rot_y_axis_reference")
-                    
-                if hasattr(model_config.pts_bbox_head, 'separate_head') and model_config.pts_bbox_head.separate_head.type == "SeparateHeadONNX":
-                    model_config.pts_bbox_head.separate_head.type = "SeparateHead"
-                    logger.info("  Converted separate head: SeparateHeadONNX -> SeparateHead")
-            else:
-                # For ONNX models, ensure device is set
-                if hasattr(model_config, 'device'):
-                    model_config.device = str(device)
-                    logger.info(f"Set model config device to: {model_config.device}")
+            # For ONNX models, ensure device is set
+            if hasattr(model_config, 'device'):
+                model_config.device = str(device)
+                logger.info(f"Set model config device to: {model_config.device}")
             
             # Build model using MODELS registry
             logger.info(f"Building model with device: {device}")

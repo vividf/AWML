@@ -75,10 +75,10 @@ def load_pytorch_model(
     # Get model config
     model_config = model_cfg.model.copy()
 
+    # TODO(vividf): remove this
     # Replace with ONNX models if requested
     if replace_onnx_models:
-        logger = logging.getLogger(__name__)
-        logger.info("Replacing model components with ONNX-compatible versions")
+        print("Replacing model components with ONNX-compatible versions")
 
         # Update model type
         model_config.type = "CenterPointONNX"
@@ -86,13 +86,13 @@ def load_pytorch_model(
         model_config.device = device
 
         # Update voxel encoder
-        logger.info(f"Original voxel encoder type: {model_config.pts_voxel_encoder.type}")
+        print(f"Original voxel encoder type: {model_config.pts_voxel_encoder.type}")
         if model_config.pts_voxel_encoder.type == "PillarFeatureNet":
             model_config.pts_voxel_encoder.type = "PillarFeatureNetONNX"
-            logger.info(f"Updated voxel encoder type to: {model_config.pts_voxel_encoder.type}")
+            print(f"Updated voxel encoder type to: {model_config.pts_voxel_encoder.type}")
         elif model_config.pts_voxel_encoder.type == "BackwardPillarFeatureNet":
             model_config.pts_voxel_encoder.type = "BackwardPillarFeatureNetONNX"
-            logger.info(f"Updated voxel encoder type to: {model_config.pts_voxel_encoder.type}")
+            print(f"Updated voxel encoder type to: {model_config.pts_voxel_encoder.type}")
 
         # Update bbox head
         model_config.pts_bbox_head.type = "CenterHeadONNX"
@@ -308,10 +308,20 @@ def get_models_to_evaluate(eval_config: dict, logger: logging.Logger) -> list:
 def run_evaluation(
     data_loader: CenterPointDataLoader,
     config: BaseDeploymentConfig,
-    model_cfg: Config,
+    original_model_cfg: Config,
+    onnx_model_cfg: Config,
     logger: logging.Logger,
 ):
-    """Run evaluation on specified models."""
+    """
+    Run evaluation on specified models.
+    
+    Args:
+        data_loader: Data loader for samples
+        config: Deployment configuration
+        original_model_cfg: Original model config (for PyTorch evaluation)
+        onnx_model_cfg: ONNX-compatible model config (for ONNX/TensorRT evaluation)
+        logger: Logger instance
+    """
     eval_config = config.evaluation_config
 
     if not eval_config.get("enabled", False):
@@ -329,12 +339,6 @@ def run_evaluation(
         logger.warning("No models found for evaluation")
         return
 
-    # Debug: Check the model config passed to evaluator
-    logger.info(f"Evaluator model type: {model_cfg.model.type}")
-    logger.info(f"Evaluator voxel encoder type: {model_cfg.model.pts_voxel_encoder.type}")
-    
-    evaluator = CenterPointEvaluator(model_cfg)
-
     num_samples = eval_config.get("num_samples", 50)
     if num_samples == -1:
         num_samples = data_loader.get_num_samples()
@@ -342,6 +346,23 @@ def run_evaluation(
     all_results = {}
 
     for backend, model_path in models_to_evaluate:
+        # Choose the appropriate config based on backend
+        if backend == "pytorch":
+            # PyTorch: use original config (no ONNX modifications)
+            model_cfg = original_model_cfg
+            logger.info(f"\nEvaluating {backend.upper()} with original model config")
+            logger.info(f"  Model type: {model_cfg.model.type}")
+            logger.info(f"  Voxel encoder: {model_cfg.model.pts_voxel_encoder.type}")
+        else:
+            # ONNX/TensorRT: use ONNX-compatible config
+            model_cfg = onnx_model_cfg
+            logger.info(f"\nEvaluating {backend.upper()} with ONNX-compatible config")
+            logger.info(f"  Model type: {model_cfg.model.type}")
+            logger.info(f"  Voxel encoder: {model_cfg.model.pts_voxel_encoder.type}")
+        
+        # Create evaluator with the appropriate config
+        evaluator = CenterPointEvaluator(model_cfg)
+        
         results = evaluator.evaluate(
             model_path=model_path,
             data_loader=data_loader,
@@ -410,41 +431,56 @@ def main():
     )
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
-    # Load PyTorch model if needed for export or evaluation
+    # Prepare model configurations
+    # - original_model_cfg: for PyTorch evaluation (no ONNX modifications)
+    # - onnx_model_cfg: for ONNX/TensorRT evaluation and export (with ONNX modifications)
+    import copy
+    original_model_cfg = copy.deepcopy(model_cfg)  # Deep copy to keep original intact
+    onnx_model_cfg = model_cfg  # Will be replaced if ONNX models are loaded
     pytorch_model = None
-    onnx_compatible_model_cfg = model_cfg  # Keep original config for evaluation
     
-    # Check if we need ONNX-compatible config for evaluation
+    # Check if we need ONNX-compatible config
     eval_config = config.evaluation_config
-    needs_onnx_config = False
+    needs_export = config.export_config.mode != "none"
+    needs_onnx_eval = False
     if eval_config.get("enabled", False):
         models_to_eval = eval_config.get("models", {})
-        # Check if ONNX or TensorRT evaluation is requested
         if models_to_eval.get("onnx") or models_to_eval.get("tensorrt"):
-            needs_onnx_config = True
+            needs_onnx_eval = True
     
-    # Load model if needed for export OR if ONNX/TensorRT evaluation is requested
-    if config.export_config.mode != "none" or needs_onnx_config:
-        if args.checkpoint:
-            logger.info("\nLoading PyTorch model...")
-            if needs_onnx_config and args.replace_onnx_models:
-                logger.info("Loading with ONNX-compatible configuration for evaluation")
-            pytorch_model, onnx_compatible_model_cfg = load_pytorch_model(
+    # Load model if needed for export or ONNX/TensorRT evaluation
+    if needs_export or needs_onnx_eval:
+        if not args.checkpoint:
+            if needs_export:
+                logger.error("Checkpoint required for export")
+            else:
+                logger.error("Checkpoint required for ONNX/TensorRT evaluation")
+            logger.error("Please provide --checkpoint argument")
+            return
+        
+        logger.info("\nLoading PyTorch model...")
+        
+        # For export or ONNX/TensorRT evaluation: load with ONNX modifications
+        if args.replace_onnx_models:
+            logger.info("Loading model with ONNX-compatible configuration")
+            pytorch_model, onnx_model_cfg = load_pytorch_model(
                 model_cfg,
                 args.checkpoint,
                 config.export_config.device,
-                replace_onnx_models=args.replace_onnx_models,
+                replace_onnx_models=True,
                 rot_y_axis_reference=args.rot_y_axis_reference,
             )
-            logger.info("✅ PyTorch model loaded successfully")
         else:
-            if config.export_config.mode != "none":
-                logger.error("Checkpoint required for PyTorch model when export mode is not 'none'")
-                return
-            elif needs_onnx_config:
-                logger.error("Checkpoint required for ONNX/TensorRT evaluation")
-                logger.error("Please provide --checkpoint argument")
-                return
+            logger.info("Loading model with original configuration")
+            pytorch_model, _ = load_pytorch_model(
+                model_cfg,
+                args.checkpoint,
+                config.export_config.device,
+                replace_onnx_models=False,
+                rot_y_axis_reference=False,
+            )
+        
+        logger.info("✅ PyTorch model loaded successfully")
 
     # Export ONNX
     onnx_path = None
@@ -495,7 +531,7 @@ def main():
             logger.info(f"  {backend}: {status}")
 
     # Evaluation
-    run_evaluation(data_loader, config, onnx_compatible_model_cfg, logger)
+    run_evaluation(data_loader, config, original_model_cfg, onnx_model_cfg, logger)
 
     logger.info("\n" + "=" * 80)
     logger.info("Deployment Complete!")

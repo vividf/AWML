@@ -122,57 +122,6 @@ class CenterPointTensorRTBackend(BaseBackend):
                 voxel_features = self._run_voxel_encoder(input_data)
                 voxel_features_processed = self._process_middle_encoder(voxel_features, input_data)
                 detection_results = self._run_backbone_neck_head(voxel_features_processed)
-            elif 'points' in input_data:
-                # Raw points input - need to voxelize first
-                points = input_data['points']
-                # Create dummy voxel data for verification
-                # Assume points shape is (N, 5) where 5 = (x, y, z, intensity, timestamp)
-                num_points = points.shape[0]
-                # Create dummy voxels with shape (num_voxels, max_points_per_voxel, point_dim)
-                # For verification, use a reasonable number of voxels
-                num_voxels = min(10000, num_points // 10)  # Assume ~10 points per voxel
-                max_points_per_voxel = 32
-                point_dim = 11  # TensorRT engine expects 11 dimensions
-                
-                # Create dummy voxels
-                dummy_voxels = torch.zeros(num_voxels, max_points_per_voxel, point_dim, 
-                                         dtype=points.dtype, device=points.device)
-                
-                # Fill with some real point data (pad to 11 dimensions)
-                for i in range(num_voxels):
-                    start_idx = i * 10
-                    end_idx = min(start_idx + max_points_per_voxel, num_points)
-                    if start_idx < num_points:
-                        voxel_points = points[start_idx:end_idx, :4]  # Take first 4 dimensions
-                        # Pad to 11 dimensions
-                        padded_points = torch.zeros(end_idx-start_idx, point_dim, 
-                                                  dtype=points.dtype, device=points.device)
-                        padded_points[:, :4] = voxel_points
-                        dummy_voxels[i, :end_idx-start_idx, :] = padded_points
-                
-                # Create dummy input data
-                dummy_input = {
-                    'voxels': dummy_voxels,
-                    'num_points': torch.ones(num_voxels, dtype=torch.int32, device=points.device) * max_points_per_voxel,
-                    'coors': torch.zeros(num_voxels, 4, dtype=torch.int32, device=points.device)
-                }
-                
-                voxel_features = self._run_voxel_encoder(dummy_input)
-                voxel_features_processed = self._process_middle_encoder(voxel_features, dummy_input)
-                detection_results = self._run_backbone_neck_head(voxel_features_processed)
-            else:
-                raise ValueError(f"Unsupported input data keys: {list(input_data.keys())}")
-        else:
-            # Single tensor input (for verification)
-            # Create dummy input data for verification
-            dummy_input = {
-                'voxels': input_data,  # Assume input_data is voxels
-                'num_points': torch.ones(input_data.shape[0], dtype=torch.int32, device=input_data.device),
-                'coors': torch.zeros(input_data.shape[0], 4, dtype=torch.int32, device=input_data.device)
-            }
-            voxel_features = self._run_voxel_encoder(dummy_input)
-            voxel_features_processed = self._process_middle_encoder(voxel_features, dummy_input)
-            detection_results = self._run_backbone_neck_head(voxel_features_processed)
 
         total_latency_ms = (time.time() - total_start_time) * 1000
 
