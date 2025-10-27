@@ -116,6 +116,9 @@ class CenterPointEvaluator(BaseEvaluator):
                 # Get sample data
                 sample = data_loader.load_sample(i)
                 input_data = data_loader.preprocess(sample)
+                
+                # Get ground truth using get_ground_truth method
+                gt_data = data_loader.get_ground_truth(i)
 
                 # Run inference
                 if backend == "pytorch":
@@ -128,7 +131,7 @@ class CenterPointEvaluator(BaseEvaluator):
 
                 # Parse predictions and ground truths
                 predictions = self._parse_predictions(output, sample)
-                ground_truths = self._parse_ground_truths(sample)
+                ground_truths = self._parse_ground_truths(gt_data)
 
                 predictions_list.append(predictions)
                 ground_truths_list.append(ground_truths)
@@ -681,13 +684,13 @@ class CenterPointEvaluator(BaseEvaluator):
             ) from e
 
 
-    def _parse_ground_truths(self, sample: Dict) -> List[Dict]:
-        """Parse ground truth data."""
+    def _parse_ground_truths(self, gt_data: Dict) -> List[Dict]:
+        """Parse ground truth data from gt_data returned by get_ground_truth()."""
         ground_truths = []
         
-        if 'gt_bboxes_3d' in sample and 'gt_labels_3d' in sample:
-            gt_bboxes_3d = sample['gt_bboxes_3d']
-            gt_labels_3d = sample['gt_labels_3d']
+        if 'gt_bboxes_3d' in gt_data and 'gt_labels_3d' in gt_data:
+            gt_bboxes_3d = gt_data['gt_bboxes_3d']
+            gt_labels_3d = gt_data['gt_labels_3d']
             
             print(f"DEBUG: Ground truth analysis:")
             print(f"  GT bboxes shape: {gt_bboxes_3d.shape}")

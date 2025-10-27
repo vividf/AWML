@@ -277,6 +277,7 @@ class CenterPointDataLoader(BaseDataLoader):
         return len(self.data_infos)
 
 
+
     def get_ground_truth(self, index: int) -> Dict[str, Any]:
         """
         Get ground truth annotations for evaluation.

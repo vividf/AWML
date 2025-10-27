@@ -169,3 +169,28 @@ class CalibrationDataLoader(BaseDataLoader):
         """
         return len(self._samples_list)
 
+    def get_ground_truth(self, index: int) -> Dict[str, Any]:
+        """
+        Get ground truth annotations for evaluation.
+
+        For calibration classification, ground truth is determined by the
+        miscalibration_probability setting:
+        - miscalibration_probability=1.0 → GT label = 0 (miscalibrated)
+        - miscalibration_probability=0.0 → GT label = 1 (calibrated)
+
+        Args:
+            index: Sample index
+
+        Returns:
+            Dictionary containing:
+            - gt_label: Ground truth label (0 or 1)
+            - miscalibration_probability: Probability used for this sample
+        """
+        # Ground truth is determined by miscalibration_probability
+        gt_label = 0 if self.miscalibration_probability >= 0.5 else 1
+
+        return {
+            "gt_label": gt_label,
+            "miscalibration_probability": self.miscalibration_probability,
+        }
+

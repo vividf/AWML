@@ -182,7 +182,11 @@ class ClassificationEvaluator(BaseEvaluator):
         latencies = []
 
         # Process both miscalibrated (0) and calibrated (1) versions
-        for gt_label, loader in [(0, data_loader_miscalibrated), (1, data_loader_calibrated)]:
+        for loader in [data_loader_miscalibrated, data_loader_calibrated]:
+            # Get ground truth using get_ground_truth method
+            gt_data = loader.get_ground_truth(sample_idx)
+            gt_label = gt_data['gt_label']
+            
             # Load and preprocess using pre-created data loader
             input_tensor = loader.load_and_preprocess(sample_idx)
 
