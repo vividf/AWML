@@ -122,11 +122,14 @@ class CenterPointEvaluator(BaseEvaluator):
 
                 # Run inference
                 if backend == "pytorch":
+                    print("###################pytorch inference###################")
                     output, latency = self._run_pytorch_inference(inference_backend, input_data, sample)
                 elif backend == "tensorrt":
+                    print("###################tensorrt inference###################")
                     # TensorRT also needs special preprocessing to ensure voxels/coors are included
                     output, latency = self._run_tensorrt_inference(inference_backend, input_data, sample)
                 else:
+                    print("###################onnx inference###################")
                     output, latency = inference_backend.infer(input_data)
 
                 # Parse predictions and ground truths
@@ -321,7 +324,7 @@ class CenterPointEvaluator(BaseEvaluator):
         import time
         
         # TensorRT backend needs voxelized data (voxels, coors, num_points)
-        # Use PyTorch model's voxelization if available
+        # Use PyTorch model's data_preprocessor for consistency (same as ONNX backend)
         if hasattr(backend, 'pytorch_model') and backend.pytorch_model is not None:
             # Get lidar points
             if 'points' in input_data:
@@ -329,70 +332,49 @@ class CenterPointEvaluator(BaseEvaluator):
             else:
                 raise ValueError("TensorRT inference requires 'points' in input_data")
             
-            # Use mmcv's Voxelization to voxelize points
-            from mmcv.ops import Voxelization
-            
             start_time = time.time()
             
-            # Get voxelization config from model config
-            # Default CenterPoint voxelization config
-            voxel_size = [0.32, 0.32, 8.0]
-            point_cloud_range = [-121.6, -121.6, -3.0, 121.6, 121.6, 5.0]
-            max_num_points = 32  # max points per voxel
-            max_voxels = (30000, 40000)  # (train, test)
+            # Use PyTorch model's data_preprocessor for voxelization (same as ONNX backend)
+            # This ensures consistency across all backends
+            from mmdet3d.structures import Det3DDataSample
             
-            # Create voxelization layer
-            voxel_layer = Voxelization(
-                voxel_size=voxel_size,
-                point_cloud_range=point_cloud_range,
-                max_num_points=max_num_points,
-                max_voxels=max_voxels[1]  # Use test max_voxels
+            # Convert points to torch tensor if needed
+            if isinstance(points, np.ndarray):
+                points_tensor = torch.from_numpy(points).float()
+            else:
+                points_tensor = points.float()
+            
+            # Move to the same device as the model
+            device = next(backend.pytorch_model.parameters()).device
+            points_tensor = points_tensor.to(device)
+            
+            # Use data_preprocessor (same as ONNX backend)
+            data_samples = [Det3DDataSample()]
+            batch_inputs = backend.pytorch_model.data_preprocessor(
+                {'inputs': {'points': [points_tensor]}, 'data_samples': data_samples}
             )
             
-            # Convert points to CPU for voxelization (mmcv ops may require CPU)
-            if isinstance(points, torch.Tensor):
-                points_cpu = points.cpu()
-            else:
-                points_cpu = torch.from_numpy(points)
-            
-            # Voxelize
-            voxels, coors, num_points = voxel_layer(points_cpu)
-            
-            # Convert voxels to 11 dimensions using PyTorch model's get_input_features
-            # This is what ONNX does - not simple zero padding!
-            device = next(backend.pytorch_model.parameters()).device
-            voxels_torch = voxels.to(device)
-            coors_torch = coors.to(device)
-            num_points_torch = num_points.to(device)
-            
-            # Add batch_idx to coors (mmcv returns [N, 3], need [N, 4])
-            batch_idx = torch.zeros((coors_torch.shape[0], 1), dtype=coors_torch.dtype, device=device)
-            coors_torch = torch.cat([batch_idx, coors_torch], dim=1)
+            # Extract voxel data
+            voxel_dict = batch_inputs['inputs']['voxels']
+            voxels = voxel_dict['voxels']
+            num_points = voxel_dict['num_points']
+            coors = voxel_dict['coors']
             
             # Use PyTorch model's get_input_features to get 11-dim features
+            # This is what ONNX does - ensures consistency!
             with torch.no_grad():
                 if hasattr(backend.pytorch_model.pts_voxel_encoder, 'get_input_features'):
                     voxels_11d = backend.pytorch_model.pts_voxel_encoder.get_input_features(
-                        voxels_torch,
-                        num_points_torch,
-                        coors_torch
+                        voxels,
+                        num_points,
+                        coors
                     )
                 else:
-                    # Fallback: zero padding
-                    pad_size = 11 - voxels_torch.shape[2]
-                    padding = torch.zeros(voxels_torch.shape[0], voxels_torch.shape[1], pad_size, 
-                                        dtype=voxels_torch.dtype, device=device)
-                    voxels_11d = torch.cat([voxels_torch, padding], dim=2)
-            
-            # Convert back to original device for TensorRT
-            # coors_torch already has batch_idx added
-            voxels = voxels_11d
-            coors = coors_torch
-            num_points = num_points_torch
+                    ValueError("get_input_features not found")
             
             # Prepare voxelized input data
             voxelized_input = {
-                'voxels': voxels,
+                'voxels': voxels_11d,
                 'coors': coors,
                 'num_points': num_points
             }
@@ -400,9 +382,6 @@ class CenterPointEvaluator(BaseEvaluator):
             # Run TensorRT inference
             output, latency = backend.infer(voxelized_input)
             return output, latency
-        else:
-            # Fallback to direct inference
-            return backend.infer(input_data)
     
     def _run_pytorch_inference(self, model, input_data: Dict, sample: Dict) -> tuple:
         """Run PyTorch inference with proper data format."""
@@ -465,9 +444,10 @@ class CenterPointEvaluator(BaseEvaluator):
         
         # Handle different output formats
         if isinstance(output, list) and len(output) > 0:
-            # Check if it's Det3DDataSample format (PyTorch)
+            # PyTorch: Det3DDataSample format
             if hasattr(output[0], 'pred_instances_3d'):
                 data_sample = output[0]
+                print("######################### 2 #################################")
                 pred_instances = data_sample.pred_instances_3d
                 
                 if hasattr(pred_instances, 'bboxes_3d') and hasattr(pred_instances, 'scores_3d') and hasattr(pred_instances, 'labels_3d'):
@@ -491,9 +471,10 @@ class CenterPointEvaluator(BaseEvaluator):
                             'label': int(labels_np[i])
                         })
                     
-            # Check if it's TensorRT format (List[Dict[str, torch.Tensor]])
+            # TensorRT: List[Dict[str, torch.Tensor]] with 6 head outputs
             elif isinstance(output[0], dict) and len(output) == 6:
                 # TensorRT format: List[Dict[str, torch.Tensor]] with 6 head outputs
+                print("######################### 3 #################################")
                 head_outputs = {}
                 for item in output:
                     for key, value in item.items():
@@ -510,18 +491,12 @@ class CenterPointEvaluator(BaseEvaluator):
                     sample
                 )
                     
-            # Check if it's raw head outputs format (ONNX)
-            elif isinstance(output[0], (list, tuple)) and len(output[0]) == 6:
-                # Raw head outputs: [heatmap, reg, height, dim, rot, vel]
-                heatmap, reg, height, dim, rot, vel = output[0]
-                predictions = self._parse_centerpoint_head_outputs(
-                    heatmap, reg, height, dim, rot, vel, sample
-                )
             
-            # Check if it's ONNX format (list of numpy arrays or torch tensors)
+            # ONNX: list of numpy arrays or torch tensors with 6 head outputs
             elif isinstance(output[0], (torch.Tensor, np.ndarray)) and len(output) == 6:
                 # ONNX outputs: [heatmap, reg, height, dim, rot, vel]
                 heatmap, reg, height, dim, rot, vel = output
+                print("######################### 5 #################################")
                 
                 # Convert numpy arrays to torch tensors if needed
                 if isinstance(heatmap, np.ndarray):
@@ -536,14 +511,7 @@ class CenterPointEvaluator(BaseEvaluator):
                 predictions = self._parse_centerpoint_head_outputs(
                     heatmap, reg, height, dim, rot, vel, sample
                 )
-                
-        elif isinstance(output, dict):
-            # Handle dictionary output format
-            if 'predictions' in output:
-                predictions = output['predictions']
-            else:
-                # Convert dict to list format
-                predictions = [output]
+
         
         return predictions
 

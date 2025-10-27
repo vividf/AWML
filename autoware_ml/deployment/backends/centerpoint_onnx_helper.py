@@ -56,28 +56,9 @@ class CenterPointONNXHelper:
             
             # Set execution providers
             if self.device.startswith("cuda"):
-                # # CUDA provider settings for numerical consistency and performance
-                # cuda_provider_options = {
-                #     "device_id": 0,
-                #     "arena_extend_strategy": "kNextPowerOfTwo",
-                #     "cudnn_conv_algo_search": "HEURISTIC",  # Fixed algorithm search
-                #     "do_copy_in_default_stream": True,
-                #     "enable_cuda_graph": False,  # Disable CUDA Graph due to partitioning issues
-                #     "cudnn_conv1d_pad_to_nc1d": True,  # Optimize conv1d padding
-                #     "cudnn_conv_use_max_workspace": True,  # Use max workspace for better performance
-                #     # Note: enable_cuda_graph_capture is not supported in this ONNX Runtime version
-                #     # Note: enable_tf32 is not supported in this ONNX Runtime version
-                #     # Note: user_compute_stream is not supported in this ONNX Runtime version
-                # }
-                # providers = [
-                #     ("CUDAExecutionProvider", cuda_provider_options),
-                #     "CPUExecutionProvider"
-                # ]
-                # logger.info("Attempting to use CUDA acceleration (will fallback to CPU if needed)...")
                 providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
             else:
                 providers = ["CPUExecutionProvider"]
-                logger.info("Using CPU for ONNX inference")
             
             # Initialize voxel encoder session
             self.voxel_encoder_session = ort.InferenceSession(
