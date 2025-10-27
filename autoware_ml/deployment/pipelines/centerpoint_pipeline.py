@@ -160,6 +160,26 @@ class CenterPointDeploymentPipeline(ABC):
         
         heatmap, reg, height, dim, rot, vel = head_outputs
         
+        # Check if rot_y_axis_reference conversion is needed
+        # When ONNX/TensorRT outputs use rot_y_axis_reference format, we need to convert back
+        # to standard format before passing to PyTorch's predict_by_feat
+        if hasattr(self.pytorch_model, 'pts_bbox_head'):
+            rot_y_axis_reference = getattr(
+                self.pytorch_model.pts_bbox_head, 
+                '_rot_y_axis_reference', 
+                False
+            )
+            
+            if rot_y_axis_reference:
+                # Convert dim from [w, l, h] back to [l, w, h]
+                dim = dim[:, [1, 0, 2], :, :]
+                
+                # Convert rot from [-cos(x), -sin(y)] back to [sin(y), cos(x)]
+                rot = rot * (-1.0)
+                rot = rot[:, [1, 0], :, :]
+                
+                logger.debug("Converted outputs from rot_y_axis_reference format to standard format")
+        
         # Convert to mmdet3d format
         preds_dict = {
             'heatmap': heatmap,
