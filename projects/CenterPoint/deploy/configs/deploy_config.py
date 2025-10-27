@@ -7,9 +7,9 @@ Modify according to your needs.
 
 # Export settings
 export = dict(
-    mode="both",  # Export both ONNX and TensorRT
+    mode="none",  # Export both ONNX and TensorRT
     verify=False,  # Disable verification to save time
-    device="cpu",  # Use CUDA for TensorRT
+    device="cuda:0",  # Use CUDA for TensorRT
     work_dir="work_dirs/centerpoint_deployment",
 )
 

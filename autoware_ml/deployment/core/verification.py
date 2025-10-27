@@ -13,12 +13,6 @@ import torch
 
 from ..backends import BaseBackend, ONNXBackend, PyTorchBackend, TensorRTBackend
 
-# Try to import CenterPoint-specific backend (optional)
-try:
-    from projects.CenterPoint.deploy.centerpoint_tensorrt_backend import CenterPointTensorRTBackend
-except ImportError:
-    CenterPointTensorRTBackend = None
-
 DEFAULT_TOLERANCE = 1e-3
 
 
@@ -150,56 +144,17 @@ def verify_model_outputs(
         if tensorrt_path:
             logger.info("\nVerifying TensorRT model...")
             
-            # Determine backend type based on model_type parameter
-            use_centerpoint_backend = False
+            trt_backend = TensorRTBackend(tensorrt_path, device="cuda")
             
-            if model_type == "auto":
-                # Auto-detect: check if CenterPoint backend is available and path structure suggests multi-engine
-                use_centerpoint_backend = (
-                    CenterPointTensorRTBackend is not None and 
-                    os.path.isdir(tensorrt_path) and 
-                    any(f.endswith('.engine') for f in os.listdir(tensorrt_path))
-                )
-            elif model_type == "CenterPoint":
-                # Explicitly CenterPoint model
-                use_centerpoint_backend = CenterPointTensorRTBackend is not None
-            else:
-                # YOLOX, other models - use standard backend
-                use_centerpoint_backend = False
-            
-            if use_centerpoint_backend:
-                # CenterPoint multi-engine setup
-                try:
-                    # Pass PyTorch model for middle encoder
-                    trt_backend = CenterPointTensorRTBackend(tensorrt_path, device="cuda", pytorch_model=pytorch_model)
-                    logger.info("Using CenterPoint TensorRT backend (multi-engine)")
-                except Exception as e:
-                    logger.warning(f"Failed to create CenterPoint TensorRT backend: {e}, falling back to standard backend")
-                    trt_backend = TensorRTBackend(tensorrt_path, device="cuda")
-            else:
-                # Standard single-engine setup
-                trt_backend = TensorRTBackend(tensorrt_path, device="cuda")
-                logger.info("Using standard TensorRT backend (single-engine)")
-            
-            # For CenterPoint, pass the original input_data instead of input_tensor
-            if CenterPointTensorRTBackend is not None and isinstance(trt_backend, CenterPointTensorRTBackend):
-                trt_success, trt_output, trt_latency = _verify_backend(
-                    trt_backend,
-                    input_tensor,  # input_tensor is already a dict for CenterPoint
-                    pytorch_output,
-                    tolerance,
-                    "TensorRT",
-                    logger,
-                )
-            else:
-                trt_success, trt_output, trt_latency = _verify_backend(
-                    trt_backend,
-                    input_tensor,
-                    pytorch_output,
-                    tolerance,
-                    "TensorRT",
-                    logger,
-                )
+            # Use standard backend verification
+            trt_success, trt_output, trt_latency = _verify_backend(
+                trt_backend,
+                input_tensor,
+                pytorch_output,
+                tolerance,
+                "TensorRT",
+                logger,
+            )
             results[f"{sample_name}_tensorrt"] = trt_success
 
     logger.info(f"\n{'='*60}")

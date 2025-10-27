@@ -10,8 +10,6 @@ import onnxruntime as ort
 import torch
 
 from .base_backend import BaseBackend
-from .centerpoint_onnx_helper import CenterPointONNXHelper, is_centerpoint_onnx
-
 
 class ONNXBackend(BaseBackend):
     """
@@ -37,16 +35,11 @@ class ONNXBackend(BaseBackend):
         self.num_classes = num_classes
         self.pytorch_model = pytorch_model
         
-        # Check if this is CenterPoint multi-file ONNX
-        self.is_centerpoint = is_centerpoint_onnx(model_path)
         self.centerpoint_helper = None
 
     def load_model(self) -> None:
         """Load ONNX model(s)."""
-        if self.is_centerpoint:
-            self._load_centerpoint_model()
-        else:
-            self._load_standard_model()
+        self._load_standard_model()
 
     def _load_standard_model(self) -> None:
         """Load standard single-file ONNX model."""
@@ -82,33 +75,12 @@ class ONNXBackend(BaseBackend):
             else:
                 raise RuntimeError(f"Failed to load ONNX model: {e}")
 
-    def _load_centerpoint_model(self) -> None:
-        """Load CenterPoint multi-file ONNX model."""
-        if self.pytorch_model is None:
-            raise ValueError("PyTorch model is required for CenterPoint ONNX inference")
-        
-        self.centerpoint_helper = CenterPointONNXHelper(
-            self.model_path, 
-            device=self.device, 
-            pytorch_model=self.pytorch_model
-        )
-        
-        # For CenterPoint, we use the backbone/neck/head session as the main session
-        self._session = self.centerpoint_helper.backbone_head_session
-        self._model = self._session  # For is_loaded check
-        
-        # Update device based on actual ONNX execution providers
-        self.device = self.centerpoint_helper.actual_device
-        
-        self._logger.info(f"CenterPoint ONNX model loaded successfully: {self.model_path}")
-        self._logger.info(f"Actual execution device: {self.device}")
-
     def infer(self, input_tensor) -> Tuple[np.ndarray, float]:
         """
         Run inference on input tensor.
 
         Args:
-            input_tensor: Input tensor for inference (or dict for CenterPoint)
+            input_tensor: Input tensor for inference
 
         Returns:
             Tuple of (output_array, latency_ms)
@@ -116,13 +88,6 @@ class ONNXBackend(BaseBackend):
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
-        if self.is_centerpoint:
-            return self._infer_centerpoint(input_tensor)
-        else:
-            return self._infer_standard(input_tensor)
-
-    def _infer_standard(self, input_tensor: torch.Tensor) -> Tuple[np.ndarray, float]:
-        """Standard ONNX inference."""
         input_array = input_tensor.cpu().numpy()
 
         # Check if ONNX model expects different batch size than input
@@ -157,26 +122,6 @@ class ONNXBackend(BaseBackend):
         
         return output, latency_ms
 
-    def _infer_centerpoint(self, input_data: Dict[str, Any]) -> Tuple[list, float]:
-        """CenterPoint ONNX inference."""
-        # Step 1: Preprocess using CenterPoint helper
-        start_time = time.perf_counter()
-        
-        preprocessed_data = self.centerpoint_helper.preprocess_for_onnx(input_data)
-        
-        # Step 2: Run backbone/neck/head ONNX
-        backbone_head_inputs = preprocessed_data
-        head_outputs = self._session.run(None, backbone_head_inputs)
-        
-        # Step 3: Postprocess outputs
-        processed_outputs = self.centerpoint_helper.postprocess_from_onnx(head_outputs)
-        
-        end_time = time.perf_counter()
-        latency_ms = (end_time - start_time) * 1000
-        
-        self._logger.info(f"CenterPoint ONNX output: {len(processed_outputs)} head outputs")
-        
-        return processed_outputs, latency_ms
 
     def _extract_batch_size(self, shape) -> Optional[int]:
         """

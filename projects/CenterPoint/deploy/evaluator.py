@@ -15,7 +15,6 @@ from autoware_ml.deployment.backends import ONNXBackend, PyTorchBackend, TensorR
 from autoware_ml.deployment.core import BaseEvaluator
 
 from .data_loader import CenterPointDataLoader
-from .centerpoint_tensorrt_backend import CenterPointTensorRTBackend
 
 # Constants
 LOG_INTERVAL = 50
@@ -79,29 +78,12 @@ class CenterPointEvaluator(BaseEvaluator):
         logger.info(f"\nEvaluating {backend} model: {model_path}")
         logger.info(f"Number of samples: {num_samples}")
 
-        # Create backend instance
-        inference_backend = self._create_backend(backend, model_path, device, logger)
+        # Create Pipeline instance
+        pipeline = self._create_backend(backend, model_path, device, logger)
         
-        if inference_backend is None:
-            logger.error(f"Failed to create {backend} backend")
+        if pipeline is None:
+            logger.error(f"Failed to create {backend} Pipeline")
             return {}
-        
-        # Store reference to pytorch_model if available (for consistent ONNX/TensorRT decoding)
-        if hasattr(inference_backend, 'pytorch_model'):
-            self.pytorch_model = inference_backend.pytorch_model
-            logger.info(f"Stored PyTorch model reference for {backend} decoding")
-        elif backend == "pytorch":
-            self.pytorch_model = inference_backend
-        else:
-            self.pytorch_model = None
-        
-        # Load model (only for non-PyTorch backends)
-        if backend != "pytorch":
-            try:
-                inference_backend.load_model()
-            except Exception as e:
-                logger.error(f"Failed to load {backend} model: {e}")
-                return {}
 
         # Run evaluation
         predictions_list = []
@@ -115,25 +97,23 @@ class CenterPointEvaluator(BaseEvaluator):
 
                 # Get sample data
                 sample = data_loader.load_sample(i)
-                input_data = data_loader.preprocess(sample)
                 
-                # Get ground truth using get_ground_truth method
+                # Get points for pipeline
+                if 'points' in sample:
+                    points = sample['points']
+                else:
+                    # Load points from data_loader
+                    input_data = data_loader.preprocess(sample)
+                    points = input_data.get('points', input_data)
+                
+                # Get ground truth
                 gt_data = data_loader.get_ground_truth(i)
 
-                # Run inference
-                if backend == "pytorch":
-                    print("###################pytorch inference###################")
-                    output, latency = self._run_pytorch_inference(inference_backend, input_data, sample)
-                elif backend == "tensorrt":
-                    print("###################tensorrt inference###################")
-                    # TensorRT also needs special preprocessing to ensure voxels/coors are included
-                    output, latency = self._run_tensorrt_inference(inference_backend, input_data, sample)
-                else:
-                    print("###################onnx inference###################")
-                    output, latency = inference_backend.infer(input_data)
-
-                # Parse predictions and ground truths
-                predictions = self._parse_predictions(output, sample)
+                # Run inference using unified Pipeline interface
+                sample_meta = sample.get('metainfo', {})
+                predictions, latency = pipeline.infer(points, sample_meta)
+                
+                # Parse ground truths
                 ground_truths = self._parse_ground_truths(gt_data)
 
                 predictions_list.append(predictions)
@@ -151,9 +131,8 @@ class CenterPointEvaluator(BaseEvaluator):
             return {}
 
         finally:
-            # Cleanup
-            if hasattr(inference_backend, 'close'):
-                inference_backend.close()
+            # Cleanup (Pipeline handles its own cleanup)
+            pass
 
         # Compute metrics
         results = self._compute_metrics(predictions_list, ground_truths_list, latencies, logger)
@@ -161,94 +140,73 @@ class CenterPointEvaluator(BaseEvaluator):
         return results
 
     def _create_backend(self, backend: str, model_path: str, device: str, logger) -> Any:
-        """Create backend instance."""
+        """Create Pipeline instance for the specified backend."""
         try:
+            # Import Pipeline classes
+            from autoware_ml.deployment.pipelines import (
+                CenterPointPyTorchPipeline,
+                CenterPointONNXPipeline,
+                CenterPointTensorRTPipeline
+            )
+            
+            # Ensure device is properly set
+            if device == "cuda" and not torch.cuda.is_available():
+                logger.warning("CUDA not available, falling back to CPU")
+                device = "cpu"
+            
+            device_obj = torch.device(device) if isinstance(device, str) else device
+            
+            # Load PyTorch model (required by all backends)
             if backend == "pytorch":
-                # For 3D detection, we need to load the model directly
-                # PyTorch evaluation should use STANDARD config, not ONNX config!
-                # Ensure device is properly set to CPU if CUDA is not available
-                if device == "cuda" and not torch.cuda.is_available():
-                    logger.warning("CUDA not available, falling back to CPU")
-                    device = "cpu"
-                device_obj = torch.device(device) if isinstance(device, str) else device
+                pytorch_model = self._load_pytorch_model_directly(model_path, device_obj, logger)
+                return CenterPointPyTorchPipeline(pytorch_model, device=str(device_obj))
                 
-                # Use lower-level model loading to avoid CUDA checks in init_model
-                # PyTorch evaluation should receive original config (no conversion needed)
-                model = self._load_pytorch_model_directly(
-                    model_path, 
-                    device_obj, 
-                    logger
-                )
-                return model
             elif backend == "onnx":
-                # For CenterPoint ONNX, we need the PyTorch model for voxelization
-                # IMPORTANT: Use the ONNX-compatible model config (self.model_cfg should already be ONNX version)
-                # Ensure device is properly set to CPU if CUDA is not available
-                if device == "cuda" and not torch.cuda.is_available():
-                    logger.warning("CUDA not available, falling back to CPU")
-                    device = "cpu"
-                device_obj = torch.device(device) if isinstance(device, str) else device
-                
-                # ONNX evaluation should receive ONNX-compatible config (no conversion needed)
-                if self.model_cfg.model.type == "CenterPointONNX":
-                    logger.info("Using ONNX-compatible model config for ONNX backend")
-                    # Find the checkpoint path - try to infer from model_path
-                    # Typically: work_dirs/centerpoint_deployment -> work_dirs/centerpoint/best_checkpoint.pth
-                    import os
-                    checkpoint_path = model_path.replace('centerpoint_deployment', 'centerpoint/best_checkpoint.pth')
-                    if not os.path.exists(checkpoint_path):
-                        # Try alternative paths
-                        checkpoint_path = model_path.replace('_deployment', '/best_checkpoint.pth')
-                    
-                    pytorch_model = self._load_pytorch_model_directly(
-                        checkpoint_path, 
-                        device_obj, 
-                        logger
-                    )
-                else:
+                # Verify ONNX-compatible config
+                if self.model_cfg.model.type != "CenterPointONNX":
                     logger.error("Model config is not ONNX-compatible!")
-                    logger.error("Please use --replace-onnx-models flag when running deployment")
                     logger.error(f"Current model type: {self.model_cfg.model.type}")
                     logger.error("Expected model type: CenterPointONNX")
-                    raise ValueError(
-                        "ONNX evaluation requires ONNX-compatible model config. "
-                        "Please ensure the model config has been updated to use CenterPointONNX."
-                    )
+                    raise ValueError("ONNX requires ONNX-compatible model config")
                 
-                return ONNXBackend(model_path, device=device, pytorch_model=pytorch_model)
+                # Find checkpoint path
+                import os
+                checkpoint_path = model_path.replace('centerpoint_deployment', 'centerpoint/best_checkpoint.pth')
+                if not os.path.exists(checkpoint_path):
+                    checkpoint_path = model_path.replace('_deployment', '/best_checkpoint.pth')
+                
+                pytorch_model = self._load_pytorch_model_directly(checkpoint_path, device_obj, logger)
+                return CenterPointONNXPipeline(pytorch_model, onnx_dir=model_path, device=str(device_obj))
+                
             elif backend == "tensorrt":
-                # TensorRT requires CUDA, so skip if not available
-                if device == "cuda" and not torch.cuda.is_available():
-                    logger.warning("CUDA not available, skipping TensorRT backend")
+                # TensorRT requires CUDA
+                if not str(device).startswith("cuda"):
+                    logger.warning("TensorRT requires CUDA device, skipping TensorRT evaluation")
                     return None
                 
-                # TensorRT backend needs PyTorch model for middle encoder
-                # TensorRT evaluation should receive ONNX-compatible config (no conversion needed)
-                if self.model_cfg.model.type == "CenterPointONNX":
-                    logger.info("Using ONNX-compatible model config for TensorRT backend")
-                    import os
-                    checkpoint_path = model_path.replace('centerpoint_deployment/tensorrt', 'centerpoint/best_checkpoint.pth')
-                    checkpoint_path = checkpoint_path.replace('/tensorrt', '')  # Handle different path formats
-                    if not os.path.exists(checkpoint_path):
-                        # Try alternative paths
-                        checkpoint_path = model_path.replace('_deployment/tensorrt', '/best_checkpoint.pth')
-                    
-                    device_obj = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-                    pytorch_model = self._load_pytorch_model_directly(
-                        checkpoint_path, 
-                        device_obj, 
-                        logger
-                    )
-                    return CenterPointTensorRTBackend(model_path, device=device, pytorch_model=pytorch_model)
-                else:
-                    logger.error("TensorRT evaluation requires ONNX-compatible model config")
-                    logger.error("Please use --replace-onnx-models flag when running deployment")
-                    raise ValueError("TensorRT evaluation requires ONNX-compatible model config")
+                # Verify ONNX-compatible config
+                if self.model_cfg.model.type != "CenterPointONNX":
+                    logger.error("TensorRT requires ONNX-compatible model config")
+                    raise ValueError("TensorRT requires ONNX-compatible model config")
+                
+                # Find checkpoint path
+                import os
+                checkpoint_path = model_path.replace('centerpoint_deployment/tensorrt', 'centerpoint/best_checkpoint.pth')
+                checkpoint_path = checkpoint_path.replace('/tensorrt', '')
+                if not os.path.exists(checkpoint_path):
+                    checkpoint_path = model_path.replace('_deployment/tensorrt', '/best_checkpoint.pth')
+                
+                pytorch_model = self._load_pytorch_model_directly(checkpoint_path, device_obj, logger)
+                return CenterPointTensorRTPipeline(pytorch_model, tensorrt_dir=model_path, device=str(device_obj))
+                
             else:
                 logger.error(f"Unsupported backend: {backend}")
                 return None
+                
         except Exception as e:
-            logger.error(f"Failed to create {backend} backend: {e}")
+            logger.error(f"Failed to create {backend} Pipeline: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def _load_pytorch_model_directly(self, checkpoint_path: str, device: torch.device, logger) -> Any:
@@ -319,201 +277,7 @@ class CenterPointEvaluator(BaseEvaluator):
             
             raise e
 
-    def _run_tensorrt_inference(self, backend, input_data: Dict, sample: Dict) -> tuple:
-        """Run TensorRT inference with proper voxelized data format."""
-        import time
-        
-        # TensorRT backend needs voxelized data (voxels, coors, num_points)
-        # Use PyTorch model's data_preprocessor for consistency (same as ONNX backend)
-        if hasattr(backend, 'pytorch_model') and backend.pytorch_model is not None:
-            # Get lidar points
-            if 'points' in input_data:
-                points = input_data['points']
-            else:
-                raise ValueError("TensorRT inference requires 'points' in input_data")
-            
-            start_time = time.time()
-            
-            # Use PyTorch model's data_preprocessor for voxelization (same as ONNX backend)
-            # This ensures consistency across all backends
-            from mmdet3d.structures import Det3DDataSample
-            
-            # Convert points to torch tensor if needed
-            if isinstance(points, np.ndarray):
-                points_tensor = torch.from_numpy(points).float()
-            else:
-                points_tensor = points.float()
-            
-            # Move to the same device as the model
-            device = next(backend.pytorch_model.parameters()).device
-            points_tensor = points_tensor.to(device)
-            
-            # Use data_preprocessor (same as ONNX backend)
-            data_samples = [Det3DDataSample()]
-            batch_inputs = backend.pytorch_model.data_preprocessor(
-                {'inputs': {'points': [points_tensor]}, 'data_samples': data_samples}
-            )
-            
-            # Extract voxel data
-            voxel_dict = batch_inputs['inputs']['voxels']
-            voxels = voxel_dict['voxels']
-            num_points = voxel_dict['num_points']
-            coors = voxel_dict['coors']
-            
-            # Use PyTorch model's get_input_features to get 11-dim features
-            # This is what ONNX does - ensures consistency!
-            with torch.no_grad():
-                if hasattr(backend.pytorch_model.pts_voxel_encoder, 'get_input_features'):
-                    voxels_11d = backend.pytorch_model.pts_voxel_encoder.get_input_features(
-                        voxels,
-                        num_points,
-                        coors
-                    )
-                else:
-                    ValueError("get_input_features not found")
-            
-            # Prepare voxelized input data
-            voxelized_input = {
-                'voxels': voxels_11d,
-                'coors': coors,
-                'num_points': num_points
-            }
-            
-            # Run TensorRT inference
-            output, latency = backend.infer(voxelized_input)
-            return output, latency
-    
-    def _run_pytorch_inference(self, model, input_data: Dict, sample: Dict) -> tuple:
-        """Run PyTorch inference with proper data format."""
-        from mmengine.dataset import pseudo_collate
-        from mmdet3d.structures import Det3DDataSample
-        
-        # Get device from model
-        device = next(model.parameters()).device
-        
-        # Convert input data to proper format for PyTorch model
-        # PyTorch model expects voxels, num_points, coors
-        if 'voxels' in input_data and 'num_points' in input_data and 'coors' in input_data:
-            # Already in correct format
-            voxels = input_data['voxels']
-            num_points = input_data['num_points'] 
-            coors = input_data['coors']
 
-        # Create data sample
-        data_sample = Det3DDataSample()
-        data_sample.set_metainfo(sample.get('metainfo', {}))
-        
-        # Run inference
-        start_time = torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() and str(device).startswith('cuda') else None
-        end_time = torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() and str(device).startswith('cuda') else None
-        
-        if start_time:
-            start_time.record()
-        else:
-            import time
-            start_time_cpu = time.time()
-        
-        # Use inference method for proper evaluation
-        with torch.no_grad():
-            # Use the inference API which handles data formatting correctly
-            from mmdet3d.apis import inference_detector
-            # Get lidar path from sample
-            lidar_path = sample.get('pts_path', sample.get('lidar_path', None))
-            if lidar_path is None:
-                # Fallback: use points data from sample
-                lidar_path = sample['points'].numpy()
-            outputs = inference_detector(model, lidar_path)
-        
-        if end_time:
-            end_time.record()
-            torch.cuda.synchronize()
-            latency = start_time.elapsed_time(end_time)
-        else:
-            import time
-            latency = (time.time() - start_time_cpu) * 1000  # Convert to ms
-        
-        return outputs, latency
-
-    def _parse_predictions(self, output: Any, sample: Dict) -> List[Dict]:
-        """Parse model output into prediction format."""
-        predictions = []
-        
-        # Convert tuple to list if needed
-        if isinstance(output, tuple):
-            output = list(output)
-        
-        # Handle different output formats
-        if isinstance(output, list) and len(output) > 0:
-            # PyTorch: Det3DDataSample format
-            if hasattr(output[0], 'pred_instances_3d'):
-                data_sample = output[0]
-                print("######################### 2 #################################")
-                pred_instances = data_sample.pred_instances_3d
-                
-                if hasattr(pred_instances, 'bboxes_3d') and hasattr(pred_instances, 'scores_3d') and hasattr(pred_instances, 'labels_3d'):
-                    bboxes_3d = pred_instances.bboxes_3d
-                    scores_3d = pred_instances.scores_3d
-                    labels_3d = pred_instances.labels_3d
-                    
-                    # Convert to numpy for processing
-                    bboxes_np = bboxes_3d.cpu().numpy()
-                    scores_np = scores_3d.cpu().numpy()
-                    labels_np = labels_3d.cpu().numpy()
-                    
-                    # Parse each prediction
-                    for i in range(len(bboxes_np)):
-                        bbox_3d = bboxes_np[i]  # [x, y, z, w, l, h, yaw, vx, vy]
-                        bbox_ego = bbox_3d[:7]  # [x, y, z, w, l, h, yaw]
-                        
-                        predictions.append({
-                            'bbox_3d': bbox_ego.tolist(),
-                            'score': float(scores_np[i]),
-                            'label': int(labels_np[i])
-                        })
-                    
-            # TensorRT: List[Dict[str, torch.Tensor]] with 6 head outputs
-            elif isinstance(output[0], dict) and len(output) == 6:
-                # TensorRT format: List[Dict[str, torch.Tensor]] with 6 head outputs
-                print("######################### 3 #################################")
-                head_outputs = {}
-                for item in output:
-                    for key, value in item.items():
-                        head_outputs[key] = value
-                
-                # Parse CenterPoint head outputs
-                predictions = self._parse_centerpoint_head_outputs(
-                    head_outputs.get('heatmap', torch.zeros(1, 5, 200, 200)),
-                    head_outputs.get('reg', torch.zeros(1, 2, 200, 200)),
-                    head_outputs.get('height', torch.zeros(1, 1, 200, 200)),
-                    head_outputs.get('dim', torch.zeros(1, 3, 200, 200)),
-                    head_outputs.get('rot', torch.zeros(1, 2, 200, 200)),
-                    head_outputs.get('vel', torch.zeros(1, 2, 200, 200)),
-                    sample
-                )
-                    
-            
-            # ONNX: list of numpy arrays or torch tensors with 6 head outputs
-            elif isinstance(output[0], (torch.Tensor, np.ndarray)) and len(output) == 6:
-                # ONNX outputs: [heatmap, reg, height, dim, rot, vel]
-                heatmap, reg, height, dim, rot, vel = output
-                print("######################### 5 #################################")
-                
-                # Convert numpy arrays to torch tensors if needed
-                if isinstance(heatmap, np.ndarray):
-                    heatmap = torch.from_numpy(heatmap)
-                    reg = torch.from_numpy(reg)
-                    height = torch.from_numpy(height)
-                    dim = torch.from_numpy(dim)
-                    rot = torch.from_numpy(rot)
-                    vel = torch.from_numpy(vel)
-                
-                # Parse CenterPoint head outputs
-                predictions = self._parse_centerpoint_head_outputs(
-                    heatmap, reg, height, dim, rot, vel, sample
-                )
-
-        
-        return predictions
 
     
     def _parse_with_pytorch_decoder(self, heatmap, reg, height, dim, rot, vel, sample):
