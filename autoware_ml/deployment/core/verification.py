@@ -372,3 +372,230 @@ def compare_outputs(
         "mean_difference": mean_diff,
         "passed": max_diff < tolerance,
     }
+
+
+def verify_centerpoint_pipeline(
+    pytorch_model: torch.nn.Module,
+    test_inputs: Dict[str, torch.Tensor],
+    onnx_dir: str = None,
+    tensorrt_dir: str = None,
+    device: str = "cuda",
+    tolerance: float = DEFAULT_TOLERANCE,
+    logger: logging.Logger = None,
+) -> Dict[str, bool]:
+    """
+    Verify CenterPoint models using pipeline-based verification.
+    
+    This approach integrates verification into the evaluation pipeline architecture,
+    allowing verification and evaluation to share the same inference path while
+    differing only in whether postprocessing is applied.
+    
+    Args:
+        pytorch_model: Reference PyTorch model (ONNX-compatible)
+        test_inputs: Dictionary of test inputs (e.g., {'sample_0': tensor, ...})
+        onnx_dir: Optional directory containing ONNX models
+        tensorrt_dir: Optional directory containing TensorRT engines
+        device: Device for inference
+        tolerance: Maximum allowed difference
+        logger: Optional logger instance
+        
+    Returns:
+        Dictionary with verification results for each backend
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+    
+    # Import Pipeline classes
+    from ..pipelines import (
+        CenterPointPyTorchPipeline,
+        CenterPointONNXPipeline,
+        CenterPointTensorRTPipeline
+    )
+    
+    results = {}
+    
+    logger.info("=" * 60)
+    logger.info("Running CenterPoint Pipeline-based Verification")
+    logger.info("=" * 60)
+    
+    # Create PyTorch pipeline for reference
+    pytorch_pipeline = CenterPointPyTorchPipeline(pytorch_model, device=device)
+    
+    # Verify each sample
+    for sample_name, input_tensor in test_inputs.items():
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Verifying sample: {sample_name}")
+        logger.info(f"{'='*60}")
+        
+        # Get PyTorch reference (raw outputs)
+        logger.info("Running PyTorch inference (raw outputs)...")
+        try:
+            pytorch_output, pytorch_latency = pytorch_pipeline.infer(
+                input_tensor, 
+                sample_meta={},
+                return_raw_outputs=True
+            )
+            logger.info(f"  PyTorch latency: {pytorch_latency:.2f} ms")
+            logger.info(f"  PyTorch output: {len(pytorch_output)} head outputs")
+            for i, out in enumerate(pytorch_output):
+                if isinstance(out, torch.Tensor):
+                    logger.info(f"    Output[{i}] shape: {out.shape}")
+        except Exception as e:
+            logger.error(f"  PyTorch inference failed: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+        
+        # Verify ONNX
+        if onnx_dir:
+            logger.info("\nVerifying ONNX pipeline...")
+            try:
+                onnx_pipeline = CenterPointONNXPipeline(
+                    pytorch_model, 
+                    onnx_dir=onnx_dir,
+                    device=device
+                )
+                
+                onnx_output, onnx_latency = onnx_pipeline.infer(
+                    input_tensor,
+                    sample_meta={},
+                    return_raw_outputs=True
+                )
+                
+                logger.info(f"  ONNX latency: {onnx_latency:.2f} ms")
+                logger.info(f"  ONNX output: {len(onnx_output)} head outputs")
+                
+                # Compare outputs
+                max_diff = 0.0
+                mean_diff = 0.0
+                total_elements = 0
+                
+                output_names = ['heatmap', 'reg', 'height', 'dim', 'rot', 'vel']
+                
+                for i, (ref_out, onnx_out) in enumerate(zip(pytorch_output, onnx_output)):
+                    if isinstance(ref_out, torch.Tensor) and isinstance(onnx_out, torch.Tensor):
+                        ref_np = ref_out.cpu().numpy()
+                        onnx_np = onnx_out.cpu().numpy()
+                        
+                        # Log value ranges for debugging
+                        output_name = output_names[i] if i < len(output_names) else f"output_{i}"
+                        logger.info(f"    {output_name}: shape={ref_np.shape}")
+                        
+                        # Check for NaN or Inf
+                        pytorch_nan = np.isnan(ref_np).any()
+                        pytorch_inf = np.isinf(ref_np).any()
+                        onnx_nan = np.isnan(onnx_np).any()
+                        onnx_inf = np.isinf(onnx_np).any()
+                        
+                        if pytorch_nan or pytorch_inf or onnx_nan or onnx_inf:
+                            logger.warning(f"      ⚠️  Special values detected:")
+                            if pytorch_nan: logger.warning(f"         PyTorch has NaN!")
+                            if pytorch_inf: logger.warning(f"         PyTorch has Inf!")
+                            if onnx_nan: logger.warning(f"         ONNX has NaN!")
+                            if onnx_inf: logger.warning(f"         ONNX has Inf!")
+                        
+                        logger.info(f"      PyTorch range: [{ref_np.min():.3f}, {ref_np.max():.3f}], mean: {ref_np.mean():.3f}, std: {ref_np.std():.3f}")
+                        logger.info(f"      ONNX range: [{onnx_np.min():.3f}, {onnx_np.max():.3f}], mean: {onnx_np.mean():.3f}, std: {onnx_np.std():.3f}")
+                        
+                        diff = np.abs(ref_np - onnx_np)
+                        output_max_diff = diff.max()
+                        output_mean_diff = diff.mean()
+                        max_diff = max(max_diff, output_max_diff)
+                        mean_diff += diff.sum()
+                        total_elements += diff.size
+                        logger.info(f"      max_diff: {output_max_diff:.6f}, mean_diff: {output_mean_diff:.6f}")
+                
+                if total_elements > 0:
+                    mean_diff /= total_elements
+                
+                logger.info(f"  Overall Max difference: {max_diff:.6f}")
+                logger.info(f"  Overall Mean difference: {mean_diff:.6f}")
+                
+                onnx_success = max_diff < tolerance
+                if onnx_success:
+                    logger.info("  ONNX verification PASSED ✓")
+                else:
+                    logger.warning(f"  ONNX verification FAILED ✗ (max diff: {max_diff:.6f} > tolerance: {tolerance:.6f})")
+                
+                results[f"{sample_name}_onnx"] = onnx_success
+                
+            except Exception as e:
+                logger.error(f"  ONNX verification failed with error: {e}")
+                import traceback
+                traceback.print_exc()
+                results[f"{sample_name}_onnx"] = False
+        
+        # Verify TensorRT
+        if tensorrt_dir:
+            logger.info("\nVerifying TensorRT pipeline...")
+            
+            # Check if CUDA is available
+            if not device.startswith("cuda"):
+                logger.warning("  TensorRT requires CUDA device, skipping")
+                results[f"{sample_name}_tensorrt"] = False
+                continue
+            
+            try:
+                trt_pipeline = CenterPointTensorRTPipeline(
+                    pytorch_model,
+                    tensorrt_dir=tensorrt_dir,
+                    device=device
+                )
+                
+                trt_output, trt_latency = trt_pipeline.infer(
+                    input_tensor,
+                    sample_meta={},
+                    return_raw_outputs=True
+                )
+                
+                logger.info(f"  TensorRT latency: {trt_latency:.2f} ms")
+                logger.info(f"  TensorRT output: {len(trt_output)} head outputs")
+                
+                # Compare outputs
+                max_diff = 0.0
+                mean_diff = 0.0
+                total_elements = 0
+                
+                for i, (ref_out, trt_out) in enumerate(zip(pytorch_output, trt_output)):
+                    if isinstance(ref_out, torch.Tensor) and isinstance(trt_out, torch.Tensor):
+                        ref_np = ref_out.cpu().numpy()
+                        trt_np = trt_out.cpu().numpy()
+                        
+                        diff = np.abs(ref_np - trt_np)
+                        output_max_diff = diff.max()
+                        output_mean_diff = diff.mean()
+                        max_diff = max(max_diff, output_max_diff)
+                        mean_diff += diff.sum()
+                        total_elements += diff.size
+                        logger.info(f"    Output[{i}] - max_diff: {output_max_diff:.6f}, mean_diff: {output_mean_diff:.6f}")
+                
+                if total_elements > 0:
+                    mean_diff /= total_elements
+                
+                logger.info(f"  Overall Max difference: {max_diff:.6f}")
+                logger.info(f"  Overall Mean difference: {mean_diff:.6f}")
+                
+                trt_success = max_diff < tolerance
+                if trt_success:
+                    logger.info("  TensorRT verification PASSED ✓")
+                else:
+                    logger.warning(f"  TensorRT verification FAILED ✗ (max diff: {max_diff:.6f} > tolerance: {tolerance:.6f})")
+                
+                results[f"{sample_name}_tensorrt"] = trt_success
+                
+            except Exception as e:
+                logger.error(f"  TensorRT verification failed with error: {e}")
+                import traceback
+                traceback.print_exc()
+                results[f"{sample_name}_tensorrt"] = False
+    
+    # Print summary
+    logger.info(f"\n{'='*60}")
+    logger.info("Verification Summary")
+    logger.info(f"{'='*60}")
+    for key, success in results.items():
+        status = "✓ PASSED" if success else "✗ FAILED"
+        logger.info(f"  {key}: {status}")
+    logger.info(f"{'='*60}")
+    
+    return results

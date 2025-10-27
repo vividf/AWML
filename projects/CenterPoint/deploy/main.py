@@ -484,27 +484,36 @@ def main():
         logger.info("Cross-Backend Verification")
         logger.info("=" * 80)
         
-        # Create verification inputs
+        # Create verification inputs (use raw point cloud data)
         verification_inputs = {}
         num_verify_samples = config.verification_config.get("num_verify_samples", 5)
         
         for i in range(min(num_verify_samples, data_loader.get_num_samples())):
             sample = data_loader.load_sample(i)
-            input_data = data_loader.preprocess(sample)
-            verification_inputs[f"sample_{i}"] = input_data
+            # Get points directly (not preprocessed)
+            if 'points' in sample:
+                points = sample['points']
+            else:
+                # Fallback to loading from data_loader
+                input_data = data_loader.preprocess(sample)
+                points = input_data.get('points', input_data)
+            
+            verification_inputs[f"sample_{i}"] = points
         
-        # Run verification
-        from autoware_ml.deployment.core.verification import verify_model_outputs
+        # Run pipeline-based verification
+        # This new approach integrates verification into the evaluation pipeline,
+        # allowing both to share the same inference path while differing only
+        # in whether postprocessing is applied
+        from autoware_ml.deployment.core.verification import verify_centerpoint_pipeline
         
-        verification_results = verify_model_outputs(
+        verification_results = verify_centerpoint_pipeline(
             pytorch_model=pytorch_model,
             test_inputs=verification_inputs,
-            onnx_path=onnx_path,
-            tensorrt_path=trt_path,
+            onnx_dir=onnx_path,
+            tensorrt_dir=trt_path,
             device=config.export_config.device,
             tolerance=config.verification_config.get("tolerance", 1e-2),
             logger=logger,
-            model_type="CenterPoint",  # Explicitly specify CenterPoint
         )
         
         # Print verification results

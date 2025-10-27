@@ -7,9 +7,9 @@ Modify according to your needs.
 
 # Export settings
 export = dict(
-    mode="none",  # Export both ONNX and TensorRT
-    verify=False,  # Disable verification to save time
-    device="cuda:0",  # Use CUDA for TensorRT
+    mode="both",  # Export both ONNX and TensorRT
+    verify=True,  # Disable verification to save time
+    device="cpu",  # Use CUDA for TensorRT
     work_dir="work_dirs/centerpoint_deployment",
 )
 
@@ -89,7 +89,7 @@ backend_config = dict(
 
 # Evaluation configuration
 evaluation = dict(
-    enabled=True,  # Enable evaluation
+    enabled=False,  # Enable evaluation
     num_samples=1,  # Number of samples to evaluate (3D is slower)
     verbose=True,  # Detailed per-sample output for debugging
     # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)

@@ -44,12 +44,22 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
         else:
             logger.info("PyTorch pipeline initialized (standard model, using end-to-end inference)")
     
-    def infer(self, points: torch.Tensor, sample_meta: Dict = None) -> Tuple[List[Dict], float]:
+    def infer(
+        self, 
+        points: torch.Tensor, 
+        sample_meta: Dict = None,
+        return_raw_outputs: bool = False
+    ) -> Tuple:
         """
         Complete inference pipeline.
         
         For standard models, uses mmdet3d's inference_detector for end-to-end inference.
         For ONNX-compatible models, uses the staged pipeline.
+        
+        Args:
+            points: Input point cloud
+            sample_meta: Sample metadata
+            return_raw_outputs: If True, return raw head outputs (only for ONNX models)
         """
         import time
         
@@ -58,10 +68,15 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
         
         # For standard models, use end-to-end inference
         if not self.is_onnx_model:
+            if return_raw_outputs:
+                raise NotImplementedError(
+                    "return_raw_outputs=True is only supported for ONNX-compatible models. "
+                    "Standard models use end-to-end inference via inference_detector."
+                )
             return self._infer_end_to_end(points, sample_meta)
         
         # For ONNX models, use staged pipeline
-        return super().infer(points, sample_meta)
+        return super().infer(points, sample_meta, return_raw_outputs=return_raw_outputs)
     
     def _infer_end_to_end(self, points: torch.Tensor, sample_meta: Dict) -> Tuple[List[Dict], float]:
         """End-to-end inference for standard PyTorch models."""
@@ -130,7 +145,37 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
         with torch.no_grad():
             voxel_features = self.pytorch_model.pts_voxel_encoder(input_features)
         
-        logger.debug(f"PyTorch voxel encoder output shape: {voxel_features.shape}")
+        logger.debug(f"PyTorch voxel encoder raw output shape: {voxel_features.shape}")
+        
+        # Ensure output is 2D: [N_voxels, feature_dim]
+        # ONNX-compatible models may output 3D tensor that needs squeezing
+        if voxel_features.ndim == 3:
+            # Try to squeeze to 2D
+            if voxel_features.shape[1] == 1:
+                # Shape: [N_voxels, 1, feature_dim] -> [N_voxels, feature_dim]
+                voxel_features = voxel_features.squeeze(1)
+                logger.debug(f"Squeezed dimension 1: {voxel_features.shape}")
+            elif voxel_features.shape[2] == 1:
+                # Shape: [N_voxels, feature_dim, 1] -> [N_voxels, feature_dim]
+                voxel_features = voxel_features.squeeze(2)
+                logger.debug(f"Squeezed dimension 2: {voxel_features.shape}")
+            else:
+                # Cannot determine which dimension to squeeze
+                # This might be the input features [N_voxels, max_points, feature_dim]
+                # which should have been processed by the encoder
+                raise RuntimeError(
+                    f"Voxel encoder output has unexpected 3D shape: {voxel_features.shape}. "
+                    f"Expected 2D output [N_voxels, feature_dim]. "
+                    f"This may indicate the voxel encoder didn't process the input correctly. "
+                    f"Input features shape was: {input_features.shape}"
+                )
+        elif voxel_features.ndim > 3:
+            raise RuntimeError(
+                f"Voxel encoder output has {voxel_features.ndim}D shape: {voxel_features.shape}. "
+                f"Expected 2D output [N_voxels, feature_dim]."
+            )
+        
+        logger.debug(f"PyTorch voxel encoder final output shape: {voxel_features.shape}")
         
         return voxel_features
     
@@ -159,12 +204,22 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
             # Head - returns tuple of task head outputs
             head_outputs_tuple = self.pytorch_model.pts_bbox_head(x)
             
-            # Extract outputs for single-task head
-            # head_outputs_tuple format: (List[Dict],)
+            # Handle two possible output formats:
+            # 1. ONNX head: Tuple[torch.Tensor] directly (heatmap, reg, height, dim, rot, vel)
+            # 2. Standard head: Tuple[List[Dict]] format
+            
             if isinstance(head_outputs_tuple, tuple) and len(head_outputs_tuple) > 0:
-                task_outputs = head_outputs_tuple[0]  # Get first task
-                if isinstance(task_outputs, list) and len(task_outputs) > 0:
-                    preds_dict = task_outputs[0]  # Get first (and only) dict
+                first_element = head_outputs_tuple[0]
+                
+                # Check if this is ONNX format (tuple of tensors)
+                if isinstance(first_element, torch.Tensor):
+                    # ONNX format: (heatmap, reg, height, dim, rot, vel)
+                    head_outputs = list(head_outputs_tuple)
+                    logger.debug(f"ONNX head output format detected: {len(head_outputs)} tensors")
+                    
+                elif isinstance(first_element, list) and len(first_element) > 0:
+                    # Standard format: (List[Dict],)
+                    preds_dict = first_element[0]  # Get first (and only) dict
                     
                     # Extract individual outputs
                     head_outputs = [
@@ -175,8 +230,9 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
                         preds_dict['rot'],
                         preds_dict['vel']
                     ]
+                    logger.debug(f"Standard head output format detected")
                 else:
-                    raise ValueError(f"Unexpected task_outputs format: {type(task_outputs)}")
+                    raise ValueError(f"Unexpected task_outputs format: {type(first_element)}")
             else:
                 raise ValueError(f"Unexpected head_outputs format: {type(head_outputs_tuple)}")
         

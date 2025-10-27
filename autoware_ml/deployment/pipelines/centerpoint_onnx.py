@@ -59,7 +59,9 @@ class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
         
         # Create session options
         so = ort.SessionOptions()
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        # Disable graph optimization for numerical consistency with PyTorch
+        # Graph optimizations can reorder operations and fuse layers, causing numerical differences
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
         so.log_severity_level = 3  # ERROR level
         
         # Set execution providers
@@ -107,12 +109,13 @@ class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
         # Convert to numpy
         input_array = input_features.cpu().numpy().astype(np.float32)
         
-        # Get input name from ONNX model
+        # Get input and output names from ONNX model
         input_name = self.voxel_encoder_session.get_inputs()[0].name
+        output_name = self.voxel_encoder_session.get_outputs()[0].name
         
-        # Run ONNX inference
+        # Run ONNX inference with explicit output name for consistency
         outputs = self.voxel_encoder_session.run(
-            None,  # Get all outputs
+            [output_name],  # Specify output name explicitly
             {input_name: input_array}
         )
         
@@ -140,12 +143,13 @@ class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
         # Convert to numpy
         input_array = spatial_features.cpu().numpy().astype(np.float32)
         
-        # Get input name from ONNX model
+        # Get input and output names from ONNX model
         input_name = self.backbone_head_session.get_inputs()[0].name
+        output_names = [output.name for output in self.backbone_head_session.get_outputs()]
         
-        # Run ONNX inference
+        # Run ONNX inference with explicit output names for consistency
         outputs = self.backbone_head_session.run(
-            None,  # Get all outputs
+            output_names,  # Specify output names explicitly
             {input_name: input_array}
         )
         

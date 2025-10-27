@@ -241,8 +241,9 @@ class CenterPointDeploymentPipeline(ABC):
     def infer(
         self, 
         points: torch.Tensor,
-        sample_meta: Dict = None
-    ) -> Tuple[List[Dict], float]:
+        sample_meta: Dict = None,
+        return_raw_outputs: bool = False
+    ) -> Tuple[Any, float]:
         """
         Complete inference pipeline.
         
@@ -251,15 +252,20 @@ class CenterPointDeploymentPipeline(ABC):
         2. Voxel Encoder (backend-specific)
         3. Middle Encoder (PyTorch)
         4. Backbone + Head (backend-specific)
-        5. Postprocessing (PyTorch)
+        5. Postprocessing (PyTorch) - optional
         
         Args:
             points: Input point cloud [N, point_features]
             sample_meta: Sample metadata (optional)
+            return_raw_outputs: If True, return raw head outputs instead of postprocessed predictions
             
         Returns:
-            predictions: List of detection results
-            latency_ms: Inference latency in milliseconds
+            If return_raw_outputs=False:
+                predictions: List of detection results
+                latency_ms: Inference latency in milliseconds
+            If return_raw_outputs=True:
+                head_outputs: List of raw head outputs [heatmap, reg, height, dim, rot, vel]
+                latency_ms: Inference latency in milliseconds
         """
         import time
         start_time = time.time()
@@ -283,14 +289,16 @@ class CenterPointDeploymentPipeline(ABC):
             # 4. Backbone + Head (backend-specific)
             head_outputs = self.run_backbone_head(spatial_features)
             
-            # 5. Postprocess (PyTorch)
-            predictions = self.postprocess(head_outputs, sample_meta)
-            
             latency_ms = (time.time() - start_time) * 1000
             
-            logger.debug(f"Inference completed in {latency_ms:.2f}ms with {len(predictions)} detections")
-            
-            return predictions, latency_ms
+            # 5. Postprocess (PyTorch) - optional
+            if return_raw_outputs:
+                logger.debug(f"Inference completed in {latency_ms:.2f}ms (returning raw outputs)")
+                return head_outputs, latency_ms
+            else:
+                predictions = self.postprocess(head_outputs, sample_meta)
+                logger.debug(f"Inference completed in {latency_ms:.2f}ms with {len(predictions)} detections")
+                return predictions, latency_ms
             
         except Exception as e:
             logger.error(f"Inference failed: {e}")
