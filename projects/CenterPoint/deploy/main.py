@@ -480,47 +480,46 @@ def main():
 
     # Verification
     if config.export_config.verify and pytorch_model and (onnx_path or trt_path):
-        logger.info("\n" + "=" * 80)
-        logger.info("Cross-Backend Verification")
-        logger.info("=" * 80)
+        # Use the new evaluator-based verification approach
+        # This integrates verification directly into the evaluator, similar to evaluation
+        # but comparing raw outputs instead of computing detection metrics
         
-        # Create verification inputs (use raw point cloud data)
-        verification_inputs = {}
+        # Get verification parameters
         num_verify_samples = config.verification_config.get("num_verify_samples", 5)
+        tolerance = config.verification_config.get("tolerance", 0.1)
         
-        for i in range(min(num_verify_samples, data_loader.get_num_samples())):
-            sample = data_loader.load_sample(i)
-            # Get points directly (not preprocessed)
-            if 'points' in sample:
-                points = sample['points']
-            else:
-                # Fallback to loading from data_loader
-                input_data = data_loader.preprocess(sample)
-                points = input_data.get('points', input_data)
+        # Use the checkpoint path from command-line args
+        # This is the same checkpoint we used to load the PyTorch model above
+        if not args.checkpoint:
+            logger.warning("PyTorch checkpoint path not available, skipping verification")
+        else:
+            # Create evaluator with ONNX-compatible config for verification
+            evaluator = CenterPointEvaluator(onnx_model_cfg)
             
-            verification_inputs[f"sample_{i}"] = points
-        
-        # Run pipeline-based verification
-        # This new approach integrates verification into the evaluation pipeline,
-        # allowing both to share the same inference path while differing only
-        # in whether postprocessing is applied
-        from autoware_ml.deployment.core.verification import verify_centerpoint_pipeline
-        
-        verification_results = verify_centerpoint_pipeline(
-            pytorch_model=pytorch_model,
-            test_inputs=verification_inputs,
-            onnx_dir=onnx_path,
-            tensorrt_dir=trt_path,
-            device=config.export_config.device,
-            tolerance=config.verification_config.get("tolerance", 1e-2),
-            logger=logger,
-        )
-        
-        # Print verification results
-        logger.info("\nVerification Results:")
-        for backend, passed in verification_results.items():
-            status = "✓ PASSED" if passed else "✗ FAILED"
-            logger.info(f"  {backend}: {status}")
+            # Run verification
+            verification_results = evaluator.verify(
+                pytorch_model_path=args.checkpoint,
+                onnx_model_path=onnx_path,
+                tensorrt_model_path=trt_path,
+                data_loader=data_loader,
+                num_samples=num_verify_samples,
+                device=config.export_config.device,
+                tolerance=tolerance,
+                verbose=False,
+            )
+            
+            # Check if verification succeeded
+            if 'summary' in verification_results:
+                summary = verification_results['summary']
+                if summary['failed'] == 0:
+                    if summary.get('skipped', 0) > 0:
+                        logger.info(f"\n✅ All verifications passed! ({summary['skipped']} skipped)")
+                    else:
+                        logger.info("\n✅ All verifications passed!")
+                else:
+                    logger.warning(f"\n⚠️  {summary['failed']}/{summary['total']} verifications failed")
+            else:
+                logger.error("\n❌ Verification encountered errors")
 
     # Evaluation
     run_evaluation(data_loader, config, original_model_cfg, onnx_model_cfg, logger)

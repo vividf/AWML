@@ -50,6 +50,208 @@ class CenterPointEvaluator(BaseEvaluator):
             # Default for T4Dataset
             self.class_names = ["VEHICLE", "PEDESTRIAN", "CYCLIST"]
 
+    def verify(
+        self,
+        pytorch_model_path: str,
+        onnx_model_path: str = None,
+        tensorrt_model_path: str = None,
+        data_loader: CenterPointDataLoader = None,
+        num_samples: int = 1,
+        device: str = "cpu",
+        tolerance: float = 0.1,
+        verbose: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Verify exported models against PyTorch reference by comparing raw outputs.
+        
+        This method is similar to evaluate() but focuses on numerical consistency
+        rather than detection metrics. It compares raw head outputs before postprocessing.
+        
+        Args:
+            pytorch_model_path: Path to PyTorch checkpoint (reference)
+            onnx_model_path: Optional path to ONNX model directory
+            tensorrt_model_path: Optional path to TensorRT model directory
+            data_loader: Data loader for test samples
+            num_samples: Number of samples to verify
+            device: Device to run verification on
+            tolerance: Maximum allowed difference for verification to pass
+            verbose: Whether to print detailed output
+            
+        Returns:
+            Dictionary containing verification results:
+            {
+                'sample_0_onnx': bool (passed/failed),
+                'sample_0_tensorrt': bool (passed/failed),
+                ...
+                'summary': {'passed': int, 'failed': int, 'total': int}
+            }
+        """
+        logger = logging.getLogger(__name__)
+        
+        logger.info("\n" + "=" * 60)
+        logger.info("CenterPoint Model Verification")
+        logger.info("=" * 60)
+        logger.info(f"PyTorch reference: {pytorch_model_path}")
+        if onnx_model_path:
+            logger.info(f"ONNX model: {onnx_model_path}")
+        if tensorrt_model_path:
+            logger.info(f"TensorRT model: {tensorrt_model_path}")
+        logger.info(f"Number of samples: {num_samples}")
+        logger.info(f"Tolerance: {tolerance}")
+        logger.info("=" * 60)
+        
+        results = {}
+        skipped_backends = []  # Track skipped backends
+        
+        # Create PyTorch pipeline (reference)
+        logger.info("\nInitializing PyTorch reference pipeline...")
+        pytorch_pipeline = self._create_backend("pytorch", pytorch_model_path, device, logger)
+        if pytorch_pipeline is None:
+            logger.error("Failed to create PyTorch reference pipeline")
+            return {"error": "Failed to create PyTorch reference"}
+        
+        # Create ONNX pipeline if requested
+        onnx_pipeline = None
+        if onnx_model_path:
+            logger.info("\nInitializing ONNX pipeline...")
+            onnx_pipeline = self._create_backend("onnx", onnx_model_path, device, logger)
+            if onnx_pipeline is None:
+                logger.warning("Failed to create ONNX pipeline, skipping ONNX verification")
+                skipped_backends.append("onnx")
+        
+        # Create TensorRT pipeline if requested
+        tensorrt_pipeline = None
+        if tensorrt_model_path:
+            logger.info("\nInitializing TensorRT pipeline...")
+            if not device.startswith("cuda"):
+                logger.warning("TensorRT requires CUDA device, skipping TensorRT verification")
+                skipped_backends.append("tensorrt")
+            else:
+                tensorrt_pipeline = self._create_backend("tensorrt", tensorrt_model_path, device, logger)
+                if tensorrt_pipeline is None:
+                    logger.warning("Failed to create TensorRT pipeline, skipping TensorRT verification")
+                    skipped_backends.append("tensorrt")
+        
+        # Verify each sample
+        try:
+            for i in range(min(num_samples, data_loader.get_num_samples())):
+                logger.info(f"\n{'='*60}")
+                logger.info(f"Verifying sample {i}")
+                logger.info(f"{'='*60}")
+                
+                # Get sample data
+                sample = data_loader.load_sample(i)
+                
+                # Get points for pipeline
+                if 'points' in sample:
+                    points = sample['points']
+                else:
+                    input_data = data_loader.preprocess(sample)
+                    points = input_data.get('points', input_data)
+                
+                sample_meta = sample.get('metainfo', {})
+                
+                # Get PyTorch reference outputs
+                logger.info("\nRunning PyTorch reference...")
+                try:
+                    pytorch_outputs, pytorch_latency = pytorch_pipeline.infer(
+                        points, sample_meta, return_raw_outputs=True
+                    )
+                    logger.info(f"  PyTorch latency: {pytorch_latency:.2f} ms")
+                    logger.info(f"  PyTorch output: {len(pytorch_outputs)} head outputs")
+                    
+                    # Log output statistics
+                    output_names = ['heatmap', 'reg', 'height', 'dim', 'rot', 'vel']
+                    for idx, (out, name) in enumerate(zip(pytorch_outputs, output_names)):
+                        if isinstance(out, torch.Tensor):
+                            out_np = out.cpu().numpy()
+                            logger.info(f"    {name}: shape={out.shape}, range=[{out_np.min():.3f}, {out_np.max():.3f}]")
+                
+                except Exception as e:
+                    logger.error(f"  PyTorch inference failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+                
+                # Verify ONNX
+                if onnx_pipeline:
+                    logger.info("\nVerifying ONNX pipeline...")
+                    onnx_passed = self._verify_single_backend(
+                        onnx_pipeline,
+                        points,
+                        sample_meta,
+                        pytorch_outputs,
+                        pytorch_latency,
+                        tolerance,
+                        "ONNX",
+                        logger
+                    )
+                    results[f"sample_{i}_onnx"] = onnx_passed
+                
+                # Verify TensorRT
+                if tensorrt_pipeline:
+                    logger.info("\nVerifying TensorRT pipeline...")
+                    tensorrt_passed = self._verify_single_backend(
+                        tensorrt_pipeline,
+                        points,
+                        sample_meta,
+                        pytorch_outputs,
+                        pytorch_latency,
+                        tolerance,
+                        "TensorRT",
+                        logger
+                    )
+                    results[f"sample_{i}_tensorrt"] = tensorrt_passed
+                
+                # Cleanup GPU memory periodically
+                if i % GPU_CLEANUP_INTERVAL == 0 and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        
+        except Exception as e:
+            logger.error(f"Error during verification: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"error": str(e)}
+        
+        # Compute summary
+        passed = sum(1 for v in results.values() if v)
+        failed = sum(1 for v in results.values() if not v)
+        total = len(results)
+        skipped = len(skipped_backends) * num_samples  # Number of skipped verifications
+        
+        results['summary'] = {
+            'passed': passed,
+            'failed': failed,
+            'skipped': skipped,
+            'total': total
+        }
+        
+        # Print summary
+        logger.info("\n" + "=" * 60)
+        logger.info("Verification Summary")
+        logger.info("=" * 60)
+        for key, value in results.items():
+            if key != 'summary':
+                status = "✓ PASSED" if value else "✗ FAILED"
+                logger.info(f"  {key}: {status}")
+        
+        # Show skipped backends if any
+        if skipped_backends:
+            logger.info("")
+            for backend in skipped_backends:
+                logger.info(f"  {backend}: ⊝ SKIPPED")
+        
+        logger.info("=" * 60)
+        summary_parts = [f"{passed}/{total} passed"]
+        if failed > 0:
+            summary_parts.append(f"{failed}/{total} failed")
+        if skipped > 0:
+            summary_parts.append(f"{skipped} skipped")
+        logger.info(f"Total: {', '.join(summary_parts)}")
+        logger.info("=" * 60)
+        
+        return results
+
     def evaluate(
         self,
         model_path: str,
@@ -138,6 +340,112 @@ class CenterPointEvaluator(BaseEvaluator):
         results = self._compute_metrics(predictions_list, ground_truths_list, latencies, logger)
         
         return results
+
+    def _verify_single_backend(
+        self,
+        pipeline,
+        points: torch.Tensor,
+        sample_meta: Dict,
+        reference_outputs: List[torch.Tensor],
+        reference_latency: float,
+        tolerance: float,
+        backend_name: str,
+        logger,
+    ) -> bool:
+        """
+        Verify a single backend against PyTorch reference outputs.
+        
+        Args:
+            pipeline: Pipeline instance to verify
+            points: Input point cloud
+            sample_meta: Sample metadata
+            reference_outputs: Reference outputs from PyTorch [heatmap, reg, height, dim, rot, vel]
+            reference_latency: Reference inference latency
+            tolerance: Maximum allowed difference
+            backend_name: Name of backend for logging ("ONNX", "TensorRT")
+            logger: Logger instance
+            
+        Returns:
+            bool: True if verification passed, False otherwise
+        """
+        try:
+            # Run inference with raw outputs
+            backend_outputs, backend_latency = pipeline.infer(
+                points, sample_meta, return_raw_outputs=True
+            )
+            
+            logger.info(f"  {backend_name} latency: {backend_latency:.2f} ms")
+            logger.info(f"  {backend_name} output: {len(backend_outputs)} head outputs")
+            
+            # Compare outputs
+            if len(backend_outputs) != len(reference_outputs):
+                logger.error(f"  Output count mismatch: {len(backend_outputs)} vs {len(reference_outputs)}")
+                return False
+            
+            max_diff = 0.0
+            mean_diff = 0.0
+            total_elements = 0
+            
+            output_names = ['heatmap', 'reg', 'height', 'dim', 'rot', 'vel']
+            
+            for idx, (ref_out, backend_out, name) in enumerate(zip(reference_outputs, backend_outputs, output_names)):
+                if isinstance(ref_out, torch.Tensor) and isinstance(backend_out, torch.Tensor):
+                    # Convert to numpy for comparison
+                    ref_np = ref_out.cpu().numpy()
+                    backend_np = backend_out.cpu().numpy()
+                    
+                    # Check for shape mismatch
+                    if ref_np.shape != backend_np.shape:
+                        logger.error(f"    {name}: shape mismatch - {ref_np.shape} vs {backend_np.shape}")
+                        return False
+                    
+                    # Compute differences
+                    diff = np.abs(ref_np - backend_np)
+                    output_max_diff = diff.max()
+                    output_mean_diff = diff.mean()
+                    max_diff = max(max_diff, output_max_diff)
+                    mean_diff += diff.sum()
+                    total_elements += diff.size
+                    
+                    # Log detailed statistics
+                    logger.info(f"    {name}: max_diff={output_max_diff:.6f}, mean_diff={output_mean_diff:.6f}")
+                    
+                    # Check for special values
+                    ref_nan = np.isnan(ref_np).any()
+                    ref_inf = np.isinf(ref_np).any()
+                    backend_nan = np.isnan(backend_np).any()
+                    backend_inf = np.isinf(backend_np).any()
+                    
+                    if ref_nan or ref_inf or backend_nan or backend_inf:
+                        logger.warning(f"      ⚠️  Special values detected in {name}:")
+                        if ref_nan: logger.warning(f"         PyTorch has NaN!")
+                        if ref_inf: logger.warning(f"         PyTorch has Inf!")
+                        if backend_nan: logger.warning(f"         {backend_name} has NaN!")
+                        if backend_inf: logger.warning(f"         {backend_name} has Inf!")
+            
+            # Compute overall mean difference
+            if total_elements > 0:
+                mean_diff /= total_elements
+            
+            logger.info(f"  Overall Max difference: {max_diff:.6f}")
+            logger.info(f"  Overall Mean difference: {mean_diff:.6f}")
+            
+            # Check if verification passed
+            if max_diff < tolerance:
+                logger.info(f"  {backend_name} verification PASSED ✓")
+                return True
+            else:
+                logger.warning(
+                    f"  {backend_name} verification FAILED ✗ "
+                    f"(max diff: {max_diff:.6f} > tolerance: {tolerance:.6f})"
+                )
+                return False
+        
+        except Exception as e:
+            logger.error(f"  {backend_name} verification failed with error: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def _create_backend(self, backend: str, model_path: str, device: str, logger) -> Any:
         """Create Pipeline instance for the specified backend."""
