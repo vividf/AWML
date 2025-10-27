@@ -16,6 +16,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import torch
 from mmengine.config import Config
@@ -288,6 +289,158 @@ def get_models_to_evaluate(eval_config: dict, logger: logging.Logger) -> list:
 
     return models_to_evaluate
 
+def load_model(
+    model_cfg: Config,
+    checkpoint: str,
+    device: str,
+    replace_onnx_models: bool,
+    rot_y_axis_reference: bool,
+    logger: logging.Logger,
+) -> tuple[Any, Config]:
+    """
+    Load PyTorch model from checkpoint.
+    
+    Args:
+        model_cfg: Model configuration
+        checkpoint: Path to checkpoint file
+        device: Device to load model on
+        replace_onnx_models: Whether to replace with ONNX-compatible models
+        rot_y_axis_reference: Whether to use y-axis rotation reference
+        logger: Logger instance
+        
+    Returns:
+        Tuple of (loaded model, modified model config)
+    """
+    if not checkpoint:
+        logger.error("Checkpoint required")
+        return None, model_cfg
+    
+    logger.info("\nLoading PyTorch model...")
+    
+    if replace_onnx_models:
+        logger.info("Loading model with ONNX-compatible configuration")
+        pytorch_model, onnx_model_cfg = load_pytorch_model(
+            model_cfg,
+            checkpoint,
+            device,
+            replace_onnx_models=True,
+            rot_y_axis_reference=rot_y_axis_reference,
+        )
+    else:
+        logger.info("Loading model with original configuration")
+        pytorch_model, onnx_model_cfg = load_pytorch_model(
+            model_cfg,
+            checkpoint,
+            device,
+            replace_onnx_models=False,
+            rot_y_axis_reference=False,
+        )
+    
+    logger.info("✅ PyTorch model loaded successfully")
+    return pytorch_model, onnx_model_cfg
+
+
+def export_models(
+    pytorch_model: Any,
+    data_loader: CenterPointDataLoader,
+    config: BaseDeploymentConfig,
+    logger: logging.Logger,
+) -> tuple[str, str]:
+    """
+    Export models to ONNX and TensorRT.
+    
+    Args:
+        pytorch_model: PyTorch model
+        data_loader: Data loader for export
+        config: Deployment configuration
+        logger: Logger instance
+        
+    Returns:
+        Tuple of (onnx_path, trt_path)
+    """
+    onnx_path = None
+    trt_path = None
+    
+    # Export ONNX
+    if config.export_config.should_export_onnx():
+        onnx_opset = config.onnx_config.get("opset_version", 13)
+        onnx_path = export_onnx(pytorch_model, data_loader, config, logger, onnx_opset_version=onnx_opset)
+    elif config.runtime_config.get("onnx_file"):
+        onnx_path = config.runtime_config["onnx_file"]
+    
+    # Export TensorRT
+    if config.export_config.should_export_tensorrt() and onnx_path:
+        trt_path = export_tensorrt(onnx_path, config, logger)
+    
+    return onnx_path, trt_path
+
+
+def run_verification(
+    pytorch_checkpoint: str,
+    onnx_path: str,
+    trt_path: str,
+    data_loader: CenterPointDataLoader,
+    config: BaseDeploymentConfig,
+    onnx_model_cfg: Config,
+    logger: logging.Logger,
+):
+    """
+    Run verification on exported models.
+    
+    Args:
+        pytorch_checkpoint: Path to PyTorch checkpoint (reference)
+        onnx_path: Path to ONNX model directory
+        trt_path: Path to TensorRT model directory
+        data_loader: Data loader for test samples
+        config: Deployment configuration
+        onnx_model_cfg: ONNX-compatible model config
+        logger: Logger instance
+    """
+    # Verification
+    if not config.export_config.verify:
+        logger.info("Verification disabled, skipping...")
+        return
+
+    if not pytorch_checkpoint:
+        logger.warning("PyTorch checkpoint path not available, skipping verification")
+        return
+    
+    if not onnx_path and not trt_path:
+        logger.info("No exported models to verify, skipping verification")
+        return
+    
+    # Get verification parameters
+    num_verify_samples = config.verification_config.get("num_verify_samples", 5)
+    tolerance = config.verification_config.get("tolerance", 0.1)
+    
+    # Create evaluator with ONNX-compatible config for verification
+    evaluator = CenterPointEvaluator(onnx_model_cfg)
+    
+    # Run verification
+    verification_results = evaluator.verify(
+        pytorch_model_path=pytorch_checkpoint,
+        onnx_model_path=onnx_path,
+        tensorrt_model_path=trt_path,
+        data_loader=data_loader,
+        num_samples=num_verify_samples,
+        device=config.export_config.device,
+        tolerance=tolerance,
+        verbose=False,
+    )
+    
+    # Check if verification succeeded
+    if 'summary' in verification_results:
+        summary = verification_results['summary']
+        if summary['failed'] == 0:
+            if summary.get('skipped', 0) > 0:
+                logger.info(f"\n✅ All verifications passed! ({summary['skipped']} skipped)")
+            else:
+                logger.info("\n✅ All verifications passed!")
+        else:
+            logger.warning(f"\n⚠️  {summary['failed']}/{summary['total']} verifications failed")
+    else:
+        logger.error("\n❌ Verification encountered errors")
+
 
 def run_evaluation(
     data_loader: CenterPointDataLoader,
@@ -416,13 +569,13 @@ def main():
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
     # Prepare model configurations
-    # - original_model_cfg: for PyTorch evaluation (no ONNX modifications)
-    # - onnx_model_cfg: for ONNX/TensorRT evaluation and export (with ONNX modifications)
-    original_model_cfg = copy.deepcopy(model_cfg)  # Deep copy to keep original intact
-    onnx_model_cfg = model_cfg  # Will be replaced if ONNX models are loaded
+    original_model_cfg = copy.deepcopy(model_cfg)
+    onnx_model_cfg = model_cfg
     pytorch_model = None
+    onnx_path = None
+    trt_path = None
     
-    # Check if we need ONNX-compatible config
+    # Check if we need model loading and export
     eval_config = config.evaluation_config
     needs_export = config.export_config.mode != "none"
     needs_onnx_eval = False
@@ -441,85 +594,28 @@ def main():
             logger.error("Please provide --checkpoint argument")
             return
         
-        logger.info("\nLoading PyTorch model...")
+        pytorch_model, onnx_model_cfg = load_model(
+            model_cfg,
+            args.checkpoint,
+            config.export_config.device,
+            args.replace_onnx_models,
+            args.rot_y_axis_reference,
+            logger,
+        )
         
-        # For export or ONNX/TensorRT evaluation: load with ONNX modifications
-        if args.replace_onnx_models:
-            logger.info("Loading model with ONNX-compatible configuration")
-            pytorch_model, onnx_model_cfg = load_pytorch_model(
-                model_cfg,
-                args.checkpoint,
-                config.export_config.device,
-                replace_onnx_models=True,
-                rot_y_axis_reference=args.rot_y_axis_reference,
-            )
-        else:
-            logger.info("Loading model with original configuration")
-            pytorch_model, _ = load_pytorch_model(
-                model_cfg,
-                args.checkpoint,
-                config.export_config.device,
-                replace_onnx_models=False,
-                rot_y_axis_reference=False,
-            )
-        
-        logger.info("✅ PyTorch model loaded successfully")
-
-    # Export ONNX
-    onnx_path = None
-    if config.export_config.should_export_onnx():
-        onnx_opset = config.onnx_config.get("opset_version", 13)
-        onnx_path = export_onnx(pytorch_model, data_loader, config, logger, onnx_opset_version=onnx_opset)
-    elif config.runtime_config.get("onnx_file"):
-        onnx_path = config.runtime_config["onnx_file"]
-
-    # Export TensorRT
-    trt_path = None
-    if config.export_config.should_export_tensorrt() and onnx_path:
-        trt_path = export_tensorrt(onnx_path, config, logger)
+        # Export models
+        onnx_path, trt_path = export_models(pytorch_model, data_loader, config, logger)
 
     # Verification
-    if config.export_config.verify and pytorch_model and (onnx_path or trt_path):
-        # Use the new evaluator-based verification approach
-        # This integrates verification directly into the evaluator, similar to evaluation
-        # but comparing raw outputs instead of computing detection metrics
-        
-        # Get verification parameters
-        num_verify_samples = config.verification_config.get("num_verify_samples", 5)
-        tolerance = config.verification_config.get("tolerance", 0.1)
-        
-        # Use the checkpoint path from command-line args
-        # This is the same checkpoint we used to load the PyTorch model above
-        if not args.checkpoint:
-            logger.warning("PyTorch checkpoint path not available, skipping verification")
-        else:
-            # Create evaluator with ONNX-compatible config for verification
-            evaluator = CenterPointEvaluator(onnx_model_cfg)
-            
-            # Run verification
-            verification_results = evaluator.verify(
-                pytorch_model_path=args.checkpoint,
-                onnx_model_path=onnx_path,
-                tensorrt_model_path=trt_path,
-                data_loader=data_loader,
-                num_samples=num_verify_samples,
-                device=config.export_config.device,
-                tolerance=tolerance,
-                verbose=False,
-            )
-            
-            # Check if verification succeeded
-            if 'summary' in verification_results:
-                summary = verification_results['summary']
-                if summary['failed'] == 0:
-                    if summary.get('skipped', 0) > 0:
-                        logger.info(f"\n✅ All verifications passed! ({summary['skipped']} skipped)")
-                    else:
-                        logger.info("\n✅ All verifications passed!")
-                else:
-                    logger.warning(f"\n⚠️  {summary['failed']}/{summary['total']} verifications failed")
-            else:
-                logger.error("\n❌ Verification encountered errors")
+    run_verification(
+        pytorch_checkpoint=args.checkpoint,
+        onnx_path=onnx_path,
+        trt_path=trt_path,
+        data_loader=data_loader,
+        config=config,
+        onnx_model_cfg=onnx_model_cfg,
+        logger=logger,
+    )
 
     # Evaluation
     run_evaluation(data_loader, config, original_model_cfg, onnx_model_cfg, logger)
