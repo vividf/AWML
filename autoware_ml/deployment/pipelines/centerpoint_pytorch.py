@@ -78,7 +78,7 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
         # For ONNX models, use staged pipeline
         return super().infer(points, sample_meta, return_raw_outputs=return_raw_outputs)
     
-    def _infer_end_to_end(self, points: torch.Tensor, sample_meta: Dict) -> Tuple[List[Dict], float]:
+    def _infer_end_to_end(self, points: torch.Tensor, sample_meta: Dict) -> Tuple[List[Dict], float, Dict[str, float]]:
         """End-to-end inference for standard PyTorch models."""
         import time
         from mmdet3d.apis import inference_detector
@@ -115,9 +115,12 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
             
             latency_ms = (time.time() - start_time) * 1000
             
+            # Empty latency breakdown for end-to-end models (not broken down into stages)
+            latency_breakdown = {}
+            
             logger.debug(f"End-to-end inference completed in {latency_ms:.2f}ms with {len(predictions)} detections")
             
-            return predictions, latency_ms
+            return predictions, latency_ms, latency_breakdown
             
         except Exception as e:
             logger.error(f"End-to-end inference failed: {e}")

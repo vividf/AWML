@@ -154,7 +154,7 @@ class CenterPointEvaluator(BaseEvaluator):
                 # Get PyTorch reference outputs
                 logger.info("\nRunning PyTorch reference...")
                 try:
-                    pytorch_outputs, pytorch_latency = pytorch_pipeline.infer(
+                    pytorch_outputs, pytorch_latency, pytorch_breakdown = pytorch_pipeline.infer(
                         points, sample_meta, return_raw_outputs=True
                     )
                     logger.info(f"  PyTorch latency: {pytorch_latency:.2f} ms")
@@ -291,6 +291,7 @@ class CenterPointEvaluator(BaseEvaluator):
         predictions_list = []
         ground_truths_list = []
         latencies = []
+        latency_breakdowns = []  # Track individual stage latencies
 
         try:
             for i in range(min(num_samples, data_loader.get_num_samples())):
@@ -313,7 +314,7 @@ class CenterPointEvaluator(BaseEvaluator):
 
                 # Run inference using unified Pipeline interface
                 sample_meta = sample.get('metainfo', {})
-                predictions, latency = pipeline.infer(points, sample_meta)
+                predictions, latency, latency_breakdown = pipeline.infer(points, sample_meta)
                 
                 # Parse ground truths
                 ground_truths = self._parse_ground_truths(gt_data)
@@ -321,6 +322,7 @@ class CenterPointEvaluator(BaseEvaluator):
                 predictions_list.append(predictions)
                 ground_truths_list.append(ground_truths)
                 latencies.append(latency)
+                latency_breakdowns.append(latency_breakdown)
 
                 # Cleanup GPU memory after each sample (TensorRT needs frequent cleanup)
                 if torch.cuda.is_available():
@@ -337,7 +339,7 @@ class CenterPointEvaluator(BaseEvaluator):
             pass
 
         # Compute metrics
-        results = self._compute_metrics(predictions_list, ground_truths_list, latencies, logger)
+        results = self._compute_metrics(predictions_list, ground_truths_list, latencies, logger, latency_breakdowns)
         
         return results
 
@@ -370,7 +372,7 @@ class CenterPointEvaluator(BaseEvaluator):
         """
         try:
             # Run inference with raw outputs
-            backend_outputs, backend_latency = pipeline.infer(
+            backend_outputs, backend_latency, backend_breakdown = pipeline.infer(
                 points, sample_meta, return_raw_outputs=True
             )
             
@@ -627,6 +629,7 @@ class CenterPointEvaluator(BaseEvaluator):
         ground_truths_list: List[List[Dict]],
         latencies: List[float],
         logger,
+        latency_breakdowns: List[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """Compute evaluation metrics."""
         
@@ -658,6 +661,18 @@ class CenterPointEvaluator(BaseEvaluator):
 
         # Compute latency statistics
         latency_stats = self.compute_latency_stats(latencies)
+        
+        # Compute stage-wise latency breakdown if available
+        if latency_breakdowns and len(latency_breakdowns) > 0:
+            stage_stats = {}
+            stages = ['preprocessing_ms', 'voxel_encoder_ms', 'middle_encoder_ms', 'backbone_head_ms', 'postprocessing_ms']
+            
+            for stage in stages:
+                stage_values = [bd.get(stage, 0.0) for bd in latency_breakdowns if stage in bd]
+                if stage_values:
+                    stage_stats[stage] = self.compute_latency_stats(stage_values)
+            
+            latency_stats["latency_breakdown"] = stage_stats
 
         # Try to compute mmdet3d metrics
         try:
@@ -757,6 +772,21 @@ class CenterPointEvaluator(BaseEvaluator):
             print(f"  Min:    {latency['min_ms']:.2f} ms")
             print(f"  Max:    {latency['max_ms']:.2f} ms")
             print(f"  Median: {latency['median_ms']:.2f} ms")
+            
+            # Stage-wise latency breakdown
+            if "latency_breakdown" in latency:
+                breakdown = latency["latency_breakdown"]
+                print(f"\n  Stage-wise Latency Breakdown:")
+                if "preprocessing_ms" in breakdown:
+                    print(f"    Preprocessing:     {breakdown['preprocessing_ms']['mean_ms']:.2f} ± {breakdown['preprocessing_ms']['std_ms']:.2f} ms")
+                if "voxel_encoder_ms" in breakdown:
+                    print(f"    Voxel Encoder:    {breakdown['voxel_encoder_ms']['mean_ms']:.2f} ± {breakdown['voxel_encoder_ms']['std_ms']:.2f} ms")
+                if "middle_encoder_ms" in breakdown:
+                    print(f"    Middle Encoder:   {breakdown['middle_encoder_ms']['mean_ms']:.2f} ± {breakdown['middle_encoder_ms']['std_ms']:.2f} ms")
+                if "backbone_head_ms" in breakdown:
+                    print(f"    Backbone + Head:  {breakdown['backbone_head_ms']['mean_ms']:.2f} ± {breakdown['backbone_head_ms']['std_ms']:.2f} ms")
+                if "postprocessing_ms" in breakdown:
+                    print(f"    Postprocessing:   {breakdown['postprocessing_ms']['mean_ms']:.2f} ± {breakdown['postprocessing_ms']['std_ms']:.2f} ms")
 
         print(f"\nTotal Samples: {results.get('num_samples', 0)}")
         print("=" * 80)

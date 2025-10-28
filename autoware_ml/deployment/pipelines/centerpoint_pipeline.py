@@ -296,7 +296,7 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
         points: torch.Tensor,
         sample_meta: Dict = None,
         return_raw_outputs: bool = False
-    ) -> Tuple[Any, float]:
+    ) -> Tuple[Any, float, Dict[str, float]]:
         """
         Complete inference pipeline.
         
@@ -315,13 +315,16 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
         Returns:
             If return_raw_outputs=False:
                 predictions: List of detection results
-                latency_ms: Inference latency in milliseconds
+                total_latency_ms: Total inference latency in milliseconds
+                latency_breakdown: Dict with latencies for each stage
             If return_raw_outputs=True:
                 head_outputs: List of raw head outputs [heatmap, reg, height, dim, rot, vel]
-                latency_ms: Inference latency in milliseconds
+                total_latency_ms: Total inference latency in milliseconds
+                latency_breakdown: Dict with latencies for each stage
         """
         import time
         start_time = time.time()
+        t_prev = start_time
         
         if sample_meta is None:
             sample_meta = {}
@@ -329,29 +332,58 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
         try:
             # 1. Preprocess (PyTorch)
             preprocessed = self.preprocess(points)
+            t_after_pre = time.time()
+            pre_ms = (t_after_pre - t_prev) * 1000
+            t_prev = t_after_pre
+            logger.info(f"1. Preprocessing:       {pre_ms:8.2f} ms")
             
             # 2. Voxel Encoder (backend-specific)
             voxel_features = self.run_voxel_encoder(preprocessed['input_features'])
+            t_after_voxel = time.time()
+            voxel_ms = (t_after_voxel - t_prev) * 1000
+            t_prev = t_after_voxel
+            logger.info(f"2. Voxel Encoder:       {voxel_ms:8.2f} ms")
             
             # 3. Middle Encoder (PyTorch)
             spatial_features = self.process_middle_encoder(
                 voxel_features, 
                 preprocessed['coors']
             )
+            t_after_middle = time.time()
+            middle_ms = (t_after_middle - t_prev) * 1000
+            t_prev = t_after_middle
+            logger.info(f"3. Middle Encoder:       {middle_ms:8.2f} ms")
             
             # 4. Backbone + Head (backend-specific)
             head_outputs = self.run_backbone_head(spatial_features)
-            
-            latency_ms = (time.time() - start_time) * 1000
+            t_after_backbone = time.time()
+            backbone_ms = (t_after_backbone - t_prev) * 1000
+            t_prev = t_after_backbone
+            logger.info(f"4. Backbone + Head:    {backbone_ms:8.2f} ms")
             
             # 5. Postprocess (PyTorch) - optional
+            latency_breakdown = {
+                'preprocessing_ms': pre_ms,
+                'voxel_encoder_ms': voxel_ms,
+                'middle_encoder_ms': middle_ms,
+                'backbone_head_ms': backbone_ms,
+            }
+            
             if return_raw_outputs:
-                logger.debug(f"Inference completed in {latency_ms:.2f}ms (returning raw outputs)")
-                return head_outputs, latency_ms
+                total_ms = (time.time() - start_time) * 1000
+                logger.info(f"Total (no post):       {total_ms:8.2f} ms")
+                logger.debug(f"Inference completed in {total_ms:.2f}ms (returning raw outputs)")
+                return head_outputs, total_ms, latency_breakdown
             else:
                 predictions = self.postprocess(head_outputs, sample_meta)
-                logger.debug(f"Inference completed in {latency_ms:.2f}ms with {len(predictions)} detections")
-                return predictions, latency_ms
+                t_after_post = time.time()
+                post_ms = (t_after_post - t_prev) * 1000
+                total_ms = (t_after_post - start_time) * 1000
+                logger.info(f"5. Postprocessing:      {post_ms:8.2f} ms")
+                logger.info(f"Total:                 {total_ms:8.2f} ms")
+                latency_breakdown['postprocessing_ms'] = post_ms
+                logger.debug(f"Inference completed in {total_ms:.2f}ms with {len(predictions)} detections")
+                return predictions, total_ms, latency_breakdown
             
         except Exception as e:
             logger.error(f"Inference failed: {e}")
