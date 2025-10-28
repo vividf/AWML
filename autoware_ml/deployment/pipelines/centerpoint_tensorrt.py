@@ -83,6 +83,14 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
                 # Create execution context
                 context = engine.create_execution_context()
                 
+                # Check if context creation succeeded
+                if context is None:
+                    raise RuntimeError(
+                        f"Failed to create execution context for {component}. "
+                        "This is likely due to GPU out-of-memory. "
+                        "Try reducing batch size or closing other GPU processes."
+                    )
+                
                 self._engines[component] = engine
                 self._contexts[component] = context
                 
@@ -103,6 +111,10 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
         """
         engine = self._engines["voxel_encoder"]
         context = self._contexts["voxel_encoder"]
+        
+        # Check if context is valid
+        if context is None:
+            raise RuntimeError("voxel_encoder context is None - likely failed to initialize due to GPU OOM")
         
         # Convert to numpy
         input_array = input_features.cpu().numpy().astype(np.float32)
@@ -166,6 +178,8 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
             try:
                 d_input.free()
                 d_output.free()
+                # Force PyTorch CUDA cache cleanup
+                torch.cuda.empty_cache()
             except Exception:
                 pass
     
@@ -181,6 +195,10 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
         """
         engine = self._engines["backbone_neck_head"]
         context = self._contexts["backbone_neck_head"]
+        
+        # Check if context is valid
+        if context is None:
+            raise RuntimeError("backbone_neck_head context is None - likely failed to initialize due to GPU OOM")
         
         # Convert to numpy
         input_array = spatial_features.cpu().numpy().astype(np.float32)
@@ -257,6 +275,8 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
                 d_input.free()
                 for d_output in d_outputs.values():
                     d_output.free()
+                # Force PyTorch CUDA cache cleanup
+                torch.cuda.empty_cache()
             except Exception:
                 pass
     

@@ -203,8 +203,8 @@ class CenterPointEvaluator(BaseEvaluator):
                     )
                     results[f"sample_{i}_tensorrt"] = tensorrt_passed
                 
-                # Cleanup GPU memory periodically
-                if i % GPU_CLEANUP_INTERVAL == 0 and torch.cuda.is_available():
+                # Cleanup GPU memory after each sample (TensorRT needs frequent cleanup)
+                if torch.cuda.is_available():
                     torch.cuda.empty_cache()
         
         except Exception as e:
@@ -322,8 +322,8 @@ class CenterPointEvaluator(BaseEvaluator):
                 ground_truths_list.append(ground_truths)
                 latencies.append(latency)
 
-                # Cleanup GPU memory periodically
-                if i % GPU_CLEANUP_INTERVAL == 0 and torch.cuda.is_available():
+                # Cleanup GPU memory after each sample (TensorRT needs frequent cleanup)
+                if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
         except Exception as e:
