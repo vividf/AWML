@@ -43,7 +43,7 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
         if not device.startswith("cuda"):
             raise ValueError("TensorRT requires CUDA device")
         
-        super().__init__(pytorch_model, device)
+        super().__init__(pytorch_model, device, backend_type="tensorrt")
         
         self.tensorrt_dir = tensorrt_dir
         self._engines = {}

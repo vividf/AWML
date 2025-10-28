@@ -38,7 +38,7 @@ class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
             onnx_dir: Directory containing ONNX model files
             device: Device for inference ('cpu' or 'cuda')
         """
-        super().__init__(pytorch_model, device)
+        super().__init__(pytorch_model, device, backend_type="onnx")
         
         self.onnx_dir = onnx_dir
         self._load_onnx_models(device)

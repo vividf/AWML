@@ -34,7 +34,7 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
             pytorch_model: PyTorch CenterPoint model
             device: Device for inference
         """
-        super().__init__(pytorch_model, device)
+        super().__init__(pytorch_model, device, backend_type="pytorch")
         
         # Check if this is an ONNX-compatible model
         self.is_onnx_model = hasattr(pytorch_model.pts_voxel_encoder, 'get_input_features')

@@ -6,18 +6,20 @@ defining the unified pipeline that shares PyTorch processing while allowing
 backend-specific optimizations for voxel encoder and backbone/head.
 """
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Dict, List, Tuple, Any
 import logging
 
 import torch
 import numpy as np
 
+from .detection_3d_pipeline import Detection3DPipeline
+
 
 logger = logging.getLogger(__name__)
 
 
-class CenterPointDeploymentPipeline(ABC):
+class CenterPointDeploymentPipeline(Detection3DPipeline):
     """
     Abstract base class for CenterPoint deployment pipeline.
     
@@ -31,17 +33,48 @@ class CenterPointDeploymentPipeline(ABC):
     while allowing ONNX/TensorRT backends to optimize the convertible parts.
     """
     
-    def __init__(self, pytorch_model, device: str = "cuda"):
+    def __init__(
+        self, 
+        pytorch_model, 
+        device: str = "cuda",
+        backend_type: str = "unknown"
+    ):
         """
         Initialize CenterPoint pipeline.
         
         Args:
             pytorch_model: PyTorch model (used for preprocessing, middle encoder, postprocessing)
             device: Device for inference ('cuda' or 'cpu')
+            backend_type: Backend type ('pytorch', 'onnx', 'tensorrt')
         """
+        # Get class names from model config if available
+        class_names = ["VEHICLE", "PEDESTRIAN", "CYCLIST"]  # Default T4Dataset classes
+        if hasattr(pytorch_model, 'CLASSES'):
+            class_names = pytorch_model.CLASSES
+        elif hasattr(pytorch_model, 'cfg') and hasattr(pytorch_model.cfg, 'class_names'):
+            class_names = pytorch_model.cfg.class_names
+        
+        # Get point cloud range and voxel size from model config
+        point_cloud_range = None
+        voxel_size = None
+        if hasattr(pytorch_model, 'cfg'):
+            if hasattr(pytorch_model.cfg, 'point_cloud_range'):
+                point_cloud_range = pytorch_model.cfg.point_cloud_range
+            if hasattr(pytorch_model.cfg, 'voxel_size'):
+                voxel_size = pytorch_model.cfg.voxel_size
+        
+        # Initialize parent class
+        super().__init__(
+            model=pytorch_model,
+            device=device,
+            num_classes=len(class_names),
+            class_names=class_names,
+            point_cloud_range=point_cloud_range,
+            voxel_size=voxel_size,
+            backend_type=backend_type
+        )
+        
         self.pytorch_model = pytorch_model
-        self.device = torch.device(device) if isinstance(device, str) else device
-        logger.info(f"Initialized {self.__class__.__name__} on device: {self.device}")
     
     # ========== Shared Methods (All backends use same logic) ==========
     
