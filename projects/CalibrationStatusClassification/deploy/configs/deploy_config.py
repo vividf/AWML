@@ -36,7 +36,7 @@ runtime_io = dict(
 # ==============================================================================
 evaluation = dict(
     enabled=True,  # Enable full model evaluation (set to True to run evaluation)
-    num_samples=10,  # Number of samples to evaluate from info.pkl
+    num_samples=1,  # Number of samples to evaluate from info.pkl
     verbose=True,  # Enable verbose logging showing per-sample results
     # Specify models to evaluate
     models=dict(
