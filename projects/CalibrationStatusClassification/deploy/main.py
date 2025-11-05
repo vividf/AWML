@@ -1,246 +1,549 @@
 """
-CalibrationStatusClassification Model Deployment Script (Refactored)
+CalibrationStatusClassification Deployment Main Script (New Pipeline Architecture).
 
-This script exports CalibrationStatusClassification models using the unified
-deployment framework, with comprehensive verification and performance benchmarking.
-
-Features:
-- ONNX export with optimization
-- TensorRT conversion with precision policy support
-- Unified verification across backends
-- Full model evaluation with metrics
-- Performance benchmarking with latency statistics
-- Confusion matrix and per-class accuracy analysis
+This script demonstrates the new unified pipeline architecture for CalibrationStatusClassification deployment:
+- Unified interface across PyTorch, ONNX, and TensorRT backends
+- Simplified export and evaluation workflow
+- Easy cross-backend verification
 """
 
+import argparse
 import logging
-import os.path as osp
+import os
+import sys
+from pathlib import Path
+from typing import Dict, List
 
 import mmengine
 import torch
 from mmengine.config import Config
 from mmpretrain.apis import get_model
 
-from autoware_ml.deployment.core import BaseDeploymentConfig, parse_base_args, setup_logging, verify_model_outputs
-from autoware_ml.deployment.exporters import ONNXExporter, TensorRTExporter
+# Add project root to path
+project_root = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
+from autoware_ml.deployment.core.base_config import parse_base_args
 from projects.CalibrationStatusClassification.deploy.data_loader import CalibrationDataLoader
-from projects.CalibrationStatusClassification.deploy.evaluator import (
-    ClassificationEvaluator,
-    get_models_to_evaluate,
-    run_full_evaluation,
-)
+from projects.CalibrationStatusClassification.deploy.evaluator import ClassificationEvaluator
 
 
-class CalibrationDeploymentConfig(BaseDeploymentConfig):
-    """Extended configuration for CalibrationStatusClassification deployment."""
+def parse_args():
+    """Parse command line arguments."""
+    parser = parse_base_args()
+    args = parser.parse_args()
+    return args
 
-    def __init__(self, deploy_cfg: Config):
-        super().__init__(deploy_cfg)
-        # CalibrationStatus-specific config can be added here if needed
+
+def load_pytorch_model(model_cfg: Config, checkpoint_path: str, device: str):
+    """Load PyTorch model from checkpoint."""
+    torch_device = torch.device(device)
+    model = get_model(model_cfg, checkpoint_path, device=torch_device)
+    model.eval()
+    return model
+
+
+def export_onnx_with_pipeline(
+    pytorch_model,
+    data_loader: CalibrationDataLoader,
+    config: BaseDeploymentConfig,
+    logger: logging.Logger
+) -> str:
+    """
+    Export model to ONNX format using the new pipeline architecture.
+    
+    Returns:
+        Path to exported ONNX file
+    """
+    logger.info("=" * 80)
+    logger.info("Exporting to ONNX (New Pipeline Architecture)")
+    logger.info("=" * 80)
+
+    # Get ONNX settings
+    onnx_settings = config.get_onnx_settings()
+    output_path = os.path.join(config.export_config.work_dir, onnx_settings["save_file"])
+    os.makedirs(config.export_config.work_dir, exist_ok=True)
+
+    # Get sample input
+    # Use the same preprocessing as inference (via data_loader.preprocess)
+    # This ensures ONNX export and inference use identical input format
+    sample_idx = config.runtime_config.get("sample_idx", 0)
+    sample = data_loader.load_sample(sample_idx)
+    single_input = data_loader.preprocess(sample)
+    
+    # Ensure tensor is float32 (same as data_loader preprocessing)
+    if single_input.dtype != torch.float32:
+        single_input = single_input.float()
+
+    # Get batch size from configuration
+    batch_size = onnx_settings.get("batch_size", 1)
+    if batch_size is None:
+        input_tensor = single_input
+        logger.info("Using dynamic batch size")
+    else:
+        input_tensor = single_input.repeat(batch_size, 1, 1, 1)
+        logger.info(f"Using fixed batch size: {batch_size}")
+
+    # Get input/output names from config
+    input_names = onnx_settings.get("input_names", ["input"])
+    output_names = onnx_settings.get("output_names", ["output"])
+    
+    # Get dynamic axes from config
+    dynamic_axes = onnx_settings.get("dynamic_axes", None)
+
+    logger.info(f"Input shape: {input_tensor.shape}")
+    logger.info(f"Output path: {output_path}")
+
+    # Export to ONNX
+    torch.onnx.export(
+        pytorch_model,
+        input_tensor,
+        output_path,
+        opset_version=onnx_settings["opset_version"],
+        do_constant_folding=onnx_settings["do_constant_folding"],
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+        export_params=onnx_settings.get("export_params", True),
+        keep_initializers_as_inputs=onnx_settings.get("keep_initializers_as_inputs", False),
+    )
+
+    logger.info(f"✅ ONNX export successful: {output_path}")
+
+    # Apply ONNX simplifier
+    if onnx_settings.get("simplify", True):
+        try:
+            import onnx
+            from onnxsim import simplify
+            
+            logger.info("Applying ONNX simplifier...")
+            onnx_model = onnx.load(output_path)
+            model_simp, check = simplify(onnx_model)
+            if check:
+                onnx.save(model_simp, output_path)
+                logger.info("✅ ONNX simplification successful")
+            else:
+                logger.warning("⚠️  ONNX simplification check failed, using original model")
+        except Exception as e:
+            logger.warning(f"⚠️  ONNX simplification failed: {e}")
+
+    return output_path
+
+
+def export_tensorrt_from_onnx(
+    onnx_path: str,
+    config: BaseDeploymentConfig,
+    data_loader: CalibrationDataLoader,
+    logger: logging.Logger
+) -> str:
+    """
+    Export ONNX model to TensorRT engine.
+    
+    Returns:
+        Path to exported TensorRT engine
+    """
+    logger.info("=" * 80)
+    logger.info("Exporting to TensorRT")
+    logger.info("=" * 80)
+
+    try:
+        import tensorrt as trt
+    except ImportError:
+        logger.error("TensorRT not installed. Please install TensorRT.")
+        return None
+
+    trt_settings = config.get_tensorrt_settings()
+    output_path = onnx_path.replace(".onnx", ".engine")
+
+    # Build TensorRT engine
+    TRT_LOGGER = trt.Logger(trt.Logger.INFO)
+    builder = trt.Builder(TRT_LOGGER)
+    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+    parser = trt.OnnxParser(network, TRT_LOGGER)
+
+    # Parse ONNX
+    logger.info(f"Parsing ONNX file: {onnx_path}")
+    with open(onnx_path, "rb") as f:
+        if not parser.parse(f.read()):
+            logger.error("Failed to parse ONNX file")
+            for error in range(parser.num_errors):
+                logger.error(parser.get_error(error))
+            return None
+
+    # Build config
+    config_trt = builder.create_builder_config()
+
+    # Handle dynamic shapes
+    has_dynamic_shapes = False
+    for i in range(network.num_inputs):
+        input_shape = network.get_input(i).shape
+        if -1 in input_shape:
+            has_dynamic_shapes = True
+            break
+
+    if has_dynamic_shapes:
+        logger.info("Creating optimization profile for dynamic shapes...")
+        profile = builder.create_optimization_profile()
+
+        # Get input shape from backend_config or use default
+        model_inputs = config.backend_config.model_inputs
+        if model_inputs and len(model_inputs) > 0:
+            input_shapes = model_inputs[0].get("input_shapes", {})
+            for input_name, shapes in input_shapes.items():
+                min_shape = shapes.get("min_shape", [1, 5, 1080, 1920])
+                opt_shape = shapes.get("opt_shape", [1, 5, 1860, 2880])
+                max_shape = shapes.get("max_shape", [1, 5, 2160, 3840])
+                
+                logger.info(f"Setting profile for {input_name}: min={min_shape}, opt={opt_shape}, max={max_shape}")
+                profile.set_shape(input_name, min_shape, opt_shape, max_shape)
+        else:
+            # Fallback: use input from data loader
+            sample_idx = config.runtime_config.get("sample_idx", 0)
+            sample = data_loader.load_sample(sample_idx)
+            input_tensor = data_loader.preprocess(sample)
+            input_shape = tuple(input_tensor.shape)
+            
+            for i in range(network.num_inputs):
+                input_tensor_trt = network.get_input(i)
+                input_name = input_tensor_trt.name
+                logger.info(f"Setting profile for {input_name}: {input_shape}")
+                profile.set_shape(input_name, input_shape, input_shape, input_shape)
+
+        config_trt.add_optimization_profile(profile)
+
+    # Set workspace size
+    workspace_size = trt_settings["max_workspace_size"]
+    config_trt.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_size)
+
+    # Set precision
+    precision_policy = trt_settings.get("precision_policy", "auto")
+    policy_flags = trt_settings.get("policy_flags", {})
+    
+    logger.info(f"Precision policy: {precision_policy}")
+    if policy_flags.get("FP16", False):
+        config_trt.set_flag(trt.BuilderFlag.FP16)
+        logger.info("Enabled FP16 precision")
+    elif policy_flags.get("TF32", False):
+        config_trt.set_flag(trt.BuilderFlag.TF32)
+        logger.info("Enabled TF32 precision")
+
+    # Build engine
+    logger.info("Building TensorRT engine (this may take a while)...")
+    serialized_engine = builder.build_serialized_network(network, config_trt)
+    if serialized_engine is None:
+        logger.error("Failed to build TensorRT engine")
+        return None
+
+    # Save engine
+    with open(output_path, "wb") as f:
+        f.write(serialized_engine)
+
+    logger.info(f"✅ TensorRT export successful: {output_path}")
+    return output_path
+
+
+def get_models_to_evaluate(eval_config: dict, logger: logging.Logger) -> list:
+    """
+    Get list of models to evaluate from config.
+    
+    Args:
+        eval_config: Evaluation configuration
+        logger: Logger instance
+        
+    Returns:
+        List of tuples (backend_name, model_path)
+    """
+    models_config = eval_config.get("models", {})
+    models_to_evaluate = []
+    
+    backend_mapping = {
+        "pytorch": "pytorch",
+        "onnx": "onnx",
+        "tensorrt": "tensorrt",
+    }
+    
+    for backend_key, model_path in models_config.items():
+        backend_name = backend_mapping.get(backend_key.lower())
+        if backend_name and model_path:
+            # Check if path exists and is valid for the backend
+            is_valid = False
+            
+            if backend_name == "pytorch":
+                # PyTorch: check if checkpoint file exists
+                is_valid = os.path.exists(model_path) and os.path.isfile(model_path)
+            elif backend_name == "onnx":
+                # ONNX: check if file exists
+                is_valid = os.path.exists(model_path) and os.path.isfile(model_path) and model_path.endswith('.onnx')
+            elif backend_name == "tensorrt":
+                # TensorRT: check if engine file exists
+                is_valid = os.path.exists(model_path) and os.path.isfile(model_path) and (model_path.endswith('.engine') or model_path.endswith('.trt'))
+            
+            if is_valid:
+                models_to_evaluate.append((backend_name, model_path))
+                logger.info(f"  - {backend_name}: {model_path}")
+            else:
+                logger.warning(f"  - {backend_name}: {model_path} (not found or invalid, skipping)")
+    
+    return models_to_evaluate
+
+
+def run_evaluation(
+    data_loader: CalibrationDataLoader,
+    config: BaseDeploymentConfig,
+    model_cfg: Config,
+    logger: logging.Logger,
+):
+    """
+    Run evaluation on specified models.
+    
+    Args:
+        data_loader: Data loader for samples
+        config: Deployment configuration
+        model_cfg: Model configuration
+        logger: Logger instance
+    """
+    eval_config = config.evaluation_config
+    
+    if not eval_config.get("enabled", False):
+        logger.info("Evaluation disabled, skipping...")
+        return
+    
+    logger.info("=" * 80)
+    logger.info("Running Evaluation")
+    logger.info("=" * 80)
+    
+    # Get models to evaluate from config
+    models_to_evaluate = get_models_to_evaluate(eval_config, logger)
+    
+    if not models_to_evaluate:
+        logger.warning("No models found for evaluation")
+        return
+    
+    evaluator = ClassificationEvaluator(model_cfg)
+    
+    num_samples = eval_config.get("num_samples", 10)
+    if num_samples == -1:
+        num_samples = data_loader.get_num_samples()
+    
+    verbose_mode = eval_config.get("verbose", False)
+    
+    all_results = {}
+    
+    for backend, model_path in models_to_evaluate:
+        results = evaluator.evaluate(
+            model_path=model_path,
+            data_loader=data_loader,
+            num_samples=num_samples,
+            backend=backend,
+            device=config.export_config.device,
+            verbose=verbose_mode,
+        )
+        
+        all_results[backend] = results
+        
+        logger.info(f"\n{backend.upper()} Results:")
+        evaluator.print_results(results)
+    
+    # Compare results across backends
+    if len(all_results) > 1:
+        logger.info("\n" + "=" * 80)
+        logger.info("Cross-Backend Comparison")
+        logger.info("=" * 80)
+        
+        for backend, results in all_results.items():
+            logger.info(f"\n{backend.upper()}:")
+            if results and "error" not in results:
+                logger.info(f"  Accuracy: {results.get('accuracy', 0):.4f}")
+                if 'latency_stats' in results:
+                    logger.info(f"  Latency: {results['latency_stats']['mean_ms']:.2f} ± {results['latency_stats']['std_ms']:.2f} ms")
+            else:
+                logger.info("  No results available")
+
+
+def run_verification(
+    pytorch_checkpoint: str,
+    onnx_path: str,
+    tensorrt_path: str,
+    data_loader: CalibrationDataLoader,
+    config: BaseDeploymentConfig,
+    model_cfg: Config,
+    logger: logging.Logger,
+):
+    """
+    Run verification on exported models.
+    
+    Args:
+        pytorch_checkpoint: Path to PyTorch checkpoint (reference)
+        onnx_path: Path to ONNX model file
+        tensorrt_path: Path to TensorRT engine file
+        data_loader: Data loader for test samples
+        config: Deployment configuration
+        model_cfg: Model configuration
+        logger: Logger instance
+    """
+    # Verification
+    if not config.export_config.verify:
+        logger.info("Verification disabled, skipping...")
+        return
+
+    if not pytorch_checkpoint:
+        logger.warning("PyTorch checkpoint path not available, skipping verification")
+        return
+    
+    if not onnx_path and not tensorrt_path:
+        logger.info("No exported models to verify, skipping verification")
+        return
+    
+    # Get verification parameters
+    num_verify_samples = config.verification_config.get("num_verify_samples", 3)
+    tolerance = config.verification_config.get("tolerance", 0.1)
+    
+    # Create evaluator
+    evaluator = ClassificationEvaluator(model_cfg)
+    
+    # Run verification
+    verification_results = evaluator.verify(
+        pytorch_model_path=pytorch_checkpoint,
+        onnx_model_path=onnx_path,
+        tensorrt_model_path=tensorrt_path,
+        data_loader=data_loader,
+        num_samples=num_verify_samples,
+        device=config.export_config.device,
+        tolerance=tolerance,
+        verbose=False,
+    )
+    
+    # Check if verification succeeded
+    if 'summary' in verification_results:
+        summary = verification_results['summary']
+        if summary['failed'] == 0:
+            if summary.get('skipped', 0) > 0:
+                logger.info(f"\n✅ All verifications passed! ({summary['skipped']} skipped)")
+            else:
+                logger.info("\n✅ All verifications passed!")
+        else:
+            logger.warning(f"\n⚠️  {summary['failed']}/{summary['total']} verifications failed")
+    else:
+        logger.error("\n❌ Verification encountered errors")
 
 
 def main():
-    """Main deployment function."""
+    """Main deployment pipeline with new architecture."""
     # Parse arguments
-    parser = parse_base_args()
-    args = parser.parse_args()
+    args = parse_args()
+
+    # Setup logging
     logger = setup_logging(args.log_level)
 
-    # Load configurations
-    logger.info(f"Loading deploy config from: {args.deploy_cfg}")
+    logger.info("=" * 80)
+    logger.info("CalibrationStatusClassification Deployment - New Pipeline Architecture")
+    logger.info("=" * 80)
+
+    # Load configs
     deploy_cfg = Config.fromfile(args.deploy_cfg)
-    config = CalibrationDeploymentConfig(deploy_cfg)
-
-    logger.info(f"Loading model config from: {args.model_cfg}")
     model_cfg = Config.fromfile(args.model_cfg)
+    config = BaseDeploymentConfig(deploy_cfg)
 
-    # Get configuration
-    work_dir = args.work_dir or config.export_config.work_dir
-    device = args.device or config.export_config.device
+    # Override from command line
+    if args.work_dir:
+        config.export_config.work_dir = args.work_dir
+    if args.device:
+        config.export_config.device = args.device
+
+    logger.info("=" * 80)
+    logger.info("CalibrationStatusClassification Deployment Pipeline")
+    logger.info("=" * 80)
+    logger.info("Deployment Configuration:")
+    logger.info(f"  Export mode: {config.export_config.mode}")
+    logger.info(f"  Device: {config.export_config.device}")
+    logger.info(f"  Work dir: {config.export_config.work_dir}")
+    logger.info(f"  Verify: {config.export_config.verify}")
+
+    # Get info_pkl path
     info_pkl = config.runtime_config.get("info_pkl")
-    sample_idx = config.runtime_config.get("sample_idx", 0)
-    existing_onnx = config.runtime_config.get("onnx_file")
-    export_mode = config.export_config.mode
-
-    # Validate required parameters
     if not info_pkl:
         logger.error("info_pkl path must be provided in config")
         return
 
-    # Setup working directory
-    mmengine.mkdir_or_exist(osp.abspath(work_dir))
-    logger.info(f"Working directory: {work_dir}")
-    logger.info(f"Device: {device}")
-    logger.info(f"Export mode: {export_mode}")
+    # Create data loader (calibrated version for export)
+    logger.info("\nCreating data loader...")
+    data_loader = CalibrationDataLoader(
+        info_pkl_path=info_pkl,
+        model_cfg=model_cfg,
+        miscalibration_probability=0.0,
+        device=config.export_config.device,
+    )
+    logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
-    # Check if eval-only mode
-    is_eval_only = export_mode == "none"
-
-    # Validate eval-only mode configuration
-    if is_eval_only:
-        eval_enabled = config.evaluation_config.get("enabled", False)
-        if not eval_enabled:
-            logger.error(
-                "Configuration error: export mode is 'none' but evaluation.enabled is False. "
-                "Please set evaluation.enabled = True in your config."
-            )
+    # Check if we need model loading and export
+    eval_config = config.evaluation_config
+    needs_export = config.export_config.mode != "none"
+    needs_onnx_eval = False
+    if eval_config.get("enabled", False):
+        models_to_eval = eval_config.get("models", {})
+        if models_to_eval.get("onnx") or models_to_eval.get("tensorrt"):
+            needs_onnx_eval = True
+    
+    # Load model if needed for export or ONNX/TensorRT evaluation
+    pytorch_model = None
+    onnx_path = None
+    tensorrt_path = None
+    
+    if needs_export or needs_onnx_eval:
+        if not args.checkpoint:
+            if needs_export:
+                logger.error("Checkpoint required for export")
+            else:
+                logger.error("Checkpoint required for ONNX/TensorRT evaluation")
+            logger.error("Please provide --checkpoint argument")
             return
-
-    # Validate checkpoint requirement
-    if not is_eval_only and not args.checkpoint:
-        logger.error("Checkpoint is required when export mode is not 'none'")
-        return
-
-    # Export phase
-    if not is_eval_only:
-        logger.info(f"\n{'='*70}")
-        logger.info("Starting model export...")
-        logger.info(f"{'='*70}\n")
-
-        # Determine export paths
-        onnx_path = None
-        trt_path = None
-
-        onnx_settings = config.get_onnx_settings()
-
-        if config.export_config.should_export_onnx():
-            onnx_path = osp.join(work_dir, onnx_settings["save_file"])
-
-        if config.export_config.should_export_tensorrt():
-            if existing_onnx and not config.export_config.should_export_onnx():
-                onnx_path = existing_onnx
-                if not osp.exists(onnx_path):
-                    logger.error(f"Provided ONNX file does not exist: {onnx_path}")
-                    return
-            elif not onnx_path:
-                logger.error("TensorRT export requires ONNX file. Set mode='both' or provide onnx_file in config.")
-                return
-
-            trt_file = onnx_settings["save_file"].replace(".onnx", ".engine")
-            trt_path = osp.join(work_dir, trt_file)
-
-        # Load model
-        logger.info(f"Loading model from checkpoint: {args.checkpoint}")
-        torch_device = torch.device(device)
-        model = get_model(model_cfg, args.checkpoint, device=torch_device)
-
-        # Create data loaders for calibrated and miscalibrated samples
-        logger.info(f"Loading sample data from info.pkl: {info_pkl}")
-        data_loader_calibrated = CalibrationDataLoader(
-            info_pkl_path=info_pkl,
-            model_cfg=model_cfg,
-            miscalibration_probability=0.0,
-            device=device,
-        )
-        data_loader_miscalibrated = CalibrationDataLoader(
-            info_pkl_path=info_pkl,
-            model_cfg=model_cfg,
-            miscalibration_probability=1.0,
-            device=device,
-        )
-
-        # Load sample inputs
-        input_tensor_calibrated = data_loader_calibrated.load_and_preprocess(sample_idx)
-        input_tensor_miscalibrated = data_loader_miscalibrated.load_and_preprocess(sample_idx)
-
+        
+        # Load PyTorch model
+        logger.info("\nLoading PyTorch model...")
+        pytorch_model = load_pytorch_model(model_cfg, args.checkpoint, config.export_config.device)
+        
         # Export ONNX
-        if config.export_config.should_export_onnx() and onnx_path:
-            logger.info(f"\nExporting to ONNX...")
-            onnx_exporter = ONNXExporter(onnx_settings, logger)
-            success = onnx_exporter.export(model, input_tensor_calibrated, onnx_path)
-            if success:
-                logger.info(f"✓ ONNX export successful: {onnx_path}")
-                onnx_exporter.validate_export(onnx_path)
-            else:
-                logger.error("✗ ONNX export failed")
-                return
-
-        # Export TensorRT
-        if config.export_config.should_export_tensorrt() and trt_path and onnx_path:
-            logger.info(f"\nExporting to TensorRT...")
-            trt_settings = config.get_tensorrt_settings()
-            trt_exporter = TensorRTExporter(trt_settings, logger)
-            success = trt_exporter.export(model, input_tensor_calibrated, trt_path, onnx_path=onnx_path)
-            if success:
-                logger.info(f"✓ TensorRT export successful: {trt_path}")
-            else:
-                logger.error("✗ TensorRT export failed")
-                return
-
-        # Run verification if requested
-        if config.export_config.verify:
-            logger.info(f"\n{'='*70}")
-            logger.info("Running model verification...")
-            logger.info(f"{'='*70}\n")
-
-            test_inputs = {
-                "miscalibrated_sample": input_tensor_miscalibrated,
-                "calibrated_sample": input_tensor_calibrated,
-            }
-
-            verify_onnx = (
-                onnx_path if config.export_config.should_export_onnx() else (existing_onnx if existing_onnx else None)
-            )
-            verify_trt = trt_path if config.export_config.should_export_tensorrt() else None
-
-            verification_results = verify_model_outputs(
-                pytorch_model=model,
-                test_inputs=test_inputs,
-                onnx_path=verify_onnx,
-                tensorrt_path=verify_trt,
-                device=device,
-                logger=logger,
-                model_type="CalibrationStatusClassification",  # Explicitly specify model type
-            )
-
-            # Check if all verifications passed
-            all_passed = all(verification_results.values())
-            if all_passed:
-                logger.info("✓ All verifications PASSED")
-            else:
-                logger.warning("⚠ Some verifications FAILED")
-
-        # Log exported formats
-        exported_formats = []
         if config.export_config.should_export_onnx():
-            exported_formats.append("ONNX")
-        if config.export_config.should_export_tensorrt():
-            exported_formats.append("TensorRT")
-        if exported_formats:
-            logger.info(f"\nExported formats: {', '.join(exported_formats)}")
+            onnx_path = export_onnx_with_pipeline(pytorch_model, data_loader, config, logger)
+        
+        # Export TensorRT
+        if config.export_config.should_export_tensorrt() and onnx_path:
+            tensorrt_path = export_tensorrt_from_onnx(onnx_path, config, data_loader, logger)
+    
+    # Get model paths from evaluation config if not exported
+    if not onnx_path or not tensorrt_path:
+        eval_models = config.evaluation_config.get("models", {})
+        if not onnx_path:
+            onnx_path = eval_models.get("onnx")
+            if onnx_path and not os.path.exists(onnx_path):
+                logger.warning(f"ONNX file from config does not exist: {onnx_path}")
+                onnx_path = None
+        if not tensorrt_path:
+            tensorrt_path = eval_models.get("tensorrt")
+            if tensorrt_path and not os.path.exists(tensorrt_path):
+                logger.warning(f"TensorRT engine from config does not exist: {tensorrt_path}")
+                tensorrt_path = None
 
-        logger.info(f"\n{'='*70}")
-        logger.info("Deployment completed successfully!")
-        logger.info(f"{'='*70}\n")
-    else:
-        logger.info("Evaluation-only mode: Skipping model loading and export\n")
+    # Verification
+    run_verification(
+        pytorch_checkpoint=args.checkpoint,
+        onnx_path=onnx_path,
+        tensorrt_path=tensorrt_path,
+        data_loader=data_loader,
+        config=config,
+        model_cfg=model_cfg,
+        logger=logger,
+    )
 
-    # Evaluation phase
-    eval_cfg = config.evaluation_config
-    should_evaluate = eval_cfg.get("enabled", False)
-    num_samples = eval_cfg.get("num_samples", 10)
-    verbose_mode = eval_cfg.get("verbose", False)
+    # Run evaluation
+    run_evaluation(data_loader, config, model_cfg, logger)
 
-    if should_evaluate:
-        logger.info(f"\n{'='*70}")
-        logger.info("Starting full model evaluation...")
-        logger.info(f"{'='*70}\n")
-
-        models_to_evaluate = get_models_to_evaluate(eval_cfg, logger)
-
-        if models_to_evaluate:
-            run_full_evaluation(
-                models_to_evaluate,
-                model_cfg,
-                info_pkl,
-                device,
-                num_samples,
-                verbose_mode,
-                logger,
-            )
-        else:
-            logger.warning("No models found for evaluation")
+    logger.info("\n" + "=" * 80)
+    logger.info("Deployment Complete!")
+    logger.info("=" * 80)
 
 
 if __name__ == "__main__":
     main()
+

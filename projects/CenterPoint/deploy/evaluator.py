@@ -11,7 +11,6 @@ import numpy as np
 import torch
 from mmengine.config import Config
 
-from autoware_ml.deployment.backends import ONNXBackend, PyTorchBackend, TensorRTBackend
 from autoware_ml.deployment.core import BaseEvaluator
 
 from .data_loader import CenterPointDataLoader
@@ -105,7 +104,7 @@ class CenterPointEvaluator(BaseEvaluator):
         
         # Create PyTorch pipeline (reference)
         logger.info("\nInitializing PyTorch reference pipeline...")
-        pytorch_pipeline = self._create_backend("pytorch", pytorch_model_path, device, logger)
+        pytorch_pipeline = self._create_pipeline("pytorch", pytorch_model_path, device, logger)
         if pytorch_pipeline is None:
             logger.error("Failed to create PyTorch reference pipeline")
             return {"error": "Failed to create PyTorch reference"}
@@ -114,7 +113,7 @@ class CenterPointEvaluator(BaseEvaluator):
         onnx_pipeline = None
         if onnx_model_path:
             logger.info("\nInitializing ONNX pipeline...")
-            onnx_pipeline = self._create_backend("onnx", onnx_model_path, device, logger)
+            onnx_pipeline = self._create_pipeline("onnx", onnx_model_path, device, logger)
             if onnx_pipeline is None:
                 logger.warning("Failed to create ONNX pipeline, skipping ONNX verification")
                 skipped_backends.append("onnx")
@@ -127,7 +126,7 @@ class CenterPointEvaluator(BaseEvaluator):
                 logger.warning("TensorRT requires CUDA device, skipping TensorRT verification")
                 skipped_backends.append("tensorrt")
             else:
-                tensorrt_pipeline = self._create_backend("tensorrt", tensorrt_model_path, device, logger)
+                tensorrt_pipeline = self._create_pipeline("tensorrt", tensorrt_model_path, device, logger)
                 if tensorrt_pipeline is None:
                     logger.warning("Failed to create TensorRT pipeline, skipping TensorRT verification")
                     skipped_backends.append("tensorrt")
@@ -281,7 +280,7 @@ class CenterPointEvaluator(BaseEvaluator):
         logger.info(f"Number of samples: {num_samples}")
 
         # Create Pipeline instance
-        pipeline = self._create_backend(backend, model_path, device, logger)
+        pipeline = self._create_pipeline(backend, model_path, device, logger)
         
         if pipeline is None:
             logger.error(f"Failed to create {backend} Pipeline")
@@ -449,7 +448,7 @@ class CenterPointEvaluator(BaseEvaluator):
             traceback.print_exc()
             return False
 
-    def _create_backend(self, backend: str, model_path: str, device: str, logger) -> Any:
+    def _create_pipeline(self, backend: str, model_path: str, device: str, logger) -> Any:
         """Create Pipeline instance for the specified backend."""
         try:
             # Import Pipeline classes

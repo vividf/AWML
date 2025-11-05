@@ -10,7 +10,6 @@ from .base_config import (
 )
 from .base_data_loader import BaseDataLoader
 from .base_evaluator import BaseEvaluator
-from .verification import verify_model_outputs
 
 __all__ = [
     "BaseDeploymentConfig",
@@ -21,5 +20,4 @@ __all__ = [
     "parse_base_args",
     "BaseDataLoader",
     "BaseEvaluator",
-    "verify_model_outputs",
 ]

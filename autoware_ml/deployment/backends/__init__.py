@@ -1,13 +1,18 @@
-"""Inference backends for different model formats."""
+"""
+Legacy backend module - DEPRECATED.
 
-from .base_backend import BaseBackend
-from .onnx_backend import ONNXBackend
-from .pytorch_backend import PyTorchBackend
-from .tensorrt_backend import TensorRTBackend
+This module previously contained PyTorchBackend, ONNXBackend, and TensorRTBackend classes.
+These have been replaced by the new pipeline architecture.
 
-__all__ = [
-    "BaseBackend",
-    "PyTorchBackend",
-    "ONNXBackend",
-    "TensorRTBackend",
-]
+For inference, use the pipeline classes instead:
+- autoware_ml.deployment.pipelines.yolox for YOLOX
+- autoware_ml.deployment.pipelines.centerpoint for CenterPoint  
+- autoware_ml.deployment.pipelines.calibration for CalibrationStatusClassification
+
+Each pipeline module provides:
+- {Model}PyTorchPipeline
+- {Model}ONNXPipeline
+- {Model}TensorRTPipeline
+"""
+
+__all__ = []

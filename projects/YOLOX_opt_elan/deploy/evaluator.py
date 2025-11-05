@@ -11,7 +11,6 @@ import numpy as np
 import torch
 from mmengine.config import Config
 
-from autoware_ml.deployment.backends import ONNXBackend, PyTorchBackend, TensorRTBackend
 from autoware_ml.deployment.core import BaseEvaluator
 
 from .data_loader import YOLOXOptElanDataLoader
@@ -124,7 +123,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 'summary': {'passed': int, 'failed': int, 'total': int}
             }
         """
-        from .main_pipeline import load_pytorch_model
+        from .main import load_pytorch_model
         from autoware_ml.deployment.pipelines.yolox import (
             YOLOXPyTorchPipeline,
             YOLOXONNXPipeline,
