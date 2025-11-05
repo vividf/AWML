@@ -214,7 +214,7 @@ class ClassificationEvaluator(BaseEvaluator):
             input_tensor = loader.load_and_preprocess(sample_idx)
 
             # Run inference via pipeline
-            result, latency = pipeline.infer(input_tensor)
+            result, latency, _ = pipeline.infer(input_tensor)
             
             # Extract prediction from result dict
             predicted_label = result['class_id']
@@ -455,7 +455,7 @@ class ClassificationEvaluator(BaseEvaluator):
                     # Get PyTorch reference outputs (raw logits)
                     logger.info(f"\nRunning PyTorch reference ({loader_name})...")
                     try:
-                        pytorch_output, pytorch_latency = pytorch_pipeline.infer(input_tensor, return_raw_outputs=True)
+                        pytorch_output, pytorch_latency, _ = pytorch_pipeline.infer(input_tensor, return_raw_outputs=True)
                         logger.info(f"  PyTorch latency: {pytorch_latency:.2f} ms")
                         logger.info(f"  PyTorch output shape: {pytorch_output.shape}")
                         logger.info(f"  PyTorch output range: [{pytorch_output.min():.6f}, {pytorch_output.max():.6f}]")
@@ -568,7 +568,7 @@ class ClassificationEvaluator(BaseEvaluator):
         """
         try:
             # Run inference with raw outputs
-            backend_output, backend_latency = pipeline.infer(input_tensor, return_raw_outputs=True)
+            backend_output, backend_latency, _ = pipeline.infer(input_tensor, return_raw_outputs=True)
             
             logger.info(f"  {backend_name} latency: {backend_latency:.2f} ms")
             logger.info(f"  {backend_name} output shape: {backend_output.shape}")
@@ -647,78 +647,3 @@ def get_models_to_evaluate(eval_cfg: Dict[str, Any], logger: logging.Logger) -> 
                 logger.warning(f"  - {backend_name}: {model_path} (not found, skipping)")
 
     return models_to_evaluate
-
-
-def run_full_evaluation(
-    models_to_evaluate: list,
-    model_cfg: Config,
-    info_pkl: str,
-    device: str,
-    num_samples: int,
-    verbose: bool,
-    logger: logging.Logger,
-) -> None:
-    """
-    Run full evaluation on all specified models.
-
-    Args:
-        models_to_evaluate: List of (backend, model_path) tuples
-        model_cfg: Model configuration
-        info_pkl: Path to info.pkl file
-        device: Device for inference
-        num_samples: Number of samples to evaluate
-        verbose: Verbose mode
-        logger: Logger instance
-    """
-    if not models_to_evaluate:
-        logger.warning("No models specified for evaluation")
-        return
-
-    logger.info(f"\nModels to evaluate:")
-    for backend, path in models_to_evaluate:
-        logger.info(f"  - {backend}: {path}")
-
-    # Create evaluator
-    evaluator = ClassificationEvaluator(model_cfg)
-
-    # Create data loader (with miscalibration_probability=0.0 as default)
-    data_loader = CalibrationDataLoader(
-        info_pkl_path=info_pkl,
-        model_cfg=model_cfg,
-        miscalibration_probability=0.0,
-        device=device,
-    )
-
-    # Evaluate each model
-    all_results = {}
-    for backend, model_path in models_to_evaluate:
-        try:
-            results = evaluator.evaluate(
-                model_path=model_path,
-                data_loader=data_loader,
-                num_samples=num_samples,
-                backend=backend,
-                device=device,
-                verbose=verbose,
-            )
-            all_results[backend] = results
-            evaluator.print_results(results)
-        except Exception as e:
-            logger.error(f"Failed to evaluate {backend} model: {e}")
-            import traceback
-
-            logger.error(traceback.format_exc())
-
-    # Print comparison summary if multiple models
-    if len(all_results) > 1:
-        logger.info(f"\n{'='*70}")
-        logger.info("Comparison Summary")
-        logger.info(f"{'='*70}")
-        logger.info(f"{'Backend':<15} {'Accuracy':<12} {'Avg Latency (ms)':<20}")
-        logger.info(f"{'-'*70}")
-        for backend, results in all_results.items():
-            if "error" not in results:
-                acc = results["accuracy"]
-                lat = results["latency_stats"]["mean_ms"]
-                logger.info(f"{backend:<15} {acc:<12.4f} {lat:<20.2f}")
-        logger.info(f"{'='*70}\n")

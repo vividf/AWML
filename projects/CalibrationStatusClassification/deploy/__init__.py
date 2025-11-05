@@ -10,12 +10,10 @@ from .data_loader import CalibrationDataLoader
 from .evaluator import (
     ClassificationEvaluator,
     get_models_to_evaluate,
-    run_full_evaluation,
 )
 
 __all__ = [
     "CalibrationDataLoader",
     "ClassificationEvaluator",
     "get_models_to_evaluate",
-    "run_full_evaluation",
 ]

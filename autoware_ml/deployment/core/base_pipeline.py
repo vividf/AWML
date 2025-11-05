@@ -16,7 +16,7 @@ Key Design Principles:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Tuple, Union, List
+from typing import Any, Dict, Tuple, Union, List, Optional
 import logging
 import time
 
@@ -124,10 +124,10 @@ class BaseDeploymentPipeline(ABC):
     def infer(
         self, 
         input_data: Any,
-        metadata: Dict = None,
+        metadata: Optional[Dict] = None,
         return_raw_outputs: bool = False,
         **kwargs
-    ) -> Tuple[Any, float]:
+    ) -> Tuple[Any, float, Dict[str, float]]:
         """
         Complete inference pipeline.
         
@@ -147,45 +147,65 @@ class BaseDeploymentPipeline(ABC):
             **kwargs: Additional arguments passed to preprocess()
             
         Returns:
-            Tuple of (outputs, latency_ms)
-            - If return_raw_outputs=True: (raw_model_output, latency)
-            - If return_raw_outputs=False: (final_predictions, latency)
+            Tuple of (outputs, latency_ms, latency_breakdown)
+            - outputs: If return_raw_outputs=True: raw_model_output
+                      If return_raw_outputs=False: final_predictions
+            - latency_ms: Total inference latency in milliseconds
+            - latency_breakdown: Dictionary with stage-wise latencies (may be empty)
+                                Keys: 'preprocessing_ms', 'model_ms', 'postprocessing_ms'
         """
-        
-        
         if metadata is None:
             metadata = {}
         
+        latency_breakdown: Dict[str, float] = {}
+        
         try:
+            start_time = time.time()
+            
             # 1. Preprocess
             preprocessed = self.preprocess(input_data, **kwargs)
             
-            # TODO(vividf): check this
             # Unpack preprocess outputs: allow (data, metadata) tuple
             preprocess_metadata = {}
             model_input = preprocessed
             if isinstance(preprocessed, tuple) and len(preprocessed) == 2 and isinstance(preprocessed[1], dict):
                 model_input, preprocess_metadata = preprocessed
             
+            preprocess_time = time.time()
+            latency_breakdown['preprocessing_ms'] = (preprocess_time - start_time) * 1000
+            
             # Merge caller metadata (if any) with preprocess metadata (preprocess takes precedence by default)
             merged_metadata = {}
             merged_metadata.update(metadata or {})
             merged_metadata.update(preprocess_metadata)
             
-            start_time = time.time()
             # 2. Run model (backend-specific)
+            model_start = time.time()
             model_output = self.run_model(model_input)
+            model_time = time.time()
+            latency_breakdown['model_ms'] = (model_time - model_start) * 1000
             
-            latency_ms = (time.time() - start_time) * 1000
+            # Merge stage-wise latencies if available (for multi-stage pipelines like CenterPoint)
+            if hasattr(self, '_stage_latencies') and isinstance(self._stage_latencies, dict):
+                latency_breakdown.update(self._stage_latencies)
+                # Clear for next inference
+                self._stage_latencies = {}
+            
+            total_latency = (time.time() - start_time) * 1000
             
             # 3. Postprocess (optional)
             if return_raw_outputs:
-                print(f"Inference completed in {latency_ms:.2f}ms (returning raw outputs)")
-                return model_output, latency_ms
+                logger.debug(f"Inference completed in {total_latency:.2f}ms (returning raw outputs)")
+                return model_output, total_latency, latency_breakdown
             else:
+                postprocess_start = time.time()
                 predictions = self.postprocess(model_output, merged_metadata)
-                print(f"Inference completed in {latency_ms:.2f}ms (returning predictions)")
-                return predictions, latency_ms
+                postprocess_time = time.time()
+                latency_breakdown['postprocessing_ms'] = (postprocess_time - postprocess_start) * 1000
+                
+                total_latency = (time.time() - start_time) * 1000
+                logger.debug(f"Inference completed in {total_latency:.2f}ms (returning predictions)")
+                return predictions, total_latency, latency_breakdown
                 
         except Exception as e:
             logger.error(f"Inference failed: {e}")
@@ -236,7 +256,7 @@ class BaseDeploymentPipeline(ABC):
         # Benchmark
         latencies = []
         for _ in range(num_iterations):
-            _, latency = self.infer(input_data)
+            _, latency, _ = self.infer(input_data)
             latencies.append(latency)
         
         import numpy as np

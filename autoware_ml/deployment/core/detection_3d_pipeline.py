@@ -94,26 +94,46 @@ class Detection3DPipeline(BaseDeploymentPipeline):
         """
         Run 3D detection model (backend-specific).
         
-        NOTE: For 3D detection, most models use a multi-stage pipeline
-        (voxel encoder → middle encoder → backbone/head) instead of a single
-        run_model() call. Therefore, this method is typically not used.
+        **Note**: This method is intentionally not abstract for 3D detection pipelines.
         
-        Instead, 3D detection pipelines override infer() and implement
-        stage-specific methods like:
-        - run_voxel_encoder()
-        - process_middle_encoder()
-        - run_backbone_head()
+        Most 3D detection models use a **multi-stage inference pipeline** rather than
+        a single model call:
+        
+        ```
+        Points → Voxel Encoder → Middle Encoder → Backbone/Head → Postprocess
+        ```
+        
+        For 3D detection pipelines
+        
+        *Implement `run_model()` (Recommended)*
+        - Implement all stages in `run_model()`:
+          - `run_voxel_encoder()` - backend-specific voxel encoding
+          - `process_middle_encoder()` - sparse convolution (usually PyTorch-only)
+          - `run_backbone_head()` - backend-specific backbone/head inference
+        - Return final head outputs
+        - Use base class `infer()` for unified pipeline orchestration
+
         
         Args:
-            preprocessed_input: Preprocessed data
+            preprocessed_input: Preprocessed data (usually Dict from preprocess())
             
         Returns:
-            Model output (backend-specific format)
+            Model output (backend-specific format, usually List[torch.Tensor] for head outputs)
+            
+        Raises:
+            NotImplementedError: Default implementation raises error.
+                Subclasses should implement `run_model()` with all stages.
+                
+        Example:
+            See `CenterPointDeploymentPipeline.run_model()` for a complete multi-stage
+            implementation example.
         """
         raise NotImplementedError(
-            "run_model() is not used for 3D detection pipelines. "
-            "3D detection uses a multi-stage inference pipeline. "
-            "See CenterPointDeploymentPipeline.infer() for implementation."
+            "run_model() must be implemented by 3D detection pipelines. "
+            "3D detection typically uses a multi-stage inference pipeline "
+            "(voxel encoder → middle encoder → backbone/head). "
+            "Please implement run_model() with all stages. "
+            "See CenterPointDeploymentPipeline.run_model() for an example implementation."
         )
     
     def postprocess(

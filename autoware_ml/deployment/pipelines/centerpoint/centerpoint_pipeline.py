@@ -75,10 +75,11 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
         )
         
         self.pytorch_model = pytorch_model
+        self._stage_latencies = {}  # Store stage-wise latencies for detailed breakdown
     
     # ========== Shared Methods (All backends use same logic) ==========
     
-    def preprocess(self, points: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def preprocess(self, points: torch.Tensor, **kwargs) -> Tuple[Dict[str, torch.Tensor], Dict]:
         """
         Preprocess: voxelization + input features preparation.
         
@@ -87,13 +88,16 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
         
         Args:
             points: Input point cloud [N, point_features]
+            **kwargs: Additional preprocessing parameters
             
         Returns:
-            Dictionary containing:
-            - input_features: 11-dim features for voxel encoder [N_voxels, max_points, 11]
-            - voxels: Raw voxel data
-            - num_points: Number of points per voxel
-            - coors: Voxel coordinates [N_voxels, 4] (batch_idx, z, y, x)
+            Tuple of (preprocessed_dict, metadata):
+            - preprocessed_dict: Dictionary containing:
+                - 'input_features': 11-dim features for voxel encoder [N_voxels, max_points, 11]
+                - 'voxels': Raw voxel data
+                - 'num_points': Number of points per voxel
+                - 'coors': Voxel coordinates [N_voxels, 4] (batch_idx, z, y, x)
+            - metadata: Empty dict (for compatibility with base class)
         """
         from mmdet3d.structures import Det3DDataSample
         
@@ -124,12 +128,15 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
             else:
                 logger.debug(f"Preprocessed without input_features (standard model)")
         
-        return {
+        preprocessed_dict = {
             'input_features': input_features,
             'voxels': voxels,
             'num_points': num_points,
             'coors': coors
         }
+        
+        # Return tuple format for compatibility with base class infer()
+        return preprocessed_dict, {}
     
     def process_middle_encoder(
         self, 
@@ -291,106 +298,57 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
     
     # ========== Main Inference Pipeline ==========
     
-    def infer(
-        self, 
-        points: torch.Tensor,
-        sample_meta: Dict = None,
-        return_raw_outputs: bool = False
-    ) -> Tuple[Any, float, Dict[str, float]]:
+    def run_model(self, preprocessed_input: Dict[str, torch.Tensor]) -> List[torch.Tensor]:
         """
-        Complete inference pipeline.
+        Run complete multi-stage model inference.
         
-        This method orchestrates the entire inference flow:
-        1. Preprocessing (PyTorch)
-        2. Voxel Encoder (backend-specific)
-        3. Middle Encoder (PyTorch)
-        4. Backbone + Head (backend-specific)
-        5. Postprocessing (PyTorch) - optional
+        This method implements all inference stages:
+        1. Voxel Encoder (backend-specific)
+        2. Middle Encoder (PyTorch)
+        3. Backbone + Head (backend-specific)
+        
+        This method is called by the base class `infer()` method, which handles
+        preprocessing, postprocessing, latency tracking, and error handling.
         
         Args:
-            points: Input point cloud [N, point_features]
-            sample_meta: Sample metadata (optional)
-            return_raw_outputs: If True, return raw head outputs instead of postprocessed predictions
-            
+            preprocessed_input: Dict from preprocess() containing:
+                - 'input_features': Input features for voxel encoder [N_voxels, max_points, 11]
+                - 'coors': Voxel coordinates [N_voxels, 4]
+                - 'voxels': Raw voxel data
+                - 'num_points': Number of points per voxel
+        
         Returns:
-            If return_raw_outputs=False:
-                predictions: List of detection results
-                total_latency_ms: Total inference latency in milliseconds
-                latency_breakdown: Dict with latencies for each stage
-            If return_raw_outputs=True:
-                head_outputs: List of raw head outputs [heatmap, reg, height, dim, rot, vel]
-                total_latency_ms: Total inference latency in milliseconds
-                latency_breakdown: Dict with latencies for each stage
+            head_outputs: List of head outputs [heatmap, reg, height, dim, rot, vel]
+            
+        Note:
+            Stage-wise latencies are stored in `self._stage_latencies` and will be
+            merged into the overall latency breakdown by the base class `infer()`.
         """
         import time
-        start_time = time.time()
-        t_prev = start_time
         
-        if sample_meta is None:
-            sample_meta = {}
+        # Stage 1: Voxel Encoder (backend-specific)
+        start = time.time()
+        voxel_features = self.run_voxel_encoder(preprocessed_input['input_features'])
+        self._stage_latencies['voxel_encoder_ms'] = (time.time() - start) * 1000
+        logger.debug(f"Voxel Encoder: {self._stage_latencies['voxel_encoder_ms']:.2f} ms")
         
-        try:
-            # 1. Preprocess (PyTorch)
-            preprocessed = self.preprocess(points)
-            t_after_pre = time.time()
-            pre_ms = (t_after_pre - t_prev) * 1000
-            t_prev = t_after_pre
-            logger.info(f"1. Preprocessing:       {pre_ms:8.2f} ms")
-            
-            # 2. Voxel Encoder (backend-specific)
-            voxel_features = self.run_voxel_encoder(preprocessed['input_features'])
-            t_after_voxel = time.time()
-            voxel_ms = (t_after_voxel - t_prev) * 1000
-            t_prev = t_after_voxel
-            logger.info(f"2. Voxel Encoder:       {voxel_ms:8.2f} ms")
-            
-            # 3. Middle Encoder (PyTorch)
-            spatial_features = self.process_middle_encoder(
-                voxel_features, 
-                preprocessed['coors']
-            )
-            t_after_middle = time.time()
-            middle_ms = (t_after_middle - t_prev) * 1000
-            t_prev = t_after_middle
-            logger.info(f"3. Middle Encoder:       {middle_ms:8.2f} ms")
-            
-            # 4. Backbone + Head (backend-specific)
-            head_outputs = self.run_backbone_head(spatial_features)
-            t_after_backbone = time.time()
-            backbone_ms = (t_after_backbone - t_prev) * 1000
-            t_prev = t_after_backbone
-            logger.info(f"4. Backbone + Head:    {backbone_ms:8.2f} ms")
-            
-            # 5. Postprocess (PyTorch) - optional
-            latency_breakdown = {
-                'preprocessing_ms': pre_ms,
-                'voxel_encoder_ms': voxel_ms,
-                'middle_encoder_ms': middle_ms,
-                'backbone_head_ms': backbone_ms,
-            }
-            
-            if return_raw_outputs:
-                total_ms = (time.time() - start_time) * 1000
-                logger.info(f"Total (no post):       {total_ms:8.2f} ms")
-                logger.debug(f"Inference completed in {total_ms:.2f}ms (returning raw outputs)")
-                return head_outputs, total_ms, latency_breakdown
-            else:
-                predictions = self.postprocess(head_outputs, sample_meta)
-                t_after_post = time.time()
-                post_ms = (t_after_post - t_prev) * 1000
-                total_ms = (t_after_post - start_time) * 1000
-                logger.info(f"5. Postprocessing:      {post_ms:8.2f} ms")
-                logger.info(f"Total:                 {total_ms:8.2f} ms")
-                latency_breakdown['postprocessing_ms'] = post_ms
-                logger.debug(f"Inference completed in {total_ms:.2f}ms with {len(predictions)} detections")
-                return predictions, total_ms, latency_breakdown
-            
-        except Exception as e:
-            logger.error(f"Inference failed: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
-    
+        # Stage 2: Middle Encoder (PyTorch - 所有后端相同)
+        start = time.time()
+        spatial_features = self.process_middle_encoder(
+            voxel_features,
+            preprocessed_input['coors']
+        )
+        self._stage_latencies['middle_encoder_ms'] = (time.time() - start) * 1000
+        logger.debug(f"Middle Encoder: {self._stage_latencies['middle_encoder_ms']:.2f} ms")
+        
+        # Stage 3: Backbone + Head (backend-specific)
+        start = time.time()
+        head_outputs = self.run_backbone_head(spatial_features)
+        self._stage_latencies['backbone_head_ms'] = (time.time() - start) * 1000
+        logger.debug(f"Backbone + Head: {self._stage_latencies['backbone_head_ms']:.2f} ms")
+        
+        return head_outputs
+
     def __repr__(self):
         return f"{self.__class__.__name__}(device={self.device})"
 

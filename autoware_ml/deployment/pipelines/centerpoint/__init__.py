@@ -9,17 +9,26 @@ Example usage:
 PyTorch:
     >>> from autoware_ml.deployment.pipelines.centerpoint import CenterPointPyTorchPipeline
     >>> pipeline = CenterPointPyTorchPipeline(model, device='cuda')
-    >>> predictions, latency = pipeline.infer(points)
+    >>> predictions, latency, breakdown = pipeline.infer(points)
 
 ONNX:
     >>> from autoware_ml.deployment.pipelines.centerpoint import CenterPointONNXPipeline
     >>> pipeline = CenterPointONNXPipeline(pytorch_model, onnx_dir='models', device='cuda')
-    >>> predictions, latency = pipeline.infer(points)
+    >>> predictions, latency, breakdown = pipeline.infer(points)
 
 TensorRT:
     >>> from autoware_ml.deployment.pipelines.centerpoint import CenterPointTensorRTPipeline
     >>> pipeline = CenterPointTensorRTPipeline(pytorch_model, tensorrt_dir='engines', device='cuda')
-    >>> predictions, latency = pipeline.infer(points)
+    >>> predictions, latency, breakdown = pipeline.infer(points)
+    
+Note:
+    All pipelines now use the unified `infer()` interface from the base class.
+    The `breakdown` dict contains stage-wise latencies:
+    - preprocessing_ms
+    - voxel_encoder_ms
+    - middle_encoder_ms
+    - backbone_head_ms
+    - postprocessing_ms
 """
 
 from .centerpoint_pipeline import CenterPointDeploymentPipeline

@@ -218,7 +218,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 # Get PyTorch reference outputs (raw, before postprocessing)
                 logger.info("\nRunning PyTorch reference (raw outputs)...")
                 try:
-                    pytorch_output, pytorch_latency = pytorch_pipeline.infer(input_tensor, return_raw_outputs=True)
+                    pytorch_output, pytorch_latency, _ = pytorch_pipeline.infer(input_tensor, return_raw_outputs=True)
                     logger.info(f"  PyTorch latency: {pytorch_latency:.2f} ms")
                     logger.info(f"  PyTorch output shape: {pytorch_output.shape}")
                     logger.info(f"  PyTorch output range: [{pytorch_output.min():.6f}, {pytorch_output.max():.6f}]")
@@ -331,7 +331,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         """
         try:
             # Run inference with raw outputs (using MMDet preprocessed tensor)
-            backend_output, backend_latency = pipeline.infer(input_tensor, return_raw_outputs=True)
+            backend_output, backend_latency, _ = pipeline.infer(input_tensor, return_raw_outputs=True)
             
             logger.info(f"  {backend_name} latency: {backend_latency:.2f} ms")
             logger.info(f"  {backend_name} output shape: {backend_output.shape}")
@@ -419,7 +419,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
 
             # Run pipeline inference with preprocessed tensor (like CenterPoint)
             # pipeline.infer() automatically detects tensor input and uses img_info from kwargs
-            detections, latency = pipeline.infer(input_tensor, img_info=gt_data["img_info"])  # type: ignore
+            detections, latency, _ = pipeline.infer(input_tensor, img_info=gt_data["img_info"])  # type: ignore
             latencies.append(latency)
 
             # Normalize detections to expected format for eval_map
