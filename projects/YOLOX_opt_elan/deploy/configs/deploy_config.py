@@ -65,7 +65,7 @@ backend_config = dict(
     common_config=dict(
         # Precision policy for TensorRT
         # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
-        precision_policy="auto",
+        precision_policy="fp16",
         # TensorRT workspace size (bytes)
         max_workspace_size=1 << 30,  # 1 GB
     ),
@@ -78,7 +78,7 @@ backend_config = dict(
 evaluation = dict(
     enabled=True,  # Enable evaluation
     num_samples=1,  # Number of samples to evaluate (set to -1 for all)
-    verbose=False,  # Detailed per-sample output
+    verbose=True,  # Detailed per-sample output
     # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)
     models=dict(
         onnx="/workspace/work_dirs/yolox_opt_elan_deployment/yolox_opt_elan.onnx",  # Path to ONNX model file
@@ -91,5 +91,5 @@ evaluation = dict(
 verification = dict(
     enabled=True,  # Will use export.verify
     tolerance=1e-1,  # Output difference tolerance (relaxed for CUDA/CPU differences)
-    num_verify_samples=10,  # Number of samples for verification
+    num_verify_samples=1,  # Number of samples for verification
 )

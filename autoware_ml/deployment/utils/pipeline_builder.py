@@ -5,6 +5,8 @@ This module provides functions to extract and build test pipelines
 from MMDet/MMDet3D/MMPretrain configs for use in deployment.
 """
 
+# TODO(vividf): check whehter this file can integrate with new pipeline architecture
+
 import logging
 from typing import Any, List
 
@@ -174,7 +176,6 @@ def _build_detection2d_pipeline(pipeline_cfg: List) -> Any:
 
     # Try with init_default_scope (MMDet 3.x with mmengine)
     try:
-        print("################## 1 ################")
         # Import mmdet first to register all transforms
         import mmdet.datasets.transforms  # noqa: F401
         from mmengine.dataset import Compose

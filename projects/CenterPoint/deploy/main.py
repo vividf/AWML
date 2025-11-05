@@ -541,7 +541,6 @@ def main():
     # Load configs
     deploy_cfg = Config.fromfile(args.deploy_cfg)
     model_cfg = Config.fromfile(args.model_cfg)
-
     config = BaseDeploymentConfig(deploy_cfg)
 
     # Override from command line
@@ -564,7 +563,9 @@ def main():
     # Create data loader
     logger.info("\nCreating data loader...")
     data_loader = CenterPointDataLoader(
-        info_file=config.runtime_config["info_file"], model_cfg=model_cfg, device=config.export_config.device
+        info_file=config.runtime_config["info_file"], 
+        model_cfg=model_cfg, 
+        device=config.export_config.device
     )
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 

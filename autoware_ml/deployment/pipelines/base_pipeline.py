@@ -160,9 +160,21 @@ class BaseDeploymentPipeline(ABC):
             # 1. Preprocess
             preprocessed = self.preprocess(input_data, **kwargs)
             
+            # TODO(vividf): check this
+            # Unpack preprocess outputs: allow (data, metadata) tuple
+            preprocess_metadata = {}
+            model_input = preprocessed
+            if isinstance(preprocessed, tuple) and len(preprocessed) == 2 and isinstance(preprocessed[1], dict):
+                model_input, preprocess_metadata = preprocessed
+            
+            # Merge caller metadata (if any) with preprocess metadata (preprocess takes precedence by default)
+            merged_metadata = {}
+            merged_metadata.update(metadata or {})
+            merged_metadata.update(preprocess_metadata)
+            
             start_time = time.time()
             # 2. Run model (backend-specific)
-            model_output = self.run_model(preprocessed)
+            model_output = self.run_model(model_input)
             
             latency_ms = (time.time() - start_time) * 1000
             
@@ -171,7 +183,7 @@ class BaseDeploymentPipeline(ABC):
                 print(f"Inference completed in {latency_ms:.2f}ms (returning raw outputs)")
                 return model_output, latency_ms
             else:
-                predictions = self.postprocess(model_output, metadata)
+                predictions = self.postprocess(model_output, merged_metadata)
                 print(f"Inference completed in {latency_ms:.2f}ms (returning predictions)")
                 return predictions, latency_ms
                 

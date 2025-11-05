@@ -238,10 +238,20 @@ class PyTorchBackend(BaseBackend):
             
             for i in range(batch_size):
                 data_sample = DetDataSample()
+                # MMDetection expects scale_factor as (w_scale, h_scale, w_scale, h_scale)
+                # Keep-ratio case returns identical scales for w/h
+                if self.scale_factor_config['keep_ratio']:
+                    # keep_ratio=True: scale_h == scale_w == scale
+                    scale = scale_w  # equal to scale_h
+                    scale_factor = np.array([scale, scale, scale, scale], dtype=np.float32)
+                else:
+                    # Non keep-ratio: distinct per axis (w, h, w, h)
+                    scale_factor = np.array([scale_w, scale_h, scale_w, scale_h], dtype=np.float32)
+
                 data_sample.set_metainfo({
                     'img_shape': (model_input_h, model_input_w),  # Model input size
                     'ori_shape': (ori_h, ori_w),  # Original image size
-                    'scale_factor': (scale_h, scale_w),  # Use calculated scale factors
+                    'scale_factor': scale_factor,
                     'batch_input_shape': (model_input_h, model_input_w)
                 })
                 data_samples.append(data_sample)

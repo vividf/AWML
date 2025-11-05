@@ -43,7 +43,9 @@ class YOLOXONNXWrapper(nn.Module):
         Forward pass matching Tier4 YOLOX format.
 
         Args:
-            x: Input tensor [batch_size, 3, H, W]
+            x: Input tensor [batch_size, 3, H, W] in range [0, 255], BGR format
+                Note: YOLOX data_preprocessor does NOT do normalization (no mean/std configured)
+                So input is used as-is (0-255 range, BGR format) to match training behavior
 
         Returns:
             Concatenated predictions [batch_size, num_predictions, 4+1+num_classes]
@@ -52,7 +54,8 @@ class YOLOXONNXWrapper(nn.Module):
             - objectness: sigmoid activated
             - class_scores: sigmoid activated
         """
-        # Extract features using model's method
+        # Extract features (input is 0-255 range, BGR format, no normalization)
+        # This matches YOLOX training behavior where data_preprocessor does NOT normalize
         feat = self.model.extract_feat(x)
 
         # Get head outputs: (cls_scores, bbox_preds, objectnesses)
