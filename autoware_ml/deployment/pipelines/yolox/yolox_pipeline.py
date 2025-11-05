@@ -14,7 +14,7 @@ import torch
 import numpy as np
 import cv2
 
-from ..detection_2d_pipeline import Detection2DPipeline
+from autoware_ml.deployment.core.detection_2d_pipeline import Detection2DPipeline
 
 
 logger = logging.getLogger(__name__)

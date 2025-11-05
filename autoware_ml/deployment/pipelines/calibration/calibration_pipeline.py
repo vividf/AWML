@@ -13,7 +13,7 @@ import logging
 import torch
 import numpy as np
 
-from ..classification_pipeline import ClassificationPipeline
+from autoware_ml.deployment.core.classification_pipeline import ClassificationPipeline
 
 
 logger = logging.getLogger(__name__)

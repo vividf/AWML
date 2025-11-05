@@ -6,10 +6,12 @@ multi-stage processing with mixed PyTorch and optimized backend inference.
 """
 
 # CenterPoint pipelines (3D detection)
-from .centerpoint_pipeline import CenterPointDeploymentPipeline
-from .centerpoint_pytorch import CenterPointPyTorchPipeline
-from .centerpoint_onnx import CenterPointONNXPipeline
-from .centerpoint_tensorrt import CenterPointTensorRTPipeline
+from .centerpoint import (
+    CenterPointDeploymentPipeline,
+    CenterPointPyTorchPipeline,
+    CenterPointONNXPipeline,
+    CenterPointTensorRTPipeline,
+)
 
 # YOLOX pipelines (2D detection)
 from .yolox import (
@@ -17,6 +19,14 @@ from .yolox import (
     YOLOXPyTorchPipeline,
     YOLOXONNXPipeline,
     YOLOXTensorRTPipeline,
+)
+
+# Calibration pipelines (classification)
+from .calibration import (
+    CalibrationDeploymentPipeline,
+    CalibrationPyTorchPipeline,
+    CalibrationONNXPipeline,
+    CalibrationTensorRTPipeline,
 )
 
 __all__ = [
@@ -30,5 +40,10 @@ __all__ = [
     'YOLOXPyTorchPipeline',
     'YOLOXONNXPipeline',
     'YOLOXTensorRTPipeline',
+    # Calibration
+    'CalibrationDeploymentPipeline',
+    'CalibrationPyTorchPipeline',
+    'CalibrationONNXPipeline',
+    'CalibrationTensorRTPipeline',
 ]
 

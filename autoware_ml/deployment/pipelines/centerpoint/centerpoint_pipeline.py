@@ -13,7 +13,7 @@ import logging
 import torch
 import numpy as np
 
-from .detection_3d_pipeline import Detection3DPipeline
+from autoware_ml.deployment.core.detection_3d_pipeline import Detection3DPipeline
 
 
 logger = logging.getLogger(__name__)
