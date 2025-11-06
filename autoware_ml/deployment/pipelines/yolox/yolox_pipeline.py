@@ -12,7 +12,6 @@ import logging
 
 import torch
 import numpy as np
-import cv2
 
 from autoware_ml.deployment.core.detection_2d_pipeline import Detection2DPipeline
 
@@ -84,59 +83,59 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
     
     def preprocess(
         self, 
-        input_data: Any,
+        input_data: torch.Tensor,
         **kwargs
     ) -> Tuple[torch.Tensor, Dict]:
         """
         Preprocess image for YOLOX inference.
         
-        Supports two input types:
-        1. Raw image (numpy array): Apply full preprocessing pipeline
-        2. Preprocessed tensor (torch.Tensor): Skip preprocessing, use as-is
-        
-        Steps for raw image:
-        1. Resize image to model input size (with padding to maintain aspect ratio)
-        2. Normalize pixel values to [0, 1]
-        3. Convert BGR to RGB
-        4. Convert to tensor and add batch dimension
+        This method expects preprocessed tensor from MMDetection pipeline.
+        All preprocessing (resize, padding, normalization) should be done
+        by MMDetection's test_pipeline before calling this method.
         
         Args:
-            input_data: Input image [H, W, C] in BGR format OR preprocessed tensor [1, C, H, W]
-            **kwargs: Additional preprocessing parameters (may include 'img_info' for metadata)
+            input_data: Preprocessed tensor [1, C, H, W] from MMDetection pipeline
+            **kwargs: Additional preprocessing parameters (must include 'img_info' for metadata)
             
         Returns:
             Tuple of (preprocessed_tensor, preprocessing_metadata)
             - preprocessed_tensor: [1, C, H, W]
-            - preprocessing_metadata: Dict with 'scale', 'pad', 'original_shape', or 'scale_factor' from img_info
+            - preprocessing_metadata: Dict with 'scale_factor', 'original_shape', 'input_shape'
+            
+        Raises:
+            TypeError: If input_data is not a torch.Tensor
+            ValueError: If img_info is missing from kwargs
         """
-        # Check if input is already a preprocessed tensor (from MMDet pipeline)
-        if isinstance(input_data, torch.Tensor):
-            # Already preprocessed - extract metadata from kwargs
-            metadata = {}
-            
-            # Get img_info from kwargs if provided
-            img_info = kwargs.get('img_info', {})
-            if img_info:
-                metadata['scale_factor'] = img_info.get('scale_factor', [1.0, 1.0, 1.0, 1.0])
-                metadata['original_shape'] = (img_info.get('height', 1080), img_info.get('width', 1440))
-            
-            # Tensor from MMDet pipeline is in [0, 255] range
-            # YOLOX data_preprocessor does NOT do normalization (no mean/std configured)
-            # So we use the tensor as-is to match training behavior
-            tensor = input_data
-            if tensor.dtype != torch.float32:
-                tensor = tensor.float()
-            
-            # Keep tensor as-is (BGR format, 0-255 range)
-
-            metadata['input_shape'] = tuple(tensor.shape[2:])
-            metadata['scale'] = 1.0
-            metadata['pad'] = (0, 0)
-            
-            return tensor, metadata
+        if not isinstance(input_data, torch.Tensor):
+            raise TypeError(
+                f"YOLOX pipeline requires preprocessed tensor from MMDetection pipeline. "
+                f"Got {type(input_data)}. Please use data_loader.preprocess() first."
+            )
         
-        # Raw image input - apply full preprocessing
-        return super().preprocess(input_data, **kwargs)
+        # Extract metadata from kwargs
+        metadata = {}
+        
+        # Get img_info from kwargs (required)
+        img_info = kwargs.get('img_info', {})
+        if not img_info:
+            raise ValueError(
+                "img_info is required for YOLOX preprocessing. "
+                "Please provide img_info in kwargs when calling infer()."
+            )
+        
+        metadata['scale_factor'] = img_info.get('scale_factor', [1.0, 1.0, 1.0, 1.0])
+        metadata['original_shape'] = (img_info.get('height', 1080), img_info.get('width', 1440))
+        
+        # Tensor from MMDet pipeline is in [0, 255] range
+        # YOLOX data_preprocessor does NOT do normalization (no mean/std configured)
+        # So we use the tensor as-is to match training behavior
+        tensor = input_data
+        if tensor.dtype != torch.float32:
+            tensor = tensor.float()
+        
+        metadata['input_shape'] = tuple(tensor.shape[2:])
+        
+        return tensor, metadata
     
     # ========== Abstract Method (Backend-specific) ==========
     
@@ -193,11 +192,6 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
         """
         if metadata is None:
             metadata = {}
-        
-        # Extract metadata
-        scale = metadata.get('scale', 1.0)
-        pad = metadata.get('pad', (0, 0))
-        original_shape = metadata.get('original_shape', self.input_size)
         
         # Model output shape: [1, num_predictions, 4+1+num_classes]
         # Remove batch dimension
@@ -271,8 +265,8 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
         
         
         # Transform coordinates back to original image space
-        # Prefer explicit scale_factor if provided (MMDet pipeline)
-        if metadata is not None and 'scale_factor' in metadata:
+        # MMDetection pipeline provides scale_factor for coordinate transformation
+        if 'scale_factor' in metadata:
             sf = metadata['scale_factor']
             if isinstance(sf, (list, tuple, np.ndarray)) and len(sf) >= 2:
                 scale_x = float(sf[0])
@@ -283,9 +277,15 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
                 bboxes[:, 2] = bboxes[:, 2] / scale_x
                 bboxes[:, 3] = bboxes[:, 3] / scale_y
             else:
-                bboxes = self._transform_coordinates(bboxes, scale, pad, original_shape)
+                raise ValueError(
+                    f"Invalid scale_factor format: {sf}. "
+                    "Expected list/tuple/array with at least 2 elements."
+                )
         else:
-            bboxes = self._transform_coordinates(bboxes, scale, pad, original_shape)
+            raise ValueError(
+                "scale_factor is required in metadata for coordinate transformation. "
+                "Please ensure img_info contains scale_factor when calling infer()."
+            )
         
         # Limit to max detections
         if len(scores) > self.max_detections:

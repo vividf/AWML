@@ -9,7 +9,6 @@ from abc import abstractmethod
 from typing import List, Dict, Tuple, Any
 import logging
 
-import cv2
 import numpy as np
 import torch
 
@@ -24,7 +23,7 @@ class ClassificationPipeline(BaseDeploymentPipeline):
     Base class for classification pipelines.
     
     Provides common functionality for classification tasks including:
-    - Image/data preprocessing (resize, normalize)
+    - Image/data preprocessing (via data loader)
     - Postprocessing (softmax, top-k selection)
     - Standard classification output format
     
@@ -56,7 +55,7 @@ class ClassificationPipeline(BaseDeploymentPipeline):
             device: Device for inference
             num_classes: Number of classes
             class_names: List of class names
-            input_size: Model input size (height, width)
+            input_size: Model input size (height, width) - for reference only
             backend_type: Backend type
         """
         super().__init__(model, device, task_type="classification", backend_type=backend_type)
@@ -64,51 +63,27 @@ class ClassificationPipeline(BaseDeploymentPipeline):
         self.num_classes = num_classes
         self.class_names = class_names or [f"class_{i}" for i in range(num_classes)]
         self.input_size = input_size
-        
-        # ImageNet normalization (can be overridden)
-        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
     
+    @abstractmethod
     def preprocess(
         self, 
-        image: np.ndarray,
+        input_data: Any,
         **kwargs
     ) -> torch.Tensor:
         """
-        Standard classification preprocessing.
+        Preprocess input data for classification.
         
-        Steps:
-        1. Resize image to model input size
-        2. Normalize pixel values
-        3. Convert to tensor and add batch dimension
+        This method should be implemented by specific classification pipelines.
+        Preprocessing should be done by data loader before calling this method.
         
         Args:
-            image: Input image [H, W, C] in BGR format
+            input_data: Preprocessed tensor from data loader or raw input
             **kwargs: Additional preprocessing parameters
             
         Returns:
             Preprocessed tensor [1, C, H, W]
         """
-        # Resize
-        resized = cv2.resize(image, self.input_size, interpolation=cv2.INTER_LINEAR)
-        
-        # Convert BGR to RGB
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        
-        # Normalize to [0, 1]
-        normalized = rgb.astype(np.float32) / 255.0
-        
-        # Apply mean/std normalization
-        normalized = (normalized - self.mean) / self.std
-        
-        # Convert to tensor [C, H, W]
-        tensor = torch.from_numpy(normalized).permute(2, 0, 1).float()
-        
-        # Add batch dimension [1, C, H, W]
-        tensor = tensor.unsqueeze(0).to(self.device)
-        
-        
-        return tensor
+        pass
     
     @abstractmethod
     def run_model(self, preprocessed_input: torch.Tensor) -> torch.Tensor:

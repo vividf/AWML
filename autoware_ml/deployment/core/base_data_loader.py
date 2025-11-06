@@ -76,29 +76,3 @@ class BaseDataLoader(ABC):
             Total number of samples available
         """
         pass
-
-    def load_and_preprocess(self, index: int) -> torch.Tensor:
-        """
-        Convenience method to load and preprocess a sample in one call.
-
-        Args:
-            index: Sample index to load
-
-        Returns:
-            Preprocessed tensor ready for inference
-        """
-        sample = self.load_sample(index)
-        return self.preprocess(sample)
-
-    def get_batch(self, indices: list) -> torch.Tensor:
-        """
-        Load and preprocess multiple samples into a batch.
-
-        Args:
-            indices: List of sample indices to load
-
-        Returns:
-            Batched tensor with shape [batch_size, ...]
-        """
-        tensors = [self.load_and_preprocess(idx) for idx in indices]
-        return torch.stack(tensors)

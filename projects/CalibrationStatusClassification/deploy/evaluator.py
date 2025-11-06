@@ -211,7 +211,8 @@ class ClassificationEvaluator(BaseEvaluator):
             gt_label = gt_data['gt_label']
             
             # Load and preprocess using pre-created data loader
-            input_tensor = loader.load_and_preprocess(sample_idx)
+            sample = loader.load_sample(sample_idx)
+            input_tensor = loader.preprocess(sample)
 
             # Run inference via pipeline
             result, latency, _ = pipeline.infer(input_tensor)
@@ -450,7 +451,8 @@ class ClassificationEvaluator(BaseEvaluator):
                 # Process both calibrated and miscalibrated versions
                 for loader_name, loader in [("miscalibrated", data_loader_miscalibrated), ("calibrated", data_loader_calibrated)]:
                     # Load sample and preprocess
-                    input_tensor = loader.load_and_preprocess(i)
+                    sample = loader.load_sample(i)
+                    input_tensor = loader.preprocess(sample)
                     
                     # Get PyTorch reference outputs (raw logits)
                     logger.info(f"\nRunning PyTorch reference ({loader_name})...")

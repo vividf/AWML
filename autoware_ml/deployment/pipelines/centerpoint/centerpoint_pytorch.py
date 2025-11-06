@@ -118,7 +118,6 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
             # Empty latency breakdown for end-to-end models (not broken down into stages)
             latency_breakdown = {}
             
-            
             return predictions, latency_ms, latency_breakdown
             
         except Exception as e:
@@ -147,7 +146,6 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
         with torch.no_grad():
             voxel_features = self.pytorch_model.pts_voxel_encoder(input_features)
         
-        
         # Ensure output is 2D: [N_voxels, feature_dim]
         # ONNX-compatible models may output 3D tensor that needs squeezing
         if voxel_features.ndim == 3:
@@ -173,7 +171,6 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
                 f"Voxel encoder output has {voxel_features.ndim}D shape: {voxel_features.shape}. "
                 f"Expected 2D output [N_voxels, feature_dim]."
             )
-        
         
         return voxel_features
     
@@ -231,7 +228,6 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
                     raise ValueError(f"Unexpected task_outputs format: {type(first_element)}")
             else:
                 raise ValueError(f"Unexpected head_outputs format: {type(head_outputs_tuple)}")
-        
         
         return head_outputs
 

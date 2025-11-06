@@ -634,13 +634,9 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 center_x = bbox_reg[:, 0] * priors[:, 2] + priors[:, 0]
                 center_y = bbox_reg[:, 1] * priors[:, 3] + priors[:, 1]
                 
-                # Debug: Check decoded centers
-                
                 # Decode width and height (exactly like MMDetection)
                 width = np.exp(bbox_reg[:, 2]) * priors[:, 2]
                 height = np.exp(bbox_reg[:, 3]) * priors[:, 3]
-                
-                # Debug: Check decoded dimensions
                 
                 # Convert to corner format [x1, y1, x2, y2] (exactly like MMDetection)
                 x1 = center_x - width / 2
@@ -663,10 +659,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     bboxes[:, 2] /= scale_x  # x2
                     bboxes[:, 3] /= scale_y  # y2
                     
-                
-                # Debug: Check final bboxes
-                
-                # Debug: Check bbox validity (allow bboxes outside 960x960 like test.py)
+                # Check bbox validity (allow bboxes outside 960x960 like test.py)
                 valid_bboxes = (x2 > x1) & (y2 > y1) & (x1 >= 0) & (y1 >= 0)
                 if not valid_bboxes.all():
                     invalid_indices = np.where(~valid_bboxes)[0]
@@ -685,12 +678,15 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     objectness_sigmoid = np.array([])
                     max_class_scores = np.array([])
                 
-        
             elif len(output.shape) == 2 and output.shape[1] >= 7:
                 # 2D format: [N, 7] where 7 = [x1, y1, x2, y2, obj_conf, cls_conf, cls_id]
                 bboxes = output[:, :4]  # [x1, y1, x2, y2]
                 scores = output[:, 4] * output[:, 5]  # obj_conf * cls_conf
                 labels = output[:, 6].astype(int)
+                # For 2D format, we don't have objectness_sigmoid and max_class_scores
+                # Use scores directly for filtering
+                objectness_sigmoid = output[:, 4]  # obj_conf
+                max_class_scores = output[:, 5]   # cls_conf
             else:
                 # No detections
                 return predictions
@@ -700,7 +696,13 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         score_thr = 0.01  # Default threshold from test_cfg
         if len(scores) > 0:
             # Use objectness * max_class_scores for filtering (not final scores)
-            valid_mask = objectness_sigmoid * max_class_scores >= score_thr
+            # For 2D format, this is already obj_conf * cls_conf = scores
+            # For 3D format, this is objectness_sigmoid * max_class_scores
+            if 'objectness_sigmoid' in locals() and 'max_class_scores' in locals():
+                valid_mask = objectness_sigmoid * max_class_scores >= score_thr
+            else:
+                # Fallback: use scores directly
+                valid_mask = scores >= score_thr
             bboxes = bboxes[valid_mask]
             scores = scores[valid_mask]
             labels = labels[valid_mask]
@@ -755,21 +757,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     }
                 )
 
-        
-        # Debug: Analyze prediction distribution
-        if len(predictions) > 0:
-            scores = [p['score'] for p in predictions]
-            labels = [p['label'] for p in predictions]
-            print(f"  Score range: {min(scores):.4f} - {max(scores):.4f}")
-            print(f"  Score mean: {np.mean(scores):.4f}")
-            print(f"  Score std: {np.std(scores):.4f}")
-            
-            # Analyze label distribution
-            unique_labels, counts = np.unique(labels, return_counts=True)
-            print(f"  Label distribution:")
-            for label, count in zip(unique_labels, counts):
-                print(f"    Label {label}: {count} predictions")
-        
         return predictions
 
     def _parse_ground_truths(self, gt_data: Dict) -> List[Dict]:
@@ -802,19 +789,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             ground_truths.append(
                 {"bbox": gt_bbox, "label": int(label)}
             )
-
-        # Debug: Analyze ground truth distribution
-        if len(ground_truths) > 0:
-            gt_labels = [gt['label'] for gt in ground_truths]
-            gt_bboxes = np.array([gt['bbox'] for gt in ground_truths])
-            print(f"  GT count: {len(ground_truths)}")
-            print(f"  GT bbox range: x1={gt_bboxes[:, 0].min():.1f}-{gt_bboxes[:, 0].max():.1f}, y1={gt_bboxes[:, 1].min():.1f}-{gt_bboxes[:, 1].max():.1f}")
-            print(f"  GT bbox range: x2={gt_bboxes[:, 2].min():.1f}-{gt_bboxes[:, 2].max():.1f}, y2={gt_bboxes[:, 3].min():.1f}-{gt_bboxes[:, 3].max():.1f}")
-            
-            unique_gt_labels, gt_counts = np.unique(gt_labels, return_counts=True)
-            print(f"  GT label distribution:")
-            for label, count in zip(unique_gt_labels, gt_counts):
-                print(f"    Label {label}: {count} ground truths")
 
         return ground_truths
 
