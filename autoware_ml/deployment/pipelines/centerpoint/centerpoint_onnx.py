@@ -80,7 +80,6 @@ class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
                 providers=providers
             )
             logger.info(f"Loaded voxel encoder: {voxel_encoder_path}")
-            logger.debug(f"  Providers: {self.voxel_encoder_session.get_providers()}")
         except Exception as e:
             raise RuntimeError(f"Failed to load voxel encoder ONNX: {e}")
         
@@ -92,7 +91,6 @@ class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
                 providers=providers
             )
             logger.info(f"Loaded backbone+head: {backbone_head_path}")
-            logger.debug(f"  Providers: {self.backbone_head_session.get_providers()}")
         except Exception as e:
             raise RuntimeError(f"Failed to load backbone+head ONNX: {e}")
     
@@ -126,7 +124,6 @@ class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
         if voxel_features.ndim == 3 and voxel_features.shape[1] == 1:
             voxel_features = voxel_features.squeeze(1)
         
-        logger.debug(f"ONNX voxel encoder output shape: {voxel_features.shape}")
         
         return voxel_features
     
@@ -160,7 +157,6 @@ class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
         if len(head_outputs) != 6:
             raise ValueError(f"Expected 6 head outputs, got {len(head_outputs)}")
         
-        logger.debug(f"ONNX backbone+head output: {[out.shape for out in head_outputs]}")
         
         return head_outputs
 

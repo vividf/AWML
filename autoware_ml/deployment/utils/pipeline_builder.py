@@ -205,7 +205,6 @@ def _build_detection3d_pipeline(pipeline_cfg: List) -> Any:
 
     # Try with init_default_scope (MMDet3D 1.x+ with mmengine)
     try:
-        print("################## 4 ################")
         # Import mmdet3d first to register all transforms
         import mmdet3d.datasets.transforms  # noqa: F401
         from mmengine.dataset import Compose

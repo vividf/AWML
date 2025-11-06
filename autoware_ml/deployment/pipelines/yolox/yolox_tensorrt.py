@@ -166,6 +166,5 @@ class YOLOXTensorRTPipeline(YOLOXDeploymentPipeline):
         self.cuda.memcpy_dtoh_async(self.h_output, self.d_output, self.stream)
         self.stream.synchronize()
         
-        logger.debug(f"TensorRT inference output shape: {self.h_output.shape}")
         return self.h_output
 

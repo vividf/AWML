@@ -169,7 +169,6 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
             if voxel_features.ndim == 3 and voxel_features.shape[1] == 1:
                 voxel_features = voxel_features.squeeze(1)
             
-            logger.debug(f"TensorRT voxel encoder output shape: {voxel_features.shape}")
             
             return voxel_features
             
@@ -265,7 +264,6 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
             if len(head_outputs) != 6:
                 raise ValueError(f"Expected 6 head outputs, got {len(head_outputs)}")
             
-            logger.debug(f"TensorRT backbone+head output: {[out.shape for out in head_outputs]}")
             
             return head_outputs
             

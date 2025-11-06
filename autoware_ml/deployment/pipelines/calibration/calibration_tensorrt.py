@@ -166,6 +166,5 @@ class CalibrationTensorRTPipeline(CalibrationDeploymentPipeline):
         self.cuda.memcpy_dtoh_async(self.h_output, self.d_output, self.stream)
         self.stream.synchronize()
         
-        logger.debug(f"TensorRT inference output shape: {self.h_output.shape}")
         return torch.from_numpy(self.h_output).to(self.device)
 

@@ -96,7 +96,6 @@ def export_onnx_with_pipeline(
         for name, child in module.named_children():
             if isinstance(child, torch.nn.ReLU6):
                 setattr(module, name, torch.nn.ReLU(inplace=child.inplace))
-                logger.debug(f"  Replaced {name}: ReLU6 -> ReLU")
             else:
                 replace_relu6_with_relu(child)
 

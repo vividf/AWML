@@ -195,7 +195,6 @@ class BaseDeploymentPipeline(ABC):
             
             # 3. Postprocess (optional)
             if return_raw_outputs:
-                logger.debug(f"Inference completed in {total_latency:.2f}ms (returning raw outputs)")
                 return model_output, total_latency, latency_breakdown
             else:
                 postprocess_start = time.time()
@@ -204,7 +203,6 @@ class BaseDeploymentPipeline(ABC):
                 latency_breakdown['postprocessing_ms'] = (postprocess_time - postprocess_start) * 1000
                 
                 total_latency = (time.time() - start_time) * 1000
-                logger.debug(f"Inference completed in {total_latency:.2f}ms (returning predictions)")
                 return predictions, total_latency, latency_breakdown
                 
         except Exception as e:

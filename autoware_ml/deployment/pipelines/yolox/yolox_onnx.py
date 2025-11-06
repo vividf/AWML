@@ -117,7 +117,6 @@ class YOLOXONNXPipeline(YOLOXDeploymentPipeline):
         # outputs[0] shape: [batch_size, num_predictions, 4+1+num_classes]
         output_np = outputs[0]
         
-        logger.debug(f"ONNX inference output shape: {output_np.shape}")
         
         return output_np
 

@@ -124,10 +124,6 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
                 input_features = self.pytorch_model.pts_voxel_encoder.get_input_features(
                     voxels, num_points, coors
                 )
-                logger.debug(f"Preprocessed with input_features: shape={input_features.shape}")
-            else:
-                logger.debug(f"Preprocessed without input_features (standard model)")
-        
         preprocessed_dict = {
             'input_features': input_features,
             'voxels': voxels,
@@ -169,7 +165,6 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
                 voxel_features, coors, batch_size
             )
         
-        logger.debug(f"Middle encoder output: spatial_features shape={spatial_features.shape}")
         
         return spatial_features
     
@@ -218,7 +213,6 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
                 rot = rot * (-1.0)
                 rot = rot[:, [1, 0], :, :]
                 
-                logger.debug("Converted outputs from rot_y_axis_reference format to standard format")
         
         # Convert to mmdet3d format
         preds_dict = {
@@ -258,7 +252,6 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
                     'label': int(labels_3d[i])
                 })
         
-        logger.debug(f"Postprocessing: {len(results)} detections")
         
         return results
     
@@ -330,7 +323,6 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
         start = time.time()
         voxel_features = self.run_voxel_encoder(preprocessed_input['input_features'])
         self._stage_latencies['voxel_encoder_ms'] = (time.time() - start) * 1000
-        logger.debug(f"Voxel Encoder: {self._stage_latencies['voxel_encoder_ms']:.2f} ms")
         
         # Stage 2: Middle Encoder (PyTorch - 所有后端相同)
         start = time.time()
@@ -339,13 +331,11 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
             preprocessed_input['coors']
         )
         self._stage_latencies['middle_encoder_ms'] = (time.time() - start) * 1000
-        logger.debug(f"Middle Encoder: {self._stage_latencies['middle_encoder_ms']:.2f} ms")
         
         # Stage 3: Backbone + Head (backend-specific)
         start = time.time()
         head_outputs = self.run_backbone_head(spatial_features)
         self._stage_latencies['backbone_head_ms'] = (time.time() - start) * 1000
-        logger.debug(f"Backbone + Head: {self._stage_latencies['backbone_head_ms']:.2f} ms")
         
         return head_outputs
 

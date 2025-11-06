@@ -106,7 +106,6 @@ class YOLOXPyTorchPipeline(YOLOXDeploymentPipeline):
         # Convert to numpy
         output_np = outputs.cpu().numpy()
         
-        logger.debug(f"PyTorch inference output shape: {output_np.shape}")
         
         return output_np
 

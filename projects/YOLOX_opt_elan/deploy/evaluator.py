@@ -541,28 +541,17 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         """
         predictions = []
 
-        # Debug logging for output analysis
-        print(f"DEBUG: Raw output type: {type(output)}")
-        print(f"DEBUG: Raw output shape: {output.shape}")
-        print(f"DEBUG: Raw output dtype: {output.dtype}")
-        if hasattr(output, 'min') and hasattr(output, 'max'):
-            print(f"DEBUG: Raw output min/max: {output.min():.6f} / {output.max():.6f}")
-        if output.size < 50:  # Only print small arrays
-            print(f"DEBUG: Raw output content: {output}")
-
         # Handle different output formats
         if isinstance(output, dict):
             # Dict format
             bboxes = output.get("bboxes", np.array([]))
             scores = output.get("scores", np.array([]))
             labels = output.get("labels", np.array([]))
-            print(f"DEBUG: Dict format - bboxes: {bboxes.shape}, scores: {scores.shape}, labels: {labels.shape}")
         else:
             # Array format - handle both 2D and 3D outputs
             if len(output.shape) == 2 and output.shape[1] == 6:
                 # 2D format: [num_detections, 6] - Standard MMDetection PyTorch output
                 # Format: [x1, y1, x2, y2, score, label]
-                print(f"DEBUG: 2D format detected - Standard MMDetection output")
                 
                 if len(output) == 0:
                     return predictions
@@ -571,8 +560,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 scores = output[:, 4]   # scores
                 labels = output[:, 5]   # labels
                 
-                print(f"DEBUG: 2D format - bboxes: {bboxes.shape}, scores: {scores.shape}, labels: {labels.shape}")
-                
                 # For 2D format, we already have final predictions, just need to filter by score
                 score_thr = 0.3  # Default score threshold
                 if len(scores) > 0:
@@ -580,7 +567,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     bboxes = bboxes[valid_mask]
                     scores = scores[valid_mask]
                     labels = labels[valid_mask]
-                    print(f"DEBUG: After score filtering (thr={score_thr}): {len(scores)} predictions")
                 
                 # Keep in [x1, y1, x2, y2] format for evaluation (MMDetection format)
                 if len(bboxes) > 0:
@@ -591,7 +577,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                             'score': float(scores[i])
                         })
                 
-                print(f"DEBUG: Final 2D predictions: {len(predictions)}")
                 return predictions
                 
             elif len(output.shape) == 3 and output.shape[2] >= 13:
@@ -604,18 +589,12 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 objectness = batch_output[:, 4]  # objectness confidence
                 class_scores = batch_output[:, 5:13]  # class scores for 8 classes
                 
-                # Debug: Check raw values before sigmoid
-                print(f"DEBUG: Raw objectness range: {objectness.min():.6f} - {objectness.max():.6f}")
-                print(f"DEBUG: Raw class_scores range: {class_scores.min():.6f} - {class_scores.max():.6f}")
-                
                 # Check if values are already sigmoid-activated (0-1 range)
                 # PyTorch models output raw values, ONNX/TensorRT models output sigmoid values
                 if objectness.min() >= 0 and objectness.max() <= 1 and class_scores.min() >= 0 and class_scores.max() <= 1:
-                    print("DEBUG: Values already sigmoid-activated (ONNX/TensorRT output)")
                     objectness_sigmoid = objectness
                     class_scores_sigmoid = class_scores
                 else:
-                    print("DEBUG: Applying sigmoid activation (PyTorch output)")
                     # Apply sigmoid to objectness and class scores
                     objectness_sigmoid = 1 / (1 + np.exp(-objectness))
                     class_scores_sigmoid = 1 / (1 + np.exp(-class_scores))
@@ -647,12 +626,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 # bbox_reg: [dx, dy, dw, dh] - regression offsets
                 # priors: [center_x, center_y, stride_w, stride_h]
                 
-                # Debug: Check bbox regression values
-                print(f"DEBUG: Raw bbox_reg range: {bbox_reg.min():.6f} - {bbox_reg.max():.6f}")
-                print(f"DEBUG: Raw bbox_reg mean: {bbox_reg.mean():.6f}")
-                print(f"DEBUG: First 5 bbox_reg: {bbox_reg[:5]}")
-                print(f"DEBUG: First 5 priors: {priors[:5]}")
-                
                 # Decode bbox using MMDetection's exact logic
                 # MMDetection: xys = (bbox_preds[..., :2] * priors[:, 2:]) + priors[:, :2]
                 # MMDetection: whs = bbox_preds[..., 2:].exp() * priors[:, 2:]
@@ -662,14 +635,12 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 center_y = bbox_reg[:, 1] * priors[:, 3] + priors[:, 1]
                 
                 # Debug: Check decoded centers
-                print(f"DEBUG: Decoded centers range: x={center_x.min():.1f}-{center_x.max():.1f}, y={center_y.min():.1f}-{center_y.max():.1f}")
                 
                 # Decode width and height (exactly like MMDetection)
                 width = np.exp(bbox_reg[:, 2]) * priors[:, 2]
                 height = np.exp(bbox_reg[:, 3]) * priors[:, 3]
                 
                 # Debug: Check decoded dimensions
-                print(f"DEBUG: Decoded dimensions range: w={width.min():.1f}-{width.max():.1f}, h={height.min():.1f}-{height.max():.1f}")
                 
                 # Convert to corner format [x1, y1, x2, y2] (exactly like MMDetection)
                 x1 = center_x - width / 2
@@ -685,7 +656,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 if len(scale_factor) >= 2:
                     scale_x = scale_factor[0]
                     scale_y = scale_factor[1]
-                    print(f"DEBUG: Applying rescale - scale factors: x={scale_x:.4f}, y={scale_y:.4f}")
                     
                     # Rescale bboxes from model coordinates to original image coordinates
                     bboxes[:, 0] /= scale_x  # x1
@@ -693,23 +663,13 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     bboxes[:, 2] /= scale_x  # x2
                     bboxes[:, 3] /= scale_y  # y2
                     
-                    print(f"DEBUG: After rescale - bbox range: x1={bboxes[:, 0].min():.1f}-{bboxes[:, 0].max():.1f}")
-                    print(f"DEBUG: After rescale - bbox range: y1={bboxes[:, 1].min():.1f}-{bboxes[:, 1].max():.1f}")
-                    print(f"DEBUG: After rescale - bbox range: x2={bboxes[:, 2].min():.1f}-{bboxes[:, 2].max():.1f}")
-                    print(f"DEBUG: After rescale - bbox range: y2={bboxes[:, 3].min():.1f}-{bboxes[:, 3].max():.1f}")
-                else:
-                    print(f"DEBUG: No scale factor found, keeping model coordinates")
                 
                 # Debug: Check final bboxes
-                print(f"DEBUG: Final bboxes range: x1={x1.min():.1f}-{x1.max():.1f}, y1={y1.min():.1f}-{y1.max():.1f}")
-                print(f"DEBUG: Final bboxes range: x2={x2.min():.1f}-{x2.max():.1f}, y2={y2.min():.1f}-{y2.max():.1f}")
                 
                 # Debug: Check bbox validity (allow bboxes outside 960x960 like test.py)
                 valid_bboxes = (x2 > x1) & (y2 > y1) & (x1 >= 0) & (y1 >= 0)
-                print(f"DEBUG: Valid bboxes count: {valid_bboxes.sum()}/{len(valid_bboxes)}")
                 if not valid_bboxes.all():
                     invalid_indices = np.where(~valid_bboxes)[0]
-                    print(f"DEBUG: Invalid bbox indices: {invalid_indices[:10]}")  # Show first 10
                 
                 # Apply bbox validity filter (only check x2>x1, y2>y1, x1>=0, y1>=0)
                 if np.any(valid_bboxes):
@@ -718,30 +678,21 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     labels = labels[valid_bboxes]
                     objectness_sigmoid = objectness_sigmoid[valid_bboxes]
                     max_class_scores = max_class_scores[valid_bboxes]
-                    print(f"DEBUG: After bbox validity filter: {len(scores)} predictions")
                 else:
-                    print(f"DEBUG: No valid bboxes found")
                     bboxes = np.array([])
                     scores = np.array([])
                     labels = np.array([])
                     objectness_sigmoid = np.array([])
                     max_class_scores = np.array([])
                 
-                print(f"DEBUG: 3D format - bboxes: {bboxes.shape}, scores: {scores.shape}, labels: {labels.shape}")
-                print(f"DEBUG: Score range: {scores.min():.6f} - {scores.max():.6f}")
-                print(f"DEBUG: Objectness range: {objectness_sigmoid.min():.6f} - {objectness_sigmoid.max():.6f}")
-                print(f"DEBUG: Class scores range: {max_class_scores.min():.6f} - {max_class_scores.max():.6f}")
         
             elif len(output.shape) == 2 and output.shape[1] >= 7:
                 # 2D format: [N, 7] where 7 = [x1, y1, x2, y2, obj_conf, cls_conf, cls_id]
                 bboxes = output[:, :4]  # [x1, y1, x2, y2]
                 scores = output[:, 4] * output[:, 5]  # obj_conf * cls_conf
                 labels = output[:, 6].astype(int)
-                print(f"DEBUG: 2D format - bboxes: {bboxes.shape}, scores: {scores.shape}, labels: {labels.shape}")
-                print(f"DEBUG: Score range: {scores.min():.6f} - {scores.max():.6f}")
             else:
                 # No detections
-                print(f"DEBUG: Output shape {output.shape} doesn't match expected format, returning empty predictions")
                 return predictions
 
         # Apply score threshold filtering (exactly like MMDetection)
@@ -753,7 +704,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             bboxes = bboxes[valid_mask]
             scores = scores[valid_mask]
             labels = labels[valid_mask]
-            print(f"DEBUG: After score filtering (thr={score_thr}): {len(scores)} predictions")
             
             # Apply NMS (matching test.py behavior)
             if len(scores) > 0:
@@ -778,15 +728,12 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                         scores = det_bboxes[:, -1].cpu().numpy()  # NMS may reweight scores
                         labels = labels[keep_idxs.cpu().numpy()]
                         
-                        print(f"DEBUG: After batched NMS (iou_thr=0.65): {len(scores)} predictions")
                     else:
-                        print(f"DEBUG: No detections for NMS")
                         bboxes = np.array([])
                         scores = np.array([])
                         labels = np.array([])
                         
                 except ImportError:
-                    print("DEBUG: batched_nms not available, skipping NMS step")
                     bboxes = np.array([])
                     scores = np.array([])
                     labels = np.array([])
@@ -794,7 +741,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         # YOLOX does NOT apply max_per_img limit (unlike other detectors)
         # This is confirmed by checking YOLOXHead._bbox_post_process method
         # which only applies NMS but no max_per_img filtering
-        print(f"DEBUG: Final predictions after NMS: {len(scores)} predictions")
 
         # Convert to [x, y, w, h] format
         for bbox, score, label in zip(bboxes, scores, labels):
@@ -809,13 +755,11 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     }
                 )
 
-        print(f"DEBUG: Parsed {len(predictions)} predictions")
         
         # Debug: Analyze prediction distribution
         if len(predictions) > 0:
             scores = [p['score'] for p in predictions]
             labels = [p['label'] for p in predictions]
-            print(f"DEBUG: Prediction analysis:")
             print(f"  Score range: {min(scores):.4f} - {max(scores):.4f}")
             print(f"  Score mean: {np.mean(scores):.4f}")
             print(f"  Score std: {np.std(scores):.4f}")
@@ -848,7 +792,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         orig_h = img_info.get("height", 1080)
         orig_w = img_info.get("width", 1440)
         # Keep GT in original image coordinates to match rescaled predictions
-        print(f"DEBUG: GT coordinates - orig: {orig_w}x{orig_h} (keeping original coordinates)")
 
         for bbox, label in zip(gt_bboxes, gt_labels):
             # Keep GT in original image coordinates (no scaling needed)
@@ -864,7 +807,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         if len(ground_truths) > 0:
             gt_labels = [gt['label'] for gt in ground_truths]
             gt_bboxes = np.array([gt['bbox'] for gt in ground_truths])
-            print(f"DEBUG: Ground truth analysis:")
             print(f"  GT count: {len(ground_truths)}")
             print(f"  GT bbox range: x1={gt_bboxes[:, 0].min():.1f}-{gt_bboxes[:, 0].max():.1f}, y1={gt_bboxes[:, 1].min():.1f}-{gt_bboxes[:, 1].max():.1f}")
             print(f"  GT bbox range: x2={gt_bboxes[:, 2].min():.1f}-{gt_bboxes[:, 2].max():.1f}, y2={gt_bboxes[:, 3].min():.1f}-{gt_bboxes[:, 3].max():.1f}")

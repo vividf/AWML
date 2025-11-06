@@ -589,26 +589,16 @@ class CenterPointEvaluator(BaseEvaluator):
 
     def _parse_ground_truths(self, gt_data: Dict) -> List[Dict]:
         """Parse ground truth data from gt_data returned by get_ground_truth()."""
+        logger = logging.getLogger(__name__)
         ground_truths = []
         
         if 'gt_bboxes_3d' in gt_data and 'gt_labels_3d' in gt_data:
             gt_bboxes_3d = gt_data['gt_bboxes_3d']
             gt_labels_3d = gt_data['gt_labels_3d']
             
-            print(f"DEBUG: Ground truth analysis:")
-            print(f"  GT bboxes shape: {gt_bboxes_3d.shape}")
-            print(f"  GT labels shape: {gt_labels_3d.shape}")
-            print(f"  GT bboxes range: x={gt_bboxes_3d[:, 0].min():.1f}-{gt_bboxes_3d[:, 0].max():.1f}, y={gt_bboxes_3d[:, 1].min():.1f}-{gt_bboxes_3d[:, 1].max():.1f}")
-            print(f"  GT bboxes range: z={gt_bboxes_3d[:, 2].min():.1f}-{gt_bboxes_3d[:, 2].max():.1f}")
-            print(f"  GT bbox format - first bbox: {gt_bboxes_3d[0]}")
-            print(f"  GT labels: {np.unique(gt_labels_3d)}")
-            print(f"  GT count: {len(gt_bboxes_3d)}")
             
             # Count by label
             unique_labels, counts = np.unique(gt_labels_3d, return_counts=True)
-            print(f"  GT label distribution:")
-            for label, count in zip(unique_labels, counts):
-                print(f"    Label {label}: {count} ground truths")
             
             for i in range(len(gt_bboxes_3d)):
                 bbox_3d = gt_bboxes_3d[i]  # [x, y, z, w, l, h, yaw]
@@ -631,18 +621,14 @@ class CenterPointEvaluator(BaseEvaluator):
         latency_breakdowns: List[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """Compute evaluation metrics."""
+        logger = logging.getLogger(__name__)
         
         # Debug metrics
-        print(f"DEBUG: _compute_metrics - predictions_list length: {len(predictions_list)}")
-        print(f"DEBUG: _compute_metrics - ground_truths_list length: {len(ground_truths_list)}")
-        print(f"DEBUG: _compute_metrics - predictions per sample: {[len(preds) for preds in predictions_list]}")
-        print(f"DEBUG: _compute_metrics - ground truths per sample: {[len(gts) for gts in ground_truths_list]}")
         
         # Count total predictions and ground truths
         total_predictions = sum(len(preds) for preds in predictions_list)
         total_ground_truths = sum(len(gts) for gts in ground_truths_list)
         
-        print(f"DEBUG: _compute_metrics - total_predictions: {total_predictions}, total_ground_truths: {total_ground_truths}")
         
         # Count per class
         per_class_preds = {}
@@ -823,27 +809,20 @@ class CenterPointEvaluator(BaseEvaluator):
                 all_predictions.sort(key=lambda x: x['score'], reverse=True)
                 
                 # Debug IoU calculations for this class
+                logger = logging.getLogger(__name__)
                 if all_predictions and all_ground_truths:
-                    print(f"DEBUG: {class_name} - Computing IoU for {len(all_predictions)} predictions vs {len(all_ground_truths)} GTs")
                     # Show IoU between first prediction and first few GTs
                     first_pred = all_predictions[0]
-                    print(f"DEBUG: {class_name} - First pred bbox: {first_pred['bbox_3d']}")
-                    print(f"DEBUG: {class_name} - First pred score: {first_pred['score']:.3f}")
                     
                     max_iou = 0.0
                     for i, gt in enumerate(all_ground_truths[:3]):  # Show first 3 GTs
                         iou = self._compute_3d_iou_simple(first_pred['bbox_3d'], gt['bbox_3d'])
-                        print(f"DEBUG: {class_name} - IoU with GT {i}: {iou:.3f}, GT bbox: {gt['bbox_3d']}")
                         max_iou = max(max_iou, iou)
-                    print(f"DEBUG: {class_name} - Max IoU for first pred: {max_iou:.3f}")
                     
                     # Debug: Check if this is PyTorch or ONNX/TensorRT
                     backend_type = "Unknown"
                     if hasattr(self, '_current_backend'):
                         backend_type = str(type(self._current_backend))
-                    print(f"DEBUG: {class_name} - Backend type: {backend_type}")
-                    print(f"DEBUG: {class_name} - Sample count: {len(predictions_list)} samples")
-                    print(f"DEBUG: {class_name} - GT count: {len(ground_truths_list)} samples")
                 
                 # Compute AP for this class
                 if len(all_ground_truths) == 0:
@@ -900,7 +879,6 @@ class CenterPointEvaluator(BaseEvaluator):
                     ap = self._compute_ap_11_point(precision_values, recall_values)
                 
                 per_class_ap[class_name] = ap
-                print(f"DEBUG: {class_name} - AP: {ap:.4f}, predictions: {len(all_predictions)}, ground truths: {len(all_ground_truths)}")
             
             # Compute overall mAP
             map_50 = sum(per_class_ap.values()) / len(class_names) if len(class_names) > 0 else 0.0

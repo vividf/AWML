@@ -107,7 +107,6 @@ class ClassificationPipeline(BaseDeploymentPipeline):
         # Add batch dimension [1, C, H, W]
         tensor = tensor.unsqueeze(0).to(self.device)
         
-        logger.debug(f"Preprocessed image to shape: {tensor.shape}")
         
         return tensor
     
@@ -183,7 +182,6 @@ class ClassificationPipeline(BaseDeploymentPipeline):
             'top_k': top_k_predictions
         }
         
-        logger.debug(f"Predicted class: {class_name} ({confidence:.3f})")
         
         return result
 

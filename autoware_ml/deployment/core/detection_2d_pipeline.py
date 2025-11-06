@@ -112,7 +112,6 @@ class Detection2DPipeline(BaseDeploymentPipeline):
             'input_shape': self.input_size
         }
         
-        logger.debug(f"Preprocessed image: {original_shape} → {self.input_size}, scale={scale:.3f}")
         
         return tensor, metadata
     

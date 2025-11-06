@@ -252,7 +252,6 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
         # Compute final scores: objectness * max_class_score
         scores = objectness * max_class_scores
         
-        logger.debug(f"Postprocessing: {len(predictions)} raw predictions")
         
         # Filter by score threshold
         valid_mask = scores >= self.score_threshold
@@ -260,7 +259,6 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
         scores = scores[valid_mask]
         class_ids = class_ids[valid_mask]
         
-        logger.debug(f"After score filtering (thr={self.score_threshold}): {len(scores)} predictions")
         
         if len(scores) == 0:
             return []
@@ -271,7 +269,6 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
         scores = scores[keep_indices]
         class_ids = class_ids[keep_indices]
         
-        logger.debug(f"After NMS (iou_thr={self.nms_threshold}): {len(scores)} predictions")
         
         # Transform coordinates back to original image space
         # Prefer explicit scale_factor if provided (MMDet pipeline)
@@ -307,7 +304,6 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
                 'class_name': self.class_names[int(class_id)]
             })
         
-        logger.debug(f"Final detections: {len(results)}")
         
         return results
     

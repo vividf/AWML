@@ -118,7 +118,6 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
             # Empty latency breakdown for end-to-end models (not broken down into stages)
             latency_breakdown = {}
             
-            logger.debug(f"End-to-end inference completed in {latency_ms:.2f}ms with {len(predictions)} detections")
             
             return predictions, latency_ms, latency_breakdown
             
@@ -148,7 +147,6 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
         with torch.no_grad():
             voxel_features = self.pytorch_model.pts_voxel_encoder(input_features)
         
-        logger.debug(f"PyTorch voxel encoder raw output shape: {voxel_features.shape}")
         
         # Ensure output is 2D: [N_voxels, feature_dim]
         # ONNX-compatible models may output 3D tensor that needs squeezing
@@ -157,11 +155,9 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
             if voxel_features.shape[1] == 1:
                 # Shape: [N_voxels, 1, feature_dim] -> [N_voxels, feature_dim]
                 voxel_features = voxel_features.squeeze(1)
-                logger.debug(f"Squeezed dimension 1: {voxel_features.shape}")
             elif voxel_features.shape[2] == 1:
                 # Shape: [N_voxels, feature_dim, 1] -> [N_voxels, feature_dim]
                 voxel_features = voxel_features.squeeze(2)
-                logger.debug(f"Squeezed dimension 2: {voxel_features.shape}")
             else:
                 # Cannot determine which dimension to squeeze
                 # This might be the input features [N_voxels, max_points, feature_dim]
@@ -178,7 +174,6 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
                 f"Expected 2D output [N_voxels, feature_dim]."
             )
         
-        logger.debug(f"PyTorch voxel encoder final output shape: {voxel_features.shape}")
         
         return voxel_features
     
@@ -218,7 +213,6 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
                 if isinstance(first_element, torch.Tensor):
                     # ONNX format: (heatmap, reg, height, dim, rot, vel)
                     head_outputs = list(head_outputs_tuple)
-                    logger.debug(f"ONNX head output format detected: {len(head_outputs)} tensors")
                     
                 elif isinstance(first_element, list) and len(first_element) > 0:
                     # Standard format: (List[Dict],)
@@ -233,13 +227,11 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
                         preds_dict['rot'],
                         preds_dict['vel']
                     ]
-                    logger.debug(f"Standard head output format detected")
                 else:
                     raise ValueError(f"Unexpected task_outputs format: {type(first_element)}")
             else:
                 raise ValueError(f"Unexpected head_outputs format: {type(head_outputs_tuple)}")
         
-        logger.debug(f"PyTorch backbone+head output: {[out.shape for out in head_outputs]}")
         
         return head_outputs
 
