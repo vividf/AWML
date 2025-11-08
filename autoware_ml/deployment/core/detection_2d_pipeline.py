@@ -126,41 +126,7 @@ class Detection2DPipeline(BaseDeploymentPipeline):
             "postprocess() must be implemented by specific detector pipeline"
         )
     
-    def _transform_coordinates(
-        self,
-        boxes: np.ndarray,
-        scale: float,
-        pad: Tuple[int, int],
-        original_shape: Tuple[int, int]
-    ) -> np.ndarray:
-        """
-        Transform bounding box coordinates from model space to original image space.
-        
-        Args:
-            boxes: Bounding boxes [N, 4] in format [x1, y1, x2, y2]
-            scale: Scale factor used in preprocessing
-            pad: Padding (pad_h, pad_w)
-            original_shape: Original image shape (H, W)
-            
-        Returns:
-            Transformed boxes in original image coordinates
-        """
-        pad_h, pad_w = pad
-        
-        # Remove padding offset
-        boxes[:, [0, 2]] -= pad_w
-        boxes[:, [1, 3]] -= pad_h
-        
-        # Scale back to original size
-        boxes /= scale
-        
-        # Clip to image boundaries
-        h, w = original_shape
-        boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, w)
-        boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, h)
-        
-        return boxes
-    
+
     def _nms(
         self,
         boxes: np.ndarray,
