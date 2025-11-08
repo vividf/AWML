@@ -85,9 +85,11 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
         
         # Create a lightweight YOLOXHead instance for postprocessing only
         # We only need prior_generator, _bbox_decode, and _bbox_post_process methods
+        
+        # TODO(vividf): get in_channels and strides from model or use defaults
         self.yolox_head = YOLOXHead(
             num_classes=num_classes,
-            in_channels=256,  # Dummy value, not used for postprocessing
+            in_channels=128,  # Dummy value, not used for postprocessing
             strides=[8, 16, 32],
             test_cfg=ConfigDict(
                 dict(
