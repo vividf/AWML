@@ -215,10 +215,18 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 sample = data_loader.load_sample(i)
                 input_tensor = data_loader.preprocess(sample)
                 
+                # Get ground truth and img_info (required for YOLOX preprocessing)
+                gt_data = data_loader.get_ground_truth(i)
+                img_info = gt_data["img_info"]
+                
                 # Get PyTorch reference outputs (raw, before postprocessing)
                 logger.info("\nRunning PyTorch reference (raw outputs)...")
                 try:
-                    pytorch_output, pytorch_latency, _ = pytorch_pipeline.infer(input_tensor, return_raw_outputs=True)
+                    pytorch_output, pytorch_latency, _ = pytorch_pipeline.infer(
+                        input_tensor, 
+                        return_raw_outputs=True,
+                        img_info=img_info
+                    )
                     logger.info(f"  PyTorch latency: {pytorch_latency:.2f} ms")
                     logger.info(f"  PyTorch output shape: {pytorch_output.shape}")
                     logger.info(f"  PyTorch output range: [{pytorch_output.min():.6f}, {pytorch_output.max():.6f}]")
@@ -238,7 +246,8 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                         pytorch_latency,
                         tolerance,
                         "ONNX",
-                        logger
+                        logger,
+                        img_info=img_info
                     )
                     results[f"sample_{i}_onnx"] = onnx_passed
                 
@@ -252,7 +261,8 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                         pytorch_latency,
                         tolerance,
                         "TensorRT",
-                        logger
+                        logger,
+                        img_info=img_info
                     )
                     results[f"sample_{i}_tensorrt"] = tensorrt_passed
                 
@@ -313,6 +323,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         tolerance: float,
         backend_name: str,
         logger,
+        img_info: Dict = None,
     ) -> bool:
         """
         Verify a single backend against PyTorch reference outputs.
@@ -325,14 +336,23 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             tolerance: Maximum allowed difference
             backend_name: Name of backend for logging ("ONNX", "TensorRT")
             logger: Logger instance
+            img_info: Image metadata (required for YOLOX preprocessing)
             
         Returns:
             bool: True if verification passed, False otherwise
         """
         try:
             # Run inference with raw outputs (using MMDet preprocessed tensor)
-            backend_output, backend_latency, _ = pipeline.infer(input_tensor, return_raw_outputs=True)
-            
+            # img_info is required for YOLOX preprocessing
+            if img_info is not None:
+                backend_output, backend_latency, _ = pipeline.infer(
+                    input_tensor, 
+                    return_raw_outputs=True,
+                    img_info=img_info
+                )
+            else:
+                return False
+           
             logger.info(f"  {backend_name} latency: {backend_latency:.2f} ms")
             logger.info(f"  {backend_name} output shape: {backend_output.shape}")
             logger.info(f"  {backend_name} output range: [{backend_output.min():.6f}, {backend_output.max():.6f}]")

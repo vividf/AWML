@@ -14,7 +14,9 @@ import torch
 import numpy as np
 
 from autoware_ml.deployment.core.detection_2d_pipeline import Detection2DPipeline
-
+from mmdet.models.dense_heads.yolox_head import YOLOXHead
+from mmengine.config import ConfigDict
+from mmengine.structures import InstanceData
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,26 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
         self.score_threshold = score_threshold
         self.nms_threshold = nms_threshold
         self.max_detections = max_detections
+        
+        # Initialize MMDetection YOLOXHead for postprocessing
+        
+        # Create a lightweight YOLOXHead instance for postprocessing only
+        # We only need prior_generator, _bbox_decode, and _bbox_post_process methods
+        self.yolox_head = YOLOXHead(
+            num_classes=num_classes,
+            in_channels=256,  # Dummy value, not used for postprocessing
+            strides=[8, 16, 32],
+            test_cfg=ConfigDict(
+                dict(
+                    score_thr=score_threshold,
+                    nms=dict(type='nms', iou_threshold=nms_threshold),
+                    max_per_img=max_detections
+                )
+            )
+        )
+        self.yolox_head.eval()  # Set to eval mode
+            
+
     
     # ========== Preprocessing Methods ==========
     
@@ -201,109 +223,92 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
         bbox_reg = predictions[:, :4]  # [dx, dy, dw, dh] (raw regression relative to stride)
         objectness = predictions[:, 4]  # [num_predictions] - objectness score (sigmoid)
         class_scores = predictions[:, 5:]  # [num_predictions, num_classes] (sigmoid)
-
-        # Decode YOLOX bbox to absolute model-space coordinates using priors
-        # Priors are generated on the model input grid with strides [8, 16, 32] and offset=0
         input_h, input_w = metadata.get('input_shape', self.input_size)
-        strides = [8, 16, 32]
-        priors = []
-        for s in strides:
-            fh = input_h // s
-            fw = input_w // s
-            # grid centers at offset 0
-            ys, xs = np.meshgrid(np.arange(fh, dtype=np.float32), np.arange(fw, dtype=np.float32), indexing='ij')
-            centers_x = (xs.reshape(-1) * s)
-            centers_y = (ys.reshape(-1) * s)
-            stride_w = np.full_like(centers_x, s, dtype=np.float32)
-            stride_h = np.full_like(centers_y, s, dtype=np.float32)
-            priors.append(np.stack([centers_x, centers_y, stride_w, stride_h], axis=1))
-        priors = np.concatenate(priors, axis=0).astype(np.float32)  # [N, 4]
-
+        
+        # Convert to torch tensors
+        bbox_reg_tensor = torch.from_numpy(bbox_reg).float().to(self.device)
+        objectness_tensor = torch.from_numpy(objectness).float().to(self.device)
+        class_scores_tensor = torch.from_numpy(class_scores).float().to(self.device)
+        
+        # Generate priors using YOLOXHead's prior_generator
+        featmap_sizes = [(input_h // 8, input_w // 8), 
+                        (input_h // 16, input_w // 16), 
+                        (input_h // 32, input_w // 32)]
+        mlvl_priors = self.yolox_head.prior_generator.grid_priors(
+            featmap_sizes,
+            dtype=torch.float32,
+            device=self.device,
+            with_stride=True  # Returns [center_x, center_y, stride_w, stride_h]
+        )
+        priors_tensor = torch.cat(mlvl_priors, dim=0)  # [N, 4]
+        
         # Align lengths if any mismatch (safety)
-        num = min(len(bbox_reg), len(priors))
-        bbox_reg = bbox_reg[:num]
-        objectness = objectness[:num]
-        class_scores = class_scores[:num]
-        priors = priors[:num]
-
-        # Decode centers and sizes
-        center_x = bbox_reg[:, 0] * priors[:, 2] + priors[:, 0]
-        center_y = bbox_reg[:, 1] * priors[:, 3] + priors[:, 1]
-        width = np.exp(bbox_reg[:, 2]) * priors[:, 2]
-        height = np.exp(bbox_reg[:, 3]) * priors[:, 3]
-
-        # Convert to corner format [x1, y1, x2, y2] in model input space
-        x1 = center_x - width / 2
-        y1 = center_y - height / 2
-        x2 = center_x + width / 2
-        y2 = center_y + height / 2
-        bboxes = np.stack([x1, y1, x2, y2], axis=1)
+        num = min(len(bbox_reg_tensor), len(priors_tensor))
+        bbox_reg_tensor = bbox_reg_tensor[:num]
+        objectness_tensor = objectness_tensor[:num]
+        class_scores_tensor = class_scores_tensor[:num]
+        priors_tensor = priors_tensor[:num]
         
-        # Get max class score and class id for each detection
-        max_class_scores = np.max(class_scores, axis=1)
-        class_ids = np.argmax(class_scores, axis=1)
+        # Decode bboxes using YOLOXHead._bbox_decode
+        bboxes_tensor = self.yolox_head._bbox_decode(priors_tensor, bbox_reg_tensor.unsqueeze(0))
+        bboxes_tensor = bboxes_tensor[0]  # Remove batch dimension: [N, 4]
         
-        # Compute final scores: objectness * max_class_score
-        scores = objectness * max_class_scores
-        
+        # Compute scores and labels (same as YOLOXHead.predict_by_feat)
+        max_scores, labels = torch.max(class_scores_tensor, 1)
+        final_scores = max_scores * objectness_tensor
         
         # Filter by score threshold
-        valid_mask = scores >= self.score_threshold
-        bboxes = bboxes[valid_mask]
-        scores = scores[valid_mask]
-        class_ids = class_ids[valid_mask]
+        valid_mask = final_scores >= self.score_threshold
+        bboxes_tensor = bboxes_tensor[valid_mask]
+        final_scores = final_scores[valid_mask]
+        labels = labels[valid_mask]
         
-        
-        if len(scores) == 0:
+        if len(final_scores) == 0:
             return []
         
-        # Apply NMS
-        keep_indices = self._apply_nms(bboxes, scores, class_ids)
-        bboxes = bboxes[keep_indices]
-        scores = scores[keep_indices]
-        class_ids = class_ids[keep_indices]
+        # Create InstanceData for _bbox_post_process
+        results = InstanceData(
+            bboxes=bboxes_tensor,
+            scores=final_scores,
+            labels=labels
+        )
         
-        
-        # Transform coordinates back to original image space
-        # MMDetection pipeline provides scale_factor for coordinate transformation
+        # Prepare img_meta for rescale
+        img_meta = {}
         if 'scale_factor' in metadata:
             sf = metadata['scale_factor']
             if isinstance(sf, (list, tuple, np.ndarray)) and len(sf) >= 2:
-                scale_x = float(sf[0])
-                scale_y = float(sf[1])
-                # Rescale from model space to original image space
-                bboxes[:, 0] = bboxes[:, 0] / scale_x
-                bboxes[:, 1] = bboxes[:, 1] / scale_y
-                bboxes[:, 2] = bboxes[:, 2] / scale_x
-                bboxes[:, 3] = bboxes[:, 3] / scale_y
+                img_meta['scale_factor'] = [float(sf[0]), float(sf[1])]
             else:
-                raise ValueError(
-                    f"Invalid scale_factor format: {sf}. "
-                    "Expected list/tuple/array with at least 2 elements."
-                )
+                raise ValueError(f"Invalid scale_factor format: {sf}")
         else:
-            raise ValueError(
-                "scale_factor is required in metadata for coordinate transformation. "
-                "Please ensure img_info contains scale_factor when calling infer()."
-            )
+            raise ValueError("scale_factor is required in metadata")
         
-        # Limit to max detections
-        if len(scores) > self.max_detections:
-            top_indices = np.argsort(scores)[::-1][:self.max_detections]
-            bboxes = bboxes[top_indices]
-            scores = scores[top_indices]
-            class_ids = class_ids[top_indices]
+        # Use YOLOXHead._bbox_post_process for NMS and rescale
+        # Note: YOLOXHead._bbox_post_process does NOT handle max_per_img
+        # (unlike base_dense_head), so we need to handle it manually
+        processed_results = self.yolox_head._bbox_post_process(
+            results=results,
+            cfg=self.yolox_head.test_cfg,
+            rescale=True,  # Rescale to original image space
+            with_nms=True,  # Apply NMS
+            img_meta=img_meta
+        )
         
-        # Format results
+        # Limit to max detections (YOLOXHead._bbox_post_process doesn't handle max_per_img)
+        if len(processed_results.scores) > self.max_detections:
+            top_indices = torch.argsort(processed_results.scores, descending=True)[:self.max_detections]
+            processed_results = processed_results[top_indices]
+        
+        # results
         results = []
-        for bbox, score, class_id in zip(bboxes, scores, class_ids):
+        for i in range(len(processed_results.bboxes)):
             results.append({
-                'bbox': bbox.tolist(),
-                'score': float(score),
-                'class_id': int(class_id),
-                'class_name': self.class_names[int(class_id)]
+                'bbox': processed_results.bboxes[i].cpu().numpy().tolist(),
+                'score': float(processed_results.scores[i].cpu().numpy()),
+                'class_id': int(processed_results.labels[i].cpu().numpy()),
+                'class_name': self.class_names[int(processed_results.labels[i].cpu().numpy())]
             })
-        
         
         return results
     

@@ -44,6 +44,8 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
         else:
             logger.info("PyTorch pipeline initialized (standard model, using end-to-end inference)")
     
+
+    # TODO(vividf): check this
     def infer(
         self, 
         points: torch.Tensor, 
