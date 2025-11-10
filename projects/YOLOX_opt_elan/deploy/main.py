@@ -51,7 +51,7 @@ def load_pytorch_model(model_cfg: Config, checkpoint_path: str, device: str):
     return model
 
 
-def export_onnx_with_pipeline(
+def export_onnx(
     pytorch_model,
     data_loader: YOLOXOptElanDataLoader,
     config: BaseDeploymentConfig,
@@ -130,7 +130,7 @@ def export_onnx_with_pipeline(
         return None
 
 
-def export_tensorrt_from_onnx(
+def export_tensorrt(
     onnx_path: str,
     config: BaseDeploymentConfig,
     data_loader: YOLOXOptElanDataLoader,
@@ -433,11 +433,11 @@ def main():
         
         # Export ONNX
         if config.export_config.should_export_onnx():
-            onnx_path = export_onnx_with_pipeline(pytorch_model, data_loader, config, model_cfg, logger)
+            onnx_path = export_onnx(pytorch_model, data_loader, config, model_cfg, logger)
         
         # Export TensorRT
         if config.export_config.should_export_tensorrt() and onnx_path:
-            tensorrt_path = export_tensorrt_from_onnx(onnx_path, config, data_loader, logger)
+            tensorrt_path = export_tensorrt(onnx_path, config, data_loader, logger)
     
     # Get model paths from evaluation config if not exported
     if not onnx_path or not tensorrt_path:

@@ -97,25 +97,3 @@ class ONNXExporter(BaseExporter):
                 self.logger.warning("ONNX model simplification failed")
         except Exception as e:
             self.logger.warning(f"ONNX simplification error: {e}")
-
-    def validate_export(self, output_path: str) -> bool:
-        """
-        Validate ONNX model.
-
-        Args:
-            output_path: Path to ONNX model file
-
-        Returns:
-            True if valid
-        """
-        if not super().validate_export(output_path):
-            return False
-
-        try:
-            model = onnx.load(output_path)
-            onnx.checker.check_model(model)
-            self.logger.info("ONNX model validation passed")
-            return True
-        except Exception as e:
-            self.logger.error(f"ONNX model validation failed: {e}")
-            return False
