@@ -25,6 +25,8 @@ sys.path.insert(0, str(project_root))
 
 from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
 from autoware_ml.deployment.core.base_config import parse_base_args
+from autoware_ml.deployment.exporters.onnx_exporter import ONNXExporter
+from autoware_ml.deployment.exporters.tensorrt_exporter import TensorRTExporter
 from projects.CalibrationStatusClassification.deploy.data_loader import CalibrationDataLoader
 from projects.CalibrationStatusClassification.deploy.evaluator import ClassificationEvaluator
 
@@ -51,13 +53,13 @@ def export_onnx_with_pipeline(
     logger: logging.Logger
 ) -> str:
     """
-    Export model to ONNX format using the new pipeline architecture.
+    Export model to ONNX format using the unified ONNXExporter.
     
     Returns:
-        Path to exported ONNX file
+        Path to exported ONNX file, or None if export failed
     """
     logger.info("=" * 80)
-    logger.info("Exporting to ONNX (New Pipeline Architecture)")
+    logger.info("Exporting to ONNX (Using Unified ONNXExporter)")
     logger.info("=" * 80)
 
     # Get ONNX settings
@@ -85,50 +87,16 @@ def export_onnx_with_pipeline(
         input_tensor = single_input.repeat(batch_size, 1, 1, 1)
         logger.info(f"Using fixed batch size: {batch_size}")
 
-    # Get input/output names from config
-    input_names = onnx_settings.get("input_names", ["input"])
-    output_names = onnx_settings.get("output_names", ["output"])
-    
-    # Get dynamic axes from config
-    dynamic_axes = onnx_settings.get("dynamic_axes", None)
+    # Use unified ONNXExporter
+    exporter = ONNXExporter(onnx_settings, logger)
+    success = exporter.export(pytorch_model, input_tensor, output_path)
 
-    logger.info(f"Input shape: {input_tensor.shape}")
-    logger.info(f"Output path: {output_path}")
-
-    # Export to ONNX
-    torch.onnx.export(
-        pytorch_model,
-        input_tensor,
-        output_path,
-        opset_version=onnx_settings["opset_version"],
-        do_constant_folding=onnx_settings["do_constant_folding"],
-        input_names=input_names,
-        output_names=output_names,
-        dynamic_axes=dynamic_axes,
-        export_params=onnx_settings.get("export_params", True),
-        keep_initializers_as_inputs=onnx_settings.get("keep_initializers_as_inputs", False),
-    )
-
-    logger.info(f"✅ ONNX export successful: {output_path}")
-
-    # Apply ONNX simplifier
-    if onnx_settings.get("simplify", True):
-        try:
-            import onnx
-            from onnxsim import simplify
-            
-            logger.info("Applying ONNX simplifier...")
-            onnx_model = onnx.load(output_path)
-            model_simp, check = simplify(onnx_model)
-            if check:
-                onnx.save(model_simp, output_path)
-                logger.info("✅ ONNX simplification successful")
-            else:
-                logger.warning("⚠️  ONNX simplification check failed, using original model")
-        except Exception as e:
-            logger.warning(f"⚠️  ONNX simplification failed: {e}")
-
-    return output_path
+    if success:
+        logger.info(f"✅ ONNX export successful: {output_path}")
+        return output_path
+    else:
+        logger.error(f"❌ ONNX export failed")
+        return None
 
 
 def export_tensorrt_from_onnx(
@@ -138,109 +106,48 @@ def export_tensorrt_from_onnx(
     logger: logging.Logger
 ) -> str:
     """
-    Export ONNX model to TensorRT engine.
+    Export ONNX model to TensorRT engine using the unified TensorRTExporter.
     
     Returns:
-        Path to exported TensorRT engine
+        Path to exported TensorRT engine, or None if export failed
     """
     logger.info("=" * 80)
-    logger.info("Exporting to TensorRT")
+    logger.info("Exporting to TensorRT (Using Unified TensorRTExporter)")
     logger.info("=" * 80)
-
-    try:
-        import tensorrt as trt
-    except ImportError:
-        logger.error("TensorRT not installed. Please install TensorRT.")
-        return None
 
     trt_settings = config.get_tensorrt_settings()
     output_path = onnx_path.replace(".onnx", ".engine")
 
-    # Build TensorRT engine
-    TRT_LOGGER = trt.Logger(trt.Logger.INFO)
-    builder = trt.Builder(TRT_LOGGER)
-    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
-    parser = trt.OnnxParser(network, TRT_LOGGER)
-
-    # Parse ONNX
-    logger.info(f"Parsing ONNX file: {onnx_path}")
-    with open(onnx_path, "rb") as f:
-        if not parser.parse(f.read()):
-            logger.error("Failed to parse ONNX file")
-            for error in range(parser.num_errors):
-                logger.error(parser.get_error(error))
-            return None
-
-    # Build config
-    config_trt = builder.create_builder_config()
-
-    # Handle dynamic shapes
-    has_dynamic_shapes = False
-    for i in range(network.num_inputs):
-        input_shape = network.get_input(i).shape
-        if -1 in input_shape:
-            has_dynamic_shapes = True
-            break
-
-    if has_dynamic_shapes:
-        logger.info("Creating optimization profile for dynamic shapes...")
-        profile = builder.create_optimization_profile()
-
-        # Get input shape from backend_config or use default
-        model_inputs = config.backend_config.model_inputs
-        if model_inputs and len(model_inputs) > 0:
-            input_shapes = model_inputs[0].get("input_shapes", {})
-            for input_name, shapes in input_shapes.items():
-                min_shape = shapes.get("min_shape", [1, 5, 1080, 1920])
-                opt_shape = shapes.get("opt_shape", [1, 5, 1860, 2880])
-                max_shape = shapes.get("max_shape", [1, 5, 2160, 3840])
-                
-                logger.info(f"Setting profile for {input_name}: min={min_shape}, opt={opt_shape}, max={max_shape}")
-                profile.set_shape(input_name, min_shape, opt_shape, max_shape)
-        else:
-            # Fallback: use input from data loader
-            sample_idx = config.runtime_config.get("sample_idx", 0)
-            sample = data_loader.load_sample(sample_idx)
-            input_tensor = data_loader.preprocess(sample)
-            input_shape = tuple(input_tensor.shape)
-            
-            for i in range(network.num_inputs):
-                input_tensor_trt = network.get_input(i)
-                input_name = input_tensor_trt.name
-                logger.info(f"Setting profile for {input_name}: {input_shape}")
-                profile.set_shape(input_name, input_shape, input_shape, input_shape)
-
-        config_trt.add_optimization_profile(profile)
-
-    # Set workspace size
-    workspace_size = trt_settings["max_workspace_size"]
-    config_trt.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_size)
-
-    # Set precision
-    precision_policy = trt_settings.get("precision_policy", "auto")
-    policy_flags = trt_settings.get("policy_flags", {})
+    # Get sample input for shape configuration
+    sample_idx = config.runtime_config.get("sample_idx", 0)
+    sample = data_loader.load_sample(sample_idx)
+    sample_input = data_loader.preprocess(sample)
     
-    logger.info(f"Precision policy: {precision_policy}")
-    if policy_flags.get("FP16", False):
-        config_trt.set_flag(trt.BuilderFlag.FP16)
-        logger.info("Enabled FP16 precision")
-    elif policy_flags.get("TF32", False):
-        config_trt.set_flag(trt.BuilderFlag.TF32)
-        logger.info("Enabled TF32 precision")
+    # Ensure tensor is float32
+    if sample_input.dtype != torch.float32:
+        sample_input = sample_input.float()
 
-    # Build engine
-    logger.info("Building TensorRT engine (this may take a while)...")
-    serialized_engine = builder.build_serialized_network(network, config_trt)
-    if serialized_engine is None:
-        logger.error("Failed to build TensorRT engine")
+    # Merge backend_config.model_inputs into trt_settings for TensorRTExporter
+    # TensorRTExporter expects model_inputs in the config
+    if hasattr(config, 'backend_config') and hasattr(config.backend_config, 'model_inputs'):
+        trt_settings = trt_settings.copy()
+        trt_settings['model_inputs'] = config.backend_config.model_inputs
+
+    # Use unified TensorRTExporter
+    exporter = TensorRTExporter(trt_settings, logger)
+    success = exporter.export(
+        model=None,  # Not used for TensorRT
+        sample_input=sample_input,
+        output_path=output_path,
+        onnx_path=onnx_path
+    )
+
+    if success:
+        logger.info(f"✅ TensorRT export successful: {output_path}")
+        return output_path
+    else:
+        logger.error(f"❌ TensorRT export failed")
         return None
-
-    # Save engine
-    with open(output_path, "wb") as f:
-        f.write(serialized_engine)
-
-    logger.info(f"✅ TensorRT export successful: {output_path}")
-    return output_path
 
 
 def get_models_to_evaluate(eval_config: dict, logger: logging.Logger) -> list:

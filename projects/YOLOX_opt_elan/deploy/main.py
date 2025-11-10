@@ -26,6 +26,8 @@ sys.path.insert(0, str(project_root))
 
 from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
 from autoware_ml.deployment.core.base_config import parse_base_args
+from autoware_ml.deployment.exporters.onnx_exporter import ONNXExporter
+from autoware_ml.deployment.exporters.tensorrt_exporter import TensorRTExporter
 from autoware_ml.deployment.pipelines.yolox import (
     YOLOXPyTorchPipeline,
     YOLOXONNXPipeline,
@@ -57,13 +59,15 @@ def export_onnx_with_pipeline(
     logger: logging.Logger
 ) -> str:
     """
-    Export model to ONNX format using the new pipeline architecture.
+    Export model to ONNX format using the unified ONNXExporter.
+    
+    Note: YOLOX requires special wrapper (YOLOXONNXWrapper) for ONNX export.
     
     Returns:
-        Path to exported ONNX file
+        Path to exported ONNX file, or None if export failed
     """
     logger.info("=" * 80)
-    logger.info("Exporting to ONNX (New Pipeline Architecture)")
+    logger.info("Exporting to ONNX (Using Unified ONNXExporter)")
     logger.info("=" * 80)
 
     # Get ONNX settings
@@ -101,7 +105,7 @@ def export_onnx_with_pipeline(
 
     replace_relu6_with_relu(pytorch_model)
 
-    # Wrap model for ONNX export
+    # Wrap model for ONNX export (YOLOX-specific requirement)
     num_classes = model_cfg.model.bbox_head.num_classes
     wrapped_model = YOLOXONNXWrapper(model=pytorch_model, num_classes=num_classes)
     wrapped_model.eval()
@@ -110,134 +114,65 @@ def export_onnx_with_pipeline(
     logger.info(f"Output format: [batch_size, num_predictions, {4 + 1 + num_classes}]")
     logger.info(f"Output path: {output_path}")
 
-    # Export to ONNX
-    torch.onnx.export(
-        wrapped_model,
-        input_tensor,
-        output_path,
-        opset_version=onnx_settings["opset_version"],
-        do_constant_folding=onnx_settings["do_constant_folding"],
-        input_names=onnx_settings["input_names"],
-        output_names=["output"],
-        dynamic_axes=onnx_settings.get("dynamic_axes"),
-        export_params=onnx_settings.get("export_params", True),
-        keep_initializers_as_inputs=onnx_settings.get("keep_initializers_as_inputs", False),
-    )
+    # Update output_names in onnx_settings to match YOLOX requirement
+    onnx_settings_updated = onnx_settings.copy()
+    onnx_settings_updated["output_names"] = ["output"]
 
-    logger.info(f"✅ ONNX export successful: {output_path}")
+    # Use unified ONNXExporter
+    exporter = ONNXExporter(onnx_settings_updated, logger)
+    success = exporter.export(wrapped_model, input_tensor, output_path)
 
-    # Apply ONNX simplifier
-    if onnx_settings.get("simplify", True):
-        try:
-            import onnx
-            from onnxsim import simplify
-            
-            logger.info("Applying ONNX simplifier...")
-            onnx_model = onnx.load(output_path)
-            model_simp, check = simplify(onnx_model)
-            if check:
-                onnx.save(model_simp, output_path)
-                logger.info("✅ ONNX simplification successful")
-            else:
-                logger.warning("⚠️  ONNX simplification check failed, using original model")
-        except Exception as e:
-            logger.warning(f"⚠️  ONNX simplification failed: {e}")
-
-    return output_path
+    if success:
+        logger.info(f"✅ ONNX export successful: {output_path}")
+        return output_path
+    else:
+        logger.error(f"❌ ONNX export failed")
+        return None
 
 
 def export_tensorrt_from_onnx(
     onnx_path: str,
     config: BaseDeploymentConfig,
+    data_loader: YOLOXOptElanDataLoader,
     logger: logging.Logger
 ) -> str:
     """
-    Export ONNX model to TensorRT engine.
+    Export ONNX model to TensorRT engine using the unified TensorRTExporter.
     
     Returns:
-        Path to exported TensorRT engine
+        Path to exported TensorRT engine, or None if export failed
     """
     logger.info("=" * 80)
-    logger.info("Exporting to TensorRT")
+    logger.info("Exporting to TensorRT (Using Unified TensorRTExporter)")
     logger.info("=" * 80)
-
-    try:
-        import tensorrt as trt
-    except ImportError:
-        logger.error("TensorRT not installed. Please install TensorRT.")
-        return None
 
     trt_settings = config.get_tensorrt_settings()
     output_path = onnx_path.replace(".onnx", ".engine")
 
-    # Build TensorRT engine
-    TRT_LOGGER = trt.Logger(trt.Logger.INFO)
-    builder = trt.Builder(TRT_LOGGER)
-    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
-    parser = trt.OnnxParser(network, TRT_LOGGER)
+    # Get sample input for shape configuration
+    sample_idx = config.runtime_config.get("sample_idx", 0)
+    sample = data_loader.load_sample(sample_idx)
+    sample_input = data_loader.preprocess(sample)
+    
+    # Ensure tensor is float32
+    if sample_input.dtype != torch.float32:
+        sample_input = sample_input.float()
 
-    # Parse ONNX
-    logger.info(f"Parsing ONNX file: {onnx_path}")
-    with open(onnx_path, "rb") as f:
-        if not parser.parse(f.read()):
-            logger.error("Failed to parse ONNX file")
-            for error in range(parser.num_errors):
-                logger.error(parser.get_error(error))
-            return None
+    # Use unified TensorRTExporter
+    exporter = TensorRTExporter(trt_settings, logger)
+    success = exporter.export(
+        model=None,  # Not used for TensorRT
+        sample_input=sample_input,
+        output_path=output_path,
+        onnx_path=onnx_path
+    )
 
-    # Build config
-    config_trt = builder.create_builder_config()
-
-    # Handle dynamic shapes
-    has_dynamic_shapes = False
-    for i in range(network.num_inputs):
-        input_shape = network.get_input(i).shape
-        if -1 in input_shape:
-            has_dynamic_shapes = True
-            break
-
-    if has_dynamic_shapes:
-        logger.info("Creating optimization profile for dynamic shapes...")
-        profile = builder.create_optimization_profile()
-
-        for i in range(network.num_inputs):
-            input_tensor = network.get_input(i)
-            input_name = input_tensor.name
-            input_shape = input_tensor.shape
-
-            # Set profile for batch dimension
-            min_shape = tuple(1 if s == -1 else s for s in input_shape)
-            opt_shape = min_shape
-            max_shape = min_shape
-
-            logger.info(f"Setting profile for {input_name}: {min_shape}")
-            profile.set_shape(input_name, min_shape, opt_shape, max_shape)
-
-        config_trt.add_optimization_profile(profile)
-
-    # Set workspace size
-    workspace_size = trt_settings["max_workspace_size"]
-    config_trt.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_size)
-
-    # Set precision
-    precision_flags = trt_settings["policy_flags"]
-    if precision_flags.get("FP16", False):
-        config_trt.set_flag(trt.BuilderFlag.FP16)
-        logger.info("Enabled FP16 precision")
-
-    # Build engine
-    logger.info("Building TensorRT engine (this may take a while)...")
-    serialized_engine = builder.build_serialized_network(network, config_trt)
-    if serialized_engine is None:
-        logger.error("Failed to build TensorRT engine")
+    if success:
+        logger.info(f"✅ TensorRT export successful: {output_path}")
+        return output_path
+    else:
+        logger.error(f"❌ TensorRT export failed")
         return None
-
-    # Save engine
-    with open(output_path, "wb") as f:
-        f.write(serialized_engine)
-
-    logger.info(f"✅ TensorRT export successful: {output_path}")
-    return output_path
 
 
 def get_models_to_evaluate(eval_config: dict, logger: logging.Logger) -> list:
@@ -502,7 +437,7 @@ def main():
         
         # Export TensorRT
         if config.export_config.should_export_tensorrt() and onnx_path:
-            tensorrt_path = export_tensorrt_from_onnx(onnx_path, config, logger)
+            tensorrt_path = export_tensorrt_from_onnx(onnx_path, config, data_loader, logger)
     
     # Get model paths from evaluation config if not exported
     if not onnx_path or not tensorrt_path:
