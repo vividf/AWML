@@ -140,6 +140,11 @@ class BaseDeploymentConfig:
         """Get verification configuration."""
         return self.deploy_cfg.get("verification", {})
 
+    @property
+    def task_type(self) -> Optional[str]:
+        """Get task type for pipeline building."""
+        return self.deploy_cfg.get("task_type")
+
     def get_onnx_settings(self) -> Dict[str, Any]:
         """
         Get ONNX export settings.

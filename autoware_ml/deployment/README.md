@@ -1,352 +1,170 @@
 # Autoware ML Deployment Framework
 
-A unified, task-agnostic deployment framework for exporting, verifying, and evaluating machine learning models across different backends (ONNX, TensorRT) with comprehensive support for model validation and performance benchmarking.
+A unified, task-agnostic deployment framework for exporting, verifying, and evaluating machine learning models across multiple backends (PyTorch, ONNX Runtime, TensorRT). The package provides reusable building blocks so individual projects only need to implement task-specific data loading, evaluation, and optional pipeline overrides.
 
 ## Table of Contents
-
 - [Overview](#overview)
-- [Features](#features)
-- [Current Support](#current-support)
-- [Architecture](#architecture)
+- [Key Features](#key-features)
+- [Directory Layout](#directory-layout)
+- [Workflow](#workflow)
 - [Quick Start](#quick-start)
-- [Usage Guide](#usage-guide)
-  - [Basic Export](#basic-export)
-  - [Export with Verification](#export-with-verification)
-  - [Export with Full Evaluation](#export-with-full-evaluation)
-  - [Evaluation Only Mode](#evaluation-only-mode)
 - [Configuration Reference](#configuration-reference)
+- [Extending the Framework](#extending-the-framework)
 
 ## Overview
+The deployment package standardizes the process of
+1. Loading project-specific datasets and checkpoints
+2. Exporting trained PyTorch models to ONNX and TensorRT
+3. Verifying numerical parity across backends (optional)
+4. Evaluating accuracy and latency metrics across backends
 
-The Autoware ML Deployment Framework provides a standardized pipeline for deploying trained models to production-ready inference backends. It handles the complete deployment workflow from model export to validation and performance analysis, with a focus on ensuring model quality and correctness across different deployment targets.
+Projects consume the framework through lightweight entry scripts (see `projects/*/deploy/main.py`) that glue project implementations to the shared deployment workflow.
 
-### Key Capabilities
+## Key Features
+- **Unified Runner** – `DeploymentRunner` orchestrates export → verification → evaluation with pluggable hooks.
+- **Config Driven** – `BaseDeploymentConfig` parses `mmengine` configs to control export modes, runtime IO, backend settings, and verification/evaluation policies.
+- **Backend Exporters** – `ONNXExporter` and `TensorRTExporter` expose a common interface for exporting PyTorch models and ONNX graphs.
+- **Task Pipelines** – Base pipelines in `core/` implement reusable preprocessing/inference/postprocessing logic for classification, 2D detection, and 3D detection; model-specific pipelines live under `pipelines/`.
+- **Verification Support** – Optional cross-backend verification compares PyTorch, ONNX, and TensorRT outputs using project evaluators.
+- **Evaluation & Benchmarking** – Evaluators compute task metrics and latency statistics, enabling fair comparisons across backends.
 
-- **Multi-Backend Export**: Export models to ONNX and TensorRT formats
-- **Precision Policy Support**: Flexible precision policies (FP32, FP16, TF32, INT8)
-- **Automated Verification**: Cross-backend output validation to ensure correctness
-- **Performance Benchmarking**: Comprehensive latency and throughput analysis
-- **Full Evaluation**: Complete model evaluation with metrics and confusion matrices
-- **Modular Design**: Easy to extend for new tasks and backends
-
-
-
-## Current Support
-
-### Detection 3D
-* [ ] BEVFusion
-* [ ] CenterPoint
-* [ ] TransFusion
-* [ ] StreamPETR
-
-### Detection 2D
-* [ ] YOLOX
-* [ ] YOLOX_opt (Traffic Light Detection)
-* [ ] FRNet
-* [ ] GLIP (Grounded Language-Image Pre-training)
-
-### Classification
-* [X] CalibrationStatusClassification
-* [ ] MobileNetv2 (Traffic Light Classification)
-
-### Backbones & Components
-* [ ] SwinTransformer
-* [ ] ConvNeXt_PC (Point Cloud)
-* [ ] SparseConvolution
-
-### Multimodal
-* [ ] BLIP-2 (Vision-Language Model)
-
-> **Note**: Currently, only **CalibrationStatusClassification** has full deployment framework support. Other models may have custom deployment scripts in their respective project directories but are not yet integrated with the unified deployment framework.
-
-### Supported Backends
-
-| Backend | Export | Inference | Verification |
-|---------|--------|-----------|--------------|
-| **ONNX** | ✅ | ✅ | ✅ |
-| **TensorRT** | ✅ | ✅ | ✅ |
-
-## Architecture
-
-The deployment framework follows a modular architecture:
-
+## Directory Layout
 ```
 autoware_ml/deployment/
-├── core/                          # Core abstractions
-│   ├── base_config.py            # Configuration management
-│   ├── base_data_loader.py       # Data loading interface
-│   ├── base_evaluator.py         # Evaluation interface
-│   └── verification.py           # Cross-backend verification
-├── backends/                      # Backend implementations
-│   ├── pytorch_backend.py        # PyTorch inference
-│   ├── onnx_backend.py           # ONNX Runtime inference
-│   └── tensorrt_backend.py       # TensorRT inference
-└── exporters/                     # Export implementations
-    ├── onnx_exporter.py          # ONNX export
-    └── tensorrt_exporter.py      # TensorRT export
+├── core/                  # Task-agnostic base classes
+│   ├── base_config.py     # Export/runtime/backend config helpers
+│   ├── base_data_loader.py
+│   ├── base_evaluator.py
+│   ├── base_pipeline.py   # Template method for preprocess → run_model → postprocess
+│   ├── classification_pipeline.py
+│   ├── detection_2d_pipeline.py
+│   └── detection_3d_pipeline.py
+├── exporters/             # Backend exporters
+│   ├── base_exporter.py
+│   ├── onnx_exporter.py
+│   └── tensorrt_exporter.py
+├── pipelines/             # Model-specific pipeline stacks
+│   ├── calibration/
+│   ├── centerpoint/
+│   └── yolox/
+├── runners/
+│   └── deployment_runner.py
+├── core/
+│   └── preprocessing_builder.py  # Preprocessing pipeline builder
+└── docs/                  # Additional design notes and tutorials
 ```
 
-### Design Principles
+## Workflow
+`DeploymentRunner` executes the following stages:
+1. **Model Loading** – Uses project-provided `load_model_fn` (or subclass override) to restore a PyTorch checkpoint.
+2. **Export** – Calls `ONNXExporter` and/or `TensorRTExporter` according to `export.mode` (`onnx`, `trt`, `both`, `none`).
+3. **Verification** (optional) – If `export.verify=True`, project `BaseEvaluator.verify()` implementations perform cross-backend checks.
+4. **Evaluation** – When `evaluation.enabled=True`, the runner iterates through configured backends and calls `BaseEvaluator.evaluate()` to report metrics and latency statistics.
+5. **Results Summary** – Consolidates export paths, verification summaries, and evaluation metrics.
 
-1. **Task-Agnostic Core**: Base classes are independent of specific tasks
-2. **Backend Abstraction**: Unified interface across different inference backends
-3. **Extensibility**: Easy to add new tasks, backends, or exporters
-4. **Configuration-Driven**: All settings managed through Python config files
-5. **Comprehensive Validation**: Built-in verification at every step
-
+Each stage can be customized per project via dependency injection (passing callables to the runner) or subclassing `DeploymentRunner` (see `projects/CenterPoint/deploy/main.py`).
 
 ## Quick Start
-
-Here's a minimal example to export and verify a calibration classification model:
-
-```bash
-# Export to both ONNX and TensorRT with verification
-python projects/CalibrationStatusClassification/deploy/main.py \
-    deploy_config.py \
-    model_config.py \
-    checkpoint.pth \
-    --work-dir work_dirs/deployment
-```
-
-
-## Usage Guide
-
-### Basic Export
-
-Export a model to ONNX format:
-
-**1. Create deployment config** (`deploy_config_onnx.py`):
-
-```python
-export = dict(
-    mode='onnx',           # Export mode: 'onnx', 'trt', 'both', 'none'
-    verify=False,          # Skip verification
-    device='cuda:0',       # Device for export
-    work_dir='work_dirs/deployment'
-)
-
-# Runtime I/O settings
-runtime_io = dict(
-    info_pkl='path/to/info.pkl',  # Dataset info file
-    sample_idx=0                   # Sample index for export
-)
-
-# ONNX configuration
-onnx_config = dict(
-    opset_version=16,
-    do_constant_folding=True,
-    input_names=['input'],
-    output_names=['output'],
-    save_file='model.onnx',
-    dynamic_axes={
-        'input': {0: 'batch_size'},
-        'output': {0: 'batch_size'}
-    }
-)
-
-# Backend configuration
-backend_config = dict(
-    common_config=dict(
-        precision_policy='auto',      # Options: 'auto', 'fp16', 'fp32_tf32', 'int8'
-        max_workspace_size=1 << 30    # 1 GB for TensorRT
-    )
-)
-```
-
-**2. Run export**:
-
+Example: deploy a calibration status classification model.
 ```bash
 python projects/CalibrationStatusClassification/deploy/main.py \
-    deploy_config_onnx.py \
-    path/to/model_config.py \
-    path/to/checkpoint.pth
+    projects/CalibrationStatusClassification/deploy/configs/deploy_config.py \
+    projects/CalibrationStatusClassification/configs/model_config.py \
+    checkpoints/calib_classifier.pth \
+    --work-dir work_dirs/calibration_deploy
 ```
 
-### Export with Verification
+General steps for all projects:
+1. **Prepare configs** – Copy or edit a deployment config under `projects/<Project>/deploy/configs/`.
+2. **Run the entry script** – Provide `deploy_config`, `model_cfg`, and (when exporting) a checkpoint path.
+3. **Inspect outputs** – Exported models and reports are stored under `export.work_dir`.
 
-Verify that exported models produce correct outputs:
-
-**Update config**:
-
-```python
-export = dict(
-    mode='both',          # Export to both ONNX and TensorRT
-    verify=True,          # Enable verification
-    device='cuda:0',
-    work_dir='work_dirs/deployment'
-)
-
-# ... rest of config ...
+### Common CLI overrides
 ```
-
-**Run with verification**:
-
-```bash
-python projects/CalibrationStatusClassification/deploy/main.py \
-    deploy_config_verify.py \
-    path/to/model_config.py \
-    path/to/checkpoint.pth
-```
-
-### Export with Full Evaluation
-
-Perform complete model evaluation on a validation dataset:
-
-**Update config** (`deploy_config_eval.py`):
-
-```python
-export = dict(
-    mode='both',
-    verify=True,
-    device='cuda:0',
-    work_dir='work_dirs/deployment'
-)
-
-# Enable evaluation
-evaluation = dict(
-    enabled=True,
-    num_samples=1000,        # Number of samples to evaluate
-    verbose=False,           # Set True for detailed per-sample output
-    models_to_evaluate=[
-        'pytorch',           # Evaluate PyTorch model
-        'onnx',             # Evaluate ONNX model
-        'tensorrt'          # Evaluate TensorRT model
-    ]
-)
-
-# ... rest of config ...
-```
-
-**Run with evaluation**:
-
-```bash
-python projects/CalibrationStatusClassification/deploy/main.py \
-    deploy_config_eval.py \
-    path/to/model_config.py \
-    path/to/checkpoint.pth
-```
-
-**Output includes**:
-- Per-model accuracy and performance metrics
-- Confusion matrices for each backend
-- Latency statistics (min, max, mean, median, p95, p99)
-- Per-class accuracy breakdown
-
-### Evaluation Only Mode
-
-Run evaluation without exporting (useful for testing existing deployments):
-
-**Config** (`deploy_config_eval_only.py`):
-
-```python
-export = dict(
-    mode='none',           # Skip export
-    device='cuda:0',
-    work_dir='work_dirs/deployment'
-)
-
-evaluation = dict(
-    enabled=True,
-    num_samples=1000,
-    models_to_evaluate=['onnx', 'tensorrt']  # Evaluate existing models
-)
-
-runtime_io = dict(
-    info_pkl='path/to/info.pkl',
-    onnx_file='work_dirs/deployment/model.onnx'  # Path to existing ONNX
-)
-
-# ... rest of config ...
-```
-
-**Run**:
-
-```bash
-# No checkpoint needed in eval-only mode
-python projects/CalibrationStatusClassification/deploy/main.py \
-    deploy_config_eval_only.py \
-    path/to/model_config.py
+--work-dir    Override export.work_dir from the config
+--device      Override export.device (e.g., "cuda:0", "cpu")
+--log-level   Adjust logging verbosity
 ```
 
 ## Configuration Reference
+Deployment configs are standard `mmengine.Config` files. Key sections include:
 
-### Export Configuration
+### `task_type`
+Task type for pipeline building (required when using `build_preprocessing_pipeline`):
+```python
+task_type = "detection3d"  # Options: 'detection2d', 'detection3d', 'classification', 'segmentation'
+```
 
+### `export`
 ```python
 export = dict(
     mode='both',          # 'onnx', 'trt', 'both', 'none'
     verify=True,          # Enable cross-backend verification
-    device='cuda:0',      # Device for export/inference
-    work_dir='work_dirs'  # Output directory
+    device='cuda:0',      # Device used during export/inference
+    work_dir='work_dirs'  # Output directory for artifacts
 )
 ```
 
-### Runtime I/O Configuration
+### `runtime_io`
+Holds dataset-specific paths and overrides (e.g., info files, sample indices).
 
-```python
-runtime_io = dict(
-    info_pkl='path/to/dataset/info.pkl',      # Required: dataset info file
-    sample_idx=0,                              # Sample index for export
-    onnx_file='path/to/existing/model.onnx'   # Optional: use existing ONNX
-)
-```
+### `model_io`
+Describes model inputs/outputs used for export:
+- `input_name`, `input_shape`, `input_dtype`
+- `additional_inputs` / `additional_outputs`
+- `batch_size` or `dynamic_axes`
 
-### ONNX Configuration
+### `onnx_config`
+ONNX exporter options such as `opset_version`, `keep_initializers_as_inputs`, `save_file`, `decode_in_inference`.
 
-```python
-onnx_config = dict(
-    opset_version=16,                # ONNX opset version
-    do_constant_folding=True,        # Enable constant folding optimization
-    input_names=['input'],           # Input tensor names
-    output_names=['output'],         # Output tensor names
-    save_file='model.onnx',          # Output filename
-    export_params=True,              # Export model parameters
-    dynamic_axes={                   # Dynamic dimensions
-        'input': {0: 'batch_size'},
-        'output': {0: 'batch_size'}
-    },
-    keep_initializers_as_inputs=False  # ONNX optimization
-)
-```
-
-### Backend Configuration
-
+### `backend_config`
+TensorRT-specific settings:
 ```python
 backend_config = dict(
     common_config=dict(
-        precision_policy='fp16',        # Precision policy (see below)
-        max_workspace_size=1 << 30      # TensorRT workspace size (bytes)
+        precision_policy='auto',     # 'auto', 'fp16', 'fp32_tf32', 'explicit_int8', 'strongly_typed'
+        max_workspace_size=1 << 30   # Bytes of workspace memory
     ),
-    model_inputs=[                      # Optional: input specifications
-        dict(
-            name='input',
-            shape=(1, 5, 512, 512),
-            dtype='float32'
-        )
-    ]
+    model_inputs=[ ... ]            # Optional shape dictionaries for TensorRT optimization profiles
 )
 ```
 
-### Precision Policies
+### `verification`
+Controls cross-backend checks (consumed by project evaluators):
+```python
+verification = dict(
+    num_verify_samples=3,
+    tolerance=1e-3
+)
+```
 
-| Policy | Description | Use Case |
-|--------|-------------|----------|
-| `auto` | Let TensorRT decide | Default, balanced performance |
-| `fp16` | Half precision (FP16) | 2x faster, ~same accuracy |
-| `fp32_tf32` | TensorFlow 32 (TF32) | Good balance for Ampere+ GPUs |
-| `strongly_typed` | Strict type enforcement | For debugging |
-
-### Evaluation Configuration
-
+### `evaluation`
+Configures evaluation runs:
 ```python
 evaluation = dict(
-    enabled=True,                    # Enable evaluation
-    num_samples=1000,                # Number of samples to evaluate
-    verbose=False,                   # Detailed per-sample output
-    models_to_evaluate=[             # Backends to evaluate
-        'pytorch',
-        'onnx',
-        'tensorrt'
-    ]
+    enabled=True,
+    num_samples=100,
+    verbose=False,
+    models=dict(
+        pytorch='path/to/model.pth',
+        onnx='work_dirs/model.onnx',
+        tensorrt='work_dirs/model.engine'
+    )
 )
 ```
+If `models` omit a backend, the runner will fall back to freshly exported artifacts when available.
+
+## Extending the Framework
+1. **Create project-specific components**
+   - Implement `BaseDataLoader` and `BaseEvaluator` subclasses under `projects/<Project>/deploy/`.
+   - Optionally provide backend-specific pipelines by extending classes in `pipelines/<model>/`.
+
+2. **Author a deployment script**
+   - Instantiate project components, parse arguments via `parse_base_args`, and create a `DeploymentRunner` (or subclass).
+   - Pass custom callables (`load_model_fn`, `export_onnx_fn`, `export_tensorrt_fn`) when project logic diverges from the defaults.
+
+3. **Update documentation/configs**
+   - Add configuration examples in `projects/<Project>/deploy/configs/`.
+   - Document project-specific flags in the project README.
+
+Refer to `projects/CenterPoint`, `projects/YOLOX_opt_elan`, and `projects/CalibrationStatusClassification` for complete examples covering multi-stage pipelines, ONNX/TensorRT overrides, and verification workflows.

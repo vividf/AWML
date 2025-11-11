@@ -5,6 +5,10 @@ This is an example deployment config for CenterPoint.
 Modify according to your needs.
 """
 
+# Task type for pipeline building
+# Options: 'detection2d', 'detection3d', 'classification', 'segmentation'
+task_type = "detection3d"
+
 # Export settings
 export = dict(
     mode="both",  # Export both ONNX and TensorRT

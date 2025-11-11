@@ -416,7 +416,8 @@ def main():
     data_loader = CenterPointDataLoader(
         info_file=config.runtime_config["info_file"], 
         model_cfg=model_cfg, 
-        device=config.export_config.device
+        device=config.export_config.device,
+        task_type=config.task_type
     )
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 

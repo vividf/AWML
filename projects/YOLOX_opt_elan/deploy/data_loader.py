@@ -13,8 +13,7 @@ import numpy as np
 import torch
 from mmengine.config import Config
 
-from autoware_ml.deployment.core import BaseDataLoader
-from autoware_ml.deployment.utils import build_test_pipeline
+from autoware_ml.deployment.core import BaseDataLoader, build_preprocessing_pipeline
 
 
 class YOLOXOptElanDataLoader(BaseDataLoader):
@@ -38,6 +37,7 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
         img_prefix: str,
         model_cfg: Config,
         device: str = "cpu",
+        task_type: Optional[str] = None,
     ):
         """
         Initialize YOLOX_opt_elan DataLoader.
@@ -47,6 +47,8 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
             img_prefix: Directory path containing images (can be empty if full paths in annotations)
             model_cfg: Model configuration containing test pipeline
             device: Device to load tensors on ('cpu', 'cuda', etc.)
+            task_type: Task type for pipeline building. If None, will try to get from
+                      model_cfg.task_type or model_cfg.deploy.task_type.
 
         Raises:
             FileNotFoundError: If ann_file doesn't exist
@@ -80,7 +82,8 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
         self.data_list = ann_data.get("data_list", [])
 
         # Build preprocessing pipeline from model config
-        self.pipeline = build_test_pipeline(model_cfg)
+        # task_type should be provided from deploy_config
+        self.pipeline = build_preprocessing_pipeline(model_cfg, task_type=task_type)
 
     def load_sample(self, index: int) -> Dict[str, Any]:
         """
@@ -143,32 +146,51 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
 
     def preprocess(self, sample: Dict[str, Any]) -> torch.Tensor:
         """
-        Preprocess using MMDet pipeline (recommended).
+        Preprocess using MMDet pipeline.
 
         This ensures consistency with training preprocessing.
+        Expects MMDet 3.x format with 'inputs' key containing image tensor.
+
+        Args:
+            sample: Sample dictionary from load_sample()
+
+        Returns:
+            Preprocessed image tensor with shape (1, C, H, W) and dtype float32
+
+        Raises:
+            ValueError: If pipeline output format is unexpected
         """
         # Apply pipeline
         results = self.pipeline(sample)
 
-        # Extract model input
-        # MMDet 3.x uses 'inputs' key
-        if "inputs" in results:
-            inputs = results["inputs"]
-        elif "img" in results:
-            # Fallback for older versions
-            inputs = results["img"]
-        else:
-            raise ValueError(f"Unexpected pipeline output keys: {results.keys()}")
+        # Validate expected format (MMDet 3.x format)
+        if "inputs" not in results:
+            raise ValueError(
+                f"Expected 'inputs' key in pipeline results (MMDet 3.x format). "
+                f"Found keys: {list(results.keys())}"
+            )
+
+        inputs = results["inputs"]
 
         # Convert to tensor if needed
         if isinstance(inputs, torch.Tensor):
             tensor = inputs
-        else:
+        elif isinstance(inputs, np.ndarray):
             tensor = torch.from_numpy(inputs)
+        else:
+            raise ValueError(
+                f"Unexpected type for 'inputs': {type(inputs)}. "
+                f"Expected torch.Tensor or np.ndarray."
+            )
 
         # Ensure batch dimension
         if tensor.ndim == 3:
             tensor = tensor.unsqueeze(0)
+        elif tensor.ndim != 4:
+            raise ValueError(
+                f"Expected tensor with 3 or 4 dimensions (C, H, W) or (B, C, H, W), "
+                f"got shape {tensor.shape}"
+            )
 
         # Convert to float32 if still in uint8 (ByteTensor)
         # This is crucial for ONNX export and model inference

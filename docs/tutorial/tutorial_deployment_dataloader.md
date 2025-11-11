@@ -61,13 +61,13 @@ class BaseDataLoader(ABC):
 
 ### 2. 混合架構的關鍵
 
-使用 `build_test_pipeline()` 從 model config 自動建立 MMDet pipeline：
+使用 `build_preprocessing_pipeline()` 從 model config 自動建立 MMDet pipeline：
 
 ```python
-from autoware_ml.deployment.utils import build_test_pipeline
+from autoware_ml.deployment.core import build_preprocessing_pipeline
 
 # 從 model config 建立 pipeline
-pipeline = build_test_pipeline(model_cfg)
+pipeline = build_preprocessing_pipeline(model_cfg)
 
 # 使用 pipeline 預處理
 results = pipeline(sample_data)
@@ -109,7 +109,7 @@ load_sample(index)
 
 ```python
 from autoware_ml.deployment.core import BaseDataLoader
-from autoware_ml.deployment.utils import build_test_pipeline
+from autoware_ml.deployment.core import build_preprocessing_pipeline
 from mmengine.config import Config
 import torch
 
@@ -131,7 +131,7 @@ class YourProjectDataLoader(BaseDataLoader):
         self.data_infos = self._load_data_index(data_file)
 
         # 2. 建立 MMDet pipeline ⭐
-        self.pipeline = build_test_pipeline(model_cfg)
+        self.pipeline = build_preprocessing_pipeline(model_cfg)
 
         self.device = device
 ```
@@ -230,7 +230,7 @@ def get_ground_truth(self, index: int) -> Dict[str, Any]:
 # projects/YOLOX/deploy/data_loader.py
 
 from autoware_ml.deployment.core import BaseDataLoader
-from autoware_ml.deployment.utils import build_test_pipeline
+from autoware_ml.deployment.core import build_preprocessing_pipeline
 from pycocotools.coco import COCO
 import os
 import torch
@@ -251,7 +251,7 @@ class YOLOXDataLoader(BaseDataLoader):
         self.img_prefix = img_prefix
 
         # 建立 pipeline ⭐
-        self.pipeline = build_test_pipeline(model_cfg)
+        self.pipeline = build_preprocessing_pipeline(model_cfg)
         self.device = device
 
     def load_sample(self, index: int):
@@ -296,7 +296,7 @@ class YOLOXDataLoader(BaseDataLoader):
 # projects/CenterPoint/deploy/data_loader.py
 
 from autoware_ml.deployment.core import BaseDataLoader
-from autoware_ml.deployment.utils import build_test_pipeline
+from autoware_ml.deployment.core import build_preprocessing_pipeline
 import pickle
 import torch
 
@@ -315,7 +315,7 @@ class CenterPointDataLoader(BaseDataLoader):
         self.data_infos = data['data_list']
 
         # 建立 pipeline ⭐
-        self.pipeline = build_test_pipeline(model_cfg)
+        self.pipeline = build_preprocessing_pipeline(model_cfg)
         self.device = device
 
     def load_sample(self, index: int):
@@ -470,7 +470,7 @@ def preprocess(self, sample):
 class CustomDataLoader(BaseDataLoader):
     def __init__(self, ..., use_pipeline=True):
         if use_pipeline:
-            self.pipeline = build_test_pipeline(model_cfg)
+            self.pipeline = build_preprocessing_pipeline(model_cfg)
         else:
             self.pipeline = None
 
@@ -549,7 +549,7 @@ if __name__ == '__main__':
 **混合架構的關鍵點**：
 
 1. 📦 **繼承 BaseDataLoader**
-2. 🔧 **使用 `build_test_pipeline(model_cfg)`** 建立 pipeline
+2. 🔧 **使用 `build_preprocessing_pipeline(model_cfg)`** 建立 pipeline
 3. 📥 **load_sample()** 返回符合 pipeline 輸入格式的資料
 4. ⚙️ **preprocess()** 使用 pipeline 處理，提取 model input
 5. 🎯 **確保與訓練時的預處理完全一致**

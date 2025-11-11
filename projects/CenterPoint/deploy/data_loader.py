@@ -13,8 +13,7 @@ import numpy as np
 import torch
 from mmengine.config import Config
 
-from autoware_ml.deployment.core import BaseDataLoader
-from autoware_ml.deployment.utils import build_test_pipeline
+from autoware_ml.deployment.core import BaseDataLoader, build_preprocessing_pipeline
 
 
 class CenterPointDataLoader(BaseDataLoader):
@@ -35,6 +34,7 @@ class CenterPointDataLoader(BaseDataLoader):
         info_file: str,
         model_cfg: Config,
         device: str = "cpu",
+        task_type: Optional[str] = None,
     ):
         """
         Initialize CenterPoint DataLoader.
@@ -43,6 +43,8 @@ class CenterPointDataLoader(BaseDataLoader):
             info_file: Path to info.pkl file (e.g., centerpoint_infos_val.pkl)
             model_cfg: Model configuration containing test pipeline
             device: Device to load tensors on ('cpu', 'cuda', etc.)
+            task_type: Task type for pipeline building. If None, will try to get from
+                      model_cfg.task_type or model_cfg.deploy.task_type.
 
         Raises:
             FileNotFoundError: If info_file doesn't exist
@@ -67,7 +69,8 @@ class CenterPointDataLoader(BaseDataLoader):
         self.data_infos = self._load_info_file()
 
         # Build preprocessing pipeline
-        self.pipeline = build_test_pipeline(model_cfg)
+        # task_type should be provided from deploy_config
+        self.pipeline = build_preprocessing_pipeline(model_cfg, task_type=task_type)
 
     def _load_info_file(self) -> list:
         """
@@ -182,66 +185,79 @@ class CenterPointDataLoader(BaseDataLoader):
 
     def preprocess(self, sample: Dict[str, Any]) -> Union[Dict[str, torch.Tensor], torch.Tensor]:
         """
-        Preprocess using MMDet3D pipeline (recommended).
+        Preprocess using MMDet3D pipeline.
 
-        This ensures consistency with training preprocessing.
+        For CenterPoint, the test pipeline typically outputs only 'points' (not voxelized).
+        Voxelization is performed by the model's data_preprocessor during inference.
+        This method returns the point cloud tensor for use by the deployment pipeline.
+
+        Args:
+            sample: Sample dictionary from load_sample()
+
+        Returns:
+            Dictionary containing:
+            - points: Point cloud tensor [N, point_features] (typically [N, 5] for x, y, z, intensity, timestamp)
+
+        Raises:
+            ValueError: If pipeline output format is unexpected
         """
         # Apply pipeline
         results = self.pipeline(sample)
 
-        # Extract voxel-based inputs (for CenterPoint)
-        # The exact keys depend on the voxelization method
-        inputs = {}
+        # Validate expected format (MMDet3D 3.x format)
+        if 'inputs' not in results:
+            raise ValueError(
+                f"Expected 'inputs' key in pipeline results (MMDet3D 3.x format). "
+                f"Found keys: {list(results.keys())}. "
+                f"Please ensure your test pipeline includes Pack3DDetInputs transform."
+            )
 
-        # Check if results have 'inputs' key (new MMDet3D format)
-        if 'inputs' in results:
-            pipeline_inputs = results['inputs']
-            # Common keys for voxel-based models
-            voxel_keys = ["voxels", "num_points", "coors"]
-            for key in voxel_keys:
-                if key in pipeline_inputs:
-                    value = pipeline_inputs[key]
-                    if isinstance(value, torch.Tensor):
-                        inputs[key] = value.to(self.device)
-                    else:
-                        inputs[key] = torch.from_numpy(value).to(self.device)
+        pipeline_inputs = results['inputs']
+
+        # For CenterPoint, pipeline should output 'points' (voxelization happens in data_preprocessor)
+        if 'points' not in pipeline_inputs:
+            available_keys = list(pipeline_inputs.keys())
+            raise ValueError(
+                f"Expected 'points' key in pipeline inputs for CenterPoint. "
+                f"Available keys: {available_keys}. "
+                f"Note: For CenterPoint, voxelization is performed by the model's data_preprocessor, "
+                f"not in the test pipeline. The pipeline should output raw points using Pack3DDetInputs."
+            )
+
+        # Extract points
+        points = pipeline_inputs['points']
+        if isinstance(points, torch.Tensor):
+            points_tensor = points.to(self.device)
+        elif isinstance(points, np.ndarray):
+            points_tensor = torch.from_numpy(points).to(self.device)
+        elif isinstance(points, list):
+            # Handle list of point clouds (batch format)
+            if len(points) > 0:
+                if isinstance(points[0], torch.Tensor):
+                    points_tensor = points[0].to(self.device)
+                elif isinstance(points[0], np.ndarray):
+                    points_tensor = torch.from_numpy(points[0]).to(self.device)
+                else:
+                    raise ValueError(
+                        f"Unexpected type for points[0]: {type(points[0])}. "
+                        f"Expected torch.Tensor or np.ndarray."
+                    )
+            else:
+                raise ValueError("Empty points list in pipeline output.")
         else:
-            # Old format: check directly in results
-            voxel_keys = ["voxels", "num_points", "coors"]
-            for key in voxel_keys:
-                if key in results:
-                    value = results[key]
-                    if isinstance(value, torch.Tensor):
-                        inputs[key] = value.to(self.device)
-                    else:
-                        inputs[key] = torch.from_numpy(value).to(self.device)
+            raise ValueError(
+                f"Unexpected type for 'points': {type(points)}. "
+                f"Expected torch.Tensor, np.ndarray, or list of tensors/arrays."
+            )
 
-        # Add batch dimension to coordinates if needed
-        if "coors" in inputs and inputs["coors"].shape[1] == 3:
-            # Add batch_idx column (always 0 for single sample)
-            batch_idx = torch.zeros((inputs["coors"].shape[0], 1), dtype=inputs["coors"].dtype, device=self.device)
-            inputs["coors"] = torch.cat([batch_idx, inputs["coors"]], dim=1)
+        # Validate points shape
+        if points_tensor.ndim != 2:
+            raise ValueError(
+                f"Expected points tensor with shape [N, point_features], "
+                f"got shape {points_tensor.shape}"
+            )
 
-        # Check for points in inputs dict (new MMDet3D format)
-        if 'inputs' in results and 'points' in results['inputs']:
-            points = results['inputs']['points']
-            if isinstance(points, torch.Tensor):
-                inputs["points"] = points.to(self.device)
-            else:
-                inputs["points"] = torch.from_numpy(points).to(self.device)
-        
-        # Alternative: for point-based models (old format)
-        if "points" in results and not inputs:
-            points = results["points"]
-            if isinstance(points, torch.Tensor):
-                inputs["points"] = points.to(self.device)
-            else:
-                inputs["points"] = torch.from_numpy(points).to(self.device)
-
-        if not inputs:
-            raise ValueError(f"No valid inputs found in pipeline results. " f"Available keys: {results.keys()}")
-
-        return inputs
+        return {"points": points_tensor}
 
 
 

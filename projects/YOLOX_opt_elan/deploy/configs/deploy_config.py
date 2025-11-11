@@ -5,6 +5,10 @@ This is an example deployment config for YOLOX_opt_elan object detection.
 Modify according to your needs.
 """
 
+# Task type for pipeline building
+# Options: 'detection2d', 'detection3d', 'classification', 'segmentation'
+task_type = "detection2d"
+
 # Export settings
 export = dict(
     mode="both",  # 'onnx', 'trt', 'both', 'none'
