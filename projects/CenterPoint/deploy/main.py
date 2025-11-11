@@ -1,18 +1,13 @@
 """
-CenterPoint Deployment Main Script.
+CenterPoint Deployment Main Script (Unified Runner Architecture).
 
-This script handles the complete deployment pipeline for CenterPoint:
+This script uses the unified deployment runner to handle the complete deployment workflow:
 - Export to ONNX and/or TensorRT
 - Verify outputs across backends
 - Evaluate model performance
-
-This is a modernized version that integrates with the unified deployment framework,
-replacing the old DeploymentRunner approach.
 """
 
-import argparse
 import copy
-import logging
 import os
 import sys
 from pathlib import Path
@@ -28,6 +23,8 @@ sys.path.insert(0, str(project_root))
 
 from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
 from autoware_ml.deployment.core.base_config import parse_base_args
+from autoware_ml.deployment.exporters.tensorrt_exporter import TensorRTExporter
+from autoware_ml.deployment.runners import DeploymentRunner
 from projects.CenterPoint.deploy.data_loader import CenterPointDataLoader
 from projects.CenterPoint.deploy.evaluator import CenterPointEvaluator
 
@@ -49,22 +46,24 @@ def parse_args():
 
 
 def load_pytorch_model(
-    model_cfg: Config,
     checkpoint_path: str,
+    model_cfg: Config,
     device: str,
     replace_onnx_models: bool = False,
     rot_y_axis_reference: bool = False,
+    **kwargs
 ):
     """
     Load PyTorch model from checkpoint.
-
+    
     Args:
-        model_cfg: Model configuration
         checkpoint_path: Path to checkpoint file
+        model_cfg: Model configuration
         device: Device to load model on
         replace_onnx_models: Whether to replace with ONNX-compatible models
         rot_y_axis_reference: Whether to use y-axis rotation reference
-
+        **kwargs: Additional arguments
+        
     Returns:
         Tuple of (loaded model, modified model config)
     """
@@ -112,18 +111,19 @@ def load_pytorch_model(
     return model, modified_cfg
 
 
+# TODO(vividf): rethinking the onnx export for centerpoint_onnx.
 def export_onnx(
-    model,
+    pytorch_model,
     data_loader: CenterPointDataLoader,
     config: BaseDeploymentConfig,
-    logger: logging.Logger,
-    onnx_opset_version: int = 13,
+    logger,
+    **kwargs
 ) -> str:
     """
     Export model to ONNX format.
-
+    
     For CenterPoint, this uses the model's built-in save_onnx method.
-
+    
     Returns:
         Path to exported ONNX file directory
     """
@@ -135,14 +135,17 @@ def export_onnx(
     output_dir = config.export_config.work_dir
     os.makedirs(output_dir, exist_ok=True)
 
+    # Get ONNX opset version
+    onnx_opset_version = config.onnx_config.get("opset_version", 13)
+
     # Check if model has save_onnx method
-    if hasattr(model, "save_onnx"):
+    if hasattr(pytorch_model, "save_onnx"):
         logger.info(f"Using model's built-in save_onnx method")
         logger.info(f"Output directory: {output_dir}")
         logger.info(f"Using real data for ONNX export (sample_idx=0)")
 
         # Export using model's method with real data
-        model.save_onnx(
+        pytorch_model.save_onnx(
             save_dir=output_dir, 
             onnx_opset_version=onnx_opset_version,
             data_loader=data_loader,
@@ -156,15 +159,21 @@ def export_onnx(
         logger.error("Please use --replace-onnx-models flag or implement ONNX export")
         return None
 
-
-def export_tensorrt(onnx_dir: str, config: BaseDeploymentConfig, logger: logging.Logger) -> str:
+# TODO(vividf): rethinking the tensorrt export for centerpoint_onnx.
+def export_tensorrt(
+    onnx_path: str,
+    config: BaseDeploymentConfig,
+    data_loader: CenterPointDataLoader,
+    logger,
+    **kwargs
+) -> str:
     """
     Export ONNX models to TensorRT engines.
-
+    
     CenterPoint generates two ONNX files:
     1. pts_voxel_encoder.onnx - voxel feature extraction
     2. pts_backbone_neck_head.onnx - backbone, neck, and head processing
-
+    
     Returns:
         Path to exported TensorRT engine directory
     """
@@ -173,11 +182,8 @@ def export_tensorrt(onnx_dir: str, config: BaseDeploymentConfig, logger: logging
     logger.info("=" * 80)
 
     # Create TensorRT output directory
-    trt_dir = os.path.join(onnx_dir, "tensorrt")
+    trt_dir = os.path.join(onnx_path, "tensorrt")
     os.makedirs(trt_dir, exist_ok=True)
-
-    # Import TensorRT exporter
-    from autoware_ml.deployment.exporters.tensorrt_exporter import TensorRTExporter
 
     # Get TensorRT configuration
     trt_config = config.backend_config.common_config.copy()
@@ -192,11 +198,11 @@ def export_tensorrt(onnx_dir: str, config: BaseDeploymentConfig, logger: logging
     total_count = len(onnx_files)
 
     for onnx_file, trt_file in onnx_files:
-        onnx_path = os.path.join(onnx_dir, onnx_file)
+        onnx_file_path = os.path.join(onnx_path, onnx_file)
         trt_path = os.path.join(trt_dir, trt_file)
 
-        if not os.path.exists(onnx_path):
-            logger.warning(f"ONNX file not found: {onnx_path}")
+        if not os.path.exists(onnx_file_path):
+            logger.warning(f"ONNX file not found: {onnx_file_path}")
             continue
 
         logger.info(f"Converting {onnx_file} to TensorRT...")
@@ -221,7 +227,7 @@ def export_tensorrt(onnx_dir: str, config: BaseDeploymentConfig, logger: logging
             model=None,  # Not used for TensorRT
             sample_input=sample_input,
             output_path=trt_path,
-            onnx_path=onnx_path
+            onnx_path=onnx_file_path
         )
 
         if success:
@@ -241,297 +247,142 @@ def export_tensorrt(onnx_dir: str, config: BaseDeploymentConfig, logger: logging
         return None
 
 
-def get_models_to_evaluate(eval_config: dict, logger: logging.Logger) -> list:
+class CenterPointDeploymentRunner(DeploymentRunner):
     """
-    Get list of models to evaluate from config.
-
-    Args:
-        eval_config: Evaluation configuration
-        logger: Logger instance
-
-    Returns:
-        List of tuples (backend_name, model_path)
-    """
-    models_config = eval_config.get("models", {})
-    models_to_evaluate = []
-
-    backend_mapping = {
-        "pytorch": "pytorch",
-        "onnx": "onnx",
-        "tensorrt": "tensorrt",
-    }
-
-    for backend_key, model_path in models_config.items():
-        backend_name = backend_mapping.get(backend_key.lower())
-        if backend_name and model_path:
-            # Check if path exists and is valid for the backend
-            is_valid = False
-            
-            if backend_name == "pytorch":
-                # PyTorch: check if checkpoint file exists
-                is_valid = os.path.exists(model_path) and os.path.isfile(model_path)
-            elif backend_name == "onnx":
-                # ONNX: check if directory exists and contains ONNX files
-                if os.path.exists(model_path) and os.path.isdir(model_path):
-                    onnx_files = [f for f in os.listdir(model_path) if f.endswith('.onnx')]
-                    is_valid = len(onnx_files) > 0
-            elif backend_name == "tensorrt":
-                # TensorRT: check if directory exists and contains engine files
-                if os.path.exists(model_path) and os.path.isdir(model_path):
-                    engine_files = [f for f in os.listdir(model_path) if f.endswith('.engine')]
-                    is_valid = len(engine_files) > 0
-            
-            if is_valid:
-                models_to_evaluate.append((backend_name, model_path))
-                logger.info(f"  - {backend_name}: {model_path}")
-            else:
-                logger.warning(f"  - {backend_name}: {model_path} (not found or invalid, skipping)")
-
-    return models_to_evaluate
-
-def load_model(
-    model_cfg: Config,
-    checkpoint: str,
-    device: str,
-    replace_onnx_models: bool,
-    rot_y_axis_reference: bool,
-    logger: logging.Logger,
-) -> tuple[Any, Config]:
-    """
-    Load PyTorch model from checkpoint.
+    CenterPoint-specific deployment runner.
     
-    Args:
-        model_cfg: Model configuration
-        checkpoint: Path to checkpoint file
-        device: Device to load model on
-        replace_onnx_models: Whether to replace with ONNX-compatible models
-        rot_y_axis_reference: Whether to use y-axis rotation reference
-        logger: Logger instance
+    Handles CenterPoint-specific requirements:
+    - Special model loading with ONNX-compatible replacements
+    - Custom ONNX export using model's save_onnx method
+    - Multi-file TensorRT export
+    - Dual model configs (original and ONNX-compatible)
+    """
+    
+    def __init__(
+        self,
+        data_loader: CenterPointDataLoader,
+        evaluator: CenterPointEvaluator,
+        config: BaseDeploymentConfig,
+        model_cfg: Config,
+        logger,
+        replace_onnx_models: bool = False,
+        rot_y_axis_reference: bool = False,
+    ):
+        # Store original model config
+        self.original_model_cfg = copy.deepcopy(model_cfg)
+        self.replace_onnx_models = replace_onnx_models
+        self.rot_y_axis_reference = rot_y_axis_reference
+        self.onnx_model_cfg = None
         
-    Returns:
-        Tuple of (loaded model, modified model config)
-    """
-    if not checkpoint:
-        logger.error("Checkpoint required")
-        return None, model_cfg
-    
-    logger.info("\nLoading PyTorch model...")
-    
-    if replace_onnx_models:
-        logger.info("Loading model with ONNX-compatible configuration")
-        pytorch_model, onnx_model_cfg = load_pytorch_model(
-            model_cfg,
-            checkpoint,
-            device,
-            replace_onnx_models=True,
-            rot_y_axis_reference=rot_y_axis_reference,
-        )
-    else:
-        logger.info("Loading model with original configuration")
-        pytorch_model, onnx_model_cfg = load_pytorch_model(
-            model_cfg,
-            checkpoint,
-            device,
-            replace_onnx_models=False,
-            rot_y_axis_reference=False,
-        )
-    
-    logger.info("✅ PyTorch model loaded successfully")
-    return pytorch_model, onnx_model_cfg
-
-
-def export_models(
-    pytorch_model: Any,
-    data_loader: CenterPointDataLoader,
-    config: BaseDeploymentConfig,
-    logger: logging.Logger,
-) -> tuple[str, str]:
-    """
-    Export models to ONNX and TensorRT.
-    
-    Args:
-        pytorch_model: PyTorch model
-        data_loader: Data loader for export
-        config: Deployment configuration
-        logger: Logger instance
+        # Create custom load function
+        def load_model_fn(checkpoint_path, **kwargs):
+            model, modified_cfg = load_pytorch_model(
+                checkpoint_path=checkpoint_path,
+                model_cfg=model_cfg,
+                device=config.export_config.device,
+                replace_onnx_models=replace_onnx_models,
+                rot_y_axis_reference=rot_y_axis_reference,
+                **kwargs
+            )
+            self.onnx_model_cfg = modified_cfg
+            return model
         
-    Returns:
-        Tuple of (onnx_path, trt_path)
-    """
-    onnx_path = None
-    trt_path = None
-    
-    # Export ONNX
-    if config.export_config.should_export_onnx():
-        onnx_opset = config.onnx_config.get("opset_version", 13)
-        onnx_path = export_onnx(pytorch_model, data_loader, config, logger, onnx_opset_version=onnx_opset)
-    elif config.runtime_config.get("onnx_file"):
-        onnx_path = config.runtime_config["onnx_file"]
-    
-    # Export TensorRT
-    if config.export_config.should_export_tensorrt() and onnx_path:
-        trt_path = export_tensorrt(onnx_path, config, logger)
-    
-    return onnx_path, trt_path
-
-
-def run_verification(
-    pytorch_checkpoint: str,
-    onnx_path: str,
-    trt_path: str,
-    data_loader: CenterPointDataLoader,
-    config: BaseDeploymentConfig,
-    onnx_model_cfg: Config,
-    logger: logging.Logger,
-):
-    """
-    Run verification on exported models.
-    
-    Args:
-        pytorch_checkpoint: Path to PyTorch checkpoint (reference)
-        onnx_path: Path to ONNX model directory
-        trt_path: Path to TensorRT model directory
-        data_loader: Data loader for test samples
-        config: Deployment configuration
-        onnx_model_cfg: ONNX-compatible model config
-        logger: Logger instance
-    """
-    # Verification
-    if not config.export_config.verify:
-        logger.info("Verification disabled, skipping...")
-        return
-
-    if not pytorch_checkpoint:
-        logger.warning("PyTorch checkpoint path not available, skipping verification")
-        return
-    
-    if not onnx_path and not trt_path:
-        logger.info("No exported models to verify, skipping verification")
-        return
-    
-    # Get verification parameters
-    num_verify_samples = config.verification_config.get("num_verify_samples", 5)
-    tolerance = config.verification_config.get("tolerance", 0.1)
-    
-    # Create evaluator with ONNX-compatible config for verification
-    evaluator = CenterPointEvaluator(onnx_model_cfg)
-    
-    # Run verification
-    verification_results = evaluator.verify(
-        pytorch_model_path=pytorch_checkpoint,
-        onnx_model_path=onnx_path,
-        tensorrt_model_path=trt_path,
-        data_loader=data_loader,
-        num_samples=num_verify_samples,
-        device=config.export_config.device,
-        tolerance=tolerance,
-        verbose=False,
-    )
-    
-    # Check if verification succeeded
-    if 'summary' in verification_results:
-        summary = verification_results['summary']
-        if summary['failed'] == 0:
-            if summary.get('skipped', 0) > 0:
-                logger.info(f"\n✅ All verifications passed! ({summary['skipped']} skipped)")
-            else:
-                logger.info("\n✅ All verifications passed!")
-        else:
-            logger.warning(f"\n⚠️  {summary['failed']}/{summary['total']} verifications failed")
-    else:
-        logger.error("\n❌ Verification encountered errors")
-
-
-def run_evaluation(
-    data_loader: CenterPointDataLoader,
-    config: BaseDeploymentConfig,
-    original_model_cfg: Config,
-    onnx_model_cfg: Config,
-    logger: logging.Logger,
-):
-    """
-    Run evaluation on specified models.
-    
-    Args:
-        data_loader: Data loader for samples
-        config: Deployment configuration
-        original_model_cfg: Original model config (for PyTorch evaluation)
-        onnx_model_cfg: ONNX-compatible model config (for ONNX/TensorRT evaluation)
-        logger: Logger instance
-    """
-    eval_config = config.evaluation_config
-
-    if not eval_config.get("enabled", False):
-        logger.info("Evaluation disabled, skipping...")
-        return
-
-    logger.info("=" * 80)
-    logger.info("Running Evaluation")
-    logger.info("=" * 80)
-
-    # Get models to evaluate from config
-    models_to_evaluate = get_models_to_evaluate(eval_config, logger)
-
-    if not models_to_evaluate:
-        logger.warning("No models found for evaluation")
-        return
-
-    num_samples = eval_config.get("num_samples", 50)
-    if num_samples == -1:
-        num_samples = data_loader.get_num_samples()
-
-    all_results = {}
-
-    for backend, model_path in models_to_evaluate:
-        # Choose the appropriate config based on backend
-        if backend == "pytorch":
-            # PyTorch: use original config (no ONNX modifications)
-            model_cfg = original_model_cfg
-            logger.info(f"\nEvaluating {backend.upper()} with original model config")
-            logger.info(f"  Model type: {model_cfg.model.type}")
-            logger.info(f"  Voxel encoder: {model_cfg.model.pts_voxel_encoder.type}")
-        else:
-            # ONNX/TensorRT: use ONNX-compatible config
-            model_cfg = onnx_model_cfg
-            logger.info(f"\nEvaluating {backend.upper()} with ONNX-compatible config")
-            logger.info(f"  Model type: {model_cfg.model.type}")
-            logger.info(f"  Voxel encoder: {model_cfg.model.pts_voxel_encoder.type}")
-        
-        # Create evaluator with the appropriate config
-        evaluator = CenterPointEvaluator(model_cfg)
-        
-        results = evaluator.evaluate(
-            model_path=model_path,
+        super().__init__(
             data_loader=data_loader,
-            num_samples=num_samples,
-            backend=backend,
-            device=config.export_config.device,
-            verbose=eval_config.get("verbose", False),
+            evaluator=evaluator,
+            config=config,
+            model_cfg=model_cfg,
+            logger=logger,
+            load_model_fn=load_model_fn,
+            export_onnx_fn=export_onnx,
+            export_tensorrt_fn=export_tensorrt,
         )
-
-        all_results[backend] = results
-
-        logger.info(f"\n{backend.upper()} Results:")
-        evaluator.print_results(results)
-
-    # Compare results across backends
-    if len(all_results) > 1:
-        logger.info("\n" + "=" * 80)
-        logger.info("Cross-Backend Comparison")
-        logger.info("=" * 80)
-
-        for backend, results in all_results.items():
-            logger.info(f"\n{backend.upper()}:")
-            if results:  # Check if results is not empty
-                logger.info(f"  Total Predictions: {results.get('total_predictions', 0)}")
-                if 'latency' in results:
-                    logger.info(f"  Latency: {results['latency']['mean_ms']:.2f} ± {results['latency']['std_ms']:.2f} ms")
+    
+    def run_evaluation(self, **kwargs) -> dict:
+        """
+        Run evaluation with appropriate model configs for each backend.
+        
+        CenterPoint needs different configs for PyTorch vs ONNX/TensorRT.
+        """
+        eval_config = self.config.evaluation_config
+        
+        if not eval_config.get("enabled", False):
+            self.logger.info("Evaluation disabled, skipping...")
+            return {}
+        
+        self.logger.info("=" * 80)
+        self.logger.info("Running Evaluation")
+        self.logger.info("=" * 80)
+        
+        # Get models to evaluate from config
+        models_to_evaluate = self.get_models_to_evaluate()
+        
+        if not models_to_evaluate:
+            self.logger.warning("No models found for evaluation")
+            return {}
+        
+        num_samples = eval_config.get("num_samples", 50)
+        if num_samples == -1:
+            num_samples = self.data_loader.get_num_samples()
+        
+        all_results = {}
+        
+        for backend, model_path in models_to_evaluate:
+            # Choose the appropriate config based on backend
+            if backend == "pytorch":
+                # PyTorch: use original config (no ONNX modifications)
+                model_cfg = self.original_model_cfg
+                self.logger.info(f"\nEvaluating {backend.upper()} with original model config")
+                self.logger.info(f"  Model type: {model_cfg.model.type}")
+                self.logger.info(f"  Voxel encoder: {model_cfg.model.pts_voxel_encoder.type}")
             else:
-                logger.info("  No results available")
+                # ONNX/TensorRT: use ONNX-compatible config
+                if self.onnx_model_cfg is None:
+                    self.logger.warning("ONNX-compatible config not available, using original config")
+                    model_cfg = self.original_model_cfg
+                else:
+                    model_cfg = self.onnx_model_cfg
+                self.logger.info(f"\nEvaluating {backend.upper()} with ONNX-compatible config")
+                self.logger.info(f"  Model type: {model_cfg.model.type}")
+                self.logger.info(f"  Voxel encoder: {model_cfg.model.pts_voxel_encoder.type}")
+            
+            # Create evaluator with the appropriate config
+            evaluator = CenterPointEvaluator(model_cfg)
+            
+            results = evaluator.evaluate(
+                model_path=model_path,
+                data_loader=self.data_loader,
+                num_samples=num_samples,
+                backend=backend,
+                device=self.config.export_config.device,
+                verbose=eval_config.get("verbose", False),
+            )
+            
+            all_results[backend] = results
+            
+            self.logger.info(f"\n{backend.upper()} Results:")
+            evaluator.print_results(results)
+        
+        # Compare results across backends
+        if len(all_results) > 1:
+            self.logger.info("\n" + "=" * 80)
+            self.logger.info("Cross-Backend Comparison")
+            self.logger.info("=" * 80)
+            
+            for backend, results in all_results.items():
+                self.logger.info(f"\n{backend.upper()}:")
+                if results:  # Check if results is not empty
+                    self.logger.info(f"  Total Predictions: {results.get('total_predictions', 0)}")
+                    if 'latency' in results:
+                        self.logger.info(f"  Latency: {results['latency']['mean_ms']:.2f} ± {results['latency']['std_ms']:.2f} ms")
+                else:
+                    self.logger.info("  No results available")
+        
+        return all_results
 
 
 def main():
-    """Main deployment pipeline."""
+    """Main deployment pipeline using unified runner."""
     # Parse arguments
     args = parse_args()
 
@@ -569,57 +420,22 @@ def main():
     )
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
-    # Prepare model configurations
-    original_model_cfg = copy.deepcopy(model_cfg)
-    onnx_model_cfg = model_cfg
-    pytorch_model = None
-    onnx_path = None
-    trt_path = None
-    
-    # Check if we need model loading and export
-    eval_config = config.evaluation_config
-    needs_export = config.export_config.mode != "none"
-    needs_onnx_eval = False
-    if eval_config.get("enabled", False):
-        models_to_eval = eval_config.get("models", {})
-        if models_to_eval.get("onnx") or models_to_eval.get("tensorrt"):
-            needs_onnx_eval = True
-    
-    # Load model if needed for export or ONNX/TensorRT evaluation
-    if needs_export or needs_onnx_eval:
-        if not args.checkpoint:
-            if needs_export:
-                logger.error("Checkpoint required for export")
-            else:
-                logger.error("Checkpoint required for ONNX/TensorRT evaluation")
-            logger.error("Please provide --checkpoint argument")
-            return
-        
-        pytorch_model, onnx_model_cfg = load_model(
-            model_cfg,
-            args.checkpoint,
-            config.export_config.device,
-            args.replace_onnx_models,
-            args.rot_y_axis_reference,
-            logger,
-        )
-        
-        # Export models
-        onnx_path, trt_path = export_models(pytorch_model, data_loader, config, logger)
+    # Create evaluator (will be recreated with appropriate config during evaluation)
+    evaluator = CenterPointEvaluator(model_cfg)
 
-    # Verification
-    run_verification(
-        pytorch_checkpoint=args.checkpoint,
-        onnx_path=onnx_path,
-        trt_path=trt_path,
+    # Create CenterPoint-specific runner
+    runner = CenterPointDeploymentRunner(
         data_loader=data_loader,
+        evaluator=evaluator,
         config=config,
-        onnx_model_cfg=onnx_model_cfg,
+        model_cfg=model_cfg,
         logger=logger,
+        replace_onnx_models=args.replace_onnx_models,
+        rot_y_axis_reference=args.rot_y_axis_reference,
     )
 
-    # Evaluation
-    run_evaluation(data_loader, config, original_model_cfg, onnx_model_cfg, logger)
+    # Execute deployment workflow
+    runner.run(checkpoint_path=args.checkpoint)
 
     logger.info("\n" + "=" * 80)
     logger.info("Deployment Complete!")

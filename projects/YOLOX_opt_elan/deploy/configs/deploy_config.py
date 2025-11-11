@@ -65,7 +65,7 @@ backend_config = dict(
     common_config=dict(
         # Precision policy for TensorRT
         # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
-        precision_policy="fp16",
+        precision_policy="auto",
         # TensorRT workspace size (bytes)
         max_workspace_size=1 << 30,  # 1 GB
     ),
@@ -76,7 +76,7 @@ backend_config = dict(
 
 # Evaluation configuration
 evaluation = dict(
-    enabled=True,  # Enable evaluation
+    enabled=False,  # Enable evaluation
     num_samples=1,  # Number of samples to evaluate (set to -1 for all)
     verbose=True,  # Detailed per-sample output
     # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)

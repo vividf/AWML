@@ -10,12 +10,14 @@ TensorRT, TorchScript, etc.).
 from .core.base_config import BaseDeploymentConfig
 from .core.base_data_loader import BaseDataLoader
 from .core.base_evaluator import BaseEvaluator
+from .runners import DeploymentRunner
 from .utils import build_test_pipeline
 
 __all__ = [
     "BaseDeploymentConfig",
     "BaseDataLoader",
     "BaseEvaluator",
+    "DeploymentRunner",
     "build_test_pipeline",
 ]
 

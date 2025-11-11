@@ -58,7 +58,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
     specifically for object detection task (8 classes).
     """
 
-    def __init__(self, model_cfg: Config, class_names: List[str] = None):
+    def __init__(self, model_cfg: Config, model_cfg_path: str, class_names: List[str] = None):
         """
         Initialize YOLOX_opt_elan evaluator.
 
@@ -68,6 +68,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         """
         super().__init__(config={})
         self.model_cfg = model_cfg
+        self.model_cfg_path = model_cfg_path
 
         # Get class names from config
         if class_names is not None:
@@ -149,7 +150,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         
         # Load PyTorch model and create pipeline (reference)
         logger.info("\nInitializing PyTorch reference pipeline...")
-        pytorch_model = load_pytorch_model(self.model_cfg, pytorch_model_path, device)
+        pytorch_model = load_pytorch_model(pytorch_model_path, self.model_cfg_path, device)
 
         # TODO(vividf): check this
         # Create PyTorch pipeline (replace ReLU6 with ReLU to match ONNX export)
@@ -512,7 +513,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             num_classes = len(class_names)
 
         if backend == "pytorch":
-            model = init_detector(self.model_cfg, model_path, device=device)
+            model = init_detector(self.model_cfg_path, model_path, device=device)
             # Replace ReLU6 with ReLU to match ONNX export (for consistency)
             def replace_relu6_with_relu(module):
                 for name, child in module.named_children():
