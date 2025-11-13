@@ -5,7 +5,7 @@ This module implements evaluation for CenterPoint 3D object detection models.
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -29,12 +29,16 @@ class CenterPointEvaluator(BaseEvaluator):
     Note: For production, should integrate with mmdet3d's evaluation metrics.
     """
 
-    def __init__(self, model_cfg: Config, class_names: List[str] = None):
+    def __init__(
+        self,
+        model_cfg: Config,
+        class_names: List[str] = None,
+    ):
         """
         Initialize CenterPoint evaluator.
 
         Args:
-            model_cfg: Model configuration
+            model_cfg: ONNX-compatible model configuration (used for all backends)
             class_names: List of class names (optional)
         """
         super().__init__(config={})
@@ -465,18 +469,19 @@ class CenterPointEvaluator(BaseEvaluator):
             
             device_obj = torch.device(device) if isinstance(device, str) else device
             
+            # Use unified ONNX-compatible config for all backends
+            cfg_for_backend = self.model_cfg
+
             # Load PyTorch model (required by all backends)
             if backend == "pytorch":
-                pytorch_model = self._load_pytorch_model_directly(model_path, device_obj, logger)
+                pytorch_model = self._load_pytorch_model(
+                    model_path, device_obj, logger, cfg_for_backend
+                )
                 return CenterPointPyTorchPipeline(pytorch_model, device=str(device_obj))
                 
             elif backend == "onnx":
-                # Verify ONNX-compatible config
-                if self.model_cfg.model.type != "CenterPointONNX":
-                    logger.error("Model config is not ONNX-compatible!")
-                    logger.error(f"Current model type: {self.model_cfg.model.type}")
-                    logger.error("Expected model type: CenterPointONNX")
-                    raise ValueError("ONNX requires ONNX-compatible model config")
+                # ONNX pipeline uses ONNX Runtime for voxel encoder and head;
+                # PyTorch model is used for preprocessing/middle encoder/postprocessing.
                 
                 # Find checkpoint path
                 import os
@@ -484,7 +489,9 @@ class CenterPointEvaluator(BaseEvaluator):
                 if not os.path.exists(checkpoint_path):
                     checkpoint_path = model_path.replace('_deployment', '/best_checkpoint.pth')
                 
-                pytorch_model = self._load_pytorch_model_directly(checkpoint_path, device_obj, logger)
+                pytorch_model = self._load_pytorch_model(
+                    checkpoint_path, device_obj, logger, cfg_for_backend
+                )
                 return CenterPointONNXPipeline(pytorch_model, onnx_dir=model_path, device=str(device_obj))
                 
             elif backend == "tensorrt":
@@ -493,11 +500,6 @@ class CenterPointEvaluator(BaseEvaluator):
                     logger.warning("TensorRT requires CUDA device, skipping TensorRT evaluation")
                     return None
                 
-                # Verify ONNX-compatible config
-                if self.model_cfg.model.type != "CenterPointONNX":
-                    logger.error("TensorRT requires ONNX-compatible model config")
-                    raise ValueError("TensorRT requires ONNX-compatible model config")
-                
                 # Find checkpoint path
                 import os
                 checkpoint_path = model_path.replace('centerpoint_deployment/tensorrt', 'centerpoint/best_checkpoint.pth')
@@ -505,12 +507,10 @@ class CenterPointEvaluator(BaseEvaluator):
                 if not os.path.exists(checkpoint_path):
                     checkpoint_path = model_path.replace('_deployment/tensorrt', '/best_checkpoint.pth')
                 
-                pytorch_model = self._load_pytorch_model_directly(checkpoint_path, device_obj, logger)
+                pytorch_model = self._load_pytorch_model(
+                    checkpoint_path, device_obj, logger, cfg_for_backend
+                )
                 return CenterPointTensorRTPipeline(pytorch_model, tensorrt_dir=model_path, device=str(device_obj))
-                
-            else:
-                logger.error(f"Unsupported backend: {backend}")
-                return None
                 
         except Exception as e:
             logger.error(f"Failed to create {backend} Pipeline: {e}")
@@ -518,7 +518,13 @@ class CenterPointEvaluator(BaseEvaluator):
             traceback.print_exc()
             return None
 
-    def _load_pytorch_model_directly(self, checkpoint_path: str, device: torch.device, logger) -> Any:
+    def _load_pytorch_model(
+        self,
+        checkpoint_path: str,
+        device: torch.device,
+        logger,
+        model_cfg: Config,
+    ) -> Any:
         """
         Load PyTorch model directly without using init_model to avoid CUDA checks.
         
@@ -539,7 +545,7 @@ class CenterPointEvaluator(BaseEvaluator):
             init_default_scope("mmdet3d")
             
             # Get model config - use deepcopy to avoid modifying shared nested objects
-            model_config = copy_module.deepcopy(self.model_cfg.model)
+            model_config = copy_module.deepcopy(model_cfg.model)
             
             # For ONNX models, ensure device is set
             if hasattr(model_config, 'device'):
@@ -553,7 +559,7 @@ class CenterPointEvaluator(BaseEvaluator):
             model.to(device)
             
             # Add cfg attribute to model (required by inference_detector)
-            model.cfg = self.model_cfg
+            model.cfg = model_cfg
             
             # Load checkpointoriginal_model_cfg
             logger.info(f"Loading checkpoint from: {checkpoint_path}")
@@ -575,7 +581,7 @@ class CenterPointEvaluator(BaseEvaluator):
                 try:
                     from mmdet3d.apis import init_model
                     logger.info("Falling back to init_model...")
-                    model = init_model(self.model_cfg, checkpoint_path, device=device)
+                    model = init_model(model_cfg, checkpoint_path, device=device)
                     return model
                 except Exception as fallback_e:
                     logger.error(f"Fallback to init_model also failed: {fallback_e}")

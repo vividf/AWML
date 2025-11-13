@@ -144,6 +144,7 @@ class CenterPointONNX(CenterPoint):
         )
         return input_features, voxel_dict
 
+    # TODO(vividff): this is moved to centerpoint onnx exporter.
     def save_onnx(
         self,
         save_dir: str,

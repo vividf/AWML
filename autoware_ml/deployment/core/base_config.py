@@ -179,7 +179,7 @@ class BaseDeploymentConfig:
             if isinstance(additional_output, str):
                 output_names.append(additional_output)
         
-        return {
+        settings = {
             "opset_version": onnx_config.get("opset_version", 16),
             "do_constant_folding": onnx_config.get("do_constant_folding", True),
             "input_names": input_names,
@@ -191,6 +191,12 @@ class BaseDeploymentConfig:
             "decode_in_inference": onnx_config.get("decode_in_inference", True),
             "batch_size": batch_size,
         }
+        
+        # Include model_wrapper config if present in onnx_config
+        if "model_wrapper" in onnx_config:
+            settings["model_wrapper"] = onnx_config["model_wrapper"]
+        
+        return settings
 
     def get_tensorrt_settings(self) -> Dict[str, Any]:
         """

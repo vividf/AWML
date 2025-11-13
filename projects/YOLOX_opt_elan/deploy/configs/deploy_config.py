@@ -62,6 +62,12 @@ onnx_config = dict(
     save_file="yolox_opt_elan.onnx",
     keep_initializers_as_inputs=False,
     simplify=True,
+    # Model wrapper configuration for ONNX export
+    # num_classes will be automatically extracted from model.bbox_head.num_classes
+    model_wrapper=dict(
+        type='yolox',
+        # num_classes is optional - will be auto-extracted from model if not provided
+    ),
 )
 
 # Backend configuration
