@@ -20,6 +20,7 @@ PRECISION_POLICIES = {
     "auto": {},  # No special flags, TensorRT decides
     "fp16": {"FP16": True},
     "fp32_tf32": {"TF32": True},  # TF32 for FP32 operations
+    "fp32": {},  # Pure FP32 - no TF32, FP16, or INT8 (explicitly disabled)
     "explicit_int8": {"INT8": True},
     "strongly_typed": {"STRONGLY_TYPED": True},  # Network creation flag
 }

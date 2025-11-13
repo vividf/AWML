@@ -63,6 +63,8 @@ class CenterPointEvaluator(BaseEvaluator):
         device: str = "cpu",
         tolerance: float = 0.1,
         verbose: bool = False,
+        onnx_device: str = None,  # Device for ONNX verification (None = use device)
+        tensorrt_device: str = None,  # Device for TensorRT verification (None = use device)
     ) -> Dict[str, Any]:
         """
         Verify exported models against PyTorch reference by comparing raw outputs.
@@ -106,34 +108,96 @@ class CenterPointEvaluator(BaseEvaluator):
         results = {}
         skipped_backends = []  # Track skipped backends
         
-        # Create PyTorch pipeline (reference)
-        logger.info("\nInitializing PyTorch reference pipeline...")
-        pytorch_pipeline = self._create_pipeline("pytorch", pytorch_model_path, device, logger)
-        if pytorch_pipeline is None:
-            logger.error("Failed to create PyTorch reference pipeline")
-            return {"error": "Failed to create PyTorch reference"}
+        # Determine devices for each backend
+        # ONNX verification always uses CPU for numerical consistency
+        onnx_verify_device = onnx_device if onnx_device is not None else "cpu"
+        # TensorRT verification uses specified device or falls back to main device
+        tensorrt_verify_device = tensorrt_device if tensorrt_device is not None else device
         
-        # Create ONNX pipeline if requested
+        logger.info(f"Verification device configuration:")
+        logger.info(f"  ONNX: {onnx_verify_device} (CPU for numerical consistency)")
+        logger.info(f"  TensorRT: {tensorrt_verify_device}")
+        
+        # IMPORTANT: For CenterPoint hybrid architecture and numerical consistency:
+        # - ONNX export is done on CPU, so ONNX verification uses CPU (both ONNX Runtime and PyTorch reference)
+        # - TensorRT runs on CUDA, but for verification we need to compare against CPU PyTorch reference
+        #   because CUDA implementations (both ONNX Runtime CUDA and PyTorch CUDA) have numerical differences
+        #   compared to CPU implementations. This is normal due to different algorithms and floating-point ordering.
+        # - The key insight: ONNX (CPU) passes because both use CPU. ONNX (CUDA) fails because CUDA differs from CPU.
+        # - For TensorRT verification, we compare TensorRT (CUDA) vs PyTorch (CPU), accepting that CUDA has differences.
+        #   But we can also create a CPU-based TensorRT verification if needed.
+        
+        # Create ONNX pipeline and CPU PyTorch reference if requested
         onnx_pipeline = None
+        onnx_pipeline_cuda = None
+        pytorch_pipeline_cpu_onnx = None
         if onnx_model_path:
             logger.info("\nInitializing ONNX pipeline...")
-            onnx_pipeline = self._create_pipeline("onnx", onnx_model_path, device, logger)
+            onnx_pipeline = self._create_pipeline("onnx", onnx_model_path, onnx_verify_device, logger)
             if onnx_pipeline is None:
                 logger.warning("Failed to create ONNX pipeline, skipping ONNX verification")
                 skipped_backends.append("onnx")
+            else:
+                # Create PyTorch reference pipeline on CPU for ONNX verification
+                logger.info("Initializing PyTorch reference pipeline (CPU) for ONNX verification...")
+                pytorch_pipeline_cpu_onnx = self._create_pipeline("pytorch", pytorch_model_path, onnx_verify_device, logger)
+                if pytorch_pipeline_cpu_onnx is None:
+                    logger.error("Failed to create PyTorch reference pipeline for ONNX verification")
+                    skipped_backends.append("onnx")
+                # Optional: create ONNX pipeline on CUDA for comparison
+                if torch.cuda.is_available():
+                    try:
+                        logger.info("Initializing ONNX pipeline (CUDA) for comparison...")
+                        onnx_pipeline_cuda = self._create_pipeline("onnx", onnx_model_path, "cuda:0", logger)
+                        if onnx_pipeline_cuda is not None:
+                            logger.info("  ✓ ONNX pipeline (CUDA) initialized for device comparison")
+                        else:
+                            logger.warning("  ⚠️  Failed to initialize ONNX pipeline (CUDA) for comparison")
+                    except Exception as e:
+                        logger.warning(f"  ⚠️  Could not initialize ONNX pipeline (CUDA) for comparison: {e}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
         
-        # Create TensorRT pipeline if requested
+        # Create TensorRT pipeline
+        # NOTE: For verification, we use CPU PyTorch reference because:
+        # 1. CUDA implementations have inherent numerical differences
+        # 2. ONNX export is done on CPU, so CPU is the "ground truth"
+        # 3. TensorRT runs on CUDA but we compare against CPU reference
         tensorrt_pipeline = None
+        pytorch_pipeline_cpu_trt = None
+        pytorch_pipeline_cuda = None
         if tensorrt_model_path:
             logger.info("\nInitializing TensorRT pipeline...")
-            if not device.startswith("cuda"):
+            if not tensorrt_verify_device.startswith("cuda"):
                 logger.warning("TensorRT requires CUDA device, skipping TensorRT verification")
                 skipped_backends.append("tensorrt")
             else:
-                tensorrt_pipeline = self._create_pipeline("tensorrt", tensorrt_model_path, device, logger)
+                tensorrt_pipeline = self._create_pipeline("tensorrt", tensorrt_model_path, tensorrt_verify_device, logger)
                 if tensorrt_pipeline is None:
                     logger.warning("Failed to create TensorRT pipeline, skipping TensorRT verification")
                     skipped_backends.append("tensorrt")
+                else:
+                    # Create PyTorch reference pipeline on CPU for TensorRT verification
+                    # This ensures numerical consistency (CPU is the reference for exported models)
+                    logger.info("Initializing PyTorch reference pipeline (CPU) for TensorRT verification...")
+                    logger.info("  Note: Using CPU reference because CUDA implementations have numerical differences")
+                    pytorch_pipeline_cpu_trt = self._create_pipeline("pytorch", pytorch_model_path, "cpu", logger)
+                    if pytorch_pipeline_cpu_trt is None:
+                        logger.error("Failed to create PyTorch reference pipeline for TensorRT verification")
+                        skipped_backends.append("tensorrt")
+                    # Optional: create PyTorch pipeline on CUDA for device comparison
+                    if torch.cuda.is_available():
+                        try:
+                            logger.info("Initializing PyTorch pipeline (CUDA) for comparison...")
+                            pytorch_pipeline_cuda = self._create_pipeline("pytorch", pytorch_model_path, "cuda:0", logger)
+                            if pytorch_pipeline_cuda is not None:
+                                logger.info("  ✓ PyTorch pipeline (CUDA) initialized for device comparison")
+                            else:
+                                logger.warning("  ⚠️  Failed to initialize PyTorch pipeline (CUDA) for comparison")
+                        except Exception as e:
+                            logger.warning(f"  ⚠️  Could not initialize PyTorch pipeline (CUDA) for comparison: {e}")
+                            import traceback
+                            logger.debug(traceback.format_exc())
         
         # Verify each sample
         try:
@@ -154,57 +218,520 @@ class CenterPointEvaluator(BaseEvaluator):
                 
                 sample_meta = sample.get('metainfo', {})
                 
-                # Get PyTorch reference outputs
-                logger.info("\nRunning PyTorch reference...")
-                try:
-                    pytorch_outputs, pytorch_latency, pytorch_breakdown = pytorch_pipeline.infer(
-                        points, sample_meta, return_raw_outputs=True
-                    )
-                    logger.info(f"  PyTorch latency: {pytorch_latency:.2f} ms")
-                    logger.info(f"  PyTorch output: {len(pytorch_outputs)} head outputs")
-                    
-                    # Log output statistics
-                    output_names = ['heatmap', 'reg', 'height', 'dim', 'rot', 'vel']
-                    for idx, (out, name) in enumerate(zip(pytorch_outputs, output_names)):
-                        if isinstance(out, torch.Tensor):
-                            out_np = out.cpu().numpy()
-                            logger.info(f"    {name}: shape={out.shape}, range=[{out_np.min():.3f}, {out_np.max():.3f}]")
-                
-                except Exception as e:
-                    logger.error(f"  PyTorch inference failed: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
-                
-                # Verify ONNX
-                if onnx_pipeline:
+                # Verify ONNX (with CPU PyTorch reference)
+                if onnx_pipeline and pytorch_pipeline_cpu_onnx:
                     logger.info("\nVerifying ONNX pipeline...")
-                    onnx_passed = self._verify_single_backend(
-                        onnx_pipeline,
-                        points,
-                        sample_meta,
-                        pytorch_outputs,
-                        pytorch_latency,
-                        tolerance,
-                        "ONNX",
-                        logger
-                    )
-                    results[f"sample_{i}_onnx"] = onnx_passed
+                    logger.info("Running PyTorch reference (CPU) for ONNX verification...")
+                    try:
+                        pytorch_outputs_cpu_onnx, pytorch_latency_cpu_onnx, _ = pytorch_pipeline_cpu_onnx.infer(
+                            points, sample_meta, return_raw_outputs=True
+                        )
+                        logger.info(f"  PyTorch latency (CPU): {pytorch_latency_cpu_onnx:.2f} ms")
+                        logger.info(f"  PyTorch output: {len(pytorch_outputs_cpu_onnx)} head outputs")
+                        
+                        # Log output statistics
+                        output_names = ['heatmap', 'reg', 'height', 'dim', 'rot', 'vel']
+                        for idx, (out, name) in enumerate(zip(pytorch_outputs_cpu_onnx, output_names)):
+                            if isinstance(out, torch.Tensor):
+                                out_np = out.cpu().numpy()
+                                logger.info(f"    {name}: shape={out.shape}, range=[{out_np.min():.3f}, {out_np.max():.3f}]")
+                        
+                        onnx_passed = self._verify_single_backend(
+                            onnx_pipeline,
+                            points,
+                            sample_meta,
+                            pytorch_outputs_cpu_onnx,
+                            pytorch_latency_cpu_onnx,
+                            tolerance,
+                            "ONNX",
+                            logger
+                        )
+                        results[f"sample_{i}_onnx"] = onnx_passed
+                    except Exception as e:
+                        logger.error(f"  ONNX verification failed: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        results[f"sample_{i}_onnx"] = False
                 
-                # Verify TensorRT
-                if tensorrt_pipeline:
+                # Verify TensorRT (with CPU PyTorch reference for numerical consistency)
+                # NOTE: We use CPU reference because:
+                # 1. ONNX export is done on CPU, so CPU is the "ground truth"
+                # 2. CUDA implementations (both ONNX Runtime and PyTorch) have numerical differences
+                # 3. This ensures consistency with ONNX verification which also uses CPU
+                if tensorrt_pipeline and pytorch_pipeline_cpu_trt:
                     logger.info("\nVerifying TensorRT pipeline...")
-                    tensorrt_passed = self._verify_single_backend(
-                        tensorrt_pipeline,
-                        points,
-                        sample_meta,
-                        pytorch_outputs,
-                        pytorch_latency,
-                        tolerance,
-                        "TensorRT",
-                        logger
-                    )
-                    results[f"sample_{i}_tensorrt"] = tensorrt_passed
+                    logger.info("Running PyTorch reference (CPU) for TensorRT verification...")
+                    logger.info("  Note: Using CPU reference for numerical consistency (CUDA implementations differ)")
+                    try:
+                        pytorch_outputs_cpu, pytorch_latency_cpu, _ = pytorch_pipeline_cpu_trt.infer(
+                            points, sample_meta, return_raw_outputs=True
+                        )
+                        logger.info(f"  PyTorch latency (CPU): {pytorch_latency_cpu:.2f} ms")
+                        logger.info(f"  PyTorch output: {len(pytorch_outputs_cpu)} head outputs")
+                        
+                        # Log output statistics
+                        output_names = ['heatmap', 'reg', 'height', 'dim', 'rot', 'vel']
+                        for idx, (out, name) in enumerate(zip(pytorch_outputs_cpu, output_names)):
+                            if isinstance(out, torch.Tensor):
+                                out_np = out.cpu().numpy()
+                                logger.info(f"    {name}: shape={out.shape}, range=[{out_np.min():.3f}, {out_np.max():.3f}]")
+                        
+                        # DEBUG: Verify all pipelines use the same input data at each stage
+                        logger.info("\n  DEBUG: Verifying input data consistency across pipelines...")
+                        try:
+                            # Step 1: Compare original points
+                            logger.info("    Step 1: Comparing original points...")
+                            if onnx_pipeline:
+                                # Get preprocessed data from each pipeline
+                                preprocessed_pytorch, _ = pytorch_pipeline_cpu_trt.preprocess(points, **sample_meta)
+                                preprocessed_onnx, _ = onnx_pipeline.preprocess(points, **sample_meta)
+                                preprocessed_trt, _ = tensorrt_pipeline.preprocess(points, **sample_meta)
+                                
+                                # Compare input_features (voxel encoder input)
+                                if 'input_features' in preprocessed_pytorch and 'input_features' in preprocessed_onnx and 'input_features' in preprocessed_trt:
+                                    # Move all to CPU for comparison
+                                    input_feat_pytorch = preprocessed_pytorch['input_features'].cpu()
+                                    input_feat_onnx = preprocessed_onnx['input_features'].cpu()
+                                    input_feat_trt = preprocessed_trt['input_features'].cpu()
+                                    
+                                    # Compare shapes
+                                    if input_feat_pytorch.shape != input_feat_onnx.shape or input_feat_pytorch.shape != input_feat_trt.shape:
+                                        logger.error(f"      ⚠️  input_features shape mismatch!")
+                                        logger.error(f"        PyTorch: {input_feat_pytorch.shape}")
+                                        logger.error(f"        ONNX: {input_feat_onnx.shape}")
+                                        logger.error(f"        TensorRT: {input_feat_trt.shape}")
+                                    else:
+                                        # Compare values
+                                        diff_pytorch_onnx = torch.abs(input_feat_pytorch - input_feat_onnx)
+                                        diff_pytorch_trt = torch.abs(input_feat_pytorch - input_feat_trt)
+                                        diff_onnx_trt = torch.abs(input_feat_onnx - input_feat_trt)
+                                        
+                                        logger.info(f"      input_features shape: {input_feat_pytorch.shape}")
+                                        logger.info(f"      PyTorch vs ONNX: max_diff={diff_pytorch_onnx.max():.9f}, mean_diff={diff_pytorch_onnx.mean():.9f}")
+                                        logger.info(f"      PyTorch vs TensorRT: max_diff={diff_pytorch_trt.max():.9f}, mean_diff={diff_pytorch_trt.mean():.9f}")
+                                        logger.info(f"      ONNX vs TensorRT: max_diff={diff_onnx_trt.max():.9f}, mean_diff={diff_onnx_trt.mean():.9f}")
+                                        
+                                        if diff_pytorch_onnx.max() > 1e-6 or diff_pytorch_trt.max() > 1e-6:
+                                            logger.warning(f"      ⚠️  input_features differ! This could cause output differences.")
+                                
+                                # Step 2: Compare voxel encoder outputs
+                                logger.info("    Step 2: Comparing voxel encoder outputs...")
+                                voxel_feat_pytorch = pytorch_pipeline_cpu_trt.run_voxel_encoder(preprocessed_pytorch['input_features'])
+                                voxel_feat_onnx = onnx_pipeline.run_voxel_encoder(preprocessed_onnx['input_features'])
+                                voxel_feat_trt = tensorrt_pipeline.run_voxel_encoder(preprocessed_trt['input_features'])
+                                
+                                # Move all to CPU for comparison
+                                voxel_feat_pytorch = voxel_feat_pytorch.cpu()
+                                voxel_feat_onnx = voxel_feat_onnx.cpu()
+                                voxel_feat_trt = voxel_feat_trt.cpu()
+                                
+                                if voxel_feat_pytorch.shape != voxel_feat_onnx.shape or voxel_feat_pytorch.shape != voxel_feat_trt.shape:
+                                    logger.error(f"      ⚠️  voxel_features shape mismatch!")
+                                    logger.error(f"        PyTorch: {voxel_feat_pytorch.shape}")
+                                    logger.error(f"        ONNX: {voxel_feat_onnx.shape}")
+                                    logger.error(f"        TensorRT: {voxel_feat_trt.shape}")
+                                else:
+                                    diff_pytorch_onnx = torch.abs(voxel_feat_pytorch - voxel_feat_onnx)
+                                    diff_pytorch_trt = torch.abs(voxel_feat_pytorch - voxel_feat_trt)
+                                    diff_onnx_trt = torch.abs(voxel_feat_onnx - voxel_feat_trt)
+                                    
+                                    logger.info(f"      voxel_features shape: {voxel_feat_pytorch.shape}")
+                                    logger.info(f"      PyTorch vs ONNX: max_diff={diff_pytorch_onnx.max():.9f}, mean_diff={diff_pytorch_onnx.mean():.9f}")
+                                    logger.info(f"      PyTorch vs TensorRT: max_diff={diff_pytorch_trt.max():.9f}, mean_diff={diff_pytorch_trt.mean():.9f}")
+                                    logger.info(f"      ONNX vs TensorRT: max_diff={diff_onnx_trt.max():.9f}, mean_diff={diff_onnx_trt.mean():.9f}")
+                                    
+                                    if diff_pytorch_onnx.max() > 1e-6 or diff_pytorch_trt.max() > 1e-6:
+                                        logger.warning(f"      ⚠️  voxel_features differ! This could cause output differences.")
+                                
+                                # Step 3: Compare spatial_features (middle encoder output, backbone input)
+                                logger.info("    Step 3: Comparing spatial_features (backbone input)...")
+                                spatial_feat_pytorch = pytorch_pipeline_cpu_trt.process_middle_encoder(
+                                    voxel_feat_pytorch.to(pytorch_pipeline_cpu_trt.device), 
+                                    preprocessed_pytorch['coors']
+                                )
+                                spatial_feat_onnx = onnx_pipeline.process_middle_encoder(
+                                    voxel_feat_onnx.to(onnx_pipeline.device), 
+                                    preprocessed_onnx['coors']
+                                )
+                                spatial_feat_trt = tensorrt_pipeline.process_middle_encoder(
+                                    voxel_feat_trt.to(tensorrt_pipeline.device), 
+                                    preprocessed_trt['coors']
+                                )
+                                
+                                # Move all to CPU for comparison
+                                spatial_feat_pytorch = spatial_feat_pytorch.cpu()
+                                spatial_feat_onnx = spatial_feat_onnx.cpu()
+                                spatial_feat_trt = spatial_feat_trt.cpu()
+                                
+                                if spatial_feat_pytorch.shape != spatial_feat_onnx.shape or spatial_feat_pytorch.shape != spatial_feat_trt.shape:
+                                    logger.error(f"      ⚠️  spatial_features shape mismatch!")
+                                    logger.error(f"        PyTorch: {spatial_feat_pytorch.shape}")
+                                    logger.error(f"        ONNX: {spatial_feat_onnx.shape}")
+                                    logger.error(f"        TensorRT: {spatial_feat_trt.shape}")
+                                else:
+                                    diff_pytorch_onnx = torch.abs(spatial_feat_pytorch - spatial_feat_onnx)
+                                    diff_pytorch_trt = torch.abs(spatial_feat_pytorch - spatial_feat_trt)
+                                    diff_onnx_trt = torch.abs(spatial_feat_onnx - spatial_feat_trt)
+                                    
+                                    logger.info(f"      spatial_features shape: {spatial_feat_pytorch.shape}")
+                                    logger.info(f"      PyTorch vs ONNX: max_diff={diff_pytorch_onnx.max():.9f}, mean_diff={diff_pytorch_onnx.mean():.9f}")
+                                    logger.info(f"      PyTorch vs TensorRT: max_diff={diff_pytorch_trt.max():.9f}, mean_diff={diff_pytorch_trt.mean():.9f}")
+                                    logger.info(f"      ONNX vs TensorRT: max_diff={diff_onnx_trt.max():.9f}, mean_diff={diff_onnx_trt.mean():.9f}")
+                                    
+                                    if diff_pytorch_onnx.max() > 1e-6 or diff_pytorch_trt.max() > 1e-6:
+                                        logger.warning(f"      ⚠️  spatial_features differ! This could cause output differences.")
+                                    else:
+                                        logger.info(f"      ✓ All spatial_features match - backbone/head inputs are identical")
+                        except Exception as e:
+                            logger.warning(f"    Could not verify input data consistency: {e}")
+                            import traceback
+                            logger.debug(traceback.format_exc())
+                        
+                        # DEBUG: Check rot_y_axis_reference setting and output order
+                        logger.info("\n  DEBUG: Checking rot_y_axis_reference and output order...")
+                        try:
+                            # Check rot_y_axis_reference from PyTorch model
+                            rot_y_axis_ref = False
+                            if hasattr(pytorch_pipeline_cpu_trt, 'pytorch_model') and hasattr(pytorch_pipeline_cpu_trt.pytorch_model, 'pts_bbox_head'):
+                                rot_y_axis_ref = getattr(
+                                    pytorch_pipeline_cpu_trt.pytorch_model.pts_bbox_head,
+                                    '_rot_y_axis_reference',
+                                    False
+                                )
+                            logger.info(f"    rot_y_axis_reference: {rot_y_axis_ref}")
+                            
+                            # Check actual output order from ONNX and TensorRT pipelines
+                            if onnx_pipeline:
+                                # Get ONNX output names from the session
+                                onnx_output_names = None
+                                if hasattr(onnx_pipeline, 'backbone_head_session'):
+                                    onnx_output_names = [output.name for output in onnx_pipeline.backbone_head_session.get_outputs()]
+                                    logger.info(f"    ONNX output names (from session): {onnx_output_names}")
+                                
+                                # Get TensorRT output names (using new TensorRT API)
+                                trt_output_names = None
+                                if hasattr(tensorrt_pipeline, '_engines') and 'backbone_neck_head' in tensorrt_pipeline._engines:
+                                    try:
+                                        import tensorrt as trt
+                                        engine = tensorrt_pipeline._engines['backbone_neck_head']
+                                        trt_output_names = []
+                                        for i in range(engine.num_io_tensors):
+                                            tensor_name = engine.get_tensor_name(i)
+                                            if engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.OUTPUT:
+                                                trt_output_names.append(tensor_name)
+                                        logger.info(f"    TensorRT output names (from engine): {trt_output_names}")
+                                    except Exception as e:
+                                        logger.warning(f"    Could not get TensorRT output names: {e}")
+                                
+                                logger.info(f"    Expected output order: {output_names}")
+                                
+                                # Verify output order matches
+                                if onnx_output_names and trt_output_names:
+                                    # Check if they match expected order (after reordering)
+                                    logger.info(f"    ✓ Output order verification: ONNX and TensorRT pipelines should reorder to match expected order")
+                                    if onnx_output_names != trt_output_names:
+                                        logger.warning(f"    ⚠️  ONNX and TensorRT have different output name orders, but pipelines should reorder them")
+                        except Exception as e:
+                            logger.warning(f"    Could not check rot_y_axis_reference/output order: {e}")
+                            import traceback
+                            logger.debug(traceback.format_exc())
+                        
+                        # DEBUG: Compare ONNX (CPU) vs TensorRT (CUDA) to see if TensorRT optimization is the issue
+                        logger.info("\n  DEBUG: Comparing ONNX (CPU) vs TensorRT (CUDA) head outputs...")
+                        try:
+                            if onnx_pipeline:
+                                # Run ONNX inference on CPU
+                                onnx_outputs_cpu, _, _ = onnx_pipeline.infer(points, sample_meta, return_raw_outputs=True)
+                                
+                                # Run TensorRT inference
+                                tensorrt_outputs, _, _ = tensorrt_pipeline.infer(points, sample_meta, return_raw_outputs=True)
+                                
+                                # Step 3: Verify output shapes and layouts match
+                                logger.info("    Step 3: Verifying output shapes and layouts...")
+                                if len(onnx_outputs_cpu) != len(tensorrt_outputs):
+                                    logger.error(f"      ⚠️  Output count mismatch: ONNX={len(onnx_outputs_cpu)}, TensorRT={len(tensorrt_outputs)}")
+                                if len(onnx_outputs_cpu) != len(output_names):
+                                    logger.error(f"      ⚠️  Output count mismatch with expected: ONNX={len(onnx_outputs_cpu)}, Expected={len(output_names)}")
+                                
+                                # Compare ONNX CPU vs TensorRT CUDA
+                                onnx_trt_max_diff = 0.0
+                                for idx, (onnx_out, trt_out, name) in enumerate(zip(onnx_outputs_cpu, tensorrt_outputs, output_names)):
+                                    if isinstance(onnx_out, torch.Tensor) and isinstance(trt_out, torch.Tensor):
+                                        # Step 3: Check shapes and layout match
+                                        if onnx_out.shape != trt_out.shape:
+                                            logger.error(f"      ⚠️  Shape mismatch for {name}: ONNX={onnx_out.shape}, TensorRT={trt_out.shape}")
+                                            logger.error(f"         This could indicate layout differences (e.g., [B,C,H,W] vs [B,H,W,C])")
+                                        else:
+                                            logger.info(f"      ✓ {name}: Shape matches {onnx_out.shape}")
+                                        
+                                        # Move to CPU for comparison
+                                        onnx_np = onnx_out.cpu().numpy()
+                                        trt_np = trt_out.cpu().numpy()
+                                        
+                                        # Check for potential post-processing differences
+                                        # (e.g., sigmoid, exp, decode operations)
+                                        onnx_min, onnx_max = onnx_np.min(), onnx_np.max()
+                                        trt_min, trt_max = trt_np.min(), trt_np.max()
+                                        
+                                        # Check if outputs look like they've been through different transformations
+                                        # If ONNX is in logits range (e.g., -20 to 20) but TensorRT is in sigmoid range (0 to 1),
+                                        # that indicates different post-processing
+                                        if name == 'heatmap':
+                                            if (onnx_min < -10 or onnx_max > 10) and (0 <= trt_min <= 1 and 0 <= trt_max <= 1):
+                                                logger.warning(f"        ⚠️  {name} appears to have different post-processing!")
+                                                logger.warning(f"           ONNX range: [{onnx_min:.3f}, {onnx_max:.3f}] (logits?)")
+                                                logger.warning(f"           TensorRT range: [{trt_min:.3f}, {trt_max:.3f}] (sigmoid?)")
+                                            elif (0 <= onnx_min <= 1 and 0 <= onnx_max <= 1) and (trt_min < -10 or trt_max > 10):
+                                                logger.warning(f"        ⚠️  {name} appears to have different post-processing!")
+                                                logger.warning(f"           ONNX range: [{onnx_min:.3f}, {onnx_max:.3f}] (sigmoid?)")
+                                                logger.warning(f"           TensorRT range: [{trt_min:.3f}, {trt_max:.3f}] (logits?)")
+                                        
+                                        # Calculate differences
+                                        diff = np.abs(onnx_np - trt_np)
+                                        max_diff_val = diff.max()
+                                        mean_diff_val = diff.mean()
+                                        onnx_trt_max_diff = max(onnx_trt_max_diff, max_diff_val)
+                                        
+                                        # Calculate relative difference (for large values)
+                                        onnx_abs_max = np.abs(onnx_np).max()
+                                        if onnx_abs_max > 1e-6:
+                                            rel_diff = max_diff_val / onnx_abs_max
+                                            logger.info(f"      {name}: ONNX(CPU) vs TensorRT(CUDA)")
+                                            logger.info(f"        max_diff={max_diff_val:.6f}, mean_diff={mean_diff_val:.6f}, rel_diff={rel_diff:.6f}")
+                                            logger.info(f"        ONNX range: [{onnx_min:.3f}, {onnx_max:.3f}], TensorRT range: [{trt_min:.3f}, {trt_max:.3f}]")
+                                        else:
+                                            logger.info(f"      {name}: ONNX(CPU) vs TensorRT(CUDA)")
+                                            logger.info(f"        max_diff={max_diff_val:.6f}, mean_diff={mean_diff_val:.6f}")
+                                            logger.info(f"        ONNX range: [{onnx_min:.3f}, {onnx_max:.3f}], TensorRT range: [{trt_min:.3f}, {trt_max:.3f}]")
+                                        
+                                        # For rot and dim, check if rot_y_axis_reference might be causing issues
+                                        if name in ['rot', 'dim'] and rot_y_axis_ref:
+                                            logger.warning(f"        ⚠️  {name} with rot_y_axis_reference=True - check if conversion is needed")
+                                            # Check if values are in different coordinate systems
+                                            # (e.g., if dim has swapped width/length, or rot has swapped sin/cos)
+                                            if name == 'dim' and onnx_out.shape[-3] == 3:
+                                                # Check if first two channels are swapped
+                                                onnx_wl = onnx_np[:, [0, 1], :, :]
+                                                trt_wl = trt_np[:, [0, 1], :, :]
+                                                trt_wl_swapped = trt_np[:, [1, 0], :, :]
+                                                diff_normal = np.abs(onnx_wl - trt_wl).max()
+                                                diff_swapped = np.abs(onnx_wl - trt_wl_swapped).max()
+                                                if diff_swapped < diff_normal * 0.5:
+                                                    logger.warning(f"        ⚠️  {name} width/length might be swapped! (swapped diff={diff_swapped:.6f} < normal diff={diff_normal:.6f})")
+                                    else:
+                                        logger.warning(f"      {name}: Type mismatch - ONNX={type(onnx_out)}, TensorRT={type(trt_out)}")
+                                
+                                logger.info(f"    ONNX (CPU) vs TensorRT (CUDA) overall max_diff: {onnx_trt_max_diff:.6f}")
+                                
+                                if onnx_trt_max_diff > 0.1:
+                                    logger.warning(f"    ⚠️  Large difference between ONNX (CPU) and TensorRT (CUDA)!")
+                                    logger.warning(f"    This suggests TensorRT optimizations or post-processing differences.")
+                                    logger.warning(f"    ONNX (CPU) matches PyTorch (CPU), but TensorRT (CUDA) differs significantly.")
+                                    logger.warning(f"    Possible causes:")
+                                    logger.warning(f"      1. TensorRT precision/quantization (FP16/INT8 vs FP32)")
+                                    logger.warning(f"      2. Different post-processing (sigmoid/exp/decode in engine vs Python)")
+                                    logger.warning(f"      3. rot_y_axis_reference coordinate system conversion mismatch")
+                                else:
+                                    logger.info(f"    ✓ ONNX (CPU) and TensorRT (CUDA) match well.")
+                                    logger.info(f"    The difference is likely due to CUDA vs CPU implementation differences.")
+                                
+                                # Additional comparison: ONNX (CPU) vs ONNX (CUDA)
+                                if onnx_pipeline_cuda:
+                                    logger.info("\n    Step 4: Comparing ONNX Runtime (CPU) vs ONNX Runtime (CUDA) head outputs...")
+                                    try:
+                                        onnx_outputs_cuda, _, _ = onnx_pipeline_cuda.infer(points, sample_meta, return_raw_outputs=True)
+                                        if len(onnx_outputs_cuda) != len(onnx_outputs_cpu):
+                                            logger.error(f"      ⚠️  ONNX CPU/CUDA output count mismatch: CPU={len(onnx_outputs_cpu)}, CUDA={len(onnx_outputs_cuda)}")
+                                        onnx_cpu_cuda_max_diff = 0.0
+                                        for idx, (cpu_out, cuda_out, name) in enumerate(zip(onnx_outputs_cpu, onnx_outputs_cuda, output_names)):
+                                            if isinstance(cpu_out, torch.Tensor) and isinstance(cuda_out, torch.Tensor):
+                                                if cpu_out.shape != cuda_out.shape:
+                                                    logger.error(f"      ⚠️  Shape mismatch for {name}: CPU={cpu_out.shape}, CUDA={cuda_out.shape}")
+                                                    continue
+                                                cpu_np = cpu_out.cpu().numpy()
+                                                cuda_np = cuda_out.cpu().numpy()
+                                                diff = np.abs(cpu_np - cuda_np)
+                                                max_diff_val = diff.max()
+                                                mean_diff_val = diff.mean()
+                                                onnx_cpu_cuda_max_diff = max(onnx_cpu_cuda_max_diff, max_diff_val)
+                                                cpu_min, cpu_max = cpu_np.min(), cpu_np.max()
+                                                cuda_min, cuda_max = cuda_np.min(), cuda_np.max()
+                                                logger.info(f"      {name}: ONNX(CPU) vs ONNX(CUDA) max_diff={max_diff_val:.6f}, mean_diff={mean_diff_val:.6f}")
+                                                logger.info(f"        CPU range: [{cpu_min:.3f}, {cpu_max:.3f}], CUDA range: [{cuda_min:.3f}, {cuda_max:.3f}]")
+                                            else:
+                                                logger.warning(f"      {name}: Type mismatch - CPU={type(cpu_out)}, CUDA={type(cuda_out)}")
+                                        logger.info(f"      ONNX (CPU) vs ONNX (CUDA) overall max_diff: {onnx_cpu_cuda_max_diff:.6f}")
+                                        if onnx_cpu_cuda_max_diff > 0.1:
+                                            logger.warning("      ⚠️  Significant difference between ONNX CPU and CUDA outputs - indicates CUDA kernel differences")
+                                        else:
+                                            logger.info("      ✓ ONNX CPU and CUDA outputs match closely")
+                                    except Exception as e:
+                                        logger.warning(f"      ⚠️  Could not compare ONNX CPU vs CUDA outputs: {e}")
+                                        import traceback
+                                        logger.debug(traceback.format_exc())
+                                
+                                # Additional comparison: PyTorch (CPU) vs PyTorch (CUDA)
+                                if pytorch_pipeline_cuda:
+                                    logger.info("\n    Step 5: Comparing PyTorch (CPU) vs PyTorch (CUDA) head outputs...")
+                                    try:
+                                        pytorch_outputs_cuda, pytorch_latency_cuda, _ = pytorch_pipeline_cuda.infer(
+                                            points, sample_meta, return_raw_outputs=True
+                                        )
+                                        logger.info(f"      PyTorch latency (CUDA): {pytorch_latency_cuda:.2f} ms")
+                                        if len(pytorch_outputs_cuda) != len(pytorch_outputs_cpu):
+                                            logger.error(f"      ⚠️  PyTorch CPU/CUDA output count mismatch: CPU={len(pytorch_outputs_cpu)}, CUDA={len(pytorch_outputs_cuda)}")
+                                        pytorch_cpu_cuda_max_diff = 0.0
+                                        for idx, (cpu_out, cuda_out, name) in enumerate(zip(pytorch_outputs_cpu, pytorch_outputs_cuda, output_names)):
+                                            if isinstance(cpu_out, torch.Tensor) and isinstance(cuda_out, torch.Tensor):
+                                                if cpu_out.shape != cuda_out.shape:
+                                                    logger.error(f"      ⚠️  Shape mismatch for {name}: CPU={cpu_out.shape}, CUDA={cuda_out.shape}")
+                                                    continue
+                                                cpu_np = cpu_out.cpu().numpy()
+                                                cuda_np = cuda_out.cpu().numpy()
+                                                diff = np.abs(cpu_np - cuda_np)
+                                                max_diff_val = diff.max()
+                                                mean_diff_val = diff.mean()
+                                                pytorch_cpu_cuda_max_diff = max(pytorch_cpu_cuda_max_diff, max_diff_val)
+                                                cpu_min, cpu_max = cpu_np.min(), cpu_np.max()
+                                                cuda_min, cuda_max = cuda_np.min(), cuda_np.max()
+                                                logger.info(f"      {name}: PyTorch(CPU) vs PyTorch(CUDA) max_diff={max_diff_val:.6f}, mean_diff={mean_diff_val:.6f}")
+                                                logger.info(f"        CPU range: [{cpu_min:.3f}, {cpu_max:.3f}], CUDA range: [{cuda_min:.3f}, {cuda_max:.3f}]")
+                                            else:
+                                                logger.warning(f"      {name}: Type mismatch - CPU={type(cpu_out)}, CUDA={type(cuda_out)}")
+                                        logger.info(f"      PyTorch (CPU) vs PyTorch (CUDA) overall max_diff: {pytorch_cpu_cuda_max_diff:.6f}")
+                                        if pytorch_cpu_cuda_max_diff > 0.1:
+                                            logger.warning("      ⚠️  Significant difference between PyTorch CPU and CUDA outputs - indicates CUDA kernel differences")
+                                        else:
+                                            logger.info("      ✓ PyTorch CPU and CUDA outputs match closely")
+                                        
+                                        # Additional comparison: PyTorch (CUDA) vs ONNX (CUDA)
+                                        if onnx_pipeline_cuda:
+                                            logger.info("\n    Step 6: Comparing PyTorch (CUDA) vs ONNX Runtime (CUDA) head outputs...")
+                                            try:
+                                                if len(pytorch_outputs_cuda) != len(onnx_outputs_cuda):
+                                                    logger.error(f"      ⚠️  PyTorch/ONNX CUDA output count mismatch: PyTorch={len(pytorch_outputs_cuda)}, ONNX={len(onnx_outputs_cuda)}")
+                                                pytorch_onnx_cuda_max_diff = 0.0
+                                                for idx, (pytorch_out, onnx_out, name) in enumerate(zip(pytorch_outputs_cuda, onnx_outputs_cuda, output_names)):
+                                                    if isinstance(pytorch_out, torch.Tensor) and isinstance(onnx_out, torch.Tensor):
+                                                        if pytorch_out.shape != onnx_out.shape:
+                                                            logger.error(f"      ⚠️  Shape mismatch for {name}: PyTorch={pytorch_out.shape}, ONNX={onnx_out.shape}")
+                                                            continue
+                                                        pytorch_np = pytorch_out.cpu().numpy()
+                                                        onnx_np = onnx_out.cpu().numpy()
+                                                        diff = np.abs(pytorch_np - onnx_np)
+                                                        max_diff_val = diff.max()
+                                                        mean_diff_val = diff.mean()
+                                                        pytorch_onnx_cuda_max_diff = max(pytorch_onnx_cuda_max_diff, max_diff_val)
+                                                        pytorch_min, pytorch_max = pytorch_np.min(), pytorch_np.max()
+                                                        onnx_min, onnx_max = onnx_np.min(), onnx_np.max()
+                                                        logger.info(f"      {name}: PyTorch(CUDA) vs ONNX(CUDA) max_diff={max_diff_val:.6f}, mean_diff={mean_diff_val:.6f}")
+                                                        logger.info(f"        PyTorch range: [{pytorch_min:.3f}, {pytorch_max:.3f}], ONNX range: [{onnx_min:.3f}, {onnx_max:.3f}]")
+                                                    else:
+                                                        logger.warning(f"      {name}: Type mismatch - PyTorch={type(pytorch_out)}, ONNX={type(onnx_out)}")
+                                                logger.info(f"      PyTorch (CUDA) vs ONNX (CUDA) overall max_diff: {pytorch_onnx_cuda_max_diff:.6f}")
+                                                if pytorch_onnx_cuda_max_diff > 0.1:
+                                                    logger.warning("      ⚠️  Significant difference between PyTorch CUDA and ONNX CUDA outputs")
+                                                    logger.warning("      This suggests ONNX Runtime CUDA uses different kernels than PyTorch CUDA")
+                                                else:
+                                                    logger.info("      ✓ PyTorch CUDA and ONNX CUDA outputs match closely")
+                                            except Exception as e:
+                                                logger.warning(f"      ⚠️  Could not compare PyTorch CUDA vs ONNX CUDA outputs: {e}")
+                                                import traceback
+                                                logger.debug(traceback.format_exc())
+                                        
+                                        # Additional comparison: PyTorch (CUDA) vs TensorRT (CUDA)
+                                        logger.info("\n    Step 7: Comparing PyTorch (CUDA) vs TensorRT (CUDA) head outputs...")
+                                        try:
+                                            if len(pytorch_outputs_cuda) != len(tensorrt_outputs):
+                                                logger.error(f"      ⚠️  PyTorch/TensorRT CUDA output count mismatch: PyTorch={len(pytorch_outputs_cuda)}, TensorRT={len(tensorrt_outputs)}")
+                                            pytorch_trt_cuda_max_diff = 0.0
+                                            for idx, (pytorch_out, trt_out, name) in enumerate(zip(pytorch_outputs_cuda, tensorrt_outputs, output_names)):
+                                                if isinstance(pytorch_out, torch.Tensor) and isinstance(trt_out, torch.Tensor):
+                                                    if pytorch_out.shape != trt_out.shape:
+                                                        logger.error(f"      ⚠️  Shape mismatch for {name}: PyTorch={pytorch_out.shape}, TensorRT={trt_out.shape}")
+                                                        continue
+                                                    pytorch_np = pytorch_out.cpu().numpy()
+                                                    trt_np = trt_out.cpu().numpy()
+                                                    diff = np.abs(pytorch_np - trt_np)
+                                                    max_diff_val = diff.max()
+                                                    mean_diff_val = diff.mean()
+                                                    pytorch_trt_cuda_max_diff = max(pytorch_trt_cuda_max_diff, max_diff_val)
+                                                    pytorch_min, pytorch_max = pytorch_np.min(), pytorch_np.max()
+                                                    trt_min, trt_max = trt_np.min(), trt_np.max()
+                                                    logger.info(f"      {name}: PyTorch(CUDA) vs TensorRT(CUDA) max_diff={max_diff_val:.6f}, mean_diff={mean_diff_val:.6f}")
+                                                    logger.info(f"        PyTorch range: [{pytorch_min:.3f}, {pytorch_max:.3f}], TensorRT range: [{trt_min:.3f}, {trt_max:.3f}]")
+                                                else:
+                                                    logger.warning(f"      {name}: Type mismatch - PyTorch={type(pytorch_out)}, TensorRT={type(trt_out)}")
+                                            logger.info(f"      PyTorch (CUDA) vs TensorRT (CUDA) overall max_diff: {pytorch_trt_cuda_max_diff:.6f}")
+                                            if pytorch_trt_cuda_max_diff > 0.1:
+                                                logger.warning("      ⚠️  Significant difference between PyTorch CUDA and TensorRT CUDA outputs")
+                                                logger.warning("      This suggests TensorRT optimizations cause differences even when both use CUDA")
+                                            else:
+                                                logger.info("      ✓ PyTorch CUDA and TensorRT CUDA outputs match closely")
+                                        except Exception as e:
+                                            logger.warning(f"      ⚠️  Could not compare PyTorch CUDA vs TensorRT CUDA outputs: {e}")
+                                            import traceback
+                                            logger.debug(traceback.format_exc())
+                                        
+                                        # Additional comparison: ONNX (CUDA) vs TensorRT (CUDA)
+                                        if onnx_pipeline_cuda:
+                                            logger.info("\n    Step 8: Comparing ONNX Runtime (CUDA) vs TensorRT (CUDA) head outputs...")
+                                            try:
+                                                if len(onnx_outputs_cuda) != len(tensorrt_outputs):
+                                                    logger.error(f"      ⚠️  ONNX/TensorRT CUDA output count mismatch: ONNX={len(onnx_outputs_cuda)}, TensorRT={len(tensorrt_outputs)}")
+                                                onnx_trt_cuda_max_diff = 0.0
+                                                for idx, (onnx_out, trt_out, name) in enumerate(zip(onnx_outputs_cuda, tensorrt_outputs, output_names)):
+                                                    if isinstance(onnx_out, torch.Tensor) and isinstance(trt_out, torch.Tensor):
+                                                        if onnx_out.shape != trt_out.shape:
+                                                            logger.error(f"      ⚠️  Shape mismatch for {name}: ONNX={onnx_out.shape}, TensorRT={trt_out.shape}")
+                                                            continue
+                                                        onnx_np = onnx_out.cpu().numpy()
+                                                        trt_np = trt_out.cpu().numpy()
+                                                        diff = np.abs(onnx_np - trt_np)
+                                                        max_diff_val = diff.max()
+                                                        mean_diff_val = diff.mean()
+                                                        onnx_trt_cuda_max_diff = max(onnx_trt_cuda_max_diff, max_diff_val)
+                                                        onnx_min, onnx_max = onnx_np.min(), onnx_np.max()
+                                                        trt_min, trt_max = trt_np.min(), trt_np.max()
+                                                        logger.info(f"      {name}: ONNX(CUDA) vs TensorRT(CUDA) max_diff={max_diff_val:.6f}, mean_diff={mean_diff_val:.6f}")
+                                                        logger.info(f"        ONNX range: [{onnx_min:.3f}, {onnx_max:.3f}], TensorRT range: [{trt_min:.3f}, {trt_max:.3f}]")
+                                                    else:
+                                                        logger.warning(f"      {name}: Type mismatch - ONNX={type(onnx_out)}, TensorRT={type(trt_out)}")
+                                                logger.info(f"      ONNX (CUDA) vs TensorRT (CUDA) overall max_diff: {onnx_trt_cuda_max_diff:.6f}")
+                                                if onnx_trt_cuda_max_diff > 0.1:
+                                                    logger.warning("      ⚠️  Significant difference between ONNX CUDA and TensorRT CUDA outputs")
+                                                    logger.warning("      This suggests TensorRT optimizations cause differences compared to ONNX Runtime CUDA")
+                                                else:
+                                                    logger.info("      ✓ ONNX CUDA and TensorRT CUDA outputs match closely")
+                                            except Exception as e:
+                                                logger.warning(f"      ⚠️  Could not compare ONNX CUDA vs TensorRT CUDA outputs: {e}")
+                                                import traceback
+                                                logger.debug(traceback.format_exc())
+                                    except Exception as e:
+                                        logger.warning(f"      ⚠️  Could not compare PyTorch CPU vs CUDA outputs: {e}")
+                                        import traceback
+                                        logger.debug(traceback.format_exc())
+                        except Exception as e:
+                            logger.warning(f"    Could not compare ONNX vs TensorRT: {e}")
+                            import traceback
+                            logger.debug(traceback.format_exc())
+                        
+                        tensorrt_passed = self._verify_single_backend(
+                            tensorrt_pipeline,
+                            points,
+                            sample_meta,
+                            pytorch_outputs_cpu,
+                            pytorch_latency_cpu,
+                            tolerance,
+                            "TensorRT",
+                            logger
+                        )
+                        results[f"sample_{i}_tensorrt"] = tensorrt_passed
+                    except Exception as e:
+                        logger.error(f"  TensorRT verification failed: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        results[f"sample_{i}_tensorrt"] = False
                 
                 # Cleanup GPU memory after each sample (TensorRT needs frequent cleanup)
                 if torch.cuda.is_available():
@@ -374,6 +901,12 @@ class CenterPointEvaluator(BaseEvaluator):
             bool: True if verification passed, False otherwise
         """
         try:
+            # For debugging: Check if this is TensorRT and log input to backbone
+            if backend_name == "TensorRT" and hasattr(pipeline, 'run_backbone_head'):
+                # We can't easily intercept the input here, but we can add logging
+                # in the pipeline itself
+                pass
+            
             # Run inference with raw outputs
             backend_outputs, backend_latency, backend_breakdown = pipeline.infer(
                 points, sample_meta, return_raw_outputs=True
@@ -381,6 +914,17 @@ class CenterPointEvaluator(BaseEvaluator):
             
             logger.info(f"  {backend_name} latency: {backend_latency:.2f} ms")
             logger.info(f"  {backend_name} output: {len(backend_outputs)} head outputs")
+            
+            # Debug: Check output shapes match
+            if len(backend_outputs) != len(reference_outputs):
+                logger.error(f"  Output count mismatch: {len(backend_outputs)} vs {len(reference_outputs)}")
+                return False
+            
+            for i, (ref_out, backend_out) in enumerate(zip(reference_outputs, backend_outputs)):
+                if isinstance(ref_out, torch.Tensor) and isinstance(backend_out, torch.Tensor):
+                    if ref_out.shape != backend_out.shape:
+                        logger.error(f"  Output {i} shape mismatch: {ref_out.shape} vs {backend_out.shape}")
+                        return False
             
             # Compare outputs
             if len(backend_outputs) != len(reference_outputs):

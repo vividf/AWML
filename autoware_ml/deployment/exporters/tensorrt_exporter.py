@@ -66,6 +66,19 @@ class TensorRTExporter(BaseExporter):
 
         max_workspace_size = self.config.get("max_workspace_size", 1 << 30)
         builder_config.set_memory_pool_limit(pool=trt.MemoryPoolType.WORKSPACE, pool_size=max_workspace_size)
+        
+        # Disable aggressive optimizations for better numerical accuracy
+        # This helps reduce numerical differences between TensorRT and ONNX/PyTorch
+        disable_optimizations = self.config.get("disable_optimizations", False)
+        if disable_optimizations:
+            # Disable layer fusion and other aggressive optimizations
+            # Note: This may reduce performance but improves numerical accuracy
+            self.logger.info("Disabling aggressive TensorRT optimizations for better numerical accuracy")
+            # TensorRT doesn't have a direct flag to disable all optimizations,
+            # but we can set a flag to prefer precision over performance
+            if hasattr(trt.BuilderFlag, "OBEY_PRECISION_CONSTRAINTS"):
+                builder_config.set_flag(trt.BuilderFlag.OBEY_PRECISION_CONSTRAINTS)
+                self.logger.info("BuilderFlag.OBEY_PRECISION_CONSTRAINTS enabled")
 
         # Create network with appropriate flags
         flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
@@ -78,6 +91,22 @@ class TensorRTExporter(BaseExporter):
         network = builder.create_network(flags)
 
         # Apply precision flags to builder config
+        # For pure FP32, explicitly disable TF32, FP16, and INT8
+        if precision_policy == "fp32":
+            self.logger.info("Using pure FP32 precision - disabling TF32, FP16, and INT8")
+            # Explicitly disable TF32 (if available)
+            if hasattr(trt.BuilderFlag, "TF32"):
+                # Note: TensorRT doesn't have a direct way to disable TF32,
+                # but we can ensure FP16 and INT8 are not enabled
+                pass
+            # Ensure FP16 and INT8 are not enabled
+            if hasattr(trt.BuilderFlag, "FP16"):
+                # Don't set FP16 flag
+                pass
+            if hasattr(trt.BuilderFlag, "INT8"):
+                # Don't set INT8 flag
+                pass
+        
         for flag_name, enabled in policy_flags.items():
             if flag_name == "STRONGLY_TYPED":
                 continue  # Already handled

@@ -69,6 +69,23 @@ class ONNXExporter(BaseExporter):
         os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
 
         try:
+            # IMPORTANT: ONNX export should always be done on CPU for numerical consistency,
+            # regardless of the device the model was trained on or will be used on.
+            # The exported ONNX model can then be run on any device via ONNX Runtime.
+            original_device = next(model.parameters()).device
+            model = model.cpu()
+            
+            # Move sample input to CPU if it's a tensor
+            if isinstance(sample_input, torch.Tensor):
+                sample_input = sample_input.cpu()
+            elif isinstance(sample_input, (tuple, list)):
+                sample_input = tuple(x.cpu() if isinstance(x, torch.Tensor) else x for x in sample_input)
+            elif isinstance(sample_input, dict):
+                sample_input = {k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in sample_input.items()}
+            
+            if original_device.type != 'cpu':
+                self.logger.info(f"  Moving model from {original_device} to CPU for ONNX export (standard practice)")
+            
             with torch.no_grad():
                 torch.onnx.export(
                     model,
@@ -83,6 +100,9 @@ class ONNXExporter(BaseExporter):
                     dynamic_axes=export_config.get("dynamic_axes"),
                     verbose=export_config.get("verbose", False),
                 )
+            
+            # Restore model to original device (optional, but good practice)
+            model = model.to(original_device)
 
             self.logger.info(f"ONNX export completed: {output_path}")
 

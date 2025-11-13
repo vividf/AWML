@@ -253,9 +253,10 @@ class DeploymentRunner:
                     self.logger.error("CenterPoint requires ONNX directory, not a single file")
                     return None
                 
+                # TensorRT export always uses cuda:0
                 success = exporter.export(
                     onnx_dir=onnx_path,
-                    device=self.config.export_config.device
+                    device="cuda:0"
                 )
                 
                 if success:
@@ -396,6 +397,14 @@ class DeploymentRunner:
 
         num_verify_samples = self.config.verification_config.get("num_verify_samples", 3)
         tolerance = self.config.verification_config.get("tolerance", 0.1)
+        
+        # Verification device configuration (fixed):
+        # - ONNX verification always uses CPU (for numerical consistency with export)
+        # - TensorRT verification always uses cuda:0 (required)
+        # - PyTorch reference uses cuda:0 (for consistency with TensorRT)
+        onnx_verify_device = "cpu"
+        tensorrt_verify_device = "cuda:0"
+        pytorch_reference_device = "cuda:0"
 
         verification_results = self.evaluator.verify(
             pytorch_model_path=pytorch_checkpoint,
@@ -403,9 +412,11 @@ class DeploymentRunner:
             tensorrt_model_path=tensorrt_path,
             data_loader=self.data_loader,
             num_samples=num_verify_samples,
-            device=self.config.export_config.device,
+            device=pytorch_reference_device,  # PyTorch reference device
             tolerance=tolerance,
             verbose=False,
+            onnx_device=onnx_verify_device,
+            tensorrt_device=tensorrt_verify_device,
         )
 
         if 'summary' in verification_results:
@@ -453,16 +464,31 @@ class DeploymentRunner:
             num_samples = self.data_loader.get_num_samples()
 
         verbose_mode = eval_config.get("verbose", False)
+        
+        # Get device configuration for evaluation
+        onnx_eval_device = eval_config.get("onnx_device", "cpu")
+        tensorrt_eval_device = eval_config.get("tensorrt_device", "cuda:0")  # TensorRT always uses cuda:0
+        pytorch_eval_device = eval_config.get("pytorch_device", "cuda:0")
 
         all_results: Dict[str, Any] = {}
 
         for backend, model_path in models_to_evaluate:
+            # Select device based on backend
+            if backend == "onnx":
+                eval_device = onnx_eval_device
+            elif backend == "tensorrt":
+                eval_device = tensorrt_eval_device
+            else:  # pytorch
+                eval_device = pytorch_eval_device
+            
+            self.logger.info(f"\nEvaluating {backend.upper()} on device: {eval_device}")
+            
             results = self.evaluator.evaluate(
                 model_path=model_path,
                 data_loader=self.data_loader,
                 num_samples=num_samples,
                 backend=backend,
-                device=self.config.export_config.device,
+                device=eval_device,
                 verbose=verbose_mode,
             )
 

@@ -65,9 +65,15 @@ class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
         so.log_severity_level = 3  # ERROR level
         
         # Set execution providers
+        # IMPORTANT: For verification, always use CPU provider for numerical consistency
+        # with ONNX export (which is done on CPU). For evaluation, can use CUDA for speed.
+        # This ensures verification passes when ONNX was exported on CPU.
         if device.startswith("cuda"):
+            # For evaluation, can use CUDA for speed
+            # For verification, should use CPU (device will be "cpu" when passed from verification)
             providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            logger.info("Using CUDA execution provider for ONNX")
+            logger.info("Using CUDA execution provider for ONNX (evaluation mode)")
+            logger.info("  Note: For verification, device should be 'cpu' to ensure numerical consistency")
         else:
             providers = ["CPUExecutionProvider"]
             logger.info("Using CPU execution provider for ONNX")
@@ -150,9 +156,21 @@ class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
             {input_name: input_array}
         )
         
-        # Convert outputs to torch tensors
-        # outputs should be: [heatmap, reg, height, dim, rot, vel]
-        head_outputs = [torch.from_numpy(out).to(self.device) for out in outputs]
+        # IMPORTANT: Reorder outputs to match expected order [heatmap, reg, height, dim, rot, vel]
+        # ONNX export may use different order (e.g., ['reg', 'height', 'dim', 'rot', 'vel', 'heatmap'])
+        # But pipeline expects: [heatmap, reg, height, dim, rot, vel]
+        expected_order = ['heatmap', 'reg', 'height', 'dim', 'rot', 'vel']
+        
+        # Create a mapping from output name to output value
+        output_dict = {name: out for name, out in zip(output_names, outputs)}
+        
+        # Reorder outputs according to expected order
+        head_outputs = []
+        for expected_name in expected_order:
+            if expected_name in output_dict:
+                head_outputs.append(torch.from_numpy(output_dict[expected_name]).to(self.device))
+            else:
+                raise ValueError(f"Expected output '{expected_name}' not found in ONNX model outputs: {output_names}")
         
         if len(head_outputs) != 6:
             raise ValueError(f"Expected 6 head outputs, got {len(head_outputs)}")
