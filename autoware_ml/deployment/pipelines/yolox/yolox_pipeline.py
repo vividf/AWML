@@ -13,7 +13,7 @@ import logging
 import torch
 import numpy as np
 
-from autoware_ml.deployment.core.detection_2d_pipeline import Detection2DPipeline
+from autoware_ml.deployment.pipelines.base.detection_2d_pipeline import Detection2DPipeline
 from mmdet.models.dense_heads.yolox_head import YOLOXHead
 from mmengine.config import ConfigDict
 from mmengine.structures import InstanceData
