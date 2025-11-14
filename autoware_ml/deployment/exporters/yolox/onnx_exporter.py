@@ -1,7 +1,5 @@
 """
 YOLOX-specific ONNX exporter.
-
-This is a thin wrapper around the base ONNXExporter.
 YOLOX uses the standard ONNX export flow with a model wrapper.
 """
 

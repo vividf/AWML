@@ -1,7 +1,7 @@
 """TensorRT model exporter."""
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import tensorrt as trt
 import torch

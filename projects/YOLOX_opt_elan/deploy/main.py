@@ -21,6 +21,9 @@ sys.path.insert(0, str(project_root))
 from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
 from autoware_ml.deployment.core.base_config import parse_base_args
 from autoware_ml.deployment.runners import DeploymentRunner
+from autoware_ml.deployment.exporters.yolox.onnx_exporter import YOLOXONNXExporter
+from autoware_ml.deployment.exporters.yolox.tensorrt_exporter import YOLOXTensorRTExporter
+from autoware_ml.deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
 from projects.YOLOX_opt_elan.deploy.data_loader import YOLOXOptElanDataLoader
 from projects.YOLOX_opt_elan.deploy.evaluator import YOLOXOptElanEvaluator
 
@@ -102,9 +105,15 @@ def main():
     # Create evaluator
     evaluator = YOLOXOptElanEvaluator(model_cfg, model_cfg_path=model_cfg_path)
 
-    # Create unified runner
-    # Note: export_onnx uses default implementation from DeploymentRunner
-    # Model wrapper is configured in deploy_config.py (onnx_config.model_wrapper)
+    # Create YOLOX-specific exporters with wrapper
+    # YOLOXONNXExporter automatically uses YOLOXONNXWrapper by default
+    onnx_settings = config.get_onnx_settings()
+    trt_settings = config.get_tensorrt_settings()
+    
+    onnx_exporter = YOLOXONNXExporter(onnx_settings, logger)
+    tensorrt_exporter = YOLOXTensorRTExporter(trt_settings, logger)
+
+    # Create unified runner with YOLOX-specific exporters and wrapper
     runner = DeploymentRunner(
         data_loader=data_loader,
         evaluator=evaluator,
@@ -114,6 +123,9 @@ def main():
         load_model_fn=lambda checkpoint_path, **kwargs: load_pytorch_model(
             checkpoint_path, model_cfg_path=model_cfg_path, device=config.export_config.device, **kwargs
         ),
+        onnx_exporter=onnx_exporter,
+        tensorrt_exporter=tensorrt_exporter,
+        model_wrapper=YOLOXONNXWrapper,
     )
 
     # Execute deployment workflow

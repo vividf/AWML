@@ -13,7 +13,6 @@ import torch
 from mmengine.config import Config
 
 from autoware_ml.deployment.core import BaseDeploymentConfig, BaseDataLoader, BaseEvaluator
-from autoware_ml.deployment.exporters import ONNXExporter, TensorRTExporter
 
 
 class DeploymentRunner:
@@ -41,11 +40,9 @@ class DeploymentRunner:
         model_cfg: Config,
         logger: logging.Logger,
         load_model_fn: Optional[Callable] = None,
-        export_onnx_fn: Optional[Callable] = None,
-        export_tensorrt_fn: Optional[Callable] = None,
-        onnx_exporter: Optional[Any] = None,
-        tensorrt_exporter: Optional[Any] = None,
-        model_wrapper: Optional[Any] = None,
+        onnx_exporter: Any = None,
+        tensorrt_exporter: Any = None,
+        model_wrapper: Any = None,
     ):
         """
         Initialize unified deployment runner.
@@ -57,33 +54,37 @@ class DeploymentRunner:
             model_cfg: Model configuration
             logger: Logger instance
             load_model_fn: Optional custom function to load PyTorch model
-            export_onnx_fn: Optional custom function to export ONNX
-            export_tensorrt_fn: Optional custom function to export TensorRT
-            onnx_exporter: Optional ONNX exporter instance (e.g., CenterPointONNXExporter)
-            tensorrt_exporter: Optional TensorRT exporter instance (e.g., CenterPointTensorRTExporter)
-            model_wrapper: Optional model wrapper class (e.g., YOLOXONNXWrapper)
-                          If provided and exporters don't have wrapper, it will be passed to exporters
+            onnx_exporter: Required ONNX exporter instance (e.g., CenterPointONNXExporter, YOLOXONNXExporter)
+            tensorrt_exporter: Required TensorRT exporter instance (e.g., CenterPointTensorRTExporter, YOLOXTensorRTExporter)
+            model_wrapper: Required model wrapper class (e.g., YOLOXONNXWrapper, IdentityWrapper)
+                          If exporters don't have wrapper, it will be passed to exporters
+                          
+        Raises:
+            ValueError: If onnx_exporter, tensorrt_exporter, or model_wrapper is None
         """
+        # Validate required exporters and wrapper
+        if onnx_exporter is None:
+            raise ValueError("onnx_exporter is required and cannot be None")
+        if tensorrt_exporter is None:
+            raise ValueError("tensorrt_exporter is required and cannot be None")
+        if model_wrapper is None:
+            raise ValueError("model_wrapper is required and cannot be None")
+        
         self.data_loader = data_loader
         self.evaluator = evaluator
         self.config = config
         self.model_cfg = model_cfg
         self.logger = logger
         self._load_model_fn = load_model_fn
-        self._export_onnx_fn = export_onnx_fn
-        self._export_tensorrt_fn = export_tensorrt_fn
         self._onnx_exporter = onnx_exporter
         self._tensorrt_exporter = tensorrt_exporter
         self._model_wrapper = model_wrapper
         
-        # If exporters are provided but don't have model_wrapper, inject it
-        if model_wrapper is not None:
-            if self._onnx_exporter is not None:
-                if not hasattr(self._onnx_exporter, '_model_wrapper') or self._onnx_exporter._model_wrapper is None:
-                    self._onnx_exporter._model_wrapper = model_wrapper
-            if self._tensorrt_exporter is not None:
-                if not hasattr(self._tensorrt_exporter, '_model_wrapper') or self._tensorrt_exporter._model_wrapper is None:
-                    self._tensorrt_exporter._model_wrapper = model_wrapper
+        # If exporters don't have model_wrapper, inject it
+        if not hasattr(self._onnx_exporter, '_model_wrapper') or self._onnx_exporter._model_wrapper is None:
+            self._onnx_exporter._model_wrapper = model_wrapper
+        if not hasattr(self._tensorrt_exporter, '_model_wrapper') or self._tensorrt_exporter._model_wrapper is None:
+            self._tensorrt_exporter._model_wrapper = model_wrapper
     
     def load_pytorch_model(
         self,
@@ -117,7 +118,7 @@ class DeploymentRunner:
         """
         Export model to ONNX format.
         
-        Uses custom function if provided, otherwise uses standard ONNXExporter.
+        Uses the provided ONNX exporter instance.
         
         Args:
             pytorch_model: PyTorch model to export
@@ -126,9 +127,6 @@ class DeploymentRunner:
         Returns:
             Path to exported ONNX file/directory, or None if export failed
         """
-        if self._export_onnx_fn:
-            return self._export_onnx_fn(pytorch_model, self.data_loader, self.config, self.logger, **kwargs)
-        
         # Standard ONNX export using ONNXExporter
         if not self.config.export_config.should_export_onnx():
             return None
@@ -140,39 +138,38 @@ class DeploymentRunner:
         # Get ONNX settings
         onnx_settings = self.config.get_onnx_settings()
         
-        # Use provided exporter instance if available
-        if self._onnx_exporter is not None:
-            exporter = self._onnx_exporter
-            self.logger.info("=" * 80)
-            self.logger.info(f"Exporting to ONNX (Using {type(exporter).__name__})")
-            self.logger.info("=" * 80)
+        # Use provided exporter (required, cannot be None)
+        exporter = self._onnx_exporter
+        self.logger.info("=" * 80)
+        self.logger.info(f"Exporting to ONNX (Using {type(exporter).__name__})")
+        self.logger.info("=" * 80)
+        
+        # Check if it's a CenterPoint exporter (needs special handling)
+        # CenterPoint exporter has data_loader parameter in export method
+        import inspect
+        sig = inspect.signature(exporter.export)
+        if 'data_loader' in sig.parameters:
+            # CenterPoint exporter signature
+            # Save to work_dir/onnx/ directory
+            output_dir = os.path.join(self.config.export_config.work_dir, "onnx")
+            os.makedirs(output_dir, exist_ok=True)
+            if not hasattr(pytorch_model, "_extract_features"):
+                self.logger.error("❌ ONNX export requires an ONNX-compatible model (CenterPointONNX).")
+                return None
             
-            # Check if it's a CenterPoint exporter (needs special handling)
-            # CenterPoint exporter has data_loader parameter in export method
-            import inspect
-            sig = inspect.signature(exporter.export)
-            if 'data_loader' in sig.parameters:
-                # CenterPoint exporter signature
-                # Save to work_dir/onnx/ directory
-                output_dir = os.path.join(self.config.export_config.work_dir, "onnx")
-                os.makedirs(output_dir, exist_ok=True)
-                if not hasattr(pytorch_model, "_extract_features"):
-                    self.logger.error("❌ ONNX export requires an ONNX-compatible model (CenterPointONNX).")
-                    return None
-                
-                success = exporter.export(
-                    model=pytorch_model,
-                    data_loader=self.data_loader,
-                    output_dir=output_dir,
-                    sample_idx=0
-                )
-                
-                if success:
-                    self.logger.info(f"✅ ONNX export successful: {output_dir}")
-                    return output_dir
-                else:
-                    self.logger.error(f"❌ ONNX export failed")
-                    return None
+            success = exporter.export(
+                model=pytorch_model,
+                data_loader=self.data_loader,
+                output_dir=output_dir,
+                sample_idx=0
+            )
+            
+            if success:
+                self.logger.info(f"✅ ONNX export successful: {output_dir}")
+                return output_dir
+            else:
+                self.logger.error(f"❌ ONNX export failed")
+                return None
         
         # Standard ONNX export
         # Save to work_dir/onnx/ directory
@@ -207,15 +204,8 @@ class DeploymentRunner:
                 input_tensor = single_input.repeat(batch_size, *([1] * (len(single_input.shape) - 1)))
             self.logger.info(f"Using fixed batch size: {batch_size}")
         
-        # Use provided exporter or create default
-        if self._onnx_exporter is not None:
-            exporter = self._onnx_exporter
-        else:
-            exporter = ONNXExporter(
-                onnx_settings, 
-                self.logger,
-                model_wrapper=self._model_wrapper
-            )
+        # Use provided exporter (required, cannot be None)
+        exporter = self._onnx_exporter
         
         success = exporter.export(pytorch_model, input_tensor, output_path)
         
@@ -234,7 +224,7 @@ class DeploymentRunner:
         """
         Export ONNX model to TensorRT engine.
         
-        Uses custom function if provided, otherwise uses standard TensorRTExporter.
+        Uses the provided TensorRT exporter instance.
         
         Args:
             onnx_path: Path to ONNX model file/directory
@@ -243,9 +233,6 @@ class DeploymentRunner:
         Returns:
             Path to exported TensorRT engine file/directory, or None if export failed
         """
-        if self._export_tensorrt_fn:
-            return self._export_tensorrt_fn(onnx_path, self.config, self.data_loader, self.logger, **kwargs)
-        
         # Standard TensorRT export using TensorRTExporter
         if not self.config.export_config.should_export_tensorrt():
             return None
@@ -256,45 +243,40 @@ class DeploymentRunner:
         
         trt_settings = self.config.get_tensorrt_settings()
         
-        # Use provided exporter instance if available
-        if self._tensorrt_exporter is not None:
-            exporter = self._tensorrt_exporter
-            self.logger.info("=" * 80)
-            self.logger.info(f"Exporting to TensorRT (Using {type(exporter).__name__})")
-            self.logger.info("=" * 80)
+        # Use provided exporter (required, cannot be None)
+        exporter = self._tensorrt_exporter
+        self.logger.info("=" * 80)
+        self.logger.info(f"Exporting to TensorRT (Using {type(exporter).__name__})")
+        self.logger.info("=" * 80)
+        
+        # Check if it's a CenterPoint exporter (needs special handling)
+        # CenterPoint exporter has onnx_dir parameter in export method
+        import inspect
+        sig = inspect.signature(exporter.export)
+        if 'onnx_dir' in sig.parameters:
+            # CenterPoint exporter signature
+            if not os.path.isdir(onnx_path):
+                self.logger.error("CenterPoint requires ONNX directory, not a single file")
+                return None
             
-            # Check if it's a CenterPoint exporter (needs special handling)
-            # CenterPoint exporter has onnx_dir parameter in export method
-            import inspect
-            sig = inspect.signature(exporter.export)
-            if 'onnx_dir' in sig.parameters:
-                # CenterPoint exporter signature
-                if not os.path.isdir(onnx_path):
-                    self.logger.error("CenterPoint requires ONNX directory, not a single file")
-                    return None
-                
-                # Save to work_dir/tensorrt/ directory
-                output_dir = os.path.join(self.config.export_config.work_dir, "tensorrt")
-                os.makedirs(output_dir, exist_ok=True)
-                
-                success = exporter.export(
-                    onnx_dir=onnx_path,
-                    output_dir=output_dir,
-                    device=self.config.export_config.device
-                )
-                
-                if success:
-                    self.logger.info(f"✅ TensorRT export successful: {output_dir}")
-                    return output_dir
-                else:
-                    self.logger.error(f"❌ TensorRT export failed")
-                    return None
+            # Save to work_dir/tensorrt/ directory
+            output_dir = os.path.join(self.config.export_config.work_dir, "tensorrt")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            success = exporter.export(
+                onnx_dir=onnx_path,
+                output_dir=output_dir,
+                device=self.config.export_config.device
+            )
+            
+            if success:
+                self.logger.info(f"✅ TensorRT export successful: {output_dir}")
+                return output_dir
+            else:
+                self.logger.error(f"❌ TensorRT export failed")
+                return None
         
         # Standard TensorRT export
-        self.logger.info("=" * 80)
-        self.logger.info("Exporting to TensorRT (Using Unified TensorRTExporter)")
-        self.logger.info("=" * 80)
-        
         # Save to work_dir/tensorrt/ directory
         tensorrt_dir = os.path.join(self.config.export_config.work_dir, "tensorrt")
         os.makedirs(tensorrt_dir, exist_ok=True)
@@ -326,15 +308,8 @@ class DeploymentRunner:
             trt_settings = trt_settings.copy()
             trt_settings['model_inputs'] = self.config.backend_config.model_inputs
         
-        # Use provided exporter or create default
-        if self._tensorrt_exporter is not None:
-            exporter = self._tensorrt_exporter
-        else:
-            exporter = TensorRTExporter(
-                trt_settings, 
-                self.logger,
-                model_wrapper=self._model_wrapper
-            )
+        # Use provided exporter (required, cannot be None)
+        exporter = self._tensorrt_exporter
         
         success = exporter.export(
             model=None,  # Not used for TensorRT

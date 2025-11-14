@@ -24,6 +24,7 @@ sys.path.insert(0, str(project_root))
 from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
 from autoware_ml.deployment.core.base_config import parse_base_args
 from autoware_ml.deployment.exporters import CenterPointONNXExporter, CenterPointTensorRTExporter
+from autoware_ml.deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapper
 from autoware_ml.deployment.runners import DeploymentRunner
 from projects.CenterPoint.deploy.data_loader import CenterPointDataLoader
 from projects.CenterPoint.deploy.evaluator import CenterPointEvaluator
@@ -162,7 +163,7 @@ class CenterPointDeploymentRunner(DeploymentRunner):
         onnx_exporter = CenterPointONNXExporter(onnx_settings, logger)
         tensorrt_exporter = CenterPointTensorRTExporter(trt_settings, logger)
 
-        # Pass exporters directly to DeploymentRunner
+        # Pass exporters and wrapper directly to DeploymentRunner
         super().__init__(
             data_loader=data_loader,
             evaluator=evaluator,
@@ -172,6 +173,7 @@ class CenterPointDeploymentRunner(DeploymentRunner):
             load_model_fn=load_model_fn,
             onnx_exporter=onnx_exporter,
             tensorrt_exporter=tensorrt_exporter,
+            model_wrapper=CenterPointONNXWrapper,
         )
 
 

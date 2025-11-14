@@ -21,6 +21,9 @@ sys.path.insert(0, str(project_root))
 from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
 from autoware_ml.deployment.core.base_config import parse_base_args
 from autoware_ml.deployment.runners import DeploymentRunner
+from autoware_ml.deployment.exporters.calibration.onnx_exporter import CalibrationONNXExporter
+from autoware_ml.deployment.exporters.calibration.tensorrt_exporter import CalibrationTensorRTExporter
+from autoware_ml.deployment.exporters.calibration.model_wrappers import CalibrationONNXWrapper
 from projects.CalibrationStatusClassification.deploy.data_loader import CalibrationDataLoader
 from projects.CalibrationStatusClassification.deploy.evaluator import ClassificationEvaluator
 
@@ -93,7 +96,15 @@ def main():
     # Create evaluator
     evaluator = ClassificationEvaluator(model_cfg)
 
-    # Create unified runner with custom model loading function
+    # Create Calibration-specific exporters
+    # CalibrationONNXExporter automatically uses IdentityWrapper by default
+    onnx_settings = config.get_onnx_settings()
+    trt_settings = config.get_tensorrt_settings()
+    
+    onnx_exporter = CalibrationONNXExporter(onnx_settings, logger)
+    tensorrt_exporter = CalibrationTensorRTExporter(trt_settings, logger)
+
+    # Create unified runner with Calibration-specific exporters and wrapper
     runner = DeploymentRunner(
         data_loader=data_loader,
         evaluator=evaluator,
@@ -103,6 +114,9 @@ def main():
         load_model_fn=lambda checkpoint_path, **kwargs: load_pytorch_model(
             checkpoint_path, model_cfg=model_cfg, device=config.export_config.device, **kwargs
         ),
+        onnx_exporter=onnx_exporter,
+        tensorrt_exporter=tensorrt_exporter,
+        model_wrapper=CalibrationONNXWrapper,
     )
 
     # Execute deployment workflow
