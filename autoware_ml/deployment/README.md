@@ -549,19 +549,20 @@ autoware_ml/deployment/
 │   ├── base_config.py            # Configuration management
 │   ├── base_data_loader.py        # Data loader interface
 │   ├── base_evaluator.py          # Evaluator interface
-│   ├── base_pipeline.py            # Pipeline base class
-│   ├── detection_2d_pipeline.py   # 2D detection pipeline
-│   ├── detection_3d_pipeline.py   # 3D detection pipeline
-│   └── classification_pipeline.py # Classification pipeline
+│   └── preprocessing_builder.py   # Preprocessing builder
 │
 ├── exporters/                     # Model exporters
 │   ├── base_exporter.py           # Exporter base class
 │   ├── onnx_exporter.py           # ONNX exporter
 │   ├── tensorrt_exporter.py       # TensorRT exporter
-│   ├── centerpoint_exporter.py    # CenterPoint-specific exporters
 │   └── model_wrappers.py          # Model wrappers for ONNX
 │
 ├── pipelines/                     # Task-specific pipelines
+│   ├── base/                      # Base pipeline classes
+│   │   ├── base_pipeline.py       # Pipeline base class
+│   │   ├── detection_2d_pipeline.py   # 2D detection pipeline
+│   │   ├── detection_3d_pipeline.py   # 3D detection pipeline
+│   │   └── classification_pipeline.py # Classification pipeline
 │   ├── centerpoint/               # CenterPoint pipelines
 │   │   ├── centerpoint_pipeline.py
 │   │   ├── centerpoint_pytorch.py
