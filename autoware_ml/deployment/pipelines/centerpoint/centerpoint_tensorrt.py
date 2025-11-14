@@ -15,7 +15,7 @@ import pycuda.driver as cuda
 import tensorrt as trt
 import torch
 
-from .centerpoint_pipeline import CenterPointDeploymentPipeline
+from autoware_ml.deployment.pipelines.centerpoint.centerpoint_pipeline import CenterPointDeploymentPipeline
 
 
 logger = logging.getLogger(__name__)
@@ -199,6 +199,12 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
         if context is None:
             raise RuntimeError("backbone_neck_head context is None - likely failed to initialize due to GPU OOM")
         
+        # DEBUG: Log input statistics for verification
+        if hasattr(self, '_debug_mode') and self._debug_mode:
+            logger.info(f"TensorRT backbone input: shape={spatial_features.shape}, "
+                       f"range=[{spatial_features.min():.3f}, {spatial_features.max():.3f}], "
+                       f"mean={spatial_features.mean():.3f}, std={spatial_features.std():.3f}")
+        
         # Convert to numpy
         input_array = spatial_features.cpu().numpy().astype(np.float32)
         
@@ -256,10 +262,29 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
             
             stream.synchronize()
             
-            # Convert outputs to torch tensors
-            # outputs should be: [heatmap, reg, height, dim, rot, vel]
-            head_outputs = [torch.from_numpy(output_arrays[name]).to(self.device) 
-                          for name in output_names]
+            # IMPORTANT: Reorder outputs to match expected order [heatmap, reg, height, dim, rot, vel]
+            # ONNX export uses order: ['reg', 'height', 'dim', 'rot', 'vel', 'heatmap']
+            # But pipeline expects: [heatmap, reg, height, dim, rot, vel]
+            # TensorRT preserves ONNX output order, so we need to reorder based on tensor names
+            expected_order = ['heatmap', 'reg', 'height', 'dim', 'rot', 'vel']
+            
+            # Create a mapping from output name to index in expected order
+            name_to_index = {name: expected_order.index(name) if name in expected_order else -1 
+                           for name in output_names}
+            
+            # Check if all outputs are recognized
+            if any(idx == -1 for idx in name_to_index.values()):
+                logger.warning(f"Some output names not recognized: {output_names}")
+                logger.warning("Using TensorRT order as-is (may cause verification failures)")
+                head_outputs = [torch.from_numpy(output_arrays[name]).to(self.device) 
+                              for name in output_names]
+            else:
+                # Reorder outputs according to expected order
+                reordered_outputs = [None] * len(expected_order)
+                for name in output_names:
+                    idx = name_to_index[name]
+                    reordered_outputs[idx] = torch.from_numpy(output_arrays[name]).to(self.device)
+                head_outputs = reordered_outputs
             
             if len(head_outputs) != 6:
                 raise ValueError(f"Expected 6 head outputs, got {len(head_outputs)}")

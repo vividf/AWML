@@ -116,7 +116,6 @@ AWML Deployment Framework 是一個統一的、任務無關的部署框架，用
 **功能**：匯出器抽象基類
 - `BaseExporter`：定義匯出介面
   - `export()`：執行匯出（抽象方法）
-  - `validate_export()`：驗證匯出結果
 
 #### `onnx_exporter.py`
 **功能**：ONNX 匯出器

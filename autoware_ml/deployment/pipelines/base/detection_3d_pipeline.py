@@ -12,7 +12,7 @@ import logging
 import torch
 import numpy as np
 
-from .base_pipeline import BaseDeploymentPipeline
+from autoware_ml.deployment.pipelines.base.base_pipeline import BaseDeploymentPipeline
 
 
 logger = logging.getLogger(__name__)

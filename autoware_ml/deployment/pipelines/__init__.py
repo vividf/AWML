@@ -6,7 +6,7 @@ multi-stage processing with mixed PyTorch and optimized backend inference.
 """
 
 # CenterPoint pipelines (3D detection)
-from .centerpoint import (
+from autoware_ml.deployment.pipelines.centerpoint import (
     CenterPointDeploymentPipeline,
     CenterPointPyTorchPipeline,
     CenterPointONNXPipeline,
@@ -14,7 +14,7 @@ from .centerpoint import (
 )
 
 # YOLOX pipelines (2D detection)
-from .yolox import (
+from autoware_ml.deployment.pipelines.yolox import (
     YOLOXDeploymentPipeline,
     YOLOXPyTorchPipeline,
     YOLOXONNXPipeline,
@@ -22,7 +22,7 @@ from .yolox import (
 )
 
 # Calibration pipelines (classification)
-from .calibration import (
+from autoware_ml.deployment.pipelines.calibration import (
     CalibrationDeploymentPipeline,
     CalibrationPyTorchPipeline,
     CalibrationONNXPipeline,

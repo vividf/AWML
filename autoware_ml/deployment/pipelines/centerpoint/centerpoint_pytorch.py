@@ -10,7 +10,7 @@ from typing import List, Dict, Tuple
 
 import torch
 
-from .centerpoint_pipeline import CenterPointDeploymentPipeline
+from autoware_ml.deployment.pipelines.centerpoint.centerpoint_pipeline import CenterPointDeploymentPipeline
 
 
 logger = logging.getLogger(__name__)

@@ -11,7 +11,7 @@ import logging
 import torch
 import numpy as np
 
-from .calibration_pipeline import CalibrationDeploymentPipeline
+from autoware_ml.deployment.pipelines.calibration.calibration_pipeline import CalibrationDeploymentPipeline
 
 
 logger = logging.getLogger(__name__)

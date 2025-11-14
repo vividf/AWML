@@ -13,8 +13,7 @@ import torch
 from mmengine.config import Config
 
 from autoware_ml.deployment.core import BaseDeploymentConfig, BaseDataLoader, BaseEvaluator
-from autoware_ml.deployment.exporters.onnx_exporter import ONNXExporter
-from autoware_ml.deployment.exporters.tensorrt_exporter import TensorRTExporter
+from autoware_ml.deployment.exporters import ONNXExporter, TensorRTExporter
 
 
 class DeploymentRunner:

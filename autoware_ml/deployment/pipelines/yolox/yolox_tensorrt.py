@@ -11,7 +11,7 @@ import logging
 import torch
 import numpy as np
 
-from .yolox_pipeline import YOLOXDeploymentPipeline
+from autoware_ml.deployment.pipelines.yolox.yolox_pipeline import YOLOXDeploymentPipeline
 
 
 logger = logging.getLogger(__name__)

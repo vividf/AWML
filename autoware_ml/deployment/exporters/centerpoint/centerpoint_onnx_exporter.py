@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 import torch
 
-from .onnx_exporter import ONNXExporter
+from autoware_ml.deployment.exporters.base.onnx_exporter import ONNXExporter
 
 
 class CenterPointONNXExporter(ONNXExporter):

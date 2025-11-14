@@ -31,10 +31,10 @@ Note:
     - postprocessing_ms
 """
 
-from .centerpoint_pipeline import CenterPointDeploymentPipeline
-from .centerpoint_pytorch import CenterPointPyTorchPipeline
-from .centerpoint_onnx import CenterPointONNXPipeline
-from .centerpoint_tensorrt import CenterPointTensorRTPipeline
+from autoware_ml.deployment.pipelines.centerpoint.centerpoint_pipeline import CenterPointDeploymentPipeline
+from autoware_ml.deployment.pipelines.centerpoint.centerpoint_pytorch import CenterPointPyTorchPipeline
+from autoware_ml.deployment.pipelines.centerpoint.centerpoint_onnx import CenterPointONNXPipeline
+from autoware_ml.deployment.pipelines.centerpoint.centerpoint_tensorrt import CenterPointTensorRTPipeline
 
 
 __all__ = [

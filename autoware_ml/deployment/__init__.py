@@ -7,11 +7,11 @@ tasks (classification, detection, segmentation, etc.) and backends (ONNX,
 TensorRT, TorchScript, etc.).
 """
 
-from .core.base_config import BaseDeploymentConfig
-from .core.base_data_loader import BaseDataLoader
-from .core.base_evaluator import BaseEvaluator
-from .core.preprocessing_builder import build_preprocessing_pipeline
-from .runners import DeploymentRunner
+from autoware_ml.deployment.core.base_config import BaseDeploymentConfig
+from autoware_ml.deployment.core.base_data_loader import BaseDataLoader
+from autoware_ml.deployment.core.base_evaluator import BaseEvaluator
+from autoware_ml.deployment.core.preprocessing_builder import build_preprocessing_pipeline
+from autoware_ml.deployment.runners import DeploymentRunner
 
 __all__ = [
     "BaseDeploymentConfig",

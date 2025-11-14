@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 import torch
 
-from .tensorrt_exporter import TensorRTExporter
+from autoware_ml.deployment.exporters.base.tensorrt_exporter import TensorRTExporter
 
 
 class CenterPointTensorRTExporter(TensorRTExporter):

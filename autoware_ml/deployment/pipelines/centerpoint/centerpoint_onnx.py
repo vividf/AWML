@@ -13,7 +13,7 @@ import numpy as np
 import onnxruntime as ort
 import torch
 
-from .centerpoint_pipeline import CenterPointDeploymentPipeline
+from autoware_ml.deployment.pipelines.centerpoint.centerpoint_pipeline import CenterPointDeploymentPipeline
 
 
 logger = logging.getLogger(__name__)

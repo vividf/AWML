@@ -6,7 +6,7 @@ from typing import Any, Dict
 import tensorrt as trt
 import torch
 
-from .base_exporter import BaseExporter
+from autoware_ml.deployment.exporters.base.base_exporter import BaseExporter
 
 
 class TensorRTExporter(BaseExporter):

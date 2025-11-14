@@ -22,10 +22,10 @@ TensorRT:
     >>> predictions, latency = pipeline.infer(image)
 """
 
-from .yolox_pipeline import YOLOXDeploymentPipeline
-from .yolox_pytorch import YOLOXPyTorchPipeline
-from .yolox_onnx import YOLOXONNXPipeline
-from .yolox_tensorrt import YOLOXTensorRTPipeline
+from autoware_ml.deployment.pipelines.yolox.yolox_pipeline import YOLOXDeploymentPipeline
+from autoware_ml.deployment.pipelines.yolox.yolox_pytorch import YOLOXPyTorchPipeline
+from autoware_ml.deployment.pipelines.yolox.yolox_onnx import YOLOXONNXPipeline
+from autoware_ml.deployment.pipelines.yolox.yolox_tensorrt import YOLOXTensorRTPipeline
 
 
 __all__ = [

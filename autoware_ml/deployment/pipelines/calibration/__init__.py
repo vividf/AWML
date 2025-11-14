@@ -22,10 +22,10 @@ TensorRT:
     >>> predictions, latency = pipeline.infer(input_tensor)
 """
 
-from .calibration_pipeline import CalibrationDeploymentPipeline
-from .calibration_pytorch import CalibrationPyTorchPipeline
-from .calibration_onnx import CalibrationONNXPipeline
-from .calibration_tensorrt import CalibrationTensorRTPipeline
+from autoware_ml.deployment.pipelines.calibration.calibration_pipeline import CalibrationDeploymentPipeline
+from autoware_ml.deployment.pipelines.calibration.calibration_pytorch import CalibrationPyTorchPipeline
+from autoware_ml.deployment.pipelines.calibration.calibration_onnx import CalibrationONNXPipeline
+from autoware_ml.deployment.pipelines.calibration.calibration_tensorrt import CalibrationTensorRTPipeline
 
 
 __all__ = [

@@ -10,7 +10,7 @@ from typing import Any, Dict
 
 import numpy as np
 
-from .base_data_loader import BaseDataLoader
+from autoware_ml.deployment.core.base_data_loader import BaseDataLoader
 
 
 class BaseEvaluator(ABC):
