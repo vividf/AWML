@@ -86,7 +86,7 @@ def main():
     logger.info(f"  Export mode: {config.export_config.mode}")
     logger.info(f"  Device: {config.export_config.device}")
     logger.info(f"  Work dir: {config.export_config.work_dir}")
-    logger.info(f"  Verify: {config.export_config.verify}")
+    logger.info(f"  Verify: {config.verification_config.get('enabled', False)}")
 
     # Create data loader
     logger.info("\nCreating data loader...")

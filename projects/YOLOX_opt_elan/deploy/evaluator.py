@@ -5,7 +5,7 @@ This module implements evaluation for YOLOX_opt_elan object detection models.
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -87,39 +87,42 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 "Config file must contain 'classes' attribute. "
                 "Please ensure your dataset config file (referenced via _base_) defines 'classes'."
             )
-
     def verify(
         self,
-        pytorch_model_path: str,
-        onnx_model_path: str = None,
-        tensorrt_model_path: str = None,
-        data_loader: YOLOXOptElanDataLoader = None,
+        ref_backend: str,
+        ref_device: str,
+        ref_path: str,
+        test_backend: str,
+        test_device: str,
+        test_path: str,
+        data_loader: YOLOXOptElanDataLoader,
         num_samples: int = 1,
-        device: str = "cpu",
         tolerance: float = 0.1,
         verbose: bool = False,
     ) -> Dict[str, Any]:
         """
-        Verify exported models against PyTorch reference by comparing raw outputs.
+        Verify exported models using policy-based verification.
         
-        This is similar to evaluate() but focuses on numerical consistency
-        rather than detection metrics. It compares raw model outputs before postprocessing.
+        This method compares outputs from a reference backend against a test backend
+        as specified by the verification policy.
         
         Args:
-            pytorch_model_path: Path to PyTorch checkpoint (reference)
-            onnx_model_path: Optional path to ONNX model file
-            tensorrt_model_path: Optional path to TensorRT engine file
+            ref_backend: Reference backend name ('pytorch' or 'onnx')
+            ref_device: Device for reference backend (e.g., 'cpu', 'cuda:0')
+            ref_path: Path to reference model (checkpoint for pytorch, model path for onnx)
+            test_backend: Test backend name ('onnx' or 'tensorrt')
+            test_device: Device for test backend (e.g., 'cpu', 'cuda:0')
+            test_path: Path to test model (model path for onnx, engine path for tensorrt)
             data_loader: Data loader for test samples
             num_samples: Number of samples to verify
-            device: Device to run verification on
             tolerance: Maximum allowed difference for verification to pass
             verbose: Whether to print detailed output
             
         Returns:
             Dictionary containing verification results:
             {
-                'sample_0_onnx': bool (passed/failed),
-                'sample_0_tensorrt': bool (passed/failed),
+                'sample_0': bool (passed/failed),
+                'sample_1': bool (passed/failed),
                 ...
                 'summary': {'passed': int, 'failed': int, 'total': int}
             }
@@ -133,141 +136,145 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         
         logger = logging.getLogger(__name__)
         
+        # Enforce device scenarios
+        if ref_backend == "pytorch" and ref_device.startswith("cuda"):
+            logger.warning("PyTorch verification is forced to CPU; overriding device to 'cpu'")
+            ref_device = "cpu"
+        
+        if test_backend == "tensorrt":
+            if not test_device.startswith("cuda"):
+                logger.warning("TensorRT verification requires CUDA device. Skipping verification.")
+                return {"error": "TensorRT requires CUDA"}
+            if test_device != "cuda:0":
+                logger.warning("TensorRT verification only supports 'cuda:0'. Overriding device to 'cuda:0'.")
+                test_device = "cuda:0"
+        
         logger.info("\n" + "=" * 60)
-        logger.info("YOLOX_opt_elan Model Verification")
+        logger.info("YOLOX_opt_elan Model Verification (Policy-Based)")
         logger.info("=" * 60)
-        logger.info(f"PyTorch reference: {pytorch_model_path}")
-        if onnx_model_path:
-            logger.info(f"ONNX model: {onnx_model_path}")
-        if tensorrt_model_path:
-            logger.info(f"TensorRT model: {tensorrt_model_path}")
+        logger.info(f"Reference: {ref_backend} on {ref_device} - {ref_path}")
+        logger.info(f"Test: {test_backend} on {test_device} - {test_path}")
         logger.info(f"Number of samples: {num_samples}")
         logger.info(f"Tolerance: {tolerance}")
         logger.info("=" * 60)
         
-        results = {}
-        skipped_backends = []
+        # Create reference pipeline
+        logger.info(f"\nInitializing {ref_backend} reference pipeline...")
+        if ref_backend == "pytorch":
+            pytorch_model = load_pytorch_model(ref_path, self.model_cfg_path, ref_device)
+            # Replace ReLU6 with ReLU to match ONNX export
+            def replace_relu6_with_relu(module):
+                for name, child in module.named_children():
+                    if isinstance(child, torch.nn.ReLU6):
+                        setattr(module, name, torch.nn.ReLU(inplace=child.inplace))
+                    else:
+                        replace_relu6_with_relu(child)
+            replace_relu6_with_relu(pytorch_model)
+            ref_pipeline = YOLOXPyTorchPipeline(
+                pytorch_model=pytorch_model,
+                device=ref_device,
+                num_classes=len(self.class_names),
+                class_names=self.class_names
+            )
+        elif ref_backend == "onnx":
+            ref_pipeline = YOLOXONNXPipeline(
+                onnx_path=ref_path,
+                device=ref_device,
+                num_classes=len(self.class_names),
+                class_names=self.class_names
+            )
+        else:
+            logger.error(f"Unsupported reference backend: {ref_backend}")
+            return {"error": f"Unsupported reference backend: {ref_backend}"}
         
-        # Load PyTorch model and create pipeline (reference)
-        logger.info("\nInitializing PyTorch reference pipeline...")
-        pytorch_model = load_pytorch_model(pytorch_model_path, self.model_cfg_path, device)
-
-        # TODO(vividf): check this
-        # Create PyTorch pipeline (replace ReLU6 with ReLU to match ONNX export)
-        # This ensures verification uses the same model state as export
-        def replace_relu6_with_relu(module):
-            for name, child in module.named_children():
-                if isinstance(child, torch.nn.ReLU6):
-                    setattr(module, name, torch.nn.ReLU(inplace=child.inplace))
-                else:
-                    replace_relu6_with_relu(child)
+        if ref_pipeline is None:
+            logger.error(f"Failed to create {ref_backend} reference pipeline")
+            return {"error": f"Failed to create {ref_backend} reference pipeline"}
         
-        replace_relu6_with_relu(pytorch_model)
+        # Create test pipeline
+        logger.info(f"\nInitializing {test_backend} test pipeline...")
+        if test_backend == "onnx":
+            test_pipeline = YOLOXONNXPipeline(
+                onnx_path=test_path,
+                device=test_device,
+                num_classes=len(self.class_names),
+                class_names=self.class_names
+            )
+        elif test_backend == "tensorrt":
+            test_pipeline = YOLOXTensorRTPipeline(
+                engine_path=test_path,
+                device=test_device,
+                num_classes=len(self.class_names),
+                class_names=self.class_names
+            )
+        else:
+            logger.error(f"Unsupported test backend: {test_backend}")
+            return {"error": f"Unsupported test backend: {test_backend}"}
         
-        pytorch_pipeline = YOLOXPyTorchPipeline(
-            pytorch_model=pytorch_model,
-            device=device,
-            num_classes=len(self.class_names),
-            class_names=self.class_names
-        )
-        
-        # Create ONNX pipeline if requested
-        onnx_pipeline = None
-        if onnx_model_path:
-            logger.info("\nInitializing ONNX pipeline...")
-            try:
-                onnx_pipeline = YOLOXONNXPipeline(
-                    onnx_path=onnx_model_path,
-                    device=device,
-                    num_classes=len(self.class_names),
-                    class_names=self.class_names
-                )
-            except Exception as e:
-                logger.warning(f"Failed to create ONNX pipeline, skipping ONNX verification: {e}")
-                skipped_backends.append("onnx")
-        
-        # Create TensorRT pipeline if requested
-        tensorrt_pipeline = None
-        if tensorrt_model_path:
-            logger.info("\nInitializing TensorRT pipeline...")
-            if not device.startswith("cuda"):
-                logger.warning("TensorRT requires CUDA device, skipping TensorRT verification")
-                skipped_backends.append("tensorrt")
-            else:
-                try:
-                    tensorrt_pipeline = YOLOXTensorRTPipeline(
-                        engine_path=tensorrt_model_path,
-                        device=device,
-                        num_classes=len(self.class_names),
-                        class_names=self.class_names
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to create TensorRT pipeline, skipping TensorRT verification: {e}")
-                    skipped_backends.append("tensorrt")
+        if test_pipeline is None:
+            logger.error(f"Failed to create {test_backend} test pipeline")
+            return {"error": f"Failed to create {test_backend} test pipeline"}
         
         # Verify each sample
+        results = {}
+        
         try:
             for i in range(min(num_samples, data_loader.get_num_samples())):
                 logger.info(f"\n{'='*60}")
                 logger.info(f"Verifying sample {i}")
                 logger.info(f"{'='*60}")
                 
-                # Load sample and preprocess via MMDet test pipeline (same as evaluation)
+                # Load sample and preprocess
                 sample = data_loader.load_sample(i)
                 input_tensor = data_loader.preprocess(sample)
+                
+                # Ensure input tensor is on the correct device for reference backend
+                # data_loader may have a different device, so we need to move the tensor
+                ref_device_obj = torch.device(ref_device)
+                if input_tensor.device != ref_device_obj:
+                    input_tensor = input_tensor.to(ref_device_obj)
                 
                 # Get ground truth and img_info (required for YOLOX preprocessing)
                 gt_data = data_loader.get_ground_truth(i)
                 img_info = gt_data["img_info"]
                 
-                # Get PyTorch reference outputs (raw, before postprocessing)
-                logger.info("\nRunning PyTorch reference (raw outputs)...")
+                # Get reference outputs
+                logger.info(f"\nRunning {ref_backend} reference ({ref_device})...")
                 try:
-                    pytorch_output, pytorch_latency, _ = pytorch_pipeline.infer(
-                        input_tensor, 
+                    ref_output, ref_latency, _ = ref_pipeline.infer(
+                        input_tensor,
                         return_raw_outputs=True,
                         img_info=img_info
                     )
-                    logger.info(f"  PyTorch latency: {pytorch_latency:.2f} ms")
-                    logger.info(f"  PyTorch output shape: {pytorch_output.shape}")
-                    logger.info(f"  PyTorch output range: [{pytorch_output.min():.6f}, {pytorch_output.max():.6f}]")
+                    logger.info(f"  {ref_backend} latency: {ref_latency:.2f} ms")
+                    logger.info(f"  {ref_backend} output shape: {ref_output.shape}")
                 except Exception as e:
-                    logger.error(f"  PyTorch inference failed: {e}")
+                    logger.error(f"  {ref_backend} inference failed: {e}")
                     import traceback
                     traceback.print_exc()
+                    results[f"sample_{i}"] = False
                     continue
                 
-                # Verify ONNX
-                if onnx_pipeline:
-                    logger.info("\nVerifying ONNX pipeline...")
-                    onnx_passed = self._verify_single_backend(
-                        onnx_pipeline,
-                        input_tensor,
-                        pytorch_output,
-                        pytorch_latency,
-                        tolerance,
-                        "ONNX",
-                        logger,
-                        img_info=img_info
-                    )
-                    results[f"sample_{i}_onnx"] = onnx_passed
+                # Ensure input tensor is on the correct device for test backend
+                test_device_obj = torch.device(test_device)
+                test_input_tensor = input_tensor.to(test_device_obj) if input_tensor.device != test_device_obj else input_tensor
                 
-                # Verify TensorRT
-                if tensorrt_pipeline:
-                    logger.info("\nVerifying TensorRT pipeline...")
-                    tensorrt_passed = self._verify_single_backend(
-                        tensorrt_pipeline,
-                        input_tensor,
-                        pytorch_output,
-                        pytorch_latency,
-                        tolerance,
-                        "TensorRT",
-                        logger,
-                        img_info=img_info
-                    )
-                    results[f"sample_{i}_tensorrt"] = tensorrt_passed
+                # Verify test backend against reference
+                ref_name = f"{ref_backend} ({ref_device})"
+                test_name = f"{test_backend} ({test_device})"
+                passed = self._verify_single_backend(
+                    test_pipeline,
+                    test_input_tensor,
+                    ref_output,
+                    ref_latency,
+                    tolerance,
+                    test_name,
+                    logger,
+                    img_info=img_info
+                )
+                results[f"sample_{i}"] = passed
                 
-                # Cleanup GPU memory
+                # Cleanup GPU memory after each sample
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
         
@@ -278,15 +285,14 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             return {"error": str(e)}
         
         # Compute summary
-        passed = sum(1 for v in results.values() if v)
-        failed = sum(1 for v in results.values() if not v)
+        # Use == instead of 'is' to handle numpy bool values
+        passed = sum(1 for v in results.values() if v == True)
+        failed = sum(1 for v in results.values() if v == False)
         total = len(results)
-        skipped = len(skipped_backends) * num_samples
         
         results['summary'] = {
             'passed': passed,
             'failed': failed,
-            'skipped': skipped,
             'total': total
         }
         
@@ -299,18 +305,8 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 status = "✓ PASSED" if value else "✗ FAILED"
                 logger.info(f"  {key}: {status}")
         
-        if skipped_backends:
-            logger.info("")
-            for backend in skipped_backends:
-                logger.info(f"  {backend}: ⊝ SKIPPED")
-        
         logger.info("=" * 60)
-        summary_parts = [f"{passed}/{total} passed"]
-        if failed > 0:
-            summary_parts.append(f"{failed}/{total} failed")
-        if skipped > 0:
-            summary_parts.append(f"{skipped} skipped")
-        logger.info(f"Total: {', '.join(summary_parts)}")
+        logger.info(f"Total: {passed}/{total} passed, {failed}/{total} failed")
         logger.info("=" * 60)
         
         return results

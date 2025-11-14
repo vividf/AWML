@@ -30,9 +30,13 @@ class ExportConfig:
 
     def __init__(self, config_dict: Dict[str, Any]):
         self.mode = config_dict.get("mode", "both")
-        self.verify = config_dict.get("verify", False)
+        # Note: verify has been moved to verification.enabled in v2 config format
+        # Device is optional in v2 format (devices are specified per-backend in evaluation/verification)
+        # Default to cuda:0 for backward compatibility
         self.device = config_dict.get("device", "cuda:0")
         self.work_dir = config_dict.get("work_dir", "work_dirs")
+        self.checkpoint_path = config_dict.get("checkpoint_path")
+        self.onnx_path = config_dict.get("onnx_path")
 
     def should_export_onnx(self) -> bool:
         """Check if ONNX export is requested."""
@@ -139,6 +143,30 @@ class BaseDeploymentConfig:
     def verification_config(self) -> Dict:
         """Get verification configuration."""
         return self.deploy_cfg.get("verification", {})
+
+    def get_evaluation_backends(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get evaluation backends configuration.
+        
+        Returns:
+            Dictionary mapping backend names to their configuration
+        """
+        eval_config = self.evaluation_config
+        return eval_config.get("backends", {})
+
+    def get_verification_scenarios(self, export_mode: str) -> List[Dict[str, str]]:
+        """
+        Get verification scenarios for the given export mode.
+        
+        Args:
+            export_mode: Export mode ('onnx', 'trt', 'both', 'none')
+            
+        Returns:
+            List of verification scenarios dictionaries
+        """
+        verification_cfg = self.verification_config
+        scenarios = verification_cfg.get("scenarios", {})
+        return scenarios.get(export_mode, [])
 
     @property
     def task_type(self) -> Optional[str]:

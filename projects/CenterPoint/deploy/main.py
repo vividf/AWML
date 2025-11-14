@@ -153,7 +153,7 @@ class CenterPointDeploymentRunner(DeploymentRunner):
         self.model_cfg = copy.deepcopy(model_cfg)
 
         def load_model_fn(checkpoint_path, **kwargs):
-            return build_model_from_cfg(self.model_cfg, checkpoint_path, device=config.export_config.device)
+            return build_model_from_cfg(self.model_cfg, checkpoint_path, device="cpu")
 
         # Create CenterPoint-specific exporters
         onnx_settings = config.get_onnx_settings()
@@ -191,13 +191,22 @@ def main():
     # Override from command line
     if args.work_dir:
         config.export_config.work_dir = args.work_dir
+    # Optionally override evaluation devices from command line
     if args.device:
-        config.export_config.device = args.device
+        if args.device not in ("cpu", "cuda:0"):
+            logger.warning(
+                f"Unsupported device override '{args.device}'. "
+                "Only 'cpu' or 'cuda:0' are allowed. Ignoring override."
+            )
+        else:
+            eval_devices_cfg = config.deploy_cfg.setdefault("evaluation", {}).setdefault("devices", {})
+            eval_devices_cfg["pytorch"] = args.device
+            eval_devices_cfg["onnx"] = args.device
 
-    # Always create ONNX-compatible config for all backends
+    # Always create ONNX-compatible config for all backends (export uses CPU)
     onnx_model_cfg = create_onnx_model_cfg(
         model_cfg,
-        device=config.export_config.device,
+        device="cpu",
         rot_y_axis_reference=args.rot_y_axis_reference,
     )
 
@@ -206,9 +215,13 @@ def main():
     logger.info("=" * 80)
     logger.info("Deployment Configuration:")
     logger.info(f"  Export mode: {config.export_config.mode}")
-    logger.info(f"  Device: {config.export_config.device}")
     logger.info(f"  Work dir: {config.export_config.work_dir}")
-    logger.info(f"  Verify: {config.export_config.verify}")
+    logger.info(f"  Verify: {config.verification_config.get('enabled', False)}")
+    eval_devices_cfg = config.evaluation_config.get("devices", {})
+    logger.info("  Evaluation devices:")
+    logger.info(f"    PyTorch: {eval_devices_cfg.get('pytorch', 'cpu')}")
+    logger.info(f"    ONNX: {eval_devices_cfg.get('onnx', 'cpu')}")
+    logger.info(f"    TensorRT: {eval_devices_cfg.get('tensorrt', 'cuda:0')}")
     logger.info(f"  Y-axis rotation: {args.rot_y_axis_reference}")
     logger.info(f"  Using ONNX-compatible config for all backends")
 
@@ -217,13 +230,18 @@ def main():
     data_loader = CenterPointDataLoader(
         info_file=config.runtime_config["info_file"], 
         model_cfg=model_cfg,  # Data loader can use original config
-        device=config.export_config.device,
+        device="cpu",
         task_type=config.task_type
     )
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
     # Create evaluator with unified ONNX-compatible config
-    evaluator = CenterPointEvaluator(onnx_model_cfg)
+    # Get checkpoint_path from config or command line args
+    checkpoint_path = args.checkpoint or config.export_config.checkpoint_path
+    evaluator = CenterPointEvaluator(
+        onnx_model_cfg,
+        checkpoint_path=checkpoint_path
+    )
 
     # Create CenterPoint-specific runner
     runner = CenterPointDeploymentRunner(

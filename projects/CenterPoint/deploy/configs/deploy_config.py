@@ -1,112 +1,229 @@
 """
-CenterPoint Deployment Configuration.
+CenterPoint Deployment Configuration (v2).
 
-This is an example deployment config for CenterPoint.
-Modify according to your needs.
+This config is designed to:
+- Make export mode behavior explicit and easy to reason about.
+- Separate "what to do" (mode, which backends) from "how to do it" (paths, devices).
+- Make verification & evaluation rules depend on export.mode without hardcoding them in code.
 """
 
+# ============================================================================
 # Task type for pipeline building
 # Options: 'detection2d', 'detection3d', 'classification', 'segmentation'
+# ============================================================================
 task_type = "detection3d"
 
-# Export settings
+# ============================================================================
+# Export Configuration
+# ============================================================================
 export = dict(
-    mode="both",  # Export both ONNX and TensorRT
-    verify=True,  # Disable verification to save time
-    device="cpu",  # Use CUDA for TensorRT
+    # Export mode:
+    # - 'onnx' : export PyTorch -> ONNX
+    # - 'trt'  : build TensorRT engine from an existing ONNX
+    # - 'both' : export PyTorch -> ONNX -> TensorRT
+    # - 'none' : no export (only evaluation / verification on existing artifacts)
+    mode="both",
+
+    # ---- Common options ----------------------------------------------------
     work_dir="work_dirs/centerpoint_deployment",
+
+    # ---- Source for ONNX export --------------------------------------------
+    # Rule:
+    # - mode in ['onnx', 'both']  -> checkpoint_path MUST be provided
+    # - mode == 'trt'             -> checkpoint_path is ignored
+    checkpoint_path="work_dirs/centerpoint/best_checkpoint.pth",
+
+    # ---- ONNX source when building TensorRT only ---------------------------
+    # Rule:
+    # - mode == 'trt'  -> onnx_path MUST be provided (file or directory)
+    # - mode in ['onnx', 'both'] -> onnx_path can be None (pipeline uses newly exported ONNX)
+    onnx_path=None,  # e.g. "work_dirs/centerpoint_deployment/centerpoint.onnx"
 )
 
+# ============================================================================
 # Runtime I/O settings
+# ============================================================================
 runtime_io = dict(
     # Path to info.pkl file
     info_file="data/t4dataset/info/t4dataset_j6gen2_infos_val.pkl",
     # Sample index for export (use first sample)
     sample_idx=0,
-    # Optional: path to existing ONNX file (for eval-only mode)
-    # onnx_file='work_dirs/centerpoint_deployment/centerpoint.onnx',
 )
 
-# ==============================================================================
+# ============================================================================
 # Model Input/Output Configuration
-# ==============================================================================
+# ============================================================================
 model_io = dict(
-    # Input configuration for 3D detection
-    # Note: CenterPoint has multiple inputs with variable dimensions
-    input_name="voxels",  # Primary input name
-    input_shape=(32, 4),  # (max_points_per_voxel, point_dim) - batch dimension will be added automatically
+    # Primary input configuration for 3D detection
+    input_name="voxels",
+    input_shape=(32, 4),  # (max_points_per_voxel, point_dim); batch dim added automatically
     input_dtype="float32",
-    
+
     # Additional inputs for 3D detection
     additional_inputs=[
-        dict(name="num_points", shape=(-1,), dtype="int32"),  # (num_voxels,)
-        dict(name="coors", shape=(-1, 4), dtype="int32"),  # (num_voxels, 4) where 4 = (batch_idx, z, y, x)
+        dict(name="num_points", shape=(-1,), dtype="int32"),     # (num_voxels,)
+        dict(name="coors", shape=(-1, 4), dtype="int32"),        # (num_voxels, 4) = (batch, z, y, x)
     ],
-    
-    # Output configuration  
+
+    # Outputs (head tensors)
     output_name="reg",  # Primary output name
     additional_outputs=["height", "dim", "rot", "vel", "hm"],
-    
+
     # Batch size configuration
-    # Options:
-    # - int: Fixed batch size (e.g., 1, 2)
-    # - None: Dynamic batch size (uses dynamic_axes)
-    batch_size=None,  # Dynamic batch size for flexible inference
-    
-    # Dynamic axes (only used when batch_size=None)
-    # When batch_size is set to a number, this is automatically set to None
-    # When batch_size is None, this defines dynamic batch dimensions
+    # - int  : fixed batch size
+    # - None : dynamic batch size with dynamic_axes
+    batch_size=None,
+
+    # Dynamic axes when batch_size=None
     dynamic_axes={
-        "voxels": {0: "num_voxels"}, 
-        "num_points": {0: "num_voxels"}, 
-        "coors": {0: "num_voxels"}
+        "voxels": {0: "num_voxels"},
+        "num_points": {0: "num_voxels"},
+        "coors": {0: "num_voxels"},
     },
 )
 
-# ==============================================================================
+# ============================================================================
 # ONNX Export Configuration
-# ==============================================================================
+# ============================================================================
 onnx_config = dict(
-    opset_version=16,  # CenterPoint typically uses opset 13
+    opset_version=16,
     do_constant_folding=True,
     save_file="centerpoint.onnx",
     export_params=True,
     keep_initializers_as_inputs=False,
     simplify=True,
+    # CenterPoint uses multi-file ONNX (voxel encoder + backbone/head)
+    # When True, model_path should be a directory containing multiple .onnx files
+    # When False (default), model_path should be a single .onnx file
+    multi_file=True,
 )
 
-# ==============================================================================
-# Backend Configuration
-# ==============================================================================
+# ============================================================================
+# Backend Configuration (mainly for TensorRT)
+# ============================================================================
 backend_config = dict(
     common_config=dict(
         # Precision policy for TensorRT
         # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
         precision_policy="auto",
         # TensorRT workspace size (bytes)
-        max_workspace_size=2 << 30,  # 2 GB (3D models need more memory)
+        max_workspace_size=2 << 30,  # 2 GB
     ),
     # Model inputs will be generated automatically from model_io configuration
-    # This will be populated by the deployment pipeline based on model_io settings
-    model_inputs=None,  # Will be set automatically
+    model_inputs=None,  # Will be populated by the deployment pipeline
 )
 
-# Evaluation configuration
+# ============================================================================
+# Evaluation Configuration
+# ============================================================================
 evaluation = dict(
-    enabled=True,  # Enable evaluation
-    num_samples=1,  # Number of samples to evaluate (3D is slower)
-    verbose=True,  # Detailed per-sample output for debugging
-    # Specify models to evaluate (comment out or remove paths for backends you don't want to evaluate)
-    models=dict(
-        pytorch="work_dirs/centerpoint/best_checkpoint.pth",  # PyTorch checkpoint
-        onnx="work_dirs/centerpoint_deployment",  # Path to ONNX model directory
-        tensorrt="work_dirs/centerpoint_deployment/tensorrt",  # Path to TensorRT engine directory
+    enabled=True,
+    num_samples=1,      # Number of samples to evaluate
+    verbose=True,
+
+    # Decide which backends to evaluate and on which devices.
+    # Note:
+    # - tensorrt.device MUST be a CUDA device (e.g., 'cuda:0')
+    # - For 'none' export mode, all models must already exist on disk.
+    backends=dict(
+        # PyTorch evaluation
+        pytorch=dict(
+            enabled=True,
+            device="cuda:0",  # or 'cpu'
+            checkpoint="work_dirs/centerpoint/best_checkpoint.pth",
+        ),
+
+        # ONNX evaluation
+        onnx=dict(
+            enabled=True,
+            device="cuda:0",  # 'cpu' or 'cuda:0'
+            # If None: pipeline will infer from export.work_dir / onnx_config.save_file
+            model_dir=None,
+        ),
+
+        # TensorRT evaluation
+        tensorrt=dict(
+            enabled=True,
+            device="cuda:0",  # must be CUDA
+            # If None: pipeline will infer from export.work_dir + "/tensorrt"
+            engine_dir=None,
+        ),
     ),
 )
 
-# Verification configuration
+# ============================================================================
+# Verification Configuration
+# ============================================================================
+# This block defines *scenarios* per export.mode, so the pipeline does not
+# need many if/else branches; it just chooses the policy based on export["mode"].
+# ----------------------------------------------------------------------------
 verification = dict(
-    enabled=False,  # Will use export.verify
-    tolerance=1e-1,  # Slightly higher tolerance for 3D detection
-    num_verify_samples=1,  # Fewer samples for 3D (slower)
+    # Master switch to enable/disable verification
+    enabled=True,
+
+    tolerance=1e-1,
+    num_verify_samples=1,
+
+    # Device aliases for flexible device management
+    # 
+    # Benefits of using aliases:
+    # - Change all CPU verifications to "cuda:1"? Just update devices["cpu"] = "cuda:1"
+    # - Switch ONNX verification device? Just update devices["cuda"] = "cuda:1"
+    # - Scenarios reference these aliases (e.g., ref_device="cpu", test_device="cuda")
+    devices=dict(
+        cpu="cpu",      # Alias for CPU device
+        cuda="cuda:0",  # Alias for CUDA device (can be changed to cuda:1, cuda:2, etc.)
+    ),
+
+    # Verification scenarios per export mode
+    #
+    # Each policy is a list of comparison pairs:
+    #   - ref_backend   : reference backend ('pytorch' or 'onnx')
+    #   - ref_device    : device alias (e.g., "cpu", "cuda") - resolved via devices dict above
+    #   - test_backend  : backend under test ('onnx' or 'tensorrt')
+    #   - test_device   : device alias (e.g., "cpu", "cuda") - resolved via devices dict above
+    #
+    # Pipeline resolves devices like: actual_device = verification["devices"][policy["ref_device"]]
+    #
+    # This structure encodes:
+    # - 'both':
+    #     1) PyTorch(cpu) vs ONNX(cpu)
+    #     2) ONNX(cuda)   vs TensorRT(cuda)
+    # - 'onnx':
+    #     1) PyTorch(cpu) vs ONNX(cpu)
+    # - 'trt':
+    #     1) ONNX(cuda)   vs TensorRT(cuda)  (using provided ONNX)
+    scenarios=dict(
+        both=[
+            dict(
+                ref_backend="pytorch",
+                ref_device="cpu",
+                test_backend="onnx",
+                test_device="cpu",
+            ),
+            dict(
+                ref_backend="onnx",
+                ref_device="cuda",
+                test_backend="tensorrt",
+                test_device="cuda",
+            ),
+        ],
+        onnx=[
+            dict(
+                ref_backend="pytorch",
+                ref_device="cpu",
+                test_backend="onnx",
+                test_device="cpu",
+            ),
+        ],
+        trt=[
+            dict(
+                ref_backend="onnx",
+                ref_device="cuda",
+                test_backend="tensorrt",
+                test_device="cuda",
+            ),
+        ],
+        none=[],
+    ),
 )

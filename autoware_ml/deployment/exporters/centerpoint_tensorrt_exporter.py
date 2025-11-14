@@ -63,6 +63,18 @@ class CenterPointTensorRTExporter(TensorRTExporter):
         Returns:
             True if all exports succeeded
         """
+        # TensorRT export must run on CUDA
+        if device is None or not str(device).startswith("cuda"):
+            self.logger.warning("TensorRT exporter requires CUDA. Overriding device to 'cuda:0'.")
+            device = "cuda:0"
+        elif device != "cuda:0":
+            self.logger.warning("CenterPoint TensorRT exporter only supports 'cuda:0'. Overriding device.")
+            device = "cuda:0"
+
+        if not torch.cuda.is_available():
+            self.logger.error("CUDA is not available. TensorRT export cannot proceed.")
+            return False
+
         # Use onnx_dir if provided, otherwise fall back to onnx_path
         if onnx_dir is None:
             if onnx_path is None:

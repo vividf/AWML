@@ -33,6 +33,7 @@ class CenterPointEvaluator(BaseEvaluator):
         self,
         model_cfg: Config,
         class_names: List[str] = None,
+        checkpoint_path: Optional[str] = None,
     ):
         """
         Initialize CenterPoint evaluator.
@@ -40,9 +41,11 @@ class CenterPointEvaluator(BaseEvaluator):
         Args:
             model_cfg: ONNX-compatible model configuration (used for all backends)
             class_names: List of class names (optional)
+            checkpoint_path: Path to checkpoint file (optional, will be used for ONNX/TensorRT pipelines)
         """
         super().__init__(config={})
         self.model_cfg = model_cfg
+        self.checkpoint_path = checkpoint_path
 
         # Get class names
         if class_names is not None:
@@ -53,89 +56,88 @@ class CenterPointEvaluator(BaseEvaluator):
             # Default for T4Dataset
             self.class_names = ["VEHICLE", "PEDESTRIAN", "CYCLIST"]
 
+
     def verify(
         self,
-        pytorch_model_path: str,
-        onnx_model_path: str = None,
-        tensorrt_model_path: str = None,
-        data_loader: CenterPointDataLoader = None,
+        ref_backend: str,
+        ref_device: str,
+        ref_path: str,
+        test_backend: str,
+        test_device: str,
+        test_path: str,
+        data_loader: CenterPointDataLoader,
         num_samples: int = 1,
-        device: str = "cpu",
         tolerance: float = 0.1,
         verbose: bool = False,
     ) -> Dict[str, Any]:
         """
-        Verify exported models against PyTorch reference by comparing raw outputs.
+        Verify exported models using policy-based verification.
         
-        This method is similar to evaluate() but focuses on numerical consistency
-        rather than detection metrics. It compares raw head outputs before postprocessing.
+        This method compares outputs from a reference backend against a test backend
+        as specified by the verification policy.
         
         Args:
-            pytorch_model_path: Path to PyTorch checkpoint (reference)
-            onnx_model_path: Optional path to ONNX model directory
-            tensorrt_model_path: Optional path to TensorRT model directory
+            ref_backend: Reference backend name ('pytorch' or 'onnx')
+            ref_device: Device for reference backend (e.g., 'cpu', 'cuda:0')
+            ref_path: Path to reference model (checkpoint for pytorch, model path for onnx)
+            test_backend: Test backend name ('onnx' or 'tensorrt')
+            test_device: Device for test backend (e.g., 'cpu', 'cuda:0')
+            test_path: Path to test model (model path for onnx, engine path for tensorrt)
             data_loader: Data loader for test samples
             num_samples: Number of samples to verify
-            device: Device to run verification on
             tolerance: Maximum allowed difference for verification to pass
             verbose: Whether to print detailed output
             
         Returns:
             Dictionary containing verification results:
             {
-                'sample_0_onnx': bool (passed/failed),
-                'sample_0_tensorrt': bool (passed/failed),
+                'sample_0': bool (passed/failed),
+                'sample_1': bool (passed/failed),
                 ...
                 'summary': {'passed': int, 'failed': int, 'total': int}
             }
         """
         logger = logging.getLogger(__name__)
         
+        # Enforce device scenarios
+        if ref_backend == "pytorch" and ref_device.startswith("cuda"):
+            logger.warning("PyTorch verification is forced to CPU; overriding device to 'cpu'")
+            ref_device = "cpu"
+        
+        if test_backend == "tensorrt":
+            if not test_device.startswith("cuda"):
+                logger.warning("TensorRT verification requires CUDA device. Skipping verification.")
+                return {"error": "TensorRT requires CUDA"}
+            if test_device != "cuda:0":
+                logger.warning("TensorRT verification only supports 'cuda:0'. Overriding device to 'cuda:0'.")
+                test_device = "cuda:0"
+        
         logger.info("\n" + "=" * 60)
-        logger.info("CenterPoint Model Verification")
+        logger.info("CenterPoint Model Verification (Policy-Based)")
         logger.info("=" * 60)
-        logger.info(f"PyTorch reference: {pytorch_model_path}")
-        if onnx_model_path:
-            logger.info(f"ONNX model: {onnx_model_path}")
-        if tensorrt_model_path:
-            logger.info(f"TensorRT model: {tensorrt_model_path}")
+        logger.info(f"Reference: {ref_backend} on {ref_device} - {ref_path}")
+        logger.info(f"Test: {test_backend} on {test_device} - {test_path}")
         logger.info(f"Number of samples: {num_samples}")
         logger.info(f"Tolerance: {tolerance}")
         logger.info("=" * 60)
         
-        results = {}
-        skipped_backends = []  # Track skipped backends
+        # Create reference pipeline
+        logger.info(f"\nInitializing {ref_backend} reference pipeline...")
+        ref_pipeline = self._create_pipeline(ref_backend, ref_path, ref_device, logger)
+        if ref_pipeline is None:
+            logger.error(f"Failed to create {ref_backend} reference pipeline")
+            return {"error": f"Failed to create {ref_backend} reference pipeline"}
         
-        # Create PyTorch pipeline (reference)
-        logger.info("\nInitializing PyTorch reference pipeline...")
-        pytorch_pipeline = self._create_pipeline("pytorch", pytorch_model_path, device, logger)
-        if pytorch_pipeline is None:
-            logger.error("Failed to create PyTorch reference pipeline")
-            return {"error": "Failed to create PyTorch reference"}
-        
-        # Create ONNX pipeline if requested
-        onnx_pipeline = None
-        if onnx_model_path:
-            logger.info("\nInitializing ONNX pipeline...")
-            onnx_pipeline = self._create_pipeline("onnx", onnx_model_path, device, logger)
-            if onnx_pipeline is None:
-                logger.warning("Failed to create ONNX pipeline, skipping ONNX verification")
-                skipped_backends.append("onnx")
-        
-        # Create TensorRT pipeline if requested
-        tensorrt_pipeline = None
-        if tensorrt_model_path:
-            logger.info("\nInitializing TensorRT pipeline...")
-            if not device.startswith("cuda"):
-                logger.warning("TensorRT requires CUDA device, skipping TensorRT verification")
-                skipped_backends.append("tensorrt")
-            else:
-                tensorrt_pipeline = self._create_pipeline("tensorrt", tensorrt_model_path, device, logger)
-                if tensorrt_pipeline is None:
-                    logger.warning("Failed to create TensorRT pipeline, skipping TensorRT verification")
-                    skipped_backends.append("tensorrt")
+        # Create test pipeline
+        logger.info(f"\nInitializing {test_backend} test pipeline...")
+        test_pipeline = self._create_pipeline(test_backend, test_path, test_device, logger)
+        if test_pipeline is None:
+            logger.error(f"Failed to create {test_backend} test pipeline")
+            return {"error": f"Failed to create {test_backend} test pipeline"}
         
         # Verify each sample
+        results = {}
+        
         try:
             for i in range(min(num_samples, data_loader.get_num_samples())):
                 logger.info(f"\n{'='*60}")
@@ -154,59 +156,38 @@ class CenterPointEvaluator(BaseEvaluator):
                 
                 sample_meta = sample.get('metainfo', {})
                 
-                # Get PyTorch reference outputs
-                logger.info("\nRunning PyTorch reference...")
+                # Get reference outputs
+                logger.info(f"\nRunning {ref_backend} reference ({ref_device})...")
                 try:
-                    pytorch_outputs, pytorch_latency, pytorch_breakdown = pytorch_pipeline.infer(
+                    ref_outputs, ref_latency, _ = ref_pipeline.infer(
                         points, sample_meta, return_raw_outputs=True
                     )
-                    logger.info(f"  PyTorch latency: {pytorch_latency:.2f} ms")
-                    logger.info(f"  PyTorch output: {len(pytorch_outputs)} head outputs")
-                    
-                    # Log output statistics
-                    output_names = ['heatmap', 'reg', 'height', 'dim', 'rot', 'vel']
-                    for idx, (out, name) in enumerate(zip(pytorch_outputs, output_names)):
-                        if isinstance(out, torch.Tensor):
-                            out_np = out.cpu().numpy()
-                            logger.info(f"    {name}: shape={out.shape}, range=[{out_np.min():.3f}, {out_np.max():.3f}]")
-                
+                    logger.info(f"  {ref_backend} latency: {ref_latency:.2f} ms")
+                    logger.info(f"  {ref_backend} output: {len(ref_outputs) if isinstance(ref_outputs, (list, tuple)) else 1} head outputs")
                 except Exception as e:
-                    logger.error(f"  PyTorch inference failed: {e}")
+                    logger.error(f"  {ref_backend} inference failed: {e}")
                     import traceback
                     traceback.print_exc()
+                    results[f"sample_{i}"] = False
                     continue
                 
-                # Verify ONNX
-                if onnx_pipeline:
-                    logger.info("\nVerifying ONNX pipeline...")
-                    onnx_passed = self._verify_single_backend(
-                        onnx_pipeline,
-                        points,
-                        sample_meta,
-                        pytorch_outputs,
-                        pytorch_latency,
-                        tolerance,
-                        "ONNX",
-                        logger
-                    )
-                    results[f"sample_{i}_onnx"] = onnx_passed
+                # Verify test backend against reference
+                ref_name = f"{ref_backend} ({ref_device})"
+                test_name = f"{test_backend} ({test_device})"
+                passed = self._verify_single_backend(
+                    test_pipeline,
+                    points,
+                    sample_meta,
+                    ref_outputs,
+                    ref_latency,
+                    tolerance,
+                    test_name,
+                    logger,
+                    reference_name=ref_name
+                )
+                results[f"sample_{i}"] = passed
                 
-                # Verify TensorRT
-                if tensorrt_pipeline:
-                    logger.info("\nVerifying TensorRT pipeline...")
-                    tensorrt_passed = self._verify_single_backend(
-                        tensorrt_pipeline,
-                        points,
-                        sample_meta,
-                        pytorch_outputs,
-                        pytorch_latency,
-                        tolerance,
-                        "TensorRT",
-                        logger
-                    )
-                    results[f"sample_{i}_tensorrt"] = tensorrt_passed
-                
-                # Cleanup GPU memory after each sample (TensorRT needs frequent cleanup)
+                # Cleanup GPU memory after each sample
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
         
@@ -217,15 +198,14 @@ class CenterPointEvaluator(BaseEvaluator):
             return {"error": str(e)}
         
         # Compute summary
-        passed = sum(1 for v in results.values() if v)
-        failed = sum(1 for v in results.values() if not v)
+        # Use == instead of 'is' to handle numpy bool values
+        passed = sum(1 for v in results.values() if v == True)
+        failed = sum(1 for v in results.values() if v == False)
         total = len(results)
-        skipped = len(skipped_backends) * num_samples  # Number of skipped verifications
         
         results['summary'] = {
             'passed': passed,
             'failed': failed,
-            'skipped': skipped,
             'total': total
         }
         
@@ -238,19 +218,8 @@ class CenterPointEvaluator(BaseEvaluator):
                 status = "✓ PASSED" if value else "✗ FAILED"
                 logger.info(f"  {key}: {status}")
         
-        # Show skipped backends if any
-        if skipped_backends:
-            logger.info("")
-            for backend in skipped_backends:
-                logger.info(f"  {backend}: ⊝ SKIPPED")
-        
         logger.info("=" * 60)
-        summary_parts = [f"{passed}/{total} passed"]
-        if failed > 0:
-            summary_parts.append(f"{failed}/{total} failed")
-        if skipped > 0:
-            summary_parts.append(f"{skipped} skipped")
-        logger.info(f"Total: {', '.join(summary_parts)}")
+        logger.info(f"Total: {passed}/{total} passed, {failed}/{total} failed")
         logger.info("=" * 60)
         
         return results
@@ -356,6 +325,7 @@ class CenterPointEvaluator(BaseEvaluator):
         tolerance: float,
         backend_name: str,
         logger,
+        reference_name: str = "Reference",
     ) -> bool:
         """
         Verify a single backend against PyTorch reference outputs.
@@ -364,11 +334,12 @@ class CenterPointEvaluator(BaseEvaluator):
             pipeline: Pipeline instance to verify
             points: Input point cloud
             sample_meta: Sample metadata
-            reference_outputs: Reference outputs from PyTorch [heatmap, reg, height, dim, rot, vel]
+            reference_outputs: Reference outputs from baseline backend
             reference_latency: Reference inference latency
             tolerance: Maximum allowed difference
-            backend_name: Name of backend for logging ("ONNX", "TensorRT")
+            backend_name: Name of backend for logging ("ONNX (CPU)", "TensorRT", etc.)
             logger: Logger instance
+            reference_name: Name of reference backend for logging
             
         Returns:
             bool: True if verification passed, False otherwise
@@ -380,6 +351,8 @@ class CenterPointEvaluator(BaseEvaluator):
             )
             
             logger.info(f"  {backend_name} latency: {backend_latency:.2f} ms")
+            if reference_latency is not None:
+                logger.info(f"  {reference_name} latency: {reference_latency:.2f} ms")
             logger.info(f"  {backend_name} output: {len(backend_outputs)} head outputs")
             
             # Compare outputs
@@ -483,14 +456,23 @@ class CenterPointEvaluator(BaseEvaluator):
                 # ONNX pipeline uses ONNX Runtime for voxel encoder and head;
                 # PyTorch model is used for preprocessing/middle encoder/postprocessing.
                 
-                # Find checkpoint path
-                import os
-                checkpoint_path = model_path.replace('centerpoint_deployment', 'centerpoint/best_checkpoint.pth')
-                if not os.path.exists(checkpoint_path):
-                    checkpoint_path = model_path.replace('_deployment', '/best_checkpoint.pth')
+                # Use checkpoint_path from config if available, otherwise raise error
+                if not self.checkpoint_path:
+                    raise ValueError(
+                        "checkpoint_path must be provided to CenterPointEvaluator.__init__() "
+                        "for ONNX pipeline to work. Please pass checkpoint_path when creating the evaluator."
+                    )
                 
+                import os
+                if not os.path.exists(self.checkpoint_path):
+                    raise FileNotFoundError(
+                        f"Checkpoint file not found: {self.checkpoint_path}. "
+                        f"Please ensure the checkpoint file exists."
+                    )
+                
+                logger.info(f"Using checkpoint for ONNX pipeline: {self.checkpoint_path}")
                 pytorch_model = self._load_pytorch_model(
-                    checkpoint_path, device_obj, logger, cfg_for_backend
+                    self.checkpoint_path, device_obj, logger, cfg_for_backend
                 )
                 return CenterPointONNXPipeline(pytorch_model, onnx_dir=model_path, device=str(device_obj))
                 
@@ -500,15 +482,23 @@ class CenterPointEvaluator(BaseEvaluator):
                     logger.warning("TensorRT requires CUDA device, skipping TensorRT evaluation")
                     return None
                 
-                # Find checkpoint path
-                import os
-                checkpoint_path = model_path.replace('centerpoint_deployment/tensorrt', 'centerpoint/best_checkpoint.pth')
-                checkpoint_path = checkpoint_path.replace('/tensorrt', '')
-                if not os.path.exists(checkpoint_path):
-                    checkpoint_path = model_path.replace('_deployment/tensorrt', '/best_checkpoint.pth')
+                # Use checkpoint_path from config if available, otherwise raise error
+                if not self.checkpoint_path:
+                    raise ValueError(
+                        "checkpoint_path must be provided to CenterPointEvaluator.__init__() "
+                        "for TensorRT pipeline to work. Please pass checkpoint_path when creating the evaluator."
+                    )
                 
+                import os
+                if not os.path.exists(self.checkpoint_path):
+                    raise FileNotFoundError(
+                        f"Checkpoint file not found: {self.checkpoint_path}. "
+                        f"Please ensure the checkpoint file exists."
+                    )
+                
+                logger.info(f"Using checkpoint for TensorRT pipeline: {self.checkpoint_path}")
                 pytorch_model = self._load_pytorch_model(
-                    checkpoint_path, device_obj, logger, cfg_for_backend
+                    self.checkpoint_path, device_obj, logger, cfg_for_backend
                 )
                 return CenterPointTensorRTPipeline(pytorch_model, tensorrt_dir=model_path, device=str(device_obj))
                 

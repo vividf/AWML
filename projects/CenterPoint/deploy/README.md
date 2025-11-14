@@ -100,10 +100,17 @@ backend_config = dict(
 ### Verification Settings
 
 ```python
+# Note: Verification is controlled by export.verify (see export section above)
+# This section only contains verification parameters (tolerance, devices, etc.)
 verification = dict(
-    enabled=True,  # Will use export.verify
     tolerance=1e-1,  # Slightly higher tolerance for 3D detection
     num_verify_samples=1,  # Fewer samples for 3D (slower)
+    devices=dict(
+        pytorch="cpu",  # PyTorch reference device (should be 'cpu')
+        onnx_cpu="cpu",  # ONNX verification device for PyTorch comparison
+        onnx_cuda="cuda:0",  # ONNX verification device for TensorRT comparison
+        tensorrt="cuda:0",  # TensorRT verification device (must be 'cuda:0')
+    ),
 )
 ```
 

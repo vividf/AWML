@@ -1,55 +1,169 @@
-# Deployment configuration for ResNet18 5-channel calibration classification model
-#
-# 1. export: Controls export behavior (mode, verification, device, output directory)
-# 2. runtime_io: Runtime I/O configuration (data paths, sample selection)
-# 3. Backend configs: ONNX and TensorRT specific settings
+"""
+CalibrationStatusClassification Deployment Configuration (v2).
 
-# ==============================================================================
+This config uses the new policy-based verification architecture.
+"""
+
+# ============================================================================
+# Task type for pipeline building
+# Options: 'detection2d', 'detection3d', 'classification', 'segmentation'
+# ============================================================================
+task_type = "classification"
+
+# ============================================================================
 # Export Configuration
-# ==============================================================================
+# ============================================================================
 export = dict(
-    mode="both",  # Export mode: "onnx", "trt", "both", or "none"
-    # - "onnx": Export to ONNX only
-    # - "trt": Convert to TensorRT only (requires onnx_file in runtime_io)
-    # - "both": Export to ONNX then convert to TensorRT
-    # - "none": Skip export, only run evaluation on existing models
-    #           (requires evaluation.onnx_model and/or evaluation.tensorrt_model)
-    verify=True,  # Run verification comparing PyTorch/ONNX/TRT outputs
-    device="cuda:0",  # Device for export (use "cuda:0" or "cpu")
-    # Note: TensorRT always requires CUDA, will auto-switch if needed
-    work_dir="/workspace/work_dirs",  # Output directory for exported models
+    # Export mode:
+    # - 'onnx' : export PyTorch -> ONNX
+    # - 'trt'  : build TensorRT engine from an existing ONNX
+    # - 'both' : export PyTorch -> ONNX -> TensorRT
+    # - 'none' : no export (only evaluation / verification on existing artifacts)
+    mode="both",
+
+    # ---- Common options ----------------------------------------------------
+    work_dir="work_dirs/calibration_classifier",
+
+    # ---- Source for ONNX export --------------------------------------------
+    # Rule:
+    # - mode in ['onnx', 'both']  -> checkpoint_path MUST be provided
+    # - mode == 'trt'             -> checkpoint_path is ignored
+    checkpoint_path="work_dirs/calibration_classifier/best_accuracy_top1_epoch_28.pth",  # Set to checkpoint path if needed
+
+    # ---- ONNX source when building TensorRT only ---------------------------
+    # Rule:
+    # - mode == 'trt'  -> onnx_path MUST be provided (file or directory)
+    # - mode in ['onnx', 'both'] -> onnx_path can be None (pipeline uses newly exported ONNX)
+    onnx_path=None,  # e.g. "/workspace/work_dirs/end2end.onnx"
 )
 
-# ==============================================================================
-# Runtime I/O Configuration
-# ==============================================================================
+# ============================================================================
+# Runtime I/O settings
+# ============================================================================
 runtime_io = dict(
     info_pkl="data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl",
     sample_idx=0,  # Sample index to use for export and verification
-    onnx_file="/workspace/work_dirs/end2end.onnx",  # Optional: Path to existing ONNX file
-    # - If provided with mode="trt", will convert this ONNX to TensorRT
-    # - If None with mode="both", will export ONNX first then convert
 )
 
-# ==============================================================================
+# ============================================================================
 # Evaluation Configuration
-# ==============================================================================
+# ============================================================================
 evaluation = dict(
-    enabled=True,  # Enable full model evaluation (set to True to run evaluation)
-    num_samples=1,  # Number of samples to evaluate from info.pkl
-    verbose=True,  # Enable verbose logging showing per-sample results
-    # Specify models to evaluate
-    models=dict(
-        onnx="/workspace/work_dirs/end2end.onnx",  # Path to ONNX model file
-        tensorrt="/workspace/work_dirs/end2end.engine",  # Path to TensorRT engine file
-        # pytorch="/workspace/work_dirs/best_accuracy_top1_epoch_28.pth",  # Optional: PyTorch checkpoint
+    enabled=True,
+    num_samples=1,      # Number of samples to evaluate
+    verbose=True,
+
+    # Decide which backends to evaluate and on which devices.
+    # Note:
+    # - tensorrt.device MUST be a CUDA device (e.g., 'cuda:0')
+    # - For 'none' export mode, all models must already exist on disk.
+    backends=dict(
+        # PyTorch evaluation
+        pytorch=dict(
+            enabled=True,
+            device="cuda:0",  # or 'cpu'
+            checkpoint="work_dirs/calibration_classifier/best_accuracy_top1_epoch_28.pth",  # Use same checkpoint as export
+        ),
+
+        # ONNX evaluation
+        onnx=dict(
+            enabled=True,
+            device="cuda:0",  # 'cpu' or 'cuda:0'
+            # If None: pipeline will infer from export.work_dir / onnx_config.save_file
+            model_dir=None,
+        ),
+
+        # TensorRT evaluation
+        tensorrt=dict(
+            enabled=True,
+            device="cuda:0",  # must be CUDA
+            # If None: pipeline will infer from export.work_dir + "/tensorrt"
+            engine_dir=None,
+        ),
     ),
 )
 
-# ==============================================================================
+# ============================================================================
 # Codebase Configuration
-# ==============================================================================
+# ============================================================================
 codebase_config = dict(type="mmpretrain", task="Classification", model_type="end2end")
+
+# ============================================================================
+# Verification Configuration
+# ============================================================================
+# This block defines *scenarios* per export.mode, so the pipeline does not
+# need many if/else branches; it just chooses the policy based on export["mode"].
+# ----------------------------------------------------------------------------
+verification = dict(
+    # Master switch to enable/disable verification
+    enabled=True,
+
+    tolerance=1e-1,
+    num_verify_samples=1,
+
+    # Device aliases for flexible device management
+    # 
+    # Benefits of using aliases:
+    # - Change all CPU verifications to "cuda:1"? Just update devices["cpu"] = "cuda:1"
+    # - Switch ONNX verification device? Just update devices["cuda"] = "cuda:1"
+    # - Scenarios reference these aliases (e.g., ref_device="cpu", test_device="cuda")
+    devices=dict(
+        cpu="cpu",      # Alias for CPU device
+        cuda="cuda:0",  # Alias for CUDA device (can be changed to cuda:1, cuda:2, etc.)
+    ),
+
+    # Verification scenarios per export mode
+    #
+    # Each policy is a list of comparison pairs:
+    #   - ref_backend   : reference backend ('pytorch' or 'onnx')
+    #   - ref_device    : device alias (e.g., "cpu", "cuda") - resolved via devices dict above
+    #   - test_backend  : backend under test ('onnx' or 'tensorrt')
+    #   - test_device   : device alias (e.g., "cpu", "cuda") - resolved via devices dict above
+    #
+    # Pipeline resolves devices like: actual_device = verification["devices"][policy["ref_device"]]
+    #
+    # This structure encodes:
+    # - 'both':
+    #     1) PyTorch(cpu) vs ONNX(cpu)
+    #     2) ONNX(cuda)   vs TensorRT(cuda)
+    # - 'onnx':
+    #     1) PyTorch(cpu) vs ONNX(cpu)
+    # - 'trt':
+    #     1) ONNX(cuda)   vs TensorRT(cuda)  (using provided ONNX)
+    scenarios=dict(
+        both=[
+            dict(
+                ref_backend="pytorch",
+                ref_device="cpu",
+                test_backend="onnx",
+                test_device="cpu",
+            ),
+            dict(
+                ref_backend="onnx",
+                ref_device="cuda",
+                test_backend="tensorrt",
+                test_device="cuda",
+            ),
+        ],
+        onnx=[
+            dict(
+                ref_backend="pytorch",
+                ref_device="cpu",
+                test_backend="onnx",
+                test_device="cpu",
+            ),
+        ],
+        trt=[
+            dict(
+                ref_backend="onnx",
+                ref_device="cuda",
+                test_backend="tensorrt",
+                test_device="cuda",
+            ),
+        ],
+        none=[],
+    ),
+)
 
 # ==============================================================================
 # Model Input/Output Configuration

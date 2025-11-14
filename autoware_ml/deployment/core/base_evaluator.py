@@ -92,6 +92,50 @@ class BaseEvaluator(ABC):
         """
         pass
 
+    @abstractmethod
+    def verify(
+        self,
+        ref_backend: str,
+        ref_device: str,
+        ref_path: str,
+        test_backend: str,
+        test_device: str,
+        test_path: str,
+        data_loader: BaseDataLoader,
+        num_samples: int = 1,
+        tolerance: float = 0.1,
+        verbose: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Verify exported models using scenario-based verification.
+        
+        This method compares outputs from a reference backend against a test backend
+        as specified by the verification scenarios. This is a more flexible approach
+        than the legacy verify() method which compares all available backends.
+        
+        Args:
+            ref_backend: Reference backend name ('pytorch' or 'onnx')
+            ref_device: Device for reference backend (e.g., 'cpu', 'cuda:0')
+            ref_path: Path to reference model (checkpoint for pytorch, model path for onnx)
+            test_backend: Test backend name ('onnx' or 'tensorrt')
+            test_device: Device for test backend (e.g., 'cpu', 'cuda:0')
+            test_path: Path to test model (model path for onnx, engine path for tensorrt)
+            data_loader: Data loader for test samples
+            num_samples: Number of samples to verify
+            tolerance: Maximum allowed difference for verification to pass
+            verbose: Whether to print detailed output
+            
+        Returns:
+            Dictionary containing verification results:
+            {
+                'sample_0': bool (passed/failed),
+                'sample_1': bool (passed/failed),
+                ...
+                'summary': {'passed': int, 'failed': int, 'total': int}
+            }
+        """
+        pass
+
     def compute_latency_stats(self, latencies: list) -> Dict[str, float]:
         """
         Compute latency statistics from a list of latency measurements.

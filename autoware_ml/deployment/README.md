@@ -22,7 +22,7 @@ Projects consume the framework through lightweight entry scripts (see `projects/
 
 ## Key Features
 - **Unified Runner** – `DeploymentRunner` orchestrates export → verification → evaluation with pluggable hooks.
-- **Config Driven** – `BaseDeploymentConfig` parses `mmengine` configs to control export modes, runtime IO, backend settings, and verification/evaluation policies.
+- **Config Driven** – `BaseDeploymentConfig` parses `mmengine` configs to control export modes, runtime IO, backend settings, and verification/evaluation scenarios.
 - **Backend Exporters** – `ONNXExporter` and `TensorRTExporter` expose a common interface for exporting PyTorch models and ONNX graphs.
 - **Task Pipelines** – Base pipelines in `core/` implement reusable preprocessing/inference/postprocessing logic for classification, 2D detection, and 3D detection; model-specific pipelines live under `pipelines/`.
 - **Verification Support** – Optional cross-backend verification compares PyTorch, ONNX, and TensorRT outputs using project evaluators.

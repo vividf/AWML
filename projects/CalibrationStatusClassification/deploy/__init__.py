@@ -7,13 +7,9 @@ the unified deployment framework.
 """
 
 from .data_loader import CalibrationDataLoader
-from .evaluator import (
-    ClassificationEvaluator,
-    get_models_to_evaluate,
-)
+from .evaluator import ClassificationEvaluator
 
 __all__ = [
     "CalibrationDataLoader",
     "ClassificationEvaluator",
-    "get_models_to_evaluate",
 ]
