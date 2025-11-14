@@ -159,3 +159,4 @@ class Detection3DPipeline(BaseDeploymentPipeline):
             "postprocess() must be implemented by specific 3D detector pipeline.\n"
             "3D detection postprocessing varies significantly between models."
         )
+
