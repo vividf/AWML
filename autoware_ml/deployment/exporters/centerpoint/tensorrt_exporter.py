@@ -7,7 +7,7 @@ to export multiple TensorRT engines from multiple ONNX files.
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import torch
 
@@ -26,15 +26,21 @@ class CenterPointTensorRTExporter(TensorRTExporter):
     2. pts_backbone_neck_head.onnx → pts_backbone_neck_head.engine
     """
     
-    def __init__(self, config: Dict[str, Any], logger: logging.Logger = None):
+    def __init__(
+        self, 
+        config: Dict[str, Any], 
+        logger: logging.Logger = None,
+        model_wrapper: Optional[Any] = None
+    ):
         """
         Initialize CenterPoint TensorRT exporter.
         
         Args:
             config: TensorRT export configuration
             logger: Optional logger instance
+            model_wrapper: Optional model wrapper class (usually not needed for TensorRT)
         """
-        super().__init__(config, logger)
+        super().__init__(config, logger, model_wrapper=model_wrapper)
     
     def export(
         self,

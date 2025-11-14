@@ -7,7 +7,7 @@ to export multiple ONNX files (voxel encoder + backbone/neck/head).
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import torch
 
@@ -26,15 +26,25 @@ class CenterPointONNXExporter(ONNXExporter):
     2. pts_backbone_neck_head.onnx - backbone, neck, and head processing
     """
     
-    def __init__(self, config: Dict[str, Any], logger: logging.Logger = None):
+    def __init__(
+        self, 
+        config: Dict[str, Any], 
+        logger: logging.Logger = None,
+        model_wrapper: Optional[Any] = None
+    ):
         """
         Initialize CenterPoint ONNX exporter.
         
         Args:
             config: ONNX export configuration
             logger: Optional logger instance
+            model_wrapper: Optional model wrapper class (default: IdentityWrapper)
         """
-        super().__init__(config, logger)
+        from autoware_ml.deployment.exporters.base.model_wrappers import IdentityWrapper
+        # Use provided wrapper or default to IdentityWrapper
+        if model_wrapper is None:
+            model_wrapper = IdentityWrapper
+        super().__init__(config, logger, model_wrapper=model_wrapper)
     
     def export(
         self,

@@ -15,9 +15,6 @@ from autoware_ml.deployment.exporters.calibration.tensorrt_exporter import Calib
 from autoware_ml.deployment.exporters.base.model_wrappers import (
     BaseModelWrapper,
     IdentityWrapper,
-    register_model_wrapper,
-    get_model_wrapper,
-    list_model_wrappers,
 )
 
 __all__ = [
@@ -35,7 +32,4 @@ __all__ = [
     "CalibrationONNXWrapper",
     "BaseModelWrapper",
     "IdentityWrapper",
-    "register_model_wrapper",
-    "get_model_wrapper",
-    "list_model_wrappers",
 ]

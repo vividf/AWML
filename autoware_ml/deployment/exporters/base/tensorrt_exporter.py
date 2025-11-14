@@ -16,15 +16,21 @@ class TensorRTExporter(BaseExporter):
     Converts ONNX models to TensorRT engine format with precision policy support.
     """
 
-    def __init__(self, config: Dict[str, Any], logger: logging.Logger = None):
+    def __init__(
+        self, 
+        config: Dict[str, Any], 
+        logger: logging.Logger = None,
+        model_wrapper: Optional[Any] = None
+    ):
         """
         Initialize TensorRT exporter.
 
         Args:
             config: TensorRT export configuration
             logger: Optional logger instance
+            model_wrapper: Optional model wrapper class (usually not needed for TensorRT)
         """
-        super().__init__(config)
+        super().__init__(config, logger, model_wrapper=model_wrapper)
         self.logger = logger or logging.getLogger(__name__)
 
     def export(

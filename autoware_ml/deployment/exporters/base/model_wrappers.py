@@ -1,8 +1,12 @@
 """
-Model wrappers for ONNX export.
+Base model wrappers for ONNX export.
 
-This module provides wrapper classes that prepare models for ONNX export
-with specific output formats and processing requirements.
+This module provides the base classes for model wrappers that prepare models
+for ONNX export with specific output formats and processing requirements.
+
+Each project should define its own wrapper in {project}/model_wrappers.py,
+either by using IdentityWrapper or by creating a custom wrapper that inherits
+from BaseModelWrapper.
 """
 
 from abc import ABC, abstractmethod
@@ -18,6 +22,9 @@ class BaseModelWrapper(nn.Module, ABC):
     
     Wrappers modify model forward pass to produce ONNX-compatible outputs
     with specific formats required by deployment backends.
+    
+    Each project should create its own wrapper class that inherits from this
+    base class if special output format conversion is needed.
     """
     
     def __init__(self, model: nn.Module, **kwargs):
@@ -51,6 +58,7 @@ class IdentityWrapper(BaseModelWrapper):
     Identity wrapper that doesn't modify the model.
     
     Useful for models that don't need special ONNX export handling.
+    This is the default wrapper for most models.
     """
     
     def __init__(self, model: nn.Module, **kwargs):
@@ -59,55 +67,3 @@ class IdentityWrapper(BaseModelWrapper):
     def forward(self, *args, **kwargs):
         """Forward pass without modification."""
         return self.model(*args, **kwargs)
-
-
-# Model wrapper registry
-# Import YOLOX wrapper lazily to avoid circular imports
-_MODEL_WRAPPERS = {
-    'identity': IdentityWrapper,
-}
-
-
-def register_model_wrapper(name: str, wrapper_class: type):
-    """
-    Register a custom model wrapper.
-    
-    Args:
-        name: Wrapper name
-        wrapper_class: Wrapper class (must inherit from BaseModelWrapper)
-    """
-    if not issubclass(wrapper_class, BaseModelWrapper):
-        raise TypeError(f"Wrapper class must inherit from BaseModelWrapper, got {wrapper_class}")
-    _MODEL_WRAPPERS[name] = wrapper_class
-
-
-def get_model_wrapper(name: str):
-    """
-    Get model wrapper class by name.
-    
-    Args:
-        name: Wrapper name
-        
-    Returns:
-        Wrapper class
-        
-    Raises:
-        KeyError: If wrapper name not found
-    """
-    # Lazy import for YOLOX wrapper to avoid circular imports
-    if name == 'yolox' and 'yolox' not in _MODEL_WRAPPERS:
-        from autoware_ml.deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
-        _MODEL_WRAPPERS['yolox'] = YOLOXONNXWrapper
-    
-    if name not in _MODEL_WRAPPERS:
-        raise KeyError(
-            f"Model wrapper '{name}' not found. "
-            f"Available wrappers: {list(_MODEL_WRAPPERS.keys())}"
-        )
-    return _MODEL_WRAPPERS[name]
-
-
-def list_model_wrappers():
-    """List all registered model wrappers."""
-    return list(_MODEL_WRAPPERS.keys())
-

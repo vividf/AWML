@@ -22,15 +22,21 @@ class ONNXExporter(BaseExporter):
     - Configuration override capability
     """
 
-    def __init__(self, config: Dict[str, Any], logger: logging.Logger = None):
+    def __init__(
+        self, 
+        config: Dict[str, Any], 
+        logger: logging.Logger = None,
+        model_wrapper: Optional[Any] = None
+    ):
         """
         Initialize ONNX exporter.
 
         Args:
             config: ONNX export configuration
             logger: Optional logger instance
+            model_wrapper: Optional model wrapper class (e.g., YOLOXONNXWrapper)
         """
-        super().__init__(config, logger)
+        super().__init__(config, logger, model_wrapper=model_wrapper)
 
     def export(
         self,

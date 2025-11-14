@@ -45,6 +45,7 @@ class DeploymentRunner:
         export_tensorrt_fn: Optional[Callable] = None,
         onnx_exporter: Optional[Any] = None,
         tensorrt_exporter: Optional[Any] = None,
+        model_wrapper: Optional[Any] = None,
     ):
         """
         Initialize unified deployment runner.
@@ -60,6 +61,8 @@ class DeploymentRunner:
             export_tensorrt_fn: Optional custom function to export TensorRT
             onnx_exporter: Optional ONNX exporter instance (e.g., CenterPointONNXExporter)
             tensorrt_exporter: Optional TensorRT exporter instance (e.g., CenterPointTensorRTExporter)
+            model_wrapper: Optional model wrapper class (e.g., YOLOXONNXWrapper)
+                          If provided and exporters don't have wrapper, it will be passed to exporters
         """
         self.data_loader = data_loader
         self.evaluator = evaluator
@@ -71,6 +74,16 @@ class DeploymentRunner:
         self._export_tensorrt_fn = export_tensorrt_fn
         self._onnx_exporter = onnx_exporter
         self._tensorrt_exporter = tensorrt_exporter
+        self._model_wrapper = model_wrapper
+        
+        # If exporters are provided but don't have model_wrapper, inject it
+        if model_wrapper is not None:
+            if self._onnx_exporter is not None:
+                if not hasattr(self._onnx_exporter, '_model_wrapper') or self._onnx_exporter._model_wrapper is None:
+                    self._onnx_exporter._model_wrapper = model_wrapper
+            if self._tensorrt_exporter is not None:
+                if not hasattr(self._tensorrt_exporter, '_model_wrapper') or self._tensorrt_exporter._model_wrapper is None:
+                    self._tensorrt_exporter._model_wrapper = model_wrapper
     
     def load_pytorch_model(
         self,
@@ -198,7 +211,11 @@ class DeploymentRunner:
         if self._onnx_exporter is not None:
             exporter = self._onnx_exporter
         else:
-            exporter = ONNXExporter(onnx_settings, self.logger)
+            exporter = ONNXExporter(
+                onnx_settings, 
+                self.logger,
+                model_wrapper=self._model_wrapper
+            )
         
         success = exporter.export(pytorch_model, input_tensor, output_path)
         
@@ -313,7 +330,11 @@ class DeploymentRunner:
         if self._tensorrt_exporter is not None:
             exporter = self._tensorrt_exporter
         else:
-            exporter = TensorRTExporter(trt_settings, self.logger)
+            exporter = TensorRTExporter(
+                trt_settings, 
+                self.logger,
+                model_wrapper=self._model_wrapper
+            )
         
         success = exporter.export(
             model=None,  # Not used for TensorRT
