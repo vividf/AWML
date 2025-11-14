@@ -16,4 +16,3 @@ __all__ = [
     "Detection2DPipeline",
     "Detection3DPipeline",
 ]
-

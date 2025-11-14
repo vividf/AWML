@@ -24,7 +24,7 @@ VALID_TASK_TYPES = ["detection2d", "detection3d", "classification", "segmentatio
 class ComposeBuilder:
     """
     Unified builder for creating Compose objects with different MM frameworks.
-    
+
     Uses MMEngine-based Compose with init_default_scope for all frameworks.
     """
 
@@ -71,16 +71,13 @@ class ComposeBuilder:
             logger.info(f"Building pipeline with mmengine.dataset.Compose (default_scope='{scope}')")
             return Compose(pipeline_cfg)
         except Exception as e:
-            raise ImportError(
-                f"Failed to build Compose pipeline for scope '{scope}'. "
-                f"Error: {e}"
-            ) from e
+            raise ImportError(f"Failed to build Compose pipeline for scope '{scope}'. " f"Error: {e}") from e
 
 
 class PreprocessingPipelineRegistry:
     """
     Registry for preprocessing pipeline builders by task type.
-    
+
     Provides a clean way to register and retrieve pipeline builders.
     """
 
@@ -119,10 +116,7 @@ class PreprocessingPipelineRegistry:
             ValueError: If task_type is not registered
         """
         if task_type not in self._builders:
-            raise ValueError(
-                f"Unknown task_type '{task_type}'. "
-                f"Available types: {list(self._builders.keys())}"
-            )
+            raise ValueError(f"Unknown task_type '{task_type}'. " f"Available types: {list(self._builders.keys())}")
         return self._builders[task_type](pipeline_cfg)
 
     def _build_detection2d(self, pipeline_cfg: List) -> Any:
@@ -144,7 +138,7 @@ class PreprocessingPipelineRegistry:
     def _build_classification(self, pipeline_cfg: List) -> Any:
         """
         Build classification preprocessing pipeline using mmpretrain.
-        
+
         Raises:
             ImportError: If mmpretrain is not installed
         """

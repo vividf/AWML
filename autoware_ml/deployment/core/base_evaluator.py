@@ -100,11 +100,11 @@ class BaseEvaluator(ABC):
     ) -> Dict[str, Any]:
         """
         Verify exported models using scenario-based verification.
-        
+
         This method compares outputs from a reference backend against a test backend
         as specified by the verification scenarios. This is a more flexible approach
         than the legacy verify() method which compares all available backends.
-        
+
         Args:
             ref_backend: Reference backend name ('pytorch' or 'onnx')
             ref_device: Device for reference backend (e.g., 'cpu', 'cuda:0')
@@ -116,7 +116,7 @@ class BaseEvaluator(ABC):
             num_samples: Number of samples to verify
             tolerance: Maximum allowed difference for verification to pass
             verbose: Whether to print detailed output
-            
+
         Returns:
             Dictionary containing verification results:
             {

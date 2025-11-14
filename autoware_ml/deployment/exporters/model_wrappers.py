@@ -14,7 +14,7 @@ import torch.nn as nn
 class BaseModelWrapper(nn.Module, ABC):
     """
     Abstract base class for ONNX export model wrappers.
-    
+
     Wrappers modify model forward pass to produce ONNX-compatible outputs
     with specific formats required by deployment backends.
     """
@@ -22,7 +22,7 @@ class BaseModelWrapper(nn.Module, ABC):
     def __init__(self, model: nn.Module, **kwargs):
         """
         Initialize wrapper.
-        
+
         Args:
             model: PyTorch model to wrap
             **kwargs: Wrapper-specific arguments
@@ -35,7 +35,7 @@ class BaseModelWrapper(nn.Module, ABC):
     def forward(self, *args, **kwargs):
         """
         Forward pass for ONNX export.
-        
+
         Must be implemented by subclasses to define ONNX-specific output format.
         """
         pass
@@ -44,12 +44,14 @@ class BaseModelWrapper(nn.Module, ABC):
         """Get wrapper configuration."""
         return self._wrapper_config
 
+
 # TODO(vividf): class YOLOXONNXWrapper
+
 
 class IdentityWrapper(BaseModelWrapper):
     """
     Identity wrapper that doesn't modify the model.
-    
+
     Useful for models that don't need special ONNX export handling.
     """
 
@@ -64,14 +66,14 @@ class IdentityWrapper(BaseModelWrapper):
 # Model wrapper registry
 _MODEL_WRAPPERS = {
     # 'yolox': YOLOXONNXWrapper,
-    'identity': IdentityWrapper,
+    "identity": IdentityWrapper,
 }
 
 
 def register_model_wrapper(name: str, wrapper_class: type):
     """
     Register a custom model wrapper.
-    
+
     Args:
         name: Wrapper name
         wrapper_class: Wrapper class (must inherit from BaseModelWrapper)
@@ -84,25 +86,21 @@ def register_model_wrapper(name: str, wrapper_class: type):
 def get_model_wrapper(name: str):
     """
     Get model wrapper class by name.
-    
+
     Args:
         name: Wrapper name
-        
+
     Returns:
         Wrapper class
-        
+
     Raises:
         KeyError: If wrapper name not found
     """
     if name not in _MODEL_WRAPPERS:
-        raise KeyError(
-            f"Model wrapper '{name}' not found. "
-            f"Available wrappers: {list(_MODEL_WRAPPERS.keys())}"
-        )
+        raise KeyError(f"Model wrapper '{name}' not found. " f"Available wrappers: {list(_MODEL_WRAPPERS.keys())}")
     return _MODEL_WRAPPERS[name]
 
 
 def list_model_wrappers():
     """List all registered model wrappers."""
     return list(_MODEL_WRAPPERS.keys())
-

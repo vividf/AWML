@@ -62,7 +62,7 @@ class ONNXExporter(BaseExporter):
         self.logger.info(f"  Opset version: {export_config.get('opset_version', 16)}")
 
         # Ensure output directory exists
-        os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
+        os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
 
         try:
             with torch.no_grad():
@@ -91,6 +91,7 @@ class ONNXExporter(BaseExporter):
         except Exception as e:
             self.logger.error(f"ONNX export failed: {e}")
             import traceback
+
             self.logger.error(traceback.format_exc())
             return False
 
@@ -103,16 +104,16 @@ class ONNXExporter(BaseExporter):
     ) -> bool:
         """
         Export multiple models to separate ONNX files.
-        
+
         Useful for complex models that need to be split into multiple files
         (e.g., CenterPoint: voxel encoder + backbone/neck/head).
-        
+
         Args:
             models: Dict of {filename: model}
             sample_inputs: Dict of {filename: input_tensor}
             output_dir: Directory to save ONNX files
             configs: Optional dict of {filename: config_override}
-        
+
         Returns:
             True if all exports succeeded
         """
@@ -128,8 +129,8 @@ class ONNXExporter(BaseExporter):
                 continue
 
             output_path = os.path.join(output_dir, name)
-            if not output_path.endswith('.onnx'):
-                output_path += '.onnx'
+            if not output_path.endswith(".onnx"):
+                output_path += ".onnx"
 
             config_override = configs.get(name)
             success = self.export(
