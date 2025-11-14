@@ -347,8 +347,8 @@ See project-specific configs:
 - `projects/CenterPoint/deploy/main.py`
 - `projects/CenterPoint/deploy/evaluator.py`
 - `autoware_ml/deployment/pipelines/centerpoint/`
-- `autoware_ml/deployment/exporters/centerpoint_exporter.py`
-- `autoware_ml/deployment/exporters/centerpoint_tensorrt_exporter.py`
+- `autoware_ml/deployment/exporters/centerpoint/onnx_exporter.py`
+- `autoware_ml/deployment/exporters/centerpoint/tensorrt_exporter.py`
 
 **Pipeline Structure:**
 ```
@@ -564,12 +564,23 @@ autoware_ml/deployment/
 │   └── preprocessing_builder.py   # Preprocessing pipeline builder
 │
 ├── exporters/                     # Model exporters
-│   ├── base_exporter.py           # Exporter base class
-│   ├── onnx_exporter.py           # ONNX exporter
-│   ├── tensorrt_exporter.py       # TensorRT exporter
-│   ├── centerpoint_exporter.py    # CenterPoint ONNX exporter
-│   ├── centerpoint_tensorrt_exporter.py  # CenterPoint TensorRT exporter
-│   └── model_wrappers.py          # Model wrappers for ONNX
+│   ├── base/                      # Base exporter classes
+│   │   ├── base_exporter.py       # Exporter base class
+│   │   ├── onnx_exporter.py       # ONNX exporter
+│   │   ├── tensorrt_exporter.py   # TensorRT exporter
+│   │   └── model_wrappers.py      # Base model wrappers (IdentityWrapper)
+│   ├── centerpoint/               # CenterPoint exporters
+│   │   ├── onnx_exporter.py       # CenterPoint ONNX exporter
+│   │   ├── tensorrt_exporter.py   # CenterPoint TensorRT exporter
+│   │   └── model_wrappers.py      # CenterPoint model wrappers (IdentityWrapper)
+│   ├── yolox/                     # YOLOX exporters
+│   │   ├── onnx_exporter.py       # YOLOX ONNX exporter (inherits base)
+│   │   ├── tensorrt_exporter.py   # YOLOX TensorRT exporter (inherits base)
+│   │   └── model_wrappers.py      # YOLOX model wrappers (YOLOXONNXWrapper)
+│   └── calibration/               # CalibrationStatusClassification exporters
+│       ├── onnx_exporter.py       # Calibration ONNX exporter (inherits base)
+│       ├── tensorrt_exporter.py   # Calibration TensorRT exporter (inherits base)
+│       └── model_wrappers.py      # Calibration model wrappers (IdentityWrapper)
 │
 ├── pipelines/                     # Task-specific pipelines
 │   ├── base/                      # Base pipeline classes
