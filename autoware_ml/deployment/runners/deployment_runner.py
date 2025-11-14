@@ -1,18 +1,17 @@
-
 """
 Unified deployment runner for common deployment workflows.
 This module provides a unified runner that handles the common deployment workflow
 across different projects, while allowing project-specific customization.
 """
 
-import os
 import logging
-from typing import Any, Dict, Optional, Callable, List, Tuple
+import os
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 from mmengine.config import Config
 
-from autoware_ml.deployment.core import BaseDeploymentConfig, BaseDataLoader, BaseEvaluator
+from autoware_ml.deployment.core import BaseDataLoader, BaseDeploymentConfig, BaseEvaluator
 from autoware_ml.deployment.exporters.onnx_exporter import ONNXExporter
 from autoware_ml.deployment.exporters.tensorrt_exporter import TensorRTExporter
 
@@ -20,14 +19,14 @@ from autoware_ml.deployment.exporters.tensorrt_exporter import TensorRTExporter
 class DeploymentRunner:
     """
     Unified deployment runner for common deployment workflows.
-    
+
     This runner handles the standard deployment workflow:
     1. Load PyTorch model (if needed)
     2. Export to ONNX (if requested)
     3. Export to TensorRT (if requested)
     4. Verify outputs (if enabled)
     5. Evaluate models (if enabled)
-    
+
     Projects can customize behavior by:
     - Overriding methods (load_pytorch_model, export_onnx, export_tensorrt)
     - Providing custom callbacks
@@ -49,7 +48,7 @@ class DeploymentRunner:
     ):
         """
         Initialize unified deployment runner.
-        
+
         Args:
             data_loader: Data loader for samples
             evaluator: Evaluator for model evaluation
@@ -73,20 +72,16 @@ class DeploymentRunner:
         self._onnx_exporter = onnx_exporter
         self._tensorrt_exporter = tensorrt_exporter
 
-    def load_pytorch_model(
-        self,
-        checkpoint_path: str,
-        **kwargs
-    ) -> Any:
+    def load_pytorch_model(self, checkpoint_path: str, **kwargs) -> Any:
         """
         Load PyTorch model from checkpoint.
-        
+
         Uses custom function if provided, otherwise uses default implementation.
-        
+
         Args:
             checkpoint_path: Path to checkpoint file
             **kwargs: Additional project-specific arguments
-            
+
         Returns:
             Loaded PyTorch model
         """
@@ -97,20 +92,16 @@ class DeploymentRunner:
         self.logger.warning("Using default load_pytorch_model - projects should override this")
         raise NotImplementedError("load_pytorch_model must be implemented or provided via load_model_fn")
 
-    def export_onnx(
-        self,
-        pytorch_model: Any,
-        **kwargs
-    ) -> Optional[str]:
+    def export_onnx(self, pytorch_model: Any, **kwargs) -> Optional[str]:
         """
         Export model to ONNX format.
-        
+
         Uses custom function if provided, otherwise uses standard ONNXExporter.
-        
+
         Args:
             pytorch_model: PyTorch model to export
             **kwargs: Additional project-specific arguments
-            
+
         Returns:
             Path to exported ONNX file/directory, or None if export failed
         """
@@ -138,8 +129,9 @@ class DeploymentRunner:
             # Check if it's a CenterPoint exporter (needs special handling)
             # CenterPoint exporter has data_loader parameter in export method
             import inspect
+
             sig = inspect.signature(exporter.export)
-            if 'data_loader' in sig.parameters:
+            if "data_loader" in sig.parameters:
                 # CenterPoint exporter signature
                 # Save to work_dir/onnx/ directory
                 output_dir = os.path.join(self.config.export_config.work_dir, "onnx")
@@ -149,10 +141,7 @@ class DeploymentRunner:
                     return None
 
                 success = exporter.export(
-                    model=pytorch_model,
-                    data_loader=self.data_loader,
-                    output_dir=output_dir,
-                    sample_idx=0
+                    model=pytorch_model, data_loader=self.data_loader, output_dir=output_dir, sample_idx=0
                 )
 
                 if success:
@@ -210,20 +199,16 @@ class DeploymentRunner:
             self.logger.error(f"❌ ONNX export failed")
             return None
 
-    def export_tensorrt(
-        self,
-        onnx_path: str,
-        **kwargs
-    ) -> Optional[str]:
+    def export_tensorrt(self, onnx_path: str, **kwargs) -> Optional[str]:
         """
         Export ONNX model to TensorRT engine.
-        
+
         Uses custom function if provided, otherwise uses standard TensorRTExporter.
-        
+
         Args:
             onnx_path: Path to ONNX model file/directory
             **kwargs: Additional project-specific arguments
-            
+
         Returns:
             Path to exported TensorRT engine file/directory, or None if export failed
         """
@@ -250,8 +235,9 @@ class DeploymentRunner:
             # Check if it's a CenterPoint exporter (needs special handling)
             # CenterPoint exporter has onnx_dir parameter in export method
             import inspect
+
             sig = inspect.signature(exporter.export)
-            if 'onnx_dir' in sig.parameters:
+            if "onnx_dir" in sig.parameters:
                 # CenterPoint exporter signature
                 if not os.path.isdir(onnx_path):
                     self.logger.error("CenterPoint requires ONNX directory, not a single file")
@@ -262,9 +248,7 @@ class DeploymentRunner:
                 os.makedirs(output_dir, exist_ok=True)
 
                 success = exporter.export(
-                    onnx_dir=onnx_path,
-                    output_dir=output_dir,
-                    device=self.config.export_config.device
+                    onnx_dir=onnx_path, output_dir=output_dir, device=self.config.export_config.device
                 )
 
                 if success:
@@ -306,9 +290,9 @@ class DeploymentRunner:
             sample_input = sample_input.float()
 
         # Merge backend_config.model_inputs into trt_settings for TensorRTExporter
-        if hasattr(self.config, 'backend_config') and hasattr(self.config.backend_config, 'model_inputs'):
+        if hasattr(self.config, "backend_config") and hasattr(self.config.backend_config, "model_inputs"):
             trt_settings = trt_settings.copy()
-            trt_settings['model_inputs'] = self.config.backend_config.model_inputs
+            trt_settings["model_inputs"] = self.config.backend_config.model_inputs
 
         # Use provided exporter or create default
         if self._tensorrt_exporter is not None:
@@ -320,7 +304,7 @@ class DeploymentRunner:
             model=None,  # Not used for TensorRT
             sample_input=sample_input,
             output_path=output_path,
-            onnx_path=onnx_path
+            onnx_path=onnx_path,
         )
 
         if success:
@@ -363,7 +347,7 @@ class DeploymentRunner:
 
                     if os.path.exists(onnx_dir) and os.path.isdir(onnx_dir):
                         # Check for ONNX files in work_dir/onnx/ directory
-                        onnx_files = [f for f in os.listdir(onnx_dir) if f.endswith('.onnx')]
+                        onnx_files = [f for f in os.listdir(onnx_dir) if f.endswith(".onnx")]
                         if onnx_files:
                             if multi_file:
                                 # Multi-file ONNX: return directory path
@@ -385,7 +369,7 @@ class DeploymentRunner:
                             else:
                                 # Try single file path
                                 model_path = os.path.join(onnx_dir, save_file)
-                                is_valid = os.path.exists(model_path) and model_path.endswith('.onnx')
+                                is_valid = os.path.exists(model_path) and model_path.endswith(".onnx")
                     else:
                         if multi_file:
                             # Multi-file ONNX: return directory even if it doesn't exist yet
@@ -394,21 +378,21 @@ class DeploymentRunner:
                         else:
                             # Fallback: try in work_dir directly (for backward compatibility)
                             model_path = os.path.join(work_dir, save_file)
-                            is_valid = os.path.exists(model_path) and model_path.endswith('.onnx')
+                            is_valid = os.path.exists(model_path) and model_path.endswith(".onnx")
                 else:
                     # model_dir is explicitly set in config
                     multi_file = self.config.onnx_config.get("multi_file", False)
                     if os.path.exists(model_path):
                         if os.path.isfile(model_path):
                             # Single file ONNX
-                            is_valid = model_path.endswith('.onnx') and not multi_file
+                            is_valid = model_path.endswith(".onnx") and not multi_file
                         elif os.path.isdir(model_path):
                             # Directory: valid if multi_file is True, or if it contains ONNX files
                             if multi_file:
                                 is_valid = True
                             else:
                                 # Single file mode: find the ONNX file in directory
-                                onnx_files = [f for f in os.listdir(model_path) if f.endswith('.onnx')]
+                                onnx_files = [f for f in os.listdir(model_path) if f.endswith(".onnx")]
                                 if onnx_files:
                                     # Use the save_file if it exists, otherwise use the first ONNX file found
                                     save_file = self.config.onnx_config.get("save_file", "model.onnx")
@@ -433,7 +417,7 @@ class DeploymentRunner:
                     multi_file = self.config.onnx_config.get("multi_file", False)  # Use same config as ONNX
 
                     if os.path.exists(engine_dir) and os.path.isdir(engine_dir):
-                        engine_files = [f for f in os.listdir(engine_dir) if f.endswith('.engine')]
+                        engine_files = [f for f in os.listdir(engine_dir) if f.endswith(".engine")]
                         if engine_files:
                             if multi_file:
                                 # Multi-file TensorRT: return directory path
@@ -465,7 +449,7 @@ class DeploymentRunner:
                         else:
                             # Fallback: try in work_dir directly (for backward compatibility)
                             if os.path.exists(work_dir) and os.path.isdir(work_dir):
-                                engine_files = [f for f in os.listdir(work_dir) if f.endswith('.engine')]
+                                engine_files = [f for f in os.listdir(work_dir) if f.endswith(".engine")]
                                 if engine_files:
                                     onnx_save_file = self.config.onnx_config.get("save_file", "model.onnx")
                                     expected_engine = onnx_save_file.replace(".onnx", ".engine")
@@ -485,14 +469,16 @@ class DeploymentRunner:
                     if os.path.exists(model_path):
                         if os.path.isfile(model_path):
                             # Single file TensorRT
-                            is_valid = (model_path.endswith('.engine') or model_path.endswith('.trt')) and not multi_file
+                            is_valid = (
+                                model_path.endswith(".engine") or model_path.endswith(".trt")
+                            ) and not multi_file
                         elif os.path.isdir(model_path):
                             # Directory: valid if multi_file is True, or if it contains engine files
                             if multi_file:
                                 is_valid = True
                             else:
                                 # Single file mode: find the engine file in directory
-                                engine_files = [f for f in os.listdir(model_path) if f.endswith('.engine')]
+                                engine_files = [f for f in os.listdir(model_path) if f.endswith(".engine")]
                                 if engine_files:
                                     # Try to match ONNX filename, otherwise use the first engine file found
                                     onnx_save_file = self.config.onnx_config.get("save_file", "model.onnx")
@@ -515,11 +501,7 @@ class DeploymentRunner:
         return models_to_evaluate
 
     def run_verification(
-        self,
-        pytorch_checkpoint: Optional[str],
-        onnx_path: Optional[str],
-        tensorrt_path: Optional[str],
-        **kwargs
+        self, pytorch_checkpoint: Optional[str], onnx_path: Optional[str], tensorrt_path: Optional[str], **kwargs
     ) -> Dict[str, Any]:
         """
         Run verification on exported models using policy-based verification.
@@ -585,7 +567,9 @@ class DeploymentRunner:
                 test_device = test_device_key
                 self.logger.warning(f"Device alias '{test_device_key}' not found in devices map, using as-is")
 
-            self.logger.info(f"\Scenarios {i+1}/{len(scenarios)}: {ref_backend}({ref_device}) vs {test_backend}({test_device})")
+            self.logger.info(
+                f"\Scenarios {i+1}/{len(scenarios)}: {ref_backend}({ref_device}) vs {test_backend}({test_device})"
+            )
 
             # Resolve model paths based on backend
             ref_path = None
@@ -623,10 +607,10 @@ class DeploymentRunner:
             policy_key = f"{ref_backend}_{ref_device}_vs_{test_backend}_{test_device}"
             all_results[policy_key] = verification_results
 
-            if 'summary' in verification_results:
-                summary = verification_results['summary']
-                passed = summary.get('passed', 0)
-                failed = summary.get('failed', 0)
+            if "summary" in verification_results:
+                summary = verification_results["summary"]
+                passed = summary.get("passed", 0)
+                failed = summary.get("failed", 0)
                 total_passed += passed
                 total_failed += failed
 
@@ -643,10 +627,10 @@ class DeploymentRunner:
             self.logger.warning(f"⚠️  {total_failed}/{total_passed + total_failed} verifications failed")
         self.logger.info("=" * 80)
 
-        all_results['summary'] = {
-            'passed': total_passed,
-            'failed': total_failed,
-            'total': total_passed + total_failed,
+        all_results["summary"] = {
+            "passed": total_passed,
+            "failed": total_failed,
+            "total": total_passed + total_failed,
         }
 
         return all_results
@@ -729,29 +713,25 @@ class DeploymentRunner:
                         self.logger.info(f"  Accuracy: {results.get('accuracy', 0):.4f}")
                     if "mAP" in results:
                         self.logger.info(f"  mAP: {results.get('mAP', 0):.4f}")
-                    if 'latency_stats' in results:
-                        stats = results['latency_stats']
+                    if "latency_stats" in results:
+                        stats = results["latency_stats"]
                         self.logger.info(f"  Latency: {stats['mean_ms']:.2f} ± {stats['std_ms']:.2f} ms")
-                    elif 'latency' in results:
-                        latency = results['latency']
+                    elif "latency" in results:
+                        latency = results["latency"]
                         self.logger.info(f"  Latency: {latency['mean_ms']:.2f} ± {latency['std_ms']:.2f} ms")
                 else:
                     self.logger.info("  No results available")
 
         return all_results
 
-    def run(
-        self,
-        checkpoint_path: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
+    def run(self, checkpoint_path: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         """
         Execute the complete deployment workflow.
-        
+
         Args:
             checkpoint_path: Path to PyTorch checkpoint (optional)
             **kwargs: Additional project-specific arguments
-            
+
         Returns:
             Dictionary containing deployment results
         """
@@ -799,7 +779,9 @@ class DeploymentRunner:
 
         if requires_pytorch_model:
             if not checkpoint_path:
-                self.logger.error("Checkpoint required but not provided. Please set export.checkpoint_path in config or pass via CLI.")
+                self.logger.error(
+                    "Checkpoint required but not provided. Please set export.checkpoint_path in config or pass via CLI."
+                )
                 return results
 
             self.logger.info("\nLoading PyTorch model...")
@@ -834,7 +816,9 @@ class DeploymentRunner:
         if should_export_trt:
             onnx_source = results["onnx_path"] or external_onnx_path
             if not onnx_source:
-                self.logger.error("TensorRT export requires an ONNX path. Please set export.onnx_path in config or enable ONNX export.")
+                self.logger.error(
+                    "TensorRT export requires an ONNX path. Please set export.onnx_path in config or enable ONNX export."
+                )
                 return results
             else:
                 results["onnx_path"] = onnx_source  # Ensure verification/evaluation can use this path
@@ -865,7 +849,7 @@ class DeploymentRunner:
             pytorch_checkpoint=checkpoint_path,
             onnx_path=results["onnx_path"],
             tensorrt_path=results["tensorrt_path"],
-            **kwargs
+            **kwargs,
         )
         results["verification_results"] = verification_results
 
@@ -878,5 +862,3 @@ class DeploymentRunner:
         self.logger.info("=" * 80)
 
         return results
-
-

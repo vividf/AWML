@@ -114,7 +114,7 @@ verification = dict(
     enabled=True,
     scenarios={
         "both": [
-            {"ref_backend": "pytorch", "ref_device": "cpu", 
+            {"ref_backend": "pytorch", "ref_device": "cpu",
              "test_backend": "onnx", "test_device": "cpu"},
             {"ref_backend": "onnx", "ref_device": "cpu",
              "test_backend": "tensorrt", "test_device": "cuda:0"},
@@ -342,7 +342,7 @@ See project-specific configs:
 
 **Pipeline Structure:**
 ```
-preprocess() → run_voxel_encoder() → process_middle_encoder() → 
+preprocess() → run_voxel_encoder() → process_middle_encoder() →
 run_backbone_head() → postprocess()
 ```
 

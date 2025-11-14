@@ -144,7 +144,7 @@ class BaseDeploymentConfig:
     def get_evaluation_backends(self) -> Dict[str, Dict[str, Any]]:
         """
         Get evaluation backends configuration.
-        
+
         Returns:
             Dictionary mapping backend names to their configuration
         """
@@ -154,10 +154,10 @@ class BaseDeploymentConfig:
     def get_verification_scenarios(self, export_mode: str) -> List[Dict[str, str]]:
         """
         Get verification scenarios for the given export mode.
-        
+
         Args:
             export_mode: Export mode ('onnx', 'trt', 'both', 'none')
-            
+
         Returns:
             List of verification scenarios dictionaries
         """
@@ -258,11 +258,13 @@ class BaseDeploymentConfig:
 
                 # Add primary input
                 full_shape = (batch_size,) + input_shape
-                model_inputs.append(dict(
-                    name=input_name,
-                    shape=full_shape,
-                    dtype=input_dtype,
-                ))
+                model_inputs.append(
+                    dict(
+                        name=input_name,
+                        shape=full_shape,
+                        dtype=input_dtype,
+                    )
+                )
 
                 # Add additional inputs if specified
                 additional_inputs = model_io.get("additional_inputs", [])
@@ -280,16 +282,18 @@ class BaseDeploymentConfig:
                             # Add batch dimension for fixed shapes
                             full_add_shape = (batch_size,) + add_shape
 
-                        model_inputs.append(dict(
-                            name=add_name,
-                            shape=full_add_shape,
-                            dtype=add_dtype,
-                        ))
+                        model_inputs.append(
+                            dict(
+                                name=add_name,
+                                shape=full_add_shape,
+                                dtype=add_dtype,
+                            )
+                        )
 
                 # Update model_inputs in backend config
                 self.backend_config.model_inputs = model_inputs
             else:
-                # If model_inputs already exists (e.g., TensorRT shape ranges), 
+                # If model_inputs already exists (e.g., TensorRT shape ranges),
                 # update batch size in existing shapes if they are simple shapes
                 for model_input in existing_model_inputs:
                     if isinstance(model_input, dict) and "shape" in model_input:

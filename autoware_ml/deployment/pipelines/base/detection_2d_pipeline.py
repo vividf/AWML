@@ -4,15 +4,14 @@ This module provides the base class for 2D object detection pipelines,
 implementing common preprocessing and postprocessing for models like YOLOX, YOLO, etc.
 """
 
-from abc import abstractmethod
-from typing import List, Dict, Tuple, Any
 import logging
+from abc import abstractmethod
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
 
 from .base_pipeline import BaseDeploymentPipeline
-
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +19,12 @@ logger = logging.getLogger(__name__)
 class Detection2DPipeline(BaseDeploymentPipeline):
     """
     Base class for 2D object detection pipelines.
-    
+
     Provides common functionality for 2D detection tasks including:
     - Image preprocessing (resize, normalize, padding)
     - Postprocessing (NMS, coordinate transformation)
     - Standard detection output format
-    
+
     Expected output format:
         List[Dict] where each dict contains:
         {
@@ -37,17 +36,17 @@ class Detection2DPipeline(BaseDeploymentPipeline):
     """
 
     def __init__(
-        self, 
+        self,
         model: Any,
         device: str = "cpu",
         num_classes: int = 80,
         class_names: List[str] = None,
         input_size: Tuple[int, int] = (640, 640),
-        backend_type: str = "unknown"
+        backend_type: str = "unknown",
     ):
         """
         Initialize 2D detection pipeline.
-        
+
         Args:
             model: Model object
             device: Device for inference
@@ -63,21 +62,17 @@ class Detection2DPipeline(BaseDeploymentPipeline):
         self.input_size = input_size
 
     @abstractmethod
-    def preprocess(
-        self, 
-        input_data: Any,
-        **kwargs
-    ) -> Tuple[torch.Tensor, Dict]:
+    def preprocess(self, input_data: Any, **kwargs) -> Tuple[torch.Tensor, Dict]:
         """
         Preprocess input data for 2D detection.
-        
+
         This method should be implemented by specific detection pipelines.
         For YOLOX, preprocessing is done by MMDetection pipeline before calling this method.
-        
+
         Args:
             input_data: Preprocessed tensor from MMDetection pipeline or raw input
             **kwargs: Additional preprocessing parameters
-            
+
         Returns:
             Tuple of (preprocessed_tensor, preprocessing_metadata)
             - preprocessed_tensor: [1, C, H, W]
@@ -89,57 +84,45 @@ class Detection2DPipeline(BaseDeploymentPipeline):
     def run_model(self, preprocessed_input: torch.Tensor) -> Any:
         """
         Run detection model (backend-specific).
-        
+
         Args:
             preprocessed_input: Preprocessed tensor [1, C, H, W]
-            
+
         Returns:
             Model output (backend-specific format)
         """
         pass
 
-    def postprocess(
-        self, 
-        model_output: Any,
-        metadata: Dict = None
-    ) -> List[Dict]:
+    def postprocess(self, model_output: Any, metadata: Dict = None) -> List[Dict]:
         """
         Standard 2D detection postprocessing.
-        
+
         Steps:
         1. Parse model outputs (boxes, scores, classes)
         2. Apply NMS
         3. Transform coordinates back to original image space
         4. Filter by confidence threshold
-        
+
         Args:
             model_output: Raw model output
             metadata: Preprocessing metadata
-            
+
         Returns:
             List of detections in standard format
         """
         # This should be overridden by specific detectors (YOLOX, YOLO, etc.)
         # as output formats differ
-        raise NotImplementedError(
-            "postprocess() must be implemented by specific detector pipeline"
-        )
+        raise NotImplementedError("postprocess() must be implemented by specific detector pipeline")
 
-
-    def _nms(
-        self,
-        boxes: np.ndarray,
-        scores: np.ndarray,
-        iou_threshold: float = 0.45
-    ) -> np.ndarray:
+    def _nms(self, boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.45) -> np.ndarray:
         """
         Non-Maximum Suppression.
-        
+
         Args:
             boxes: Bounding boxes [N, 4]
             scores: Confidence scores [N]
             iou_threshold: IoU threshold for NMS
-            
+
         Returns:
             Indices of boxes to keep
         """
