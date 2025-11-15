@@ -64,11 +64,17 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
 
         Args:
             model_cfg: Model configuration
+            model_cfg_path: Path to model config file
             class_names: List of class names (optional, will try to get from config)
+        
+        IMPORTANT:
+        - `pytorch_model` will be injected by DeploymentRunner after model loading.
+        - This design ensures clear ownership: Runner loads model, Evaluator only evaluates.
         """
         super().__init__(config={})
         self.model_cfg = model_cfg
         self.model_cfg_path = model_cfg_path
+        self.pytorch_model: Any = None  # Will be injected by runner after model loading
 
         # Get class names from config
         if class_names is not None:
@@ -87,6 +93,19 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 "Config file must contain 'classes' attribute. "
                 "Please ensure your dataset config file (referenced via _base_) defines 'classes'."
             )
+
+    def set_pytorch_model(self, pytorch_model: Any) -> None:
+        """
+        Set PyTorch model (called by deployment runner).
+        
+        This is the official API for injecting the loaded PyTorch model
+        into the evaluator after the runner loads it.
+        
+        Args:
+            pytorch_model: Loaded PyTorch model
+        """
+        self.pytorch_model = pytorch_model
+
     def verify(
         self,
         ref_backend: str,
@@ -127,7 +146,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 'summary': {'passed': int, 'failed': int, 'total': int}
             }
         """
-        from .main import load_pytorch_model
         from autoware_ml.deployment.pipelines.yolox import (
             YOLOXPyTorchPipeline,
             YOLOXONNXPipeline,
@@ -161,15 +179,22 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         # Create reference pipeline
         logger.info(f"\nInitializing {ref_backend} reference pipeline...")
         if ref_backend == "pytorch":
-            pytorch_model = load_pytorch_model(ref_path, self.model_cfg_path, ref_device)
-            # Replace ReLU6 with ReLU to match ONNX export
-            def replace_relu6_with_relu(module):
-                for name, child in module.named_children():
-                    if isinstance(child, torch.nn.ReLU6):
-                        setattr(module, name, torch.nn.ReLU(inplace=child.inplace))
-                    else:
-                        replace_relu6_with_relu(child)
-            replace_relu6_with_relu(pytorch_model)
+            # Use PyTorch model injected by runner
+            pytorch_model = self.pytorch_model
+            if pytorch_model is None:
+                raise RuntimeError(
+                    "YOLOXOptElanEvaluator.pytorch_model is None. "
+                    "DeploymentRunner must set evaluator.pytorch_model before calling verify."
+                )
+            
+            # Move model to correct device if needed
+            current_device = next(pytorch_model.parameters()).device
+            target_device = torch.device(ref_device)
+            if current_device != target_device:
+                logger.info(f"Moving PyTorch model from {current_device} to {target_device}")
+                pytorch_model = pytorch_model.to(target_device)
+                self.pytorch_model = pytorch_model
+            
             ref_pipeline = YOLOXPyTorchPipeline(
                 pytorch_model=pytorch_model,
                 device=ref_device,
@@ -475,7 +500,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             YOLOXONNXPipeline,
             YOLOXTensorRTPipeline,
         )
-        from mmdet.apis import init_detector
         import os
 
         # Determine classes from config
@@ -509,15 +533,22 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             num_classes = len(class_names)
 
         if backend == "pytorch":
-            model = init_detector(self.model_cfg_path, model_path, device=device)
-            # Replace ReLU6 with ReLU to match ONNX export (for consistency)
-            def replace_relu6_with_relu(module):
-                for name, child in module.named_children():
-                    if isinstance(child, torch.nn.ReLU6):
-                        setattr(module, name, torch.nn.ReLU(inplace=child.inplace))
-                    else:
-                        replace_relu6_with_relu(child)
-            replace_relu6_with_relu(model)
+            # Use PyTorch model injected by runner
+            model = self.pytorch_model
+            if model is None:
+                raise RuntimeError(
+                    "YOLOXOptElanEvaluator.pytorch_model is None. "
+                    "DeploymentRunner must set evaluator.pytorch_model before calling evaluate/verify."
+                )
+            
+            # Move model to correct device if needed
+            current_device = next(model.parameters()).device
+            target_device = torch.device(device)
+            if current_device != target_device:
+                logger.info(f"Moving PyTorch model from {current_device} to {target_device}")
+                model = model.to(target_device)
+                self.pytorch_model = model
+            
             return YOLOXPyTorchPipeline(
                 pytorch_model=model,
                 device=device,

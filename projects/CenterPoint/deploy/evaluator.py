@@ -14,6 +14,7 @@ from mmengine.config import Config
 from autoware_ml.deployment.core import BaseEvaluator
 
 from .data_loader import CenterPointDataLoader
+from .utils import build_model_from_cfg
 
 # Constants
 LOG_INTERVAL = 50
@@ -27,25 +28,31 @@ class CenterPointEvaluator(BaseEvaluator):
     Computes 3D detection metrics including mAP, NDS, and latency statistics.
 
     Note: For production, should integrate with mmdet3d's evaluation metrics.
+    
+    IMPORTANT:
+    - `model_cfg` in __init__ can be the original mmdet3d config.
+    - `model_cfg` will be updated to ONNX-compatible config by DeploymentRunner.load_pytorch_model().
+    - `pytorch_model` will be injected by DeploymentRunner after model loading.
+    - This design ensures clear ownership: Runner loads model and manages config, Evaluator only evaluates.
     """
 
     def __init__(
         self,
         model_cfg: Config,
         class_names: List[str] = None,
-        checkpoint_path: Optional[str] = None,
     ):
         """
         Initialize CenterPoint evaluator.
 
         Args:
-            model_cfg: ONNX-compatible model configuration (used for all backends)
-            class_names: List of class names (optional)
-            checkpoint_path: Path to checkpoint file (optional, will be used for ONNX/TensorRT pipelines)
+            model_cfg: Model configuration (can be original mmdet3d config).
+                       Will be updated to ONNX-compatible config by DeploymentRunner.load_pytorch_model().
+            class_names: List of class names (optional). If not provided, will be extracted from model_cfg.
         """
         super().__init__(config={})
+        
         self.model_cfg = model_cfg
-        self.checkpoint_path = checkpoint_path
+        self.pytorch_model: Any = None  # Will be injected by runner after model loading
 
         # Get class names
         if class_names is not None:
@@ -56,6 +63,32 @@ class CenterPointEvaluator(BaseEvaluator):
             # Default for T4Dataset
             self.class_names = ["VEHICLE", "PEDESTRIAN", "CYCLIST"]
 
+    def set_onnx_config(self, model_cfg: Config) -> None:
+        """
+        Set ONNX-compatible model config (called by deployment runner).
+        
+        This is the official API for updating the evaluator's model config
+        after the runner converts the original config to ONNX-compatible format.
+        
+        Args:
+            model_cfg: ONNX-compatible model configuration
+        """
+        self.model_cfg = model_cfg
+        # Re-derive class_names if available in the new config
+        if hasattr(model_cfg, "class_names"):
+            self.class_names = model_cfg.class_names
+
+    def set_pytorch_model(self, pytorch_model: Any) -> None:
+        """
+        Set PyTorch model (called by deployment runner).
+        
+        This is the official API for injecting the loaded PyTorch model
+        into the evaluator after the runner loads it.
+        
+        Args:
+            pytorch_model: Loaded PyTorch model
+        """
+        self.pytorch_model = pytorch_model
 
     def verify(
         self,
@@ -441,66 +474,45 @@ class CenterPointEvaluator(BaseEvaluator):
                 device = "cpu"
             
             device_obj = torch.device(device) if isinstance(device, str) else device
+            device_str = str(device_obj)
             
             # Use unified ONNX-compatible config for all backends
             cfg_for_backend = self.model_cfg
 
-            # Load PyTorch model (required by all backends)
-            if backend == "pytorch":
-                pytorch_model = self._load_pytorch_model(
-                    model_path, device_obj, logger, cfg_for_backend
+            # Get PyTorch model injected by runner
+            pytorch_model = self.pytorch_model
+            if pytorch_model is None:
+                raise RuntimeError(
+                    "CenterPointEvaluator.pytorch_model is None. "
+                    "DeploymentRunner must set evaluator.pytorch_model before calling verify/evaluate."
                 )
-                return CenterPointPyTorchPipeline(pytorch_model, device=str(device_obj))
+            
+            # Move model to correct device if needed
+            current_device = next(pytorch_model.parameters()).device
+            target_device = device_obj
+            if current_device != target_device:
+                logger.info(f"Moving PyTorch model from {current_device} to {target_device}")
+                pytorch_model = pytorch_model.to(target_device)
+                # Update evaluator's model reference to the moved model
+                self.pytorch_model = pytorch_model
+            
+            logger.info(f"Using PyTorch model (injected by runner) on {target_device}")
+
+            # Create pipeline based on backend
+            if backend == "pytorch":
+                return CenterPointPyTorchPipeline(pytorch_model, device=device_str)
                 
             elif backend == "onnx":
                 # ONNX pipeline uses ONNX Runtime for voxel encoder and head;
                 # PyTorch model is used for preprocessing/middle encoder/postprocessing.
-                
-                # Use checkpoint_path from config if available, otherwise raise error
-                if not self.checkpoint_path:
-                    raise ValueError(
-                        "checkpoint_path must be provided to CenterPointEvaluator.__init__() "
-                        "for ONNX pipeline to work. Please pass checkpoint_path when creating the evaluator."
-                    )
-                
-                import os
-                if not os.path.exists(self.checkpoint_path):
-                    raise FileNotFoundError(
-                        f"Checkpoint file not found: {self.checkpoint_path}. "
-                        f"Please ensure the checkpoint file exists."
-                    )
-                
-                logger.info(f"Using checkpoint for ONNX pipeline: {self.checkpoint_path}")
-                pytorch_model = self._load_pytorch_model(
-                    self.checkpoint_path, device_obj, logger, cfg_for_backend
-                )
-                return CenterPointONNXPipeline(pytorch_model, onnx_dir=model_path, device=str(device_obj))
+                return CenterPointONNXPipeline(pytorch_model, onnx_dir=model_path, device=device_str)
                 
             elif backend == "tensorrt":
                 # TensorRT requires CUDA
                 if not str(device).startswith("cuda"):
                     logger.warning("TensorRT requires CUDA device, skipping TensorRT evaluation")
                     return None
-                
-                # Use checkpoint_path from config if available, otherwise raise error
-                if not self.checkpoint_path:
-                    raise ValueError(
-                        "checkpoint_path must be provided to CenterPointEvaluator.__init__() "
-                        "for TensorRT pipeline to work. Please pass checkpoint_path when creating the evaluator."
-                    )
-                
-                import os
-                if not os.path.exists(self.checkpoint_path):
-                    raise FileNotFoundError(
-                        f"Checkpoint file not found: {self.checkpoint_path}. "
-                        f"Please ensure the checkpoint file exists."
-                    )
-                
-                logger.info(f"Using checkpoint for TensorRT pipeline: {self.checkpoint_path}")
-                pytorch_model = self._load_pytorch_model(
-                    self.checkpoint_path, device_obj, logger, cfg_for_backend
-                )
-                return CenterPointTensorRTPipeline(pytorch_model, tensorrt_dir=model_path, device=str(device_obj))
+                return CenterPointTensorRTPipeline(pytorch_model, tensorrt_dir=model_path, device=device_str)
                 
         except Exception as e:
             logger.error(f"Failed to create {backend} Pipeline: {e}")
@@ -508,79 +520,6 @@ class CenterPointEvaluator(BaseEvaluator):
             traceback.print_exc()
             return None
 
-    def _load_pytorch_model(
-        self,
-        checkpoint_path: str,
-        device: torch.device,
-        logger,
-        model_cfg: Config,
-    ) -> Any:
-        """
-        Load PyTorch model directly without using init_model to avoid CUDA checks.
-        
-        The model config should already be in the correct format (original or ONNX-compatible)
-        based on the backend being evaluated.
-        
-        Args:
-            checkpoint_path: Path to checkpoint file
-            device: Device to load model on
-            logger: Logger instance
-        """
-        try:
-            from mmengine.registry import MODELS, init_default_scope
-            from mmengine.runner import load_checkpoint
-            import copy as copy_module
-            
-            # Initialize mmdet3d scope
-            init_default_scope("mmdet3d")
-            
-            # Get model config - use deepcopy to avoid modifying shared nested objects
-            model_config = copy_module.deepcopy(model_cfg.model)
-            
-            # For ONNX models, ensure device is set
-            if hasattr(model_config, 'device'):
-                model_config.device = str(device)
-                logger.info(f"Set model config device to: {model_config.device}")
-            
-            # Build model using MODELS registry
-            logger.info(f"Building model with device: {device}")
-            logger.info(f"Model type: {model_config.type}")
-            model = MODELS.build(model_config)
-            model.to(device)
-            
-            # Add cfg attribute to model (required by inference_detector)
-            model.cfg = model_cfg
-            
-            # Load checkpointoriginal_model_cfg
-            logger.info(f"Loading checkpoint from: {checkpoint_path}")
-            load_checkpoint(model, checkpoint_path, map_location=device)
-            
-            model.eval()
-            
-            logger.info(f"Successfully loaded PyTorch model on {device}")
-            return model
-            
-        except Exception as e:
-            logger.error(f"Failed to load PyTorch model directly: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # Fallback to init_model if direct loading fails (only for CUDA)
-            # Note: init_model doesn't work well with CPU, so skip fallback for CPU
-            if str(device).startswith('cuda'):
-                try:
-                    from mmdet3d.apis import init_model
-                    logger.info("Falling back to init_model...")
-                    model = init_model(model_cfg, checkpoint_path, device=device)
-                    return model
-                except Exception as fallback_e:
-                    logger.error(f"Fallback to init_model also failed: {fallback_e}")
-                    import traceback
-                    traceback.print_exc()
-            else:
-                logger.error("Direct model loading failed and fallback is disabled for CPU mode")
-            
-            raise e
 
 
     def _parse_ground_truths(self, gt_data: Dict) -> List[Dict]:

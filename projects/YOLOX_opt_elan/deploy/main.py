@@ -10,8 +10,6 @@ This script uses the unified deployment runner to handle the complete deployment
 import sys
 from pathlib import Path
 
-import torch
-from mmdet.apis import init_detector
 from mmengine.config import Config
 
 # Add project root to path
@@ -20,7 +18,7 @@ sys.path.insert(0, str(project_root))
 
 from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
 from autoware_ml.deployment.core.base_config import parse_base_args
-from autoware_ml.deployment.runners import DeploymentRunner
+from autoware_ml.deployment.runners import YOLOXDeploymentRunner
 from autoware_ml.deployment.exporters.yolox.onnx_exporter import YOLOXONNXExporter
 from autoware_ml.deployment.exporters.yolox.tensorrt_exporter import YOLOXTensorRTExporter
 from autoware_ml.deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
@@ -33,29 +31,6 @@ def parse_args():
     parser = parse_base_args()
     args = parser.parse_args()
     return args
-
-
-def load_pytorch_model(checkpoint_path: str, model_cfg_path: str, device: str, **kwargs):
-    """
-    Load PyTorch model from checkpoint.
-    
-    Performs YOLOX-specific preprocessing:
-    - Replaces ReLU6 with ReLU for better ONNX compatibility
-    """
-    model = init_detector(model_cfg_path, checkpoint_path, device=device)
-    model.eval()
-    
-    # Replace ReLU6 with ReLU for better ONNX compatibility
-    def replace_relu6_with_relu(module):
-        for name, child in module.named_children():
-            if isinstance(child, torch.nn.ReLU6):
-                setattr(module, name, torch.nn.ReLU(inplace=child.inplace))
-            else:
-                replace_relu6_with_relu(child)
-    
-    replace_relu6_with_relu(model)
-    
-    return model
 
 
 def main():
@@ -106,30 +81,28 @@ def main():
     evaluator = YOLOXOptElanEvaluator(model_cfg, model_cfg_path=model_cfg_path)
 
     # Create YOLOX-specific exporters with wrapper
-    # YOLOXONNXExporter automatically uses YOLOXONNXWrapper by default
     onnx_settings = config.get_onnx_settings()
     trt_settings = config.get_tensorrt_settings()
     
-    onnx_exporter = YOLOXONNXExporter(onnx_settings, logger)
-    tensorrt_exporter = YOLOXTensorRTExporter(trt_settings, logger)
+    onnx_exporter = YOLOXONNXExporter(onnx_settings, logger, model_wrapper=YOLOXONNXWrapper)
+    tensorrt_exporter = YOLOXTensorRTExporter(trt_settings, logger, model_wrapper=YOLOXONNXWrapper)
 
-    # Create unified runner with YOLOX-specific exporters and wrapper
-    runner = DeploymentRunner(
+    # Create YOLOX-specific runner
+    runner = YOLOXDeploymentRunner(
         data_loader=data_loader,
         evaluator=evaluator,
         config=config,
         model_cfg=model_cfg,
         logger=logger,
-        load_model_fn=lambda checkpoint_path, **kwargs: load_pytorch_model(
-            checkpoint_path, model_cfg_path=model_cfg_path, device=config.export_config.device, **kwargs
-        ),
         onnx_exporter=onnx_exporter,
         tensorrt_exporter=tensorrt_exporter,
-        model_wrapper=YOLOXONNXWrapper,
     )
 
     # Execute deployment workflow
-    runner.run(checkpoint_path=args.checkpoint)
+    runner.run(
+        checkpoint_path=args.checkpoint,
+        model_cfg_path=model_cfg_path,
+    )
 
 
 if __name__ == "__main__":

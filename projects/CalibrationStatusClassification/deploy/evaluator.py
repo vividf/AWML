@@ -12,7 +12,6 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 from mmengine.config import Config
-from mmpretrain.apis import get_model
 
 from autoware_ml.deployment.core import BaseEvaluator
 
@@ -39,9 +38,26 @@ class ClassificationEvaluator(BaseEvaluator):
 
         Args:
             model_cfg: Model configuration
+        
+        IMPORTANT:
+        - `pytorch_model` will be injected by DeploymentRunner after model loading.
+        - This design ensures clear ownership: Runner loads model, Evaluator only evaluates.
         """
         super().__init__(config={})
         self.model_cfg = model_cfg
+        self.pytorch_model: Any = None  # Will be injected by runner after model loading
+
+    def set_pytorch_model(self, pytorch_model: Any) -> None:
+        """
+        Set PyTorch model (called by deployment runner).
+        
+        This is the official API for injecting the loaded PyTorch model
+        into the evaluator after the runner loads it.
+        
+        Args:
+            pytorch_model: Loaded PyTorch model
+        """
+        self.pytorch_model = pytorch_model
 
     def evaluate(
         self,
@@ -149,8 +165,22 @@ class ClassificationEvaluator(BaseEvaluator):
         )
         
         if backend == "pytorch":
-            logger.info(f"Loading PyTorch model from {model_path}")
-            model = get_model(self.model_cfg, model_path, device=device)
+            # Use PyTorch model injected by runner
+            model = self.pytorch_model
+            if model is None:
+                raise RuntimeError(
+                    "ClassificationEvaluator.pytorch_model is None. "
+                    "DeploymentRunner must set evaluator.pytorch_model before calling evaluate/verify."
+                )
+            
+            # Move model to correct device if needed
+            current_device = next(model.parameters()).device
+            target_device = torch.device(device)
+            if current_device != target_device:
+                logger.info(f"Moving PyTorch model from {current_device} to {target_device}")
+                model = model.to(target_device)
+                self.pytorch_model = model
+            
             return CalibrationPyTorchPipeline(
                 pytorch_model=model,
                 device=device,
@@ -396,8 +426,22 @@ class ClassificationEvaluator(BaseEvaluator):
         # Create reference pipeline
         logger.info(f"\nInitializing {ref_backend} reference pipeline...")
         if ref_backend == "pytorch":
-            pytorch_model = get_model(self.model_cfg, ref_path, device=ref_device)
-            pytorch_model.eval()
+            # Use PyTorch model injected by runner
+            pytorch_model = self.pytorch_model
+            if pytorch_model is None:
+                raise RuntimeError(
+                    "ClassificationEvaluator.pytorch_model is None. "
+                    "DeploymentRunner must set evaluator.pytorch_model before calling verify."
+                )
+            
+            # Move model to correct device if needed
+            current_device = next(pytorch_model.parameters()).device
+            target_device = torch.device(ref_device)
+            if current_device != target_device:
+                logger.info(f"Moving PyTorch model from {current_device} to {target_device}")
+                pytorch_model = pytorch_model.to(target_device)
+                self.pytorch_model = pytorch_model
+            
             ref_pipeline = CalibrationPyTorchPipeline(
                 pytorch_model=pytorch_model,
                 device=ref_device,
