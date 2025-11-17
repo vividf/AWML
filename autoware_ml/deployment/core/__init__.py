@@ -9,7 +9,12 @@ from autoware_ml.deployment.core.base_config import (
     setup_logging,
 )
 from autoware_ml.deployment.core.base_data_loader import BaseDataLoader
-from autoware_ml.deployment.core.base_evaluator import BaseEvaluator
+from autoware_ml.deployment.core.base_evaluator import (
+    BaseEvaluator,
+    EvalResultDict,
+    ModelSpec,
+    VerifyResultDict,
+)
 from autoware_ml.deployment.core.preprocessing_builder import (
     build_preprocessing_pipeline,
 )
@@ -23,5 +28,8 @@ __all__ = [
     "parse_base_args",
     "BaseDataLoader",
     "BaseEvaluator",
+    "EvalResultDict",
+    "VerifyResultDict",
+    "ModelSpec",
     "build_preprocessing_pipeline",
 ]

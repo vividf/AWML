@@ -11,7 +11,12 @@ import numpy as np
 import torch
 from mmengine.config import Config
 
-from autoware_ml.deployment.core import BaseEvaluator
+from autoware_ml.deployment.core import (
+    BaseEvaluator,
+    EvalResultDict,
+    ModelSpec,
+    VerifyResultDict,
+)
 
 from .data_loader import YOLOXOptElanDataLoader
 
@@ -19,34 +24,35 @@ from .data_loader import YOLOXOptElanDataLoader
 LOG_INTERVAL = 50  # Log more frequently for smaller datasets
 GPU_CLEANUP_INTERVAL = 10
 
+
 def generate_yolox_priors(img_size=(960, 960)):
     """
     Generate YOLOX priors for bbox decoding.
-    
+
     Args:
         img_size: (height, width) of input image
-        
+
     Returns:
         priors: [num_anchors, 4] with [center_x, center_y, stride_w, stride_h]
     """
     priors = []
-    
+
     # YOLOX uses 3 detection levels with strides [8, 16, 32]
     # YOLOX uses offset=0 (not 0.5 like other detectors)
     strides = [8, 16, 32]
-    
+
     for stride in strides:
         # Calculate feature map size
         feat_h = img_size[0] // stride
         feat_w = img_size[1] // stride
-        
+
         # Generate grid centers with offset=0 (YOLOX specific)
         for y in range(feat_h):
             for x in range(feat_w):
                 center_x = x * stride  # offset=0, not 0.5
                 center_y = y * stride  # offset=0, not 0.5
                 priors.append([center_x, center_y, stride, stride])
-    
+
     return np.array(priors, dtype=np.float32)
 
 
@@ -66,7 +72,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             model_cfg: Model configuration
             model_cfg_path: Path to model config file
             class_names: List of class names (optional, will try to get from config)
-        
+
         IMPORTANT:
         - `pytorch_model` will be injected by DeploymentRunner after model loading.
         - This design ensures clear ownership: Runner loads model, Evaluator only evaluates.
@@ -97,10 +103,10 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
     def set_pytorch_model(self, pytorch_model: Any) -> None:
         """
         Set PyTorch model (called by deployment runner).
-        
+
         This is the official API for injecting the loaded PyTorch model
         into the evaluator after the runner loads it.
-        
+
         Args:
             pytorch_model: Loaded PyTorch model
         """
@@ -108,35 +114,27 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
 
     def verify(
         self,
-        ref_backend: str,
-        ref_device: str,
-        ref_path: str,
-        test_backend: str,
-        test_device: str,
-        test_path: str,
+        reference: ModelSpec,
+        test: ModelSpec,
         data_loader: YOLOXOptElanDataLoader,
         num_samples: int = 1,
         tolerance: float = 0.1,
         verbose: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> VerifyResultDict:
         """
         Verify exported models using policy-based verification.
-        
+
         This method compares outputs from a reference backend against a test backend
         as specified by the verification policy.
-        
+
         Args:
-            ref_backend: Reference backend name ('pytorch' or 'onnx')
-            ref_device: Device for reference backend (e.g., 'cpu', 'cuda:0')
-            ref_path: Path to reference model (checkpoint for pytorch, model path for onnx)
-            test_backend: Test backend name ('onnx' or 'tensorrt')
-            test_device: Device for test backend (e.g., 'cpu', 'cuda:0')
-            test_path: Path to test model (model path for onnx, engine path for tensorrt)
+            reference: Specification describing the reference backend/device/path
+            test: Specification describing the test backend/device/path
             data_loader: Data loader for test samples
             num_samples: Number of samples to verify
             tolerance: Maximum allowed difference for verification to pass
             verbose: Whether to print detailed output
-            
+
         Returns:
             Dictionary containing verification results:
             {
@@ -147,26 +145,38 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             }
         """
         from autoware_ml.deployment.pipelines.yolox import (
-            YOLOXPyTorchPipeline,
             YOLOXONNXPipeline,
+            YOLOXPyTorchPipeline,
             YOLOXTensorRTPipeline,
         )
-        
+
         logger = logging.getLogger(__name__)
-        
+        ref_backend = reference.backend
+        ref_device = reference.device
+        ref_path = reference.path
+        test_backend = test.backend
+        test_device = test.device
+        test_path = test.path
+
+        results: VerifyResultDict = {
+            "summary": {"passed": 0, "failed": 0, "total": 0},
+            "samples": {},
+        }
+
         # Enforce device scenarios
         if ref_backend == "pytorch" and ref_device.startswith("cuda"):
             logger.warning("PyTorch verification is forced to CPU; overriding device to 'cpu'")
             ref_device = "cpu"
-        
+
         if test_backend == "tensorrt":
             if not test_device.startswith("cuda"):
                 logger.warning("TensorRT verification requires CUDA device. Skipping verification.")
-                return {"error": "TensorRT requires CUDA"}
+                results["error"] = "TensorRT requires CUDA"
+                return results
             if test_device != "cuda:0":
                 logger.warning("TensorRT verification only supports 'cuda:0'. Overriding device to 'cuda:0'.")
                 test_device = "cuda:0"
-        
+
         logger.info("\n" + "=" * 60)
         logger.info("YOLOX_opt_elan Model Verification (Policy-Based)")
         logger.info("=" * 60)
@@ -175,7 +185,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         logger.info(f"Number of samples: {num_samples}")
         logger.info(f"Tolerance: {tolerance}")
         logger.info("=" * 60)
-        
+
         # Create reference pipeline
         logger.info(f"\nInitializing {ref_backend} reference pipeline...")
         if ref_backend == "pytorch":
@@ -186,7 +196,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     "YOLOXOptElanEvaluator.pytorch_model is None. "
                     "DeploymentRunner must set evaluator.pytorch_model before calling verify."
                 )
-            
+
             # Move model to correct device if needed
             current_device = next(pytorch_model.parameters()).device
             target_device = torch.device(ref_device)
@@ -194,28 +204,27 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 logger.info(f"Moving PyTorch model from {current_device} to {target_device}")
                 pytorch_model = pytorch_model.to(target_device)
                 self.pytorch_model = pytorch_model
-            
+
             ref_pipeline = YOLOXPyTorchPipeline(
                 pytorch_model=pytorch_model,
                 device=ref_device,
                 num_classes=len(self.class_names),
-                class_names=self.class_names
+                class_names=self.class_names,
             )
         elif ref_backend == "onnx":
             ref_pipeline = YOLOXONNXPipeline(
-                onnx_path=ref_path,
-                device=ref_device,
-                num_classes=len(self.class_names),
-                class_names=self.class_names
+                onnx_path=ref_path, device=ref_device, num_classes=len(self.class_names), class_names=self.class_names
             )
         else:
             logger.error(f"Unsupported reference backend: {ref_backend}")
-            return {"error": f"Unsupported reference backend: {ref_backend}"}
-        
+            results["error"] = f"Unsupported reference backend: {ref_backend}"
+            return results
+
         if ref_pipeline is None:
             logger.error(f"Failed to create {ref_backend} reference pipeline")
-            return {"error": f"Failed to create {ref_backend} reference pipeline"}
-        
+            results["error"] = f"Failed to create {ref_backend} reference pipeline"
+            return results
+
         # Create test pipeline
         logger.info(f"\nInitializing {test_backend} test pipeline...")
         if test_backend == "onnx":
@@ -223,67 +232,68 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 onnx_path=test_path,
                 device=test_device,
                 num_classes=len(self.class_names),
-                class_names=self.class_names
+                class_names=self.class_names,
             )
         elif test_backend == "tensorrt":
             test_pipeline = YOLOXTensorRTPipeline(
                 engine_path=test_path,
                 device=test_device,
                 num_classes=len(self.class_names),
-                class_names=self.class_names
+                class_names=self.class_names,
             )
         else:
             logger.error(f"Unsupported test backend: {test_backend}")
-            return {"error": f"Unsupported test backend: {test_backend}"}
-        
+            results["error"] = f"Unsupported test backend: {test_backend}"
+            return results
+
         if test_pipeline is None:
             logger.error(f"Failed to create {test_backend} test pipeline")
-            return {"error": f"Failed to create {test_backend} test pipeline"}
-        
+            results["error"] = f"Failed to create {test_backend} test pipeline"
+            return results
+
         # Verify each sample
-        results = {}
-        
         try:
             for i in range(min(num_samples, data_loader.get_num_samples())):
                 logger.info(f"\n{'='*60}")
                 logger.info(f"Verifying sample {i}")
                 logger.info(f"{'='*60}")
-                
+
                 # Load sample and preprocess
                 sample = data_loader.load_sample(i)
                 input_tensor = data_loader.preprocess(sample)
-                
+
                 # Ensure input tensor is on the correct device for reference backend
                 # data_loader may have a different device, so we need to move the tensor
                 ref_device_obj = torch.device(ref_device)
                 if input_tensor.device != ref_device_obj:
                     input_tensor = input_tensor.to(ref_device_obj)
-                
+
                 # Get ground truth and img_info (required for YOLOX preprocessing)
                 gt_data = data_loader.get_ground_truth(i)
                 img_info = gt_data["img_info"]
-                
+
                 # Get reference outputs
                 logger.info(f"\nRunning {ref_backend} reference ({ref_device})...")
                 try:
                     ref_output, ref_latency, _ = ref_pipeline.infer(
-                        input_tensor,
-                        return_raw_outputs=True,
-                        img_info=img_info
+                        input_tensor, return_raw_outputs=True, img_info=img_info
                     )
                     logger.info(f"  {ref_backend} latency: {ref_latency:.2f} ms")
                     logger.info(f"  {ref_backend} output shape: {ref_output.shape}")
                 except Exception as e:
                     logger.error(f"  {ref_backend} inference failed: {e}")
                     import traceback
+
                     traceback.print_exc()
-                    results[f"sample_{i}"] = False
+                    results["samples"][f"sample_{i}"] = False
                     continue
-                
+
                 # Ensure input tensor is on the correct device for test backend
                 test_device_obj = torch.device(test_device)
-                test_input_tensor = input_tensor.to(test_device_obj) if input_tensor.device != test_device_obj else input_tensor
-                
+                test_input_tensor = (
+                    input_tensor.to(test_device_obj) if input_tensor.device != test_device_obj else input_tensor
+                )
+
                 # Verify test backend against reference
                 ref_name = f"{ref_backend} ({ref_device})"
                 test_name = f"{test_backend} ({test_device})"
@@ -295,47 +305,45 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     tolerance,
                     test_name,
                     logger,
-                    img_info=img_info
+                    img_info=img_info,
                 )
-                results[f"sample_{i}"] = passed
-                
+                results["samples"][f"sample_{i}"] = passed
+
                 # Cleanup GPU memory after each sample
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-        
+
         except Exception as e:
             logger.error(f"Error during verification: {e}")
             import traceback
+
             traceback.print_exc()
-            return {"error": str(e)}
-        
+            results["error"] = str(e)
+            return results
+
         # Compute summary
         # Use == instead of 'is' to handle numpy bool values
-        passed = sum(1 for v in results.values() if v == True)
-        failed = sum(1 for v in results.values() if v == False)
-        total = len(results)
-        
-        results['summary'] = {
-            'passed': passed,
-            'failed': failed,
-            'total': total
-        }
-        
+        sample_values = results["samples"].values()
+        passed = sum(1 for v in sample_values if v == True)
+        failed = sum(1 for v in sample_values if v == False)
+        total = len(results["samples"])
+
+        results["summary"] = {"passed": passed, "failed": failed, "total": total}
+
         # Print summary
         logger.info("\n" + "=" * 60)
         logger.info("Verification Summary")
         logger.info("=" * 60)
-        for key, value in results.items():
-            if key != 'summary':
-                status = "✓ PASSED" if value else "✗ FAILED"
-                logger.info(f"  {key}: {status}")
-        
+        for key, value in results["samples"].items():
+            status = "✓ PASSED" if value else "✗ FAILED"
+            logger.info(f"  {key}: {status}")
+
         logger.info("=" * 60)
         logger.info(f"Total: {passed}/{total} passed, {failed}/{total} failed")
         logger.info("=" * 60)
-        
+
         return results
-    
+
     def _verify_single_backend(
         self,
         pipeline,
@@ -349,7 +357,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
     ) -> bool:
         """
         Verify a single backend against PyTorch reference outputs.
-        
+
         Args:
             pipeline: Pipeline instance to verify
             input_tensor: Preprocessed input tensor from MMDet pipeline
@@ -359,7 +367,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             backend_name: Name of backend for logging ("ONNX", "TensorRT")
             logger: Logger instance
             img_info: Image metadata (required for YOLOX preprocessing)
-            
+
         Returns:
             bool: True if verification passed, False otherwise
         """
@@ -368,30 +376,28 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             # img_info is required for YOLOX preprocessing
             if img_info is not None:
                 backend_output, backend_latency, _ = pipeline.infer(
-                    input_tensor, 
-                    return_raw_outputs=True,
-                    img_info=img_info
+                    input_tensor, return_raw_outputs=True, img_info=img_info
                 )
             else:
                 return False
-           
+
             logger.info(f"  {backend_name} latency: {backend_latency:.2f} ms")
             logger.info(f"  {backend_name} output shape: {backend_output.shape}")
             logger.info(f"  {backend_name} output range: [{backend_output.min():.6f}, {backend_output.max():.6f}]")
-            
+
             # Compare outputs
             if reference_output.shape != backend_output.shape:
                 logger.error(f"  Output shape mismatch: {reference_output.shape} vs {backend_output.shape}")
                 return False
-            
+
             # Compute differences
             diff = np.abs(reference_output - backend_output)
             max_diff = diff.max()
             mean_diff = diff.mean()
-            
+
             logger.info(f"  Max difference: {max_diff:.6f}")
             logger.info(f"  Mean difference: {mean_diff:.6f}")
-            
+
             # Check if verification passed
             if max_diff < tolerance:
                 logger.info(f"  {backend_name} verification PASSED ✓")
@@ -402,38 +408,36 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     f"(max diff: {max_diff:.6f} > tolerance: {tolerance:.6f})"
                 )
                 return False
-        
+
         except Exception as e:
             logger.error(f"  {backend_name} verification failed with error: {e}")
             import traceback
+
             traceback.print_exc()
             return False
-    
+
     def evaluate(
         self,
-        model_path: str,
+        model: ModelSpec,
         data_loader: YOLOXOptElanDataLoader,
         num_samples: int,
-        backend: str = "pytorch",
-        device: str = "cpu",
         verbose: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> EvalResultDict:
         """
         Run full evaluation on YOLOX_opt_elan model.
 
         Args:
-            model_path: Path to model checkpoint/weights
+            model: Specification describing backend/device/path
             data_loader: YOLOX_opt_elan DataLoader
             num_samples: Number of samples to evaluate
-            backend: Backend to use ('pytorch', 'onnx', 'tensorrt')
-            device: Device to run inference on
             verbose: Whether to print detailed progress
 
         Returns:
             Dictionary containing evaluation metrics
         """
+        backend = model.backend
         logger = logging.getLogger(__name__)
-        logger.info(f"\nEvaluating {backend.upper()} model: {model_path}")
+        logger.info(f"\nEvaluating {backend.upper()} model: {model.path}")
         logger.info(f"Number of samples: {num_samples}")
 
         # Limit num_samples
@@ -441,13 +445,13 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         num_samples = min(num_samples, total_samples)
 
         # Create YOLOX Pipeline instead of generic backend
-        pipeline = self._create_backend(backend, model_path, device, logger)
+        pipeline = self._create_backend(model, logger)
 
         # Run inference via Pipeline on MMDet-preprocessed tensors
         all_predictions = []
         all_ground_truths = []
         latencies = []
-        
+
         for idx in range(num_samples):
             if idx % LOG_INTERVAL == 0:
                 logger.info(f"Processing sample {idx + 1}/{num_samples}")
@@ -467,12 +471,14 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             # Normalize detections to expected format for eval_map
             predictions = []
             for det in detections:
-                if isinstance(det, dict) and 'bbox' in det:
-                    predictions.append({
-                        'bbox': det['bbox'],
-                        'label': int(det.get('class_id', det.get('label', 0))),
-                        'score': float(det.get('score', 0.0)),
-                    })
+                if isinstance(det, dict) and "bbox" in det:
+                    predictions.append(
+                        {
+                            "bbox": det["bbox"],
+                            "label": int(det.get("class_id", det.get("label", 0))),
+                            "score": float(det.get("score", 0.0)),
+                        }
+                    )
             all_predictions.append(predictions)
 
             # Parse ground truths
@@ -480,9 +486,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             all_ground_truths.append(ground_truths)
 
             if verbose:
-                logger.info(
-                    f"  Sample {idx}: {len(predictions)} predictions, {len(ground_truths)} ground truths"
-                )
+                logger.info(f"  Sample {idx}: {len(predictions)} predictions, {len(ground_truths)} ground truths")
 
             # GPU cleanup for TensorRT
             if backend == "tensorrt" and idx % GPU_CLEANUP_INTERVAL == 0:
@@ -493,14 +497,15 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
 
         return results
 
-    def _create_backend(self, backend: str, model_path: str, device: str, logger):
+    def _create_backend(self, model: ModelSpec, logger):
         """Create YOLOX Pipeline for the specified backend."""
+        import os
+
         from autoware_ml.deployment.pipelines.yolox import (
-            YOLOXPyTorchPipeline,
             YOLOXONNXPipeline,
+            YOLOXPyTorchPipeline,
             YOLOXTensorRTPipeline,
         )
-        import os
 
         # Determine classes from config
         # Get class names from config (from dataset config via _base_)
@@ -509,16 +514,16 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 "Config file must contain 'classes' attribute. "
                 "Please ensure your dataset config file (referenced via _base_) defines 'classes'."
             )
-        
+
         classes = self.model_cfg.classes
         if not isinstance(classes, (tuple, list)):
             raise ValueError(
                 f"Config 'classes' must be a tuple or list, got {type(classes)}. "
                 f"Please check your dataset config file."
             )
-        
+
         class_names = list(classes)
-        
+
         # Get num_classes from model config or infer from class_names
         if hasattr(self.model_cfg, "model") and hasattr(self.model_cfg.model, "bbox_head"):
             num_classes = self.model_cfg.model.bbox_head.get("num_classes", len(class_names))
@@ -532,6 +537,10 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         else:
             num_classes = len(class_names)
 
+        backend = model.backend
+        model_path = model.path
+        device = model.device
+
         if backend == "pytorch":
             # Use PyTorch model injected by runner
             model = self.pytorch_model
@@ -540,7 +549,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     "YOLOXOptElanEvaluator.pytorch_model is None. "
                     "DeploymentRunner must set evaluator.pytorch_model before calling evaluate/verify."
                 )
-            
+
             # Move model to correct device if needed
             current_device = next(model.parameters()).device
             target_device = torch.device(device)
@@ -548,7 +557,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 logger.info(f"Moving PyTorch model from {current_device} to {target_device}")
                 model = model.to(target_device)
                 self.pytorch_model = model
-            
+
             return YOLOXPyTorchPipeline(
                 pytorch_model=model,
                 device=device,
@@ -600,14 +609,14 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             if len(output.shape) == 2 and output.shape[1] == 6:
                 # 2D format: [num_detections, 6] - Standard MMDetection PyTorch output
                 # Format: [x1, y1, x2, y2, score, label]
-                
+
                 if len(output) == 0:
                     return predictions
-                
+
                 bboxes = output[:, :4]  # [x1, y1, x2, y2]
-                scores = output[:, 4]   # scores
-                labels = output[:, 5]   # labels
-                
+                scores = output[:, 4]  # scores
+                labels = output[:, 5]  # labels
+
                 # For 2D format, we already have final predictions, just need to filter by score
                 score_thr = 0.3  # Default score threshold
                 if len(scores) > 0:
@@ -615,51 +624,63 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     bboxes = bboxes[valid_mask]
                     scores = scores[valid_mask]
                     labels = labels[valid_mask]
-                
+
                 # Keep in [x1, y1, x2, y2] format for evaluation (MMDetection format)
                 if len(bboxes) > 0:
                     for i in range(len(bboxes)):
-                        predictions.append({
-                            'bbox': [float(bboxes[i, 0]), float(bboxes[i, 1]), float(bboxes[i, 2]), float(bboxes[i, 3])],
-                            'label': int(labels[i]),
-                            'score': float(scores[i])
-                        })
-                
+                        predictions.append(
+                            {
+                                "bbox": [
+                                    float(bboxes[i, 0]),
+                                    float(bboxes[i, 1]),
+                                    float(bboxes[i, 2]),
+                                    float(bboxes[i, 3]),
+                                ],
+                                "label": int(labels[i]),
+                                "score": float(scores[i]),
+                            }
+                        )
+
                 return predictions
-                
+
             elif len(output.shape) == 3 and output.shape[2] >= 13:
                 # 3D format: [batch, num_anchors, features] - TensorRT/ONNX wrapper output
                 # Format: [bbox_reg(4), objectness(1), class_scores(8)]
                 batch_output = output[0]  # Take first batch
-                
+
                 # Extract components
                 bbox_reg = batch_output[:, :4]  # [dx, dy, dw, dh] - raw regression
                 objectness = batch_output[:, 4]  # objectness confidence
                 class_scores = batch_output[:, 5:13]  # class scores for 8 classes
-                
+
                 # Check if values are already sigmoid-activated (0-1 range)
                 # PyTorch models output raw values, ONNX/TensorRT models output sigmoid values
-                if objectness.min() >= 0 and objectness.max() <= 1 and class_scores.min() >= 0 and class_scores.max() <= 1:
+                if (
+                    objectness.min() >= 0
+                    and objectness.max() <= 1
+                    and class_scores.min() >= 0
+                    and class_scores.max() <= 1
+                ):
                     objectness_sigmoid = objectness
                     class_scores_sigmoid = class_scores
                 else:
                     # Apply sigmoid to objectness and class scores
                     objectness_sigmoid = 1 / (1 + np.exp(-objectness))
                     class_scores_sigmoid = 1 / (1 + np.exp(-class_scores))
-                
+
                 # Get max class score and corresponding label (exactly like MMDetection)
                 max_class_scores = np.max(class_scores_sigmoid, axis=1)
                 labels = np.argmax(class_scores_sigmoid, axis=1)
-                
+
                 # Calculate final scores (exactly like MMDetection)
                 # MMDetection: scores = cls_preds.sigmoid() * objectness.unsqueeze(1).sigmoid()
                 # We need to use the max class score for each detection
                 scores = max_class_scores * objectness_sigmoid
-                
+
                 # Decode bbox regression to actual coordinates using proper priors
-                img_h, img_w = img_info.get('img_shape', (960, 960))[:2]
+                img_h, img_w = img_info.get("img_shape", (960, 960))[:2]
                 priors = generate_yolox_priors((img_h, img_w))
-                
+
                 # Ensure we have the right number of priors
                 if len(priors) != len(bbox_reg):
                     print(f"WARNING: Prior count mismatch: {len(priors)} vs {len(bbox_reg)}")
@@ -669,23 +690,23 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     bbox_reg = bbox_reg[:min_len]
                     objectness = objectness[:min_len]
                     class_scores = class_scores[:min_len]
-                
+
                 # Proper YOLOX bbox decoding
                 # bbox_reg: [dx, dy, dw, dh] - regression offsets
                 # priors: [center_x, center_y, stride_w, stride_h]
-                
+
                 # Decode bbox using MMDetection's exact logic
                 # MMDetection: xys = (bbox_preds[..., :2] * priors[:, 2:]) + priors[:, :2]
                 # MMDetection: whs = bbox_preds[..., 2:].exp() * priors[:, 2:]
-                
+
                 # Decode center coordinates (exactly like MMDetection)
                 center_x = bbox_reg[:, 0] * priors[:, 2] + priors[:, 0]
                 center_y = bbox_reg[:, 1] * priors[:, 3] + priors[:, 1]
-                
+
                 # Decode width and height (exactly like MMDetection)
                 width = np.exp(bbox_reg[:, 2]) * priors[:, 2]
                 height = np.exp(bbox_reg[:, 3]) * priors[:, 3]
-                
+
                 # Convert to corner format [x1, y1, x2, y2] (exactly like MMDetection)
                 x1 = center_x - width / 2
                 y1 = center_y - height / 2
@@ -693,25 +714,25 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 y2 = center_y + height / 2
 
                 bboxes = np.stack([x1, y1, x2, y2], axis=1)
-                
+
                 # Apply rescale to match test.py coordinate system (like MMDetection rescale=True)
                 # Get scale factor from img_info
-                scale_factor = img_info.get('scale_factor', [1.0, 1.0, 1.0, 1.0])
+                scale_factor = img_info.get("scale_factor", [1.0, 1.0, 1.0, 1.0])
                 if len(scale_factor) >= 2:
                     scale_x = scale_factor[0]
                     scale_y = scale_factor[1]
-                    
+
                     # Rescale bboxes from model coordinates to original image coordinates
                     bboxes[:, 0] /= scale_x  # x1
                     bboxes[:, 1] /= scale_y  # y1
                     bboxes[:, 2] /= scale_x  # x2
                     bboxes[:, 3] /= scale_y  # y2
-                    
+
                 # Check bbox validity (allow bboxes outside 960x960 like test.py)
                 valid_bboxes = (x2 > x1) & (y2 > y1) & (x1 >= 0) & (y1 >= 0)
                 if not valid_bboxes.all():
                     invalid_indices = np.where(~valid_bboxes)[0]
-                
+
                 # Apply bbox validity filter (only check x2>x1, y2>y1, x1>=0, y1>=0)
                 if np.any(valid_bboxes):
                     bboxes = bboxes[valid_bboxes]
@@ -725,7 +746,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                     labels = np.array([])
                     objectness_sigmoid = np.array([])
                     max_class_scores = np.array([])
-                
+
             elif len(output.shape) == 2 and output.shape[1] >= 7:
                 # 2D format: [N, 7] where 7 = [x1, y1, x2, y2, obj_conf, cls_conf, cls_id]
                 bboxes = output[:, :4]  # [x1, y1, x2, y2]
@@ -734,7 +755,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 # For 2D format, we don't have objectness_sigmoid and max_class_scores
                 # Use scores directly for filtering
                 objectness_sigmoid = output[:, 4]  # obj_conf
-                max_class_scores = output[:, 5]   # cls_conf
+                max_class_scores = output[:, 5]  # cls_conf
             else:
                 # No detections
                 return predictions
@@ -746,7 +767,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             # Use objectness * max_class_scores for filtering (not final scores)
             # For 2D format, this is already obj_conf * cls_conf = scores
             # For 3D format, this is objectness_sigmoid * max_class_scores
-            if 'objectness_sigmoid' in locals() and 'max_class_scores' in locals():
+            if "objectness_sigmoid" in locals() and "max_class_scores" in locals():
                 valid_mask = objectness_sigmoid * max_class_scores >= score_thr
             else:
                 # Fallback: use scores directly
@@ -754,35 +775,34 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             bboxes = bboxes[valid_mask]
             scores = scores[valid_mask]
             labels = labels[valid_mask]
-            
+
             # Apply NMS (matching test.py behavior)
             if len(scores) > 0:
                 # Convert to torch tensors for NMS
                 bboxes_tensor = torch.from_numpy(bboxes).float()
                 scores_tensor = torch.from_numpy(scores).float()
                 labels_tensor = torch.from_numpy(labels).long()
-                
+
                 # Apply batched NMS (exactly like MMDetection)
                 try:
                     from mmcv.ops import batched_nms
+
                     # Use batched NMS (same as MMDetection)
                     nms_cfg = dict(type="nms", iou_threshold=0.65)
-                    
+
                     if len(bboxes_tensor) > 0:
-                        det_bboxes, keep_idxs = batched_nms(
-                            bboxes_tensor, scores_tensor, labels_tensor, nms_cfg
-                        )
-                        
+                        det_bboxes, keep_idxs = batched_nms(bboxes_tensor, scores_tensor, labels_tensor, nms_cfg)
+
                         # Keep only NMS results
                         bboxes = bboxes[keep_idxs.cpu().numpy()]
                         scores = det_bboxes[:, -1].cpu().numpy()  # NMS may reweight scores
                         labels = labels[keep_idxs.cpu().numpy()]
-                        
+
                     else:
                         bboxes = np.array([])
                         scores = np.array([])
                         labels = np.array([])
-                        
+
                 except ImportError:
                     bboxes = np.array([])
                     scores = np.array([])
@@ -834,9 +854,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             # Keep in [x1, y1, x2, y2] format to match prediction format
             gt_bbox = [x1, y1, x2, y2]
 
-            ground_truths.append(
-                {"bbox": gt_bbox, "label": int(label)}
-            )
+            ground_truths.append({"bbox": gt_bbox, "label": int(label)})
 
         return ground_truths
 
@@ -874,45 +892,47 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         num_classes: int,
     ) -> Dict[str, Any]:
         """Compute Pascal VOC mAP to match test.py evaluation."""
-        from mmdet.evaluation.functional import eval_map
         import numpy as np
-        
+        from mmdet.evaluation.functional import eval_map
+
         # Convert to MMDetection format for eval_map
         det_results = []
         annotations = []
-        
+
         for predictions, ground_truths in zip(predictions_list, ground_truths_list):
             # Group predictions by class - each class gets a numpy array
             class_detections = []
-            
+
             for class_id in range(num_classes):
                 class_preds = []
                 for pred in predictions:
-                    if pred['label'] == class_id:
+                    if pred["label"] == class_id:
                         # Format: [x1, y1, x2, y2, score]
-                        bbox_with_score = pred['bbox'] + [pred['score']]
+                        bbox_with_score = pred["bbox"] + [pred["score"]]
                         class_preds.append(bbox_with_score)
-                
+
                 # Convert to numpy array
                 if class_preds:
                     class_detections.append(np.array(class_preds))
                 else:
                     class_detections.append(np.zeros((0, 5)))
-            
+
             # Convert ground truths to numpy arrays
             gt_bboxes = []
             gt_labels = []
-            
+
             for gt in ground_truths:
-                gt_bboxes.append(gt['bbox'])
-                gt_labels.append(gt['label'])
-            
+                gt_bboxes.append(gt["bbox"])
+                gt_labels.append(gt["label"])
+
             det_results.append(class_detections)
-            annotations.append({
-                'bboxes': np.array(gt_bboxes) if gt_bboxes else np.zeros((0, 4)),
-                'labels': np.array(gt_labels) if gt_labels else np.zeros(0, dtype=int),
-            })
-        
+            annotations.append(
+                {
+                    "bboxes": np.array(gt_bboxes) if gt_bboxes else np.zeros((0, 4)),
+                    "labels": np.array(gt_labels) if gt_labels else np.zeros(0, dtype=int),
+                }
+            )
+
         # Compute Pascal VOC mAP (IoU@0.5)
         try:
             map_results = eval_map(
@@ -920,28 +940,29 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 annotations,
                 iou_thr=0.5,  # Pascal VOC uses IoU@0.5
                 scale_ranges=None,
-                eval_mode='area',  # Use area mode like VOC2012
+                eval_mode="area",  # Use area mode like VOC2012
             )
-            
+
             # Extract results - eval_map returns (mean_ap, per_class_ap)
             map_50 = map_results[0]  # mAP@0.5
             per_class_ap_list = map_results[1]  # Per-class AP@0.5 (list)
-            
+
             # Convert per_class_ap list to dict for consistency
             per_class_ap = {}
             for i, ap in enumerate(per_class_ap_list):
                 per_class_ap[i] = ap
-            
+
             return {
                 "mAP": map_50,
                 "mAP_50": map_50,
                 "mAP_75": map_50,  # Same as mAP_50 for Pascal VOC
                 "per_class_ap": per_class_ap,
             }
-            
+
         except Exception as e:
             print(f"Error computing VOC mAP: {e}")
             import traceback
+
             traceback.print_exc()
             return {
                 "mAP": 0.0,
@@ -950,7 +971,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 "per_class_ap": {i: 0.0 for i in range(num_classes)},
             }
 
-    def print_results(self, results: Dict[str, Any]) -> None:
+    def print_results(self, results: EvalResultDict) -> None:
         """
         Pretty print evaluation results.
 
@@ -974,7 +995,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 class_name = self.class_names[class_id] if class_id < len(self.class_names) else f"class_{class_id}"
                 # Handle both numeric and dict AP values
                 if isinstance(ap, dict):
-                    ap_value = ap.get('ap', 0.0)
+                    ap_value = ap.get("ap", 0.0)
                 else:
                     ap_value = float(ap) if ap is not None else 0.0
                 print(f"  {class_name:25s}: {ap_value:.4f}")
