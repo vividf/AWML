@@ -1,5 +1,6 @@
 """
 Base configuration classes for deployment framework.
+
 This module provides the foundation for task-agnostic deployment configuration.
 Task-specific deployment configs should extend BaseDeploymentConfig.
 """
@@ -85,6 +86,7 @@ class BackendConfig:
 class BaseDeploymentConfig:
     """
     Base configuration container for deployment settings.
+
     This class provides a task-agnostic interface for deployment configuration.
     Task-specific configs should extend this class and add task-specific settings.
     """
@@ -92,6 +94,7 @@ class BaseDeploymentConfig:
     def __init__(self, deploy_cfg: Config):
         """
         Initialize deployment configuration.
+
         Args:
             deploy_cfg: MMEngine Config object containing deployment settings
         """
@@ -173,6 +176,7 @@ class BaseDeploymentConfig:
     def get_onnx_settings(self) -> Dict[str, Any]:
         """
         Get ONNX export settings.
+
         Returns:
             Dictionary containing ONNX export parameters
         """
@@ -225,6 +229,7 @@ class BaseDeploymentConfig:
     def get_tensorrt_settings(self) -> Dict[str, Any]:
         """
         Get TensorRT export settings with precision policy support.
+
         Returns:
             Dictionary containing TensorRT export parameters
         """
@@ -238,6 +243,7 @@ class BaseDeploymentConfig:
     def update_batch_size(self, batch_size: int) -> None:
         """
         Update batch size in backend config model_inputs.
+
         Args:
             batch_size: New batch size to set
         """
@@ -312,8 +318,10 @@ class BaseDeploymentConfig:
 def setup_logging(level: str = "INFO") -> logging.Logger:
     """
     Setup logging configuration.
+
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+
     Returns:
         Configured logger instance
     """
@@ -324,8 +332,10 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
 def parse_base_args(parser: Optional[argparse.ArgumentParser] = None) -> argparse.ArgumentParser:
     """
     Create argument parser with common deployment arguments.
+
     Args:
         parser: Optional existing ArgumentParser to add arguments to
+
     Returns:
         ArgumentParser with deployment arguments
     """

@@ -8,12 +8,13 @@ import onnx
 import onnxsim
 import torch
 
-from .base_exporter import BaseExporter
+from autoware_ml.deployment.exporters.base.base_exporter import BaseExporter
 
 
 class ONNXExporter(BaseExporter):
     """
     ONNX model exporter with enhanced features.
+
     Exports PyTorch models to ONNX format with:
     - Optional model wrapping for ONNX-specific output formats
     - Optional model simplification
@@ -21,14 +22,16 @@ class ONNXExporter(BaseExporter):
     - Configuration override capability
     """
 
-    def __init__(self, config: Dict[str, Any], logger: logging.Logger = None):
+    def __init__(self, config: Dict[str, Any], logger: logging.Logger = None, model_wrapper: Optional[Any] = None):
         """
         Initialize ONNX exporter.
+
         Args:
             config: ONNX export configuration
             logger: Optional logger instance
+            model_wrapper: Optional model wrapper class (e.g., YOLOXONNXWrapper)
         """
-        super().__init__(config, logger)
+        super().__init__(config, logger, model_wrapper=model_wrapper)
 
     def export(
         self,
@@ -39,11 +42,13 @@ class ONNXExporter(BaseExporter):
     ) -> bool:
         """
         Export model to ONNX format.
+
         Args:
             model: PyTorch model to export
             sample_input: Sample input tensor
             output_path: Path to save ONNX model
             config_override: Optional config overrides for this specific export
+
         Returns:
             True if export succeeded
         """
@@ -160,6 +165,7 @@ class ONNXExporter(BaseExporter):
     def _simplify_model(self, onnx_path: str) -> None:
         """
         Simplify ONNX model using onnxsim.
+
         Args:
             onnx_path: Path to ONNX model file
         """

@@ -1,5 +1,6 @@
 """
 Abstract base class for model evaluation in deployment.
+
 Each task (classification, detection, segmentation, etc.) must implement
 a concrete Evaluator that extends this base class to compute task-specific metrics.
 """
@@ -9,12 +10,13 @@ from typing import Any, Dict
 
 import numpy as np
 
-from .base_data_loader import BaseDataLoader
+from autoware_ml.deployment.core.base_data_loader import BaseDataLoader
 
 
 class BaseEvaluator(ABC):
     """
     Abstract base class for task-specific evaluators.
+
     This class defines the interface that all task-specific evaluators
     must implement. It handles running inference on a dataset and computing
     evaluation metrics appropriate for the task.
@@ -23,6 +25,7 @@ class BaseEvaluator(ABC):
     def __init__(self, config: Dict[str, Any]):
         """
         Initialize evaluator.
+
         Args:
             config: Configuration dictionary containing evaluation settings
         """
@@ -40,6 +43,7 @@ class BaseEvaluator(ABC):
     ) -> Dict[str, Any]:
         """
         Run full evaluation on a model.
+
         Args:
             model_path: Path to model checkpoint/weights
             data_loader: DataLoader for loading samples
@@ -47,6 +51,7 @@ class BaseEvaluator(ABC):
             backend: Backend to use ('pytorch', 'onnx', 'tensorrt')
             device: Device to run inference on
             verbose: Whether to print detailed progress
+
         Returns:
             Dictionary containing evaluation metrics. The exact metrics
             depend on the task, but should include:
@@ -54,6 +59,7 @@ class BaseEvaluator(ABC):
             - Per-class metrics (if applicable)
             - Inference latency statistics
             - Any other relevant metrics
+
         Example:
             For classification:
             {
@@ -64,6 +70,7 @@ class BaseEvaluator(ABC):
                 "confusion_matrix": [...],
                 "avg_latency_ms": 5.2,
             }
+
             For detection:
             {
                 "mAP": 0.72,
@@ -79,6 +86,7 @@ class BaseEvaluator(ABC):
     def print_results(self, results: Dict[str, Any]) -> None:
         """
         Pretty print evaluation results.
+
         Args:
             results: Results dictionary returned by evaluate()
         """
@@ -131,8 +139,10 @@ class BaseEvaluator(ABC):
     def compute_latency_stats(self, latencies: list) -> Dict[str, float]:
         """
         Compute latency statistics from a list of latency measurements.
+
         Args:
             latencies: List of latency values in milliseconds
+
         Returns:
             Dictionary with latency statistics
         """
@@ -158,8 +168,10 @@ class BaseEvaluator(ABC):
     def format_latency_stats(self, stats: Dict[str, float]) -> str:
         """
         Format latency statistics as a readable string.
+
         Args:
             stats: Latency statistics dictionary
+
         Returns:
             Formatted string
         """

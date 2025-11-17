@@ -1,10 +1,13 @@
 """
 Base Deployment Pipeline for Unified Model Deployment.
+
 This module provides the abstract base class for all deployment pipelines,
 defining a unified interface across different backends (PyTorch, ONNX, TensorRT)
 and task types (detection, classification, segmentation).
+
 Architecture:
     Input → preprocess() → run_model() → postprocess() → Output
+
 Key Design Principles:
     1. Shared Logic: preprocess/postprocess are shared across backends
     2. Backend-Specific: run_model() is implemented per backend

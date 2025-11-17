@@ -1,6 +1,6 @@
 """Core components for deployment framework."""
 
-from .base_config import (
+from autoware_ml.deployment.core.base_config import (
     BackendConfig,
     BaseDeploymentConfig,
     ExportConfig,
@@ -8,11 +8,10 @@ from .base_config import (
     parse_base_args,
     setup_logging,
 )
-from .base_data_loader import BaseDataLoader
-from .base_evaluator import BaseEvaluator
-from .preprocessing_builder import (
+from autoware_ml.deployment.core.base_data_loader import BaseDataLoader
+from autoware_ml.deployment.core.base_evaluator import BaseEvaluator
+from autoware_ml.deployment.core.preprocessing_builder import (
     build_preprocessing_pipeline,
-    register_preprocessing_builder,
 )
 
 __all__ = [
@@ -25,5 +24,4 @@ __all__ = [
     "BaseDataLoader",
     "BaseEvaluator",
     "build_preprocessing_pipeline",
-    "register_preprocessing_builder",
 ]
