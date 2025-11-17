@@ -26,27 +26,27 @@ class CenterPointTensorRTExporter(TensorRTExporter):
     2. pts_backbone_neck_head.onnx → pts_backbone_neck_head.engine
     """
 
-    def __init__(self, config: Dict[str, Any], logger: logging.Logger = None, model_wrapper: Optional[Any] = None):
+    def __init__(self, config: Dict[str, Any], model_wrapper: Optional[Any] = None, logger: logging.Logger = None):
         """
         Initialize CenterPoint TensorRT exporter.
 
         Args:
             config: TensorRT export configuration
+            model_wrapper: Optional model wrapper class
             logger: Optional logger instance
-            model_wrapper: Optional model wrapper class (usually not needed for TensorRT)
         """
-        super().__init__(config, logger, model_wrapper=model_wrapper)
+        super().__init__(config, model_wrapper=model_wrapper, logger=logger)
 
     def export(
         self,
         model: torch.nn.Module = None,  # Not used, kept for interface compatibility
-        sample_input: torch.Tensor = None,  # Not used, kept for interface compatibility
+        sample_input: Any = None,  # Not used, kept for interface compatibility
         output_path: str = None,  # Not used, kept for interface compatibility
         onnx_path: str = None,  # Not used, kept for interface compatibility
         onnx_dir: str = None,
         output_dir: str = None,
         device: str = "cuda:0",
-    ) -> bool:
+    ) -> None:
         """
         Export CenterPoint ONNX models to TensorRT engines.
 
@@ -61,8 +61,9 @@ class CenterPointTensorRTExporter(TensorRTExporter):
             output_dir: Directory to save TensorRT engines (default: onnx_dir/tensorrt)
             device: Device for TensorRT export
 
-        Returns:
-            True if all exports succeeded
+        Raises:
+            FileNotFoundError: If required ONNX files are missing
+            RuntimeError: If TensorRT conversion fails
         """
         if device is None:
             raise ValueError("CUDA device must be provided for TensorRT export")
@@ -103,8 +104,7 @@ class CenterPointTensorRTExporter(TensorRTExporter):
             trt_path = os.path.join(output_dir, trt_file)
 
             if not os.path.exists(onnx_file_path):
-                self.logger.warning(f"ONNX file not found: {onnx_file_path}")
-                continue
+                raise FileNotFoundError(f"ONNX file not found: {onnx_file_path}")
 
             self.logger.info(f"\nConverting {onnx_file} to TensorRT...")
 
@@ -122,29 +122,21 @@ class CenterPointTensorRTExporter(TensorRTExporter):
                 sample_input = torch.randn(1, 32, 200, 200, device=device)
 
             # Export to TensorRT using parent class method
-            success = super().export(
-                model=None,  # Not used for TensorRT
-                sample_input=sample_input,
-                output_path=trt_path,
-                onnx_path=onnx_file_path,
-            )
-
-            if success:
+            try:
+                super().export(
+                    model=None,
+                    sample_input=sample_input,
+                    output_path=trt_path,
+                    onnx_path=onnx_file_path,
+                )
                 self.logger.info(f"✅ TensorRT engine saved: {trt_path}")
                 success_count += 1
-            else:
+            except Exception as exc:
                 self.logger.error(f"❌ Failed to convert {onnx_file} to TensorRT")
+                raise RuntimeError("CenterPoint TensorRT export failed") from exc
 
         # Summary
         self.logger.info("\n" + "=" * 80)
         if success_count == total_count:
             self.logger.info(f"✅ All TensorRT engines exported successfully ({success_count}/{total_count})")
             self.logger.info(f"Output directory: {output_dir}")
-            return True
-        elif success_count > 0:
-            self.logger.warning(f"⚠️  Partial success: {success_count}/{total_count} engines exported")
-            self.logger.info(f"Output directory: {output_dir}")
-            return False
-        else:
-            self.logger.error("❌ All TensorRT exports failed")
-            return False

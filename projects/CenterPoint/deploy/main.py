@@ -93,8 +93,16 @@ def main():
     onnx_settings = config.get_onnx_settings()
     trt_settings = config.get_tensorrt_settings()
 
-    onnx_exporter = CenterPointONNXExporter(onnx_settings, logger, model_wrapper=CenterPointONNXWrapper)
-    tensorrt_exporter = CenterPointTensorRTExporter(trt_settings, logger, model_wrapper=CenterPointONNXWrapper)
+    onnx_exporter = CenterPointONNXExporter(
+        onnx_settings,
+        model_wrapper=CenterPointONNXWrapper,
+        logger=logger,
+    )
+    tensorrt_exporter = CenterPointTensorRTExporter(
+        trt_settings,
+        model_wrapper=CenterPointONNXWrapper,
+        logger=logger,
+    )
 
     # Create CenterPoint-specific runner
     # Runner will load model and inject it into evaluator

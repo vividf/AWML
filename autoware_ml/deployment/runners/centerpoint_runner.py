@@ -106,16 +106,16 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         os.makedirs(output_dir, exist_ok=True)
 
         # Use CenterPoint-specific export signature
-        success = self._onnx_exporter.export(
-            model=pytorch_model, data_loader=self.data_loader, output_dir=output_dir, sample_idx=0
-        )
-
-        if success:
-            self.logger.info(f"✅ ONNX export successful: {output_dir}")
-            return output_dir
-        else:
+        try:
+            self._onnx_exporter.export(
+                model=pytorch_model, data_loader=self.data_loader, output_dir=output_dir, sample_idx=0
+            )
+        except Exception:
             self.logger.error(f"❌ ONNX export failed")
-            return None
+            raise
+
+        self.logger.info(f"✅ ONNX export successful: {output_dir}")
+        return output_dir
 
     def export_tensorrt(self, onnx_path: str, **kwargs) -> Optional[str]:
         """
@@ -157,13 +157,13 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
 
         # Use CenterPoint-specific export signature
         # TensorRT export uses configured CUDA device
-        success = self._tensorrt_exporter.export(
-            onnx_dir=onnx_path, output_dir=output_dir, device=self.config.export_config.cuda_device
-        )
-
-        if success:
-            self.logger.info(f"✅ TensorRT export successful: {output_dir}")
-            return output_dir
-        else:
+        try:
+            self._tensorrt_exporter.export(
+                onnx_dir=onnx_path, output_dir=output_dir, device=self.config.export_config.cuda_device
+            )
+        except Exception:
             self.logger.error(f"❌ TensorRT export failed")
-            return None
+            raise
+
+        self.logger.info(f"✅ TensorRT export successful: {output_dir}")
+        return output_dir

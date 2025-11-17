@@ -108,11 +108,11 @@ All exporters and wrappers are explicitly created and passed to the runner, foll
   - **`ONNXExporter`**: Standard ONNX export with model wrapping support
   - **`TensorRTExporter`**: TensorRT engine building with precision policies
   - **`BaseModelWrapper`**: Abstract base class for model wrappers
-  - **`IdentityWrapper`**: Default wrapper that doesn't modify model output
+  - **`IdentityWrapper`**: Provided wrapper that doesn't modify model output
 
 - **Project-Specific Exporters**:
   - **YOLOX** (`exporters/yolox/`):
-    - **`YOLOXONNXExporter`**: Inherits base ONNX exporter (uses `YOLOXONNXWrapper`)
+    - **`YOLOXONNXExporter`**: Inherits base ONNX exporter (requires `YOLOXONNXWrapper`)
     - **`YOLOXTensorRTExporter`**: Inherits base TensorRT exporter
     - **`YOLOXONNXWrapper`**: Transforms YOLOX output to Tier4-compatible format
   - **CenterPoint** (`exporters/centerpoint/`):
@@ -120,7 +120,7 @@ All exporters and wrappers are explicitly created and passed to the runner, foll
     - **`CenterPointTensorRTExporter`**: Extends base exporter for multi-file TensorRT export
     - **`CenterPointONNXWrapper`**: Identity wrapper (no transformation needed)
   - **Calibration** (`exporters/calibration/`):
-    - **`CalibrationONNXExporter`**: Inherits base ONNX exporter (uses `IdentityWrapper`)
+    - **`CalibrationONNXExporter`**: Inherits base ONNX exporter (requires `IdentityWrapper`)
     - **`CalibrationTensorRTExporter`**: Inherits base TensorRT exporter
     - **`CalibrationONNXWrapper`**: Identity wrapper (no transformation needed)
 
@@ -154,7 +154,7 @@ verification = dict(
     enabled=True,
     scenarios={
         "both": [
-            {"ref_backend": "pytorch", "ref_device": "cpu", 
+            {"ref_backend": "pytorch", "ref_device": "cpu",
              "test_backend": "onnx", "test_device": "cpu"},
             {"ref_backend": "onnx", "ref_device": "cpu",
              "test_backend": "tensorrt", "test_device": "cuda:0"},
@@ -244,8 +244,16 @@ from autoware_ml.deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapp
 onnx_settings = config.get_onnx_settings()
 trt_settings = config.get_tensorrt_settings()
 
-onnx_exporter = YOLOXONNXExporter(onnx_settings, logger)
-tensorrt_exporter = YOLOXTensorRTExporter(trt_settings, logger)
+onnx_exporter = YOLOXONNXExporter(
+    onnx_settings,
+    model_wrapper=YOLOXONNXWrapper,
+    logger=logger,
+)
+tensorrt_exporter = YOLOXTensorRTExporter(
+    trt_settings,
+    model_wrapper=YOLOXONNXWrapper,
+    logger=logger,
+)
 
 # Create runner with required exporters and wrapper
 runner = DeploymentRunner(
@@ -429,7 +437,7 @@ See project-specific configs:
 
 **Pipeline Structure:**
 ```
-preprocess() → run_voxel_encoder() → process_middle_encoder() → 
+preprocess() → run_voxel_encoder() → process_middle_encoder() →
 run_backbone_head() → postprocess()
 ```
 
@@ -441,7 +449,7 @@ run_backbone_head() → postprocess()
 - ReLU6 → ReLU replacement for ONNX compatibility
 
 **Exporter and Wrapper:**
-- `YOLOXONNXExporter`: Inherits base ONNX exporter, uses `YOLOXONNXWrapper` by default
+- `YOLOXONNXExporter`: Inherits base ONNX exporter and requires explicit `YOLOXONNXWrapper`
 - `YOLOXTensorRTExporter`: Inherits base TensorRT exporter
 - `YOLOXONNXWrapper`: Transforms output from `(1, 8, 120, 120)` to `(1, 18900, 13)` format
 
@@ -497,17 +505,17 @@ class BaseDeploymentPipeline(ABC):
     def preprocess(self, input_data, **kwargs) -> Any:
         """Preprocess input data"""
         pass
-    
+
     @abstractmethod
     def run_model(self, preprocessed_input) -> Any:
         """Backend-specific model inference"""
         pass
-    
+
     @abstractmethod
     def postprocess(self, model_output, metadata) -> Any:
         """Postprocess model output"""
         pass
-    
+
     def infer(self, input_data, **kwargs):
         """Complete inference pipeline"""
         preprocessed = self.preprocess(input_data, **kwargs)
@@ -759,7 +767,7 @@ exporters/{model}/
 **Pattern 1: Simple Models** (YOLOX, Calibration)
 - Inherit base exporters (no special logic needed)
 - Use custom wrappers if output format transformation is required
-- Example: `YOLOXONNXExporter` inherits `ONNXExporter`, uses `YOLOXONNXWrapper`
+- Example: `YOLOXONNXExporter` inherits `ONNXExporter`, requires `YOLOXONNXWrapper`
 
 **Pattern 2: Complex Models** (CenterPoint)
 - Extend base exporters for special requirements (e.g., multi-file export)
@@ -777,8 +785,16 @@ from autoware_ml.deployment.exporters.yolox.tensorrt_exporter import YOLOXTensor
 from autoware_ml.deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
 
 # 2. Create exporters with settings
-onnx_exporter = YOLOXONNXExporter(onnx_settings, logger)
-tensorrt_exporter = YOLOXTensorRTExporter(trt_settings, logger)
+onnx_exporter = YOLOXONNXExporter(
+    onnx_settings,
+    model_wrapper=YOLOXONNXWrapper,
+    logger=logger,
+)
+tensorrt_exporter = YOLOXTensorRTExporter(
+    trt_settings,
+    model_wrapper=YOLOXONNXWrapper,
+    logger=logger,
+)
 
 # 3. Pass to DeploymentRunner (all required)
 runner = DeploymentRunner(

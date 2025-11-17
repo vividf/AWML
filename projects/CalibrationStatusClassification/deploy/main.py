@@ -87,8 +87,16 @@ def main():
     onnx_settings = config.get_onnx_settings()
     trt_settings = config.get_tensorrt_settings()
 
-    onnx_exporter = CalibrationONNXExporter(onnx_settings, logger, model_wrapper=CalibrationONNXWrapper)
-    tensorrt_exporter = CalibrationTensorRTExporter(trt_settings, logger, model_wrapper=CalibrationONNXWrapper)
+    onnx_exporter = CalibrationONNXExporter(
+        onnx_settings,
+        model_wrapper=CalibrationONNXWrapper,
+        logger=logger,
+    )
+    tensorrt_exporter = CalibrationTensorRTExporter(
+        trt_settings,
+        model_wrapper=CalibrationONNXWrapper,
+        logger=logger,
+    )
 
     # Create Calibration-specific runner
     runner = CalibrationDeploymentRunner(

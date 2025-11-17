@@ -156,14 +156,14 @@ class BaseDeploymentRunner:
         # Use provided exporter (required, cannot be None)
         exporter = self._onnx_exporter
 
-        success = exporter.export(pytorch_model, input_tensor, output_path)
+        try:
+            exporter.export(pytorch_model, input_tensor, output_path)
+        except Exception:
+            self.logger.error("❌ ONNX export failed")
+            raise
 
-        if success:
-            self.logger.info(f"✅ ONNX export successful: {output_path}")
-            return output_path
-        else:
-            self.logger.error(f"❌ ONNX export failed")
-            return None
+        self.logger.info(f"✅ ONNX export successful: {output_path}")
+        return output_path
 
     def export_tensorrt(self, onnx_path: str, **kwargs) -> Optional[str]:
         """
@@ -229,19 +229,19 @@ class BaseDeploymentRunner:
         # Use provided exporter (required, cannot be None)
         exporter = self._tensorrt_exporter
 
-        success = exporter.export(
-            model=None,  # Not used for TensorRT
-            sample_input=sample_input,
-            output_path=output_path,
-            onnx_path=onnx_path,
-        )
+        try:
+            exporter.export(
+                model=None,  # Not used for TensorRT
+                sample_input=sample_input,
+                output_path=output_path,
+                onnx_path=onnx_path,
+            )
+        except Exception:
+            self.logger.error("❌ TensorRT export failed")
+            raise
 
-        if success:
-            self.logger.info(f"✅ TensorRT export successful: {output_path}")
-            return output_path
-        else:
-            self.logger.error(f"❌ TensorRT export failed")
-            return None
+        self.logger.info(f"✅ TensorRT export successful: {output_path}")
+        return output_path
 
     def _resolve_pytorch_model(self, backend_cfg: Dict[str, Any]) -> Tuple[Optional[str], bool]:
         """

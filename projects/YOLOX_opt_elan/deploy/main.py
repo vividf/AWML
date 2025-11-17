@@ -78,8 +78,16 @@ def main():
     onnx_settings = config.get_onnx_settings()
     trt_settings = config.get_tensorrt_settings()
 
-    onnx_exporter = YOLOXONNXExporter(onnx_settings, logger, model_wrapper=YOLOXONNXWrapper)
-    tensorrt_exporter = YOLOXTensorRTExporter(trt_settings, logger, model_wrapper=YOLOXONNXWrapper)
+    onnx_exporter = YOLOXONNXExporter(
+        onnx_settings,
+        model_wrapper=YOLOXONNXWrapper,
+        logger=logger,
+    )
+    tensorrt_exporter = YOLOXTensorRTExporter(
+        trt_settings,
+        model_wrapper=YOLOXONNXWrapper,
+        logger=logger,
+    )
 
     checkpoint_path = config.export_config.checkpoint_path
     if not checkpoint_path and config.export_config.should_export_onnx():
