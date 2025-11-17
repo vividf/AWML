@@ -1,5 +1,6 @@
 """
 2D Object Detection Pipeline Base Class.
+
 This module provides the base class for 2D object detection pipelines,
 implementing common preprocessing and postprocessing for models like YOLOX, YOLO, etc.
 """
@@ -11,7 +12,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import torch
 
-from .base_pipeline import BaseDeploymentPipeline
+from autoware_ml.deployment.pipelines.base.base_pipeline import BaseDeploymentPipeline
 
 logger = logging.getLogger(__name__)
 

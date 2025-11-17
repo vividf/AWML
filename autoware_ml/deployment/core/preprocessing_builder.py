@@ -1,7 +1,9 @@
 """
 Preprocessing pipeline builder for deployment data loaders.
+
 This module provides functions to extract and build preprocessing pipelines
 from MMDet/MMDet3D/MMPretrain configs for use in deployment data loaders.
+
 NOTE: This module is compatible with the new pipeline architecture (BaseDeploymentPipeline).
 They serve complementary purposes:
 - preprocessing_builder.py: Builds MMDet/MMDet3D preprocessing pipelines for data loaders
@@ -36,12 +38,15 @@ class ComposeBuilder:
     ) -> Any:
         """
         Build Compose object using MMEngine with init_default_scope.
+
         Args:
             pipeline_cfg: List of transform configurations
             scope: Default scope name (e.g., 'mmdet', 'mmdet3d', 'mmpretrain')
             import_modules: List of module paths to import for transform registration
+
         Returns:
             Compose object
+
         Raises:
             ImportError: If required packages are not available
         """
@@ -95,6 +100,7 @@ class PreprocessingPipelineRegistry:
     def register(self, task_type: str, builder: Callable[[List], Any]):
         """
         Register a pipeline builder for a task type.
+
         Args:
             task_type: Task type identifier
             builder: Builder function that takes pipeline_cfg and returns Compose object
@@ -107,11 +113,14 @@ class PreprocessingPipelineRegistry:
     def build(self, task_type: str, pipeline_cfg: List) -> Any:
         """
         Build pipeline for given task type.
+
         Args:
             task_type: Task type identifier
             pipeline_cfg: Pipeline configuration
+
         Returns:
             Compose object
+
         Raises:
             ValueError: If task_type is not registered
         """
@@ -168,8 +177,10 @@ def build_preprocessing_pipeline(
 ) -> Any:
     """
     Build preprocessing pipeline from model config.
+
     This function extracts the test pipeline configuration from a model config
     and builds a Compose pipeline that can be used for preprocessing in deployment data loaders.
+
     Args:
         model_cfg: Model configuration containing test pipeline definition.
                    Can have pipeline defined in one of these locations:
@@ -182,11 +193,14 @@ def build_preprocessing_pipeline(
                    Recommended: specify in deploy_config.py as ``task_type = "detection3d"``.
         backend: Target backend ('pytorch', 'onnx', 'tensorrt').
                  Currently not used, reserved for future backend-specific optimizations.
+
     Returns:
         Pipeline compose object (e.g., mmdet.datasets.transforms.Compose)
+
     Raises:
         ValueError: If no valid test pipeline found in config or invalid task_type
         ImportError: If required transform packages are not available
+
     Examples:
         >>> from mmengine.config import Config
         >>> cfg = Config.fromfile('model_config.py')
@@ -204,11 +218,14 @@ def build_preprocessing_pipeline(
 def _resolve_task_type(model_cfg: Config, task_type: Optional[str] = None) -> str:
     """
     Resolve task type from various sources.
+
     Args:
         model_cfg: Model configuration
         task_type: Explicit task type (highest priority)
+
     Returns:
         Resolved task type string
+
     Raises:
         ValueError: If task_type cannot be resolved
     """
@@ -240,8 +257,10 @@ def _resolve_task_type(model_cfg: Config, task_type: Optional[str] = None) -> st
 def _validate_task_type(task_type: str) -> None:
     """
     Validate task type.
+
     Args:
         task_type: Task type to validate
+
     Raises:
         ValueError: If task_type is invalid
     """
@@ -255,10 +274,13 @@ def _validate_task_type(task_type: str) -> None:
 def _extract_pipeline_config(model_cfg: Config) -> List:
     """
     Extract pipeline configuration from model config.
+
     Args:
         model_cfg: Model configuration
+
     Returns:
         List of transform configurations
+
     Raises:
         ValueError: If no valid pipeline found
     """
@@ -288,19 +310,3 @@ def _extract_pipeline_config(model_cfg: Config) -> List:
         "Expected pipeline at one of: test_dataloader.dataset.pipeline, "
         "test_pipeline, or val_dataloader.dataset.pipeline"
     )
-
-
-# Public API: Allow custom pipeline builder registration
-def register_preprocessing_builder(task_type: str, builder: Callable[[List], Any]):
-    """
-    Register a custom preprocessing pipeline builder.
-    Args:
-        task_type: Task type identifier
-        builder: Builder function that takes pipeline_cfg and returns Compose object
-    Examples:
-        >>> def custom_builder(pipeline_cfg):
-        ...     # Custom logic
-        ...     return Compose(pipeline_cfg)
-        >>> register_preprocessing_builder("custom_task", custom_builder)
-    """
-    _registry.register(task_type, builder)

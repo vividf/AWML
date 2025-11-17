@@ -1,5 +1,6 @@
 """
 Classification Pipeline Base Class.
+
 This module provides the base class for classification pipelines,
 implementing common preprocessing and postprocessing for image/point cloud classification.
 """
@@ -11,7 +12,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import torch
 
-from .base_pipeline import BaseDeploymentPipeline
+from autoware_ml.deployment.pipelines.base.base_pipeline import BaseDeploymentPipeline
 
 logger = logging.getLogger(__name__)
 
