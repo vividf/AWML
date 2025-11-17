@@ -316,22 +316,3 @@ def _extract_pipeline_config(model_cfg: Config) -> List:
         "Expected pipeline at one of: test_dataloader.dataset.pipeline, "
         "test_pipeline, or val_dataloader.dataset.pipeline"
     )
-
-
-# Public API: Allow custom pipeline builder registration
-def register_preprocessing_builder(task_type: str, builder: Callable[[List], Any]):
-    """
-    Register a custom preprocessing pipeline builder.
-
-    Args:
-        task_type: Task type identifier
-        builder: Builder function that takes pipeline_cfg and returns Compose object
-
-    Examples:
-        >>> def custom_builder(pipeline_cfg):
-        ...     # Custom logic
-        ...     return Compose(pipeline_cfg)
-        >>> register_preprocessing_builder("custom_task", custom_builder)
-    """
-    _registry.register(task_type, builder)
-

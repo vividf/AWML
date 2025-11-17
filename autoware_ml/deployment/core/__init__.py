@@ -12,7 +12,6 @@ from autoware_ml.deployment.core.base_data_loader import BaseDataLoader
 from autoware_ml.deployment.core.base_evaluator import BaseEvaluator
 from autoware_ml.deployment.core.preprocessing_builder import (
     build_preprocessing_pipeline,
-    register_preprocessing_builder,
 )
 
 __all__ = [
@@ -25,5 +24,4 @@ __all__ = [
     "BaseDataLoader",
     "BaseEvaluator",
     "build_preprocessing_pipeline",
-    "register_preprocessing_builder",
 ]
