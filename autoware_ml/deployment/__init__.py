@@ -4,7 +4,7 @@ Autoware ML Unified Deployment Framework
 This package provides a unified, task-agnostic deployment framework for
 exporting, verifying, and evaluating machine learning models across different
 tasks (classification, detection, segmentation, etc.) and backends (ONNX,
-TensorRT, TorchScript, etc.).
+TensorRT).
 """
 
 from autoware_ml.deployment.core.base_config import BaseDeploymentConfig

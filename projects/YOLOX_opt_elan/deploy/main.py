@@ -18,10 +18,10 @@ sys.path.insert(0, str(project_root))
 
 from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
 from autoware_ml.deployment.core.base_config import parse_base_args
-from autoware_ml.deployment.runners import YOLOXDeploymentRunner
+from autoware_ml.deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
 from autoware_ml.deployment.exporters.yolox.onnx_exporter import YOLOXONNXExporter
 from autoware_ml.deployment.exporters.yolox.tensorrt_exporter import YOLOXTensorRTExporter
-from autoware_ml.deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
+from autoware_ml.deployment.runners import YOLOXDeploymentRunner
 from projects.YOLOX_opt_elan.deploy.data_loader import YOLOXOptElanDataLoader
 from projects.YOLOX_opt_elan.deploy.evaluator import YOLOXOptElanEvaluator
 
@@ -51,20 +51,14 @@ def main():
     model_cfg_path = args.model_cfg
     config = BaseDeploymentConfig(deploy_cfg)
 
-    # Override from command line
-    if args.work_dir:
-        config.export_config.work_dir = args.work_dir
-    if args.device:
-        config.export_config.device = args.device
-
     logger.info("=" * 80)
     logger.info("YOLOX_opt_elan Deployment Pipeline")
     logger.info("=" * 80)
     logger.info("Deployment Configuration:")
     logger.info(f"  Export mode: {config.export_config.mode}")
-    logger.info(f"  Device: {config.export_config.device}")
     logger.info(f"  Work dir: {config.export_config.work_dir}")
     logger.info(f"  Verify: {config.verification_config.get('enabled', False)}")
+    logger.info(f"  CUDA device (TensorRT): {config.export_config.cuda_device}")
 
     # Create data loader
     logger.info("\nCreating data loader...")
@@ -72,7 +66,7 @@ def main():
         ann_file=config.runtime_config["ann_file"],
         img_prefix=config.runtime_config.get("img_prefix", ""),
         model_cfg=model_cfg,
-        device=config.export_config.device,
+        device="cpu",
         task_type=config.task_type,
     )
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
@@ -83,9 +77,14 @@ def main():
     # Create YOLOX-specific exporters with wrapper
     onnx_settings = config.get_onnx_settings()
     trt_settings = config.get_tensorrt_settings()
-    
+
     onnx_exporter = YOLOXONNXExporter(onnx_settings, logger, model_wrapper=YOLOXONNXWrapper)
     tensorrt_exporter = YOLOXTensorRTExporter(trt_settings, logger, model_wrapper=YOLOXONNXWrapper)
+
+    checkpoint_path = config.export_config.checkpoint_path
+    if not checkpoint_path and config.export_config.should_export_onnx():
+        logger.error("Checkpoint path must be provided in export.checkpoint_path for ONNX/TensorRT export.")
+        return
 
     # Create YOLOX-specific runner
     runner = YOLOXDeploymentRunner(
@@ -100,7 +99,7 @@ def main():
 
     # Execute deployment workflow
     runner.run(
-        checkpoint_path=args.checkpoint,
+        checkpoint_path=checkpoint_path,
         model_cfg_path=model_cfg_path,
     )
 

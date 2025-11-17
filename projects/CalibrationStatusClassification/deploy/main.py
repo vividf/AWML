@@ -18,10 +18,10 @@ sys.path.insert(0, str(project_root))
 
 from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
 from autoware_ml.deployment.core.base_config import parse_base_args
-from autoware_ml.deployment.runners import CalibrationDeploymentRunner
+from autoware_ml.deployment.exporters.calibration.model_wrappers import CalibrationONNXWrapper
 from autoware_ml.deployment.exporters.calibration.onnx_exporter import CalibrationONNXExporter
 from autoware_ml.deployment.exporters.calibration.tensorrt_exporter import CalibrationTensorRTExporter
-from autoware_ml.deployment.exporters.calibration.model_wrappers import CalibrationONNXWrapper
+from autoware_ml.deployment.runners import CalibrationDeploymentRunner
 from projects.CalibrationStatusClassification.deploy.data_loader import CalibrationDataLoader
 from projects.CalibrationStatusClassification.deploy.evaluator import ClassificationEvaluator
 
@@ -50,20 +50,19 @@ def main():
     model_cfg = Config.fromfile(args.model_cfg)
     config = BaseDeploymentConfig(deploy_cfg)
 
-    # Override from command line
-    if args.work_dir:
-        config.export_config.work_dir = args.work_dir
-    if args.device:
-        config.export_config.device = args.device
-
     logger.info("=" * 80)
     logger.info("CalibrationStatusClassification Deployment Pipeline")
     logger.info("=" * 80)
     logger.info("Deployment Configuration:")
     logger.info(f"  Export mode: {config.export_config.mode}")
-    logger.info(f"  Device: {config.export_config.device}")
     logger.info(f"  Work dir: {config.export_config.work_dir}")
     logger.info(f"  Verify: {config.verification_config.get('enabled', False)}")
+    logger.info(f"  CUDA device (TensorRT): {config.export_config.cuda_device}")
+
+    checkpoint_path = config.export_config.checkpoint_path
+    if not checkpoint_path and config.export_config.should_export_onnx():
+        logger.error("Checkpoint path must be provided in export.checkpoint_path for ONNX/TensorRT export.")
+        return
 
     # Get info_pkl path
     info_pkl = config.runtime_config.get("info_pkl")
@@ -71,13 +70,13 @@ def main():
         logger.error("info_pkl path must be provided in config")
         return
 
-    # Create data loader (calibrated version for export)
+    # Create data loader
     logger.info("\nCreating data loader...")
     data_loader = CalibrationDataLoader(
         info_pkl_path=info_pkl,
         model_cfg=model_cfg,
         miscalibration_probability=0.0,
-        device=config.export_config.device,
+        device="cpu",
     )
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
@@ -87,7 +86,7 @@ def main():
     # Create Calibration-specific exporters
     onnx_settings = config.get_onnx_settings()
     trt_settings = config.get_tensorrt_settings()
-    
+
     onnx_exporter = CalibrationONNXExporter(onnx_settings, logger, model_wrapper=CalibrationONNXWrapper)
     tensorrt_exporter = CalibrationTensorRTExporter(trt_settings, logger, model_wrapper=CalibrationONNXWrapper)
 
@@ -103,9 +102,8 @@ def main():
     )
 
     # Execute deployment workflow
-    runner.run(checkpoint_path=args.checkpoint)
+    runner.run(checkpoint_path=checkpoint_path)
 
 
 if __name__ == "__main__":
     main()
-

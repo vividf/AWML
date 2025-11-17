@@ -38,8 +38,6 @@ def parse_args():
     return args
 
 
-
-
 def main():
     """Main deployment pipeline using unified runner."""
     # Parse arguments
@@ -53,22 +51,6 @@ def main():
     model_cfg = Config.fromfile(args.model_cfg)
     config = BaseDeploymentConfig(deploy_cfg)
 
-    # Override work_dir from CLI if provided
-    if args.work_dir:
-        config.export_config.work_dir = args.work_dir
-
-    # Optional: override evaluation devices via args.device
-    if args.device:
-        if args.device not in ("cpu", "cuda:0"):
-            logger.warning(
-                f"Unsupported device override '{args.device}'. "
-                "Only 'cpu' or 'cuda:0' are allowed. Ignoring override."
-            )
-        else:
-            eval_devices_cfg = config.deploy_cfg.setdefault("evaluation", {}).setdefault("devices", {})
-            eval_devices_cfg["pytorch"] = args.device
-            eval_devices_cfg["onnx"] = args.device
-
     logger.info("=" * 80)
     logger.info("CenterPoint Deployment Pipeline")
     logger.info("=" * 80)
@@ -76,15 +58,21 @@ def main():
     logger.info(f"  Export mode: {config.export_config.mode}")
     logger.info(f"  Work dir: {config.export_config.work_dir}")
     logger.info(f"  Verify: {config.verification_config.get('enabled', False)}")
+    logger.info(f"  CUDA device (TensorRT): {config.export_config.cuda_device}")
     eval_devices_cfg = config.evaluation_config.get("devices", {})
     logger.info("  Evaluation devices:")
     logger.info(f"    PyTorch: {eval_devices_cfg.get('pytorch', 'cpu')}")
     logger.info(f"    ONNX: {eval_devices_cfg.get('onnx', 'cpu')}")
-    logger.info(f"    TensorRT: {eval_devices_cfg.get('tensorrt', 'cuda:0')}")
+    logger.info(f"    TensorRT: {eval_devices_cfg.get('tensorrt', config.export_config.cuda_device)}")
     logger.info(f"  Y-axis rotation: {args.rot_y_axis_reference}")
     logger.info(f"  Runner will build ONNX-compatible model internally")
 
-    # Create data loader (can still use original model_cfg)
+    checkpoint_path = config.export_config.checkpoint_path
+    if not checkpoint_path and config.export_config.should_export_onnx():
+        logger.error("Checkpoint path must be provided in export.checkpoint_path for ONNX/TensorRT export.")
+        return
+
+    # Create data loader
     logger.info("\nCreating data loader...")
     data_loader = CenterPointDataLoader(
         info_file=config.runtime_config["info_file"],
@@ -95,8 +83,6 @@ def main():
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
     # Checkpoint path
-    checkpoint_path = args.checkpoint or config.export_config.checkpoint_path
-
     # Create evaluator with original model_cfg
     # Runner will convert it to ONNX-compatible config and inject both model_cfg and pytorch_model
     evaluator = CenterPointEvaluator(
