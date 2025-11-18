@@ -102,8 +102,22 @@ backend_config = dict(
         # TensorRT workspace size (bytes)
         max_workspace_size=2 << 30,  # 2 GB
     ),
-    # Model inputs will be generated automatically from model_io configuration
-    model_inputs=None,  # Will be populated by the deployment pipeline
+    model_inputs=[
+        dict(
+            input_shapes=dict(
+                input_features=dict(
+                    min_shape=[1000, 32, 11],  # Minimum supported input shape
+                    opt_shape=[20000, 32, 11],  # Optimal shape for performance tuning
+                    max_shape=[64000, 32, 11],  # Maximum supported input shape
+                ),
+                spatial_features=dict(
+                    min_shape=[1, 32, 760, 760],
+                    opt_shape=[1, 32, 760, 760],
+                    max_shape=[1, 32, 760, 760],
+                ),
+            )
+        )
+    ],
 )
 
 # ============================================================================

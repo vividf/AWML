@@ -20,16 +20,13 @@ export = dict(
     # - 'both' : export PyTorch -> ONNX -> TensorRT
     # - 'none' : no export (only evaluation / verification on existing artifacts)
     mode="both",
-
     # ---- Common options ----------------------------------------------------
     work_dir="work_dirs/yolox_opt_elan_deployment",
-
     # ---- Source for ONNX export --------------------------------------------
     # Rule:
     # - mode in ['onnx', 'both']  -> checkpoint_path MUST be provided
     # - mode == 'trt'             -> checkpoint_path is ignored
     checkpoint_path="work_dirs/old_yolox_elan/yolox_epoch24.pth",
-
     # ---- ONNX source when building TensorRT only ---------------------------
     # Rule:
     # - mode == 'trt'  -> onnx_path MUST be provided (file or directory)
@@ -55,16 +52,13 @@ model_io = dict(
     input_name="images",
     input_shape=(3, 960, 960),  # (C, H, W) - batch dimension will be added automatically
     input_dtype="float32",
-    
-    # Output configuration  
+    # Output configuration
     output_name="output",
-    
     # Batch size configuration
     # Options:
     # - int: Fixed batch size (e.g., 1, 6)
     # - None: Dynamic batch size (uses dynamic_axes)
     batch_size=1,  # Set to 6 to match old ONNX exactly, or None for dynamic
-    
     # Dynamic axes (only used when batch_size=None)
     # When batch_size is set to a number, this is automatically set to None
     # When batch_size is None, this defines dynamic batch dimensions
@@ -95,7 +89,17 @@ backend_config = dict(
     ),
     # Model inputs will be generated automatically from model_io configuration
     # This will be populated by the deployment pipeline based on model_io settings
-    model_inputs=None,  # Will be set automatically
+    model_inputs=[
+        dict(
+            input_shapes=dict(
+                input=dict(
+                    min_shape=[1, 5, 1080, 1920],  # Minimum supported input shape
+                    opt_shape=[1, 5, 1860, 2880],  # Optimal shape for performance tuning
+                    max_shape=[1, 5, 2160, 3840],  # Maximum supported input shape
+                ),
+            )
+        )
+    ],
 )
 
 # ============================================================================
@@ -103,9 +107,8 @@ backend_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=1,      # Number of samples to evaluate
+    num_samples=1,  # Number of samples to evaluate
     verbose=True,
-
     # Decide which backends to evaluate and on which devices.
     # Note:
     # - tensorrt.device MUST be a CUDA device (e.g., 'cuda:0')
@@ -117,7 +120,6 @@ evaluation = dict(
             device="cuda:0",  # or 'cpu'
             checkpoint="work_dirs/old_yolox_elan/yolox_epoch24.pth",
         ),
-
         # ONNX evaluation
         onnx=dict(
             enabled=True,
@@ -125,7 +127,6 @@ evaluation = dict(
             # If None: pipeline will infer from export.work_dir / onnx_config.save_file
             model_dir=None,
         ),
-
         # TensorRT evaluation
         tensorrt=dict(
             enabled=True,
@@ -145,21 +146,18 @@ evaluation = dict(
 verification = dict(
     # Master switch to enable/disable verification
     enabled=True,
-
     tolerance=1e-1,
     num_verify_samples=1,
-
     # Device aliases for flexible device management
-    # 
+    #
     # Benefits of using aliases:
     # - Change all CPU verifications to "cuda:1"? Just update devices["cpu"] = "cuda:1"
     # - Switch ONNX verification device? Just update devices["cuda"] = "cuda:1"
     # - Scenarios reference these aliases (e.g., ref_device="cpu", test_device="cuda")
     devices=dict(
-        cpu="cpu",      # Alias for CPU device
+        cpu="cpu",  # Alias for CPU device
         cuda="cuda:0",  # Alias for CUDA device (can be changed to cuda:1, cuda:2, etc.)
     ),
-
     # Verification scenarios per export mode
     #
     # Each policy is a list of comparison pairs:

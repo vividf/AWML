@@ -108,24 +108,11 @@ class CenterPointTensorRTExporter(TensorRTExporter):
 
             self.logger.info(f"\nConverting {onnx_file} to TensorRT...")
 
-            # TODO(vividf): check this
-            # Create dummy sample input for shape configuration
-            # For CenterPoint, we need different sample inputs for each component
-            if "voxel_encoder" in onnx_file:
-                # Voxel encoder input: (num_voxels, num_max_points, point_dim)
-                # Use realistic voxel counts for T4Dataset - actual shape is (num_voxels, 32, 11)
-                sample_input = torch.randn(10000, 32, 11, device=device)
-            else:
-                # Backbone/neck/head input: (batch_size, channels, height, width)
-                # Use realistic spatial feature dimensions - actual shape is (batch_size, 32, H, W)
-                # NOTE: Actual evaluation data can produce up to 760x760, so use 800x800 for max_shape
-                sample_input = torch.randn(1, 32, 200, 200, device=device)
-
             # Export to TensorRT using parent class method
             try:
                 super().export(
                     model=None,
-                    sample_input=sample_input,
+                    sample_input=None,
                     output_path=trt_path,
                     onnx_path=onnx_file_path,
                 )
