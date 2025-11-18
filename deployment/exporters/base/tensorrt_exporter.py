@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 import tensorrt as trt
 import torch
 
-from autoware_ml.deployment.exporters.base.base_exporter import BaseExporter
+from deployment.exporters.base.base_exporter import BaseExporter
 
 
 class TensorRTExporter(BaseExporter):
@@ -16,25 +16,30 @@ class TensorRTExporter(BaseExporter):
     Converts ONNX models to TensorRT engine format with precision policy support.
     """
 
-    def __init__(self, config: Dict[str, Any], logger: logging.Logger = None, model_wrapper: Optional[Any] = None):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        model_wrapper: Optional[Any] = None,
+        logger: logging.Logger = None,
+    ):
         """
         Initialize TensorRT exporter.
 
         Args:
             config: TensorRT export configuration
-            logger: Optional logger instance
             model_wrapper: Optional model wrapper class (usually not needed for TensorRT)
+            logger: Optional logger instance
         """
-        super().__init__(config, logger, model_wrapper=model_wrapper)
+        super().__init__(config, model_wrapper=model_wrapper, logger=logger)
         self.logger = logger or logging.getLogger(__name__)
 
     def export(
         self,
         model: torch.nn.Module,  # Not used for TensorRT, kept for interface compatibility
-        sample_input: torch.Tensor,
+        sample_input: Any,
         output_path: str,
         onnx_path: str = None,
-    ) -> bool:
+    ) -> None:
         """
         Export ONNX model to TensorRT engine.
 
@@ -44,12 +49,12 @@ class TensorRTExporter(BaseExporter):
             output_path: Path to save TensorRT engine
             onnx_path: Path to source ONNX model
 
-        Returns:
-            True if export succeeded
+        Raises:
+            RuntimeError: If export fails
+            ValueError: If ONNX path is missing
         """
         if onnx_path is None:
-            self.logger.error("onnx_path is required for TensorRT export")
-            return False
+            raise ValueError("onnx_path is required for TensorRT export")
 
         precision_policy = self.config.get("precision_policy", "auto")
         policy_flags = self.config.get("policy_flags", {})
@@ -93,7 +98,7 @@ class TensorRTExporter(BaseExporter):
             with open(onnx_path, "rb") as f:
                 if not parser.parse(f.read()):
                     self._log_parser_errors(parser)
-                    return False
+                    raise RuntimeError("TensorRT export failed: unable to parse ONNX file")
                 self.logger.info("Successfully parsed ONNX file")
 
             # Setup optimization profile after parsing ONNX to get actual input names
@@ -107,7 +112,7 @@ class TensorRTExporter(BaseExporter):
 
             if serialized_engine is None:
                 self.logger.error("Failed to build TensorRT engine")
-                return False
+                raise RuntimeError("TensorRT export failed: builder returned None")
 
             # Save engine
             with open(output_path, "wb") as f:
@@ -116,16 +121,14 @@ class TensorRTExporter(BaseExporter):
             self.logger.info(f"TensorRT engine saved to {output_path}")
             self.logger.info(f"Engine max workspace size: {max_workspace_size / (1024**3):.2f} GB")
 
-            return True
-
         except Exception as e:
             self.logger.error(f"TensorRT export failed: {e}")
-            return False
+            raise RuntimeError("TensorRT export failed") from e
 
     def _configure_input_shapes(
         self,
         profile: trt.IOptimizationProfile,
-        sample_input: torch.Tensor,
+        sample_input: Any,
         network: trt.INetworkDefinition = None,
     ) -> None:
         """
@@ -139,67 +142,33 @@ class TensorRTExporter(BaseExporter):
         model_inputs = self.config.get("model_inputs", [])
 
         if model_inputs:
+            # VIVID(calibration classifier)
+            print("model inputs: ", model_inputs)
             input_shapes = model_inputs[0].get("input_shapes", {})
             for input_name, shapes in input_shapes.items():
-                min_shape = shapes.get("min_shape", list(sample_input.shape))
-                opt_shape = shapes.get("opt_shape", list(sample_input.shape))
-                max_shape = shapes.get("max_shape", list(sample_input.shape))
+                min_shape = shapes.get("min_shape")
+                opt_shape = shapes.get("opt_shape")
+                max_shape = shapes.get("max_shape")
 
-                self.logger.info(f"Setting input shapes - min: {min_shape}, " f"opt: {opt_shape}, max: {max_shape}")
+                if min_shape is None:
+                    if sample_input is None:
+                        raise ValueError(f"min_shape missing for {input_name} and sample_input is not provided")
+                    min_shape = list(sample_input.shape)
+
+                if opt_shape is None:
+                    if sample_input is None:
+                        raise ValueError(f"opt_shape missing for {input_name} and sample_input is not provided")
+                    opt_shape = list(sample_input.shape)
+
+                if max_shape is None:
+                    if sample_input is None:
+                        raise ValueError(f"max_shape missing for {input_name} and sample_input is not provided")
+                    max_shape = list(sample_input.shape)
+
+                self.logger.info(f"Setting {input_name} shapes - min: {min_shape}, opt: {opt_shape}, max: {max_shape}")
                 profile.set_shape(input_name, min_shape, opt_shape, max_shape)
         else:
-            # Handle different input types based on shape
-            input_shape = list(sample_input.shape)
-
-            # Get actual input name from network if available
-            input_name = "input"  # Default fallback
-            if network is not None and network.num_inputs > 0:
-                # Use the first input's name from the ONNX model
-                input_name = network.get_input(0).name
-                self.logger.info(f"Using input name from ONNX model: {input_name}")
-
-            # Determine input type based on shape
-            if len(input_shape) == 3 and input_shape[1] == 32:  # voxel encoder: (num_voxels, 32, 11)
-                # CenterPoint voxel encoder input: input_features
-                min_shape = [1000, 32, 11]  # Minimum voxels
-                opt_shape = [10000, 32, 11]  # Optimal voxels
-                max_shape = [50000, 32, 11]  # Maximum voxels
-                if network is None:
-                    input_name = "input_features"
-            elif (
-                len(input_shape) == 4 and input_shape[1] == 32
-            ):  # CenterPoint backbone input: (batch, 32, height, width)
-                # Backbone input: spatial_features - use dynamic dimensions for H, W
-                # NOTE: Actual evaluation data can produce up to 760x760, so use 800x800 for max_shape
-                min_shape = [1, 32, 100, 100]
-                opt_shape = [1, 32, 200, 200]
-                max_shape = [1, 32, 800, 800]  # Increased from 400x400 to support actual data
-                if network is None:
-                    input_name = "spatial_features"
-            elif len(input_shape) == 4 and input_shape[1] in [
-                3,
-                5,
-            ]:  # Standard image input: (batch, channels, height, width)
-                # For YOLOX, CalibrationStatusClassification, etc.
-                # Use sample shape as optimal, allow some variation for batch dimension
-                batch_size = input_shape[0]
-                channels = input_shape[1]
-                height = input_shape[2]
-                width = input_shape[3]
-
-                # Allow dynamic batch size if batch_size > 1, otherwise use fixed
-                if batch_size > 1:
-                    min_shape = [1, channels, height, width]
-                    opt_shape = [batch_size, channels, height, width]
-                    max_shape = [batch_size, channels, height, width]
-                else:
-                    min_shape = opt_shape = max_shape = input_shape
-            else:
-                # Default fallback: use sample shape as-is
-                min_shape = opt_shape = max_shape = input_shape
-
-            self.logger.info(f"Setting {input_name} shapes - min: {min_shape}, opt: {opt_shape}, max: {max_shape}")
-            profile.set_shape(input_name, min_shape, opt_shape, max_shape)
+            raise ValueError("model_inputs is not set in the config")
 
     def _log_parser_errors(self, parser: trt.OnnxParser) -> None:
         """Log TensorRT parser errors."""

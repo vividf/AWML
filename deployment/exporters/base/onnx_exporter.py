@@ -8,7 +8,7 @@ import onnx
 import onnxsim
 import torch
 
-from autoware_ml.deployment.exporters.base.base_exporter import BaseExporter
+from deployment.exporters.base.base_exporter import BaseExporter
 
 
 class ONNXExporter(BaseExporter):
@@ -22,24 +22,29 @@ class ONNXExporter(BaseExporter):
     - Configuration override capability
     """
 
-    def __init__(self, config: Dict[str, Any], logger: logging.Logger = None, model_wrapper: Optional[Any] = None):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        model_wrapper: Optional[Any] = None,
+        logger: logging.Logger = None,
+    ):
         """
         Initialize ONNX exporter.
 
         Args:
             config: ONNX export configuration
-            logger: Optional logger instance
             model_wrapper: Optional model wrapper class (e.g., YOLOXONNXWrapper)
+            logger: Optional logger instance
         """
-        super().__init__(config, logger, model_wrapper=model_wrapper)
+        super().__init__(config, model_wrapper=model_wrapper, logger=logger)
 
     def export(
         self,
         model: torch.nn.Module,
-        sample_input: torch.Tensor,
+        sample_input: Any,
         output_path: str,
         config_override: Optional[Dict[str, Any]] = None,
-    ) -> bool:
+    ) -> None:
         """
         Export model to ONNX format.
 
@@ -49,8 +54,8 @@ class ONNXExporter(BaseExporter):
             output_path: Path to save ONNX model
             config_override: Optional config overrides for this specific export
 
-        Returns:
-            True if export succeeded
+        Raises:
+            RuntimeError: If export fails
         """
         # Apply model wrapper if configured
         model = self.prepare_model(model)
@@ -91,14 +96,12 @@ class ONNXExporter(BaseExporter):
             if export_config.get("simplify", True):
                 self._simplify_model(output_path)
 
-            return True
-
         except Exception as e:
             self.logger.error(f"ONNX export failed: {e}")
             import traceback
 
             self.logger.error(traceback.format_exc())
-            return False
+            raise RuntimeError("ONNX export failed") from e
 
     def export_multi(
         self,
@@ -106,7 +109,7 @@ class ONNXExporter(BaseExporter):
         sample_inputs: Dict[str, torch.Tensor],
         output_dir: str,
         configs: Optional[Dict[str, Dict[str, Any]]] = None,
-    ) -> bool:
+    ) -> None:
         """
         Export multiple models to separate ONNX files.
 
@@ -119,48 +122,37 @@ class ONNXExporter(BaseExporter):
             output_dir: Directory to save ONNX files
             configs: Optional dict of {filename: config_override}
 
-        Returns:
-            True if all exports succeeded
+        Raises:
+            ValueError: If required inputs are missing
+            RuntimeError: If any export fails
         """
         self.logger.info(f"Exporting {len(models)} models to {output_dir}")
         os.makedirs(output_dir, exist_ok=True)
 
-        success_count = 0
         configs = configs or {}
 
         for name, model in models.items():
             if name not in sample_inputs:
-                self.logger.error(f"No sample input provided for model: {name}")
-                continue
+                raise ValueError(f"No sample input provided for model: {name}")
 
             output_path = os.path.join(output_dir, name)
             if not output_path.endswith(".onnx"):
                 output_path += ".onnx"
 
             config_override = configs.get(name)
-            success = self.export(
-                model=model,
-                sample_input=sample_inputs[name],
-                output_path=output_path,
-                config_override=config_override,
-            )
-
-            if success:
-                success_count += 1
+            try:
+                self.export(
+                    model=model,
+                    sample_input=sample_inputs[name],
+                    output_path=output_path,
+                    config_override=config_override,
+                )
                 self.logger.info(f"✅ Exported {name}")
-            else:
+            except Exception as exc:
                 self.logger.error(f"❌ Failed to export {name}")
+                raise
 
-        total = len(models)
-        if success_count == total:
-            self.logger.info(f"✅ All {total} models exported successfully")
-            return True
-        elif success_count > 0:
-            self.logger.warning(f"⚠️  Partial success: {success_count}/{total} models exported")
-            return False
-        else:
-            self.logger.error(f"❌ All exports failed")
-            return False
+        self.logger.info(f"✅ All {len(models)} models exported successfully")
 
     def _simplify_model(self, onnx_path: str) -> None:
         """

@@ -6,9 +6,24 @@ a concrete DataLoader that extends this base class.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, TypedDict
 
 import torch
+
+
+class SampleData(TypedDict, total=False):
+    """
+    Typed representation of a data sample handled by data loaders.
+
+    Attributes:
+        input: Raw input data such as images or point clouds.
+        ground_truth: Labels or annotations if available.
+        metadata: Additional information required for evaluation.
+    """
+
+    input: Any
+    ground_truth: Any
+    metadata: Dict[str, Any]
 
 
 class BaseDataLoader(ABC):
@@ -30,7 +45,7 @@ class BaseDataLoader(ABC):
         self.config = config
 
     @abstractmethod
-    def load_sample(self, index: int) -> Dict[str, Any]:
+    def load_sample(self, index: int) -> SampleData:
         """
         Load a single sample from the dataset.
 
@@ -51,7 +66,7 @@ class BaseDataLoader(ABC):
         pass
 
     @abstractmethod
-    def preprocess(self, sample: Dict[str, Any]) -> torch.Tensor:
+    def preprocess(self, sample: SampleData) -> torch.Tensor:
         """
         Preprocess raw sample data into model input format.
 

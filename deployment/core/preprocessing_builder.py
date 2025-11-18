@@ -19,8 +19,8 @@ from mmengine.config import Config
 
 logger = logging.getLogger(__name__)
 
-# Valid task types
-VALID_TASK_TYPES = ["detection2d", "detection3d", "classification", "segmentation"]
+TransformConfig = Dict[str, Any]
+PipelineBuilder = Callable[[List[TransformConfig]], Any]
 
 
 class ComposeBuilder:
@@ -32,7 +32,7 @@ class ComposeBuilder:
 
     @staticmethod
     def build(
-        pipeline_cfg: List,
+        pipeline_cfg: List[TransformConfig],
         scope: str,
         import_modules: List[str],
     ) -> Any:
@@ -73,107 +73,82 @@ class ComposeBuilder:
         # Set default scope and build Compose
         try:
             init_default_scope(scope)
-            logger.info(f"Building pipeline with mmengine.dataset.Compose (default_scope='{scope}')")
+            logger.info(
+                "Building pipeline with mmengine.dataset.Compose (default_scope='%s')",
+                scope,
+            )
             return Compose(pipeline_cfg)
         except Exception as e:
-            raise ImportError(f"Failed to build Compose pipeline for scope '{scope}'. " f"Error: {e}") from e
+            raise RuntimeError(
+                f"Failed to build Compose pipeline for scope '{scope}'. "
+                f"Check your pipeline configuration and transforms. Error: {e}"
+            ) from e
 
 
-class PreprocessingPipelineRegistry:
+def _build_detection2d(pipeline_cfg: List[TransformConfig]) -> Any:
+    """Build 2D detection preprocessing pipeline."""
+    return ComposeBuilder.build(
+        pipeline_cfg=pipeline_cfg,
+        scope="mmdet",
+        import_modules=["mmdet.datasets.transforms"],
+    )
+
+
+def _build_detection3d(pipeline_cfg: List[TransformConfig]) -> Any:
+    """Build 3D detection preprocessing pipeline."""
+    return ComposeBuilder.build(
+        pipeline_cfg=pipeline_cfg,
+        scope="mmdet3d",
+        import_modules=["mmdet3d.datasets.transforms"],
+    )
+
+
+def _build_classification(pipeline_cfg: List[TransformConfig]) -> Any:
     """
-    Registry for preprocessing pipeline builders by task type.
+    Build classification preprocessing pipeline using mmpretrain.
 
-    Provides a clean way to register and retrieve pipeline builders.
+    Raises:
+        ImportError: If mmpretrain is not installed
     """
-
-    def __init__(self):
-        self._builders: Dict[str, Callable[[List], Any]] = {}
-        self._register_default_builders()
-
-    def _register_default_builders(self):
-        """Register default pipeline builders."""
-        self.register("detection2d", self._build_detection2d)
-        self.register("detection3d", self._build_detection3d)
-        self.register("classification", self._build_classification)
-        self.register("segmentation", self._build_segmentation)
-
-    def register(self, task_type: str, builder: Callable[[List], Any]):
-        """
-        Register a pipeline builder for a task type.
-
-        Args:
-            task_type: Task type identifier
-            builder: Builder function that takes pipeline_cfg and returns Compose object
-        """
-        if task_type not in VALID_TASK_TYPES:
-            logger.warning(f"Registering non-standard task_type: {task_type}")
-        self._builders[task_type] = builder
-        logger.debug(f"Registered pipeline builder for task_type: {task_type}")
-
-    def build(self, task_type: str, pipeline_cfg: List) -> Any:
-        """
-        Build pipeline for given task type.
-
-        Args:
-            task_type: Task type identifier
-            pipeline_cfg: Pipeline configuration
-
-        Returns:
-            Compose object
-
-        Raises:
-            ValueError: If task_type is not registered
-        """
-        if task_type not in self._builders:
-            raise ValueError(f"Unknown task_type '{task_type}'. " f"Available types: {list(self._builders.keys())}")
-        return self._builders[task_type](pipeline_cfg)
-
-    def _build_detection2d(self, pipeline_cfg: List) -> Any:
-        """Build 2D detection preprocessing pipeline."""
-        return ComposeBuilder.build(
-            pipeline_cfg=pipeline_cfg,
-            scope="mmdet",
-            import_modules=["mmdet.datasets.transforms"],
-        )
-
-    def _build_detection3d(self, pipeline_cfg: List) -> Any:
-        """Build 3D detection preprocessing pipeline."""
-        return ComposeBuilder.build(
-            pipeline_cfg=pipeline_cfg,
-            scope="mmdet3d",
-            import_modules=["mmdet3d.datasets.transforms"],
-        )
-
-    def _build_classification(self, pipeline_cfg: List) -> Any:
-        """
-        Build classification preprocessing pipeline using mmpretrain.
-
-        Raises:
-            ImportError: If mmpretrain is not installed
-        """
-        return ComposeBuilder.build(
-            pipeline_cfg=pipeline_cfg,
-            scope="mmpretrain",
-            import_modules=["mmpretrain.datasets.transforms"],
-        )
-
-    def _build_segmentation(self, pipeline_cfg: List) -> Any:
-        """Build segmentation preprocessing pipeline."""
-        return ComposeBuilder.build(
-            pipeline_cfg=pipeline_cfg,
-            scope="mmseg",
-            import_modules=["mmseg.datasets.transforms"],
-        )
+    return ComposeBuilder.build(
+        pipeline_cfg=pipeline_cfg,
+        scope="mmpretrain",
+        import_modules=["mmpretrain.datasets.transforms"],
+    )
 
 
-# Global registry instance
-_registry = PreprocessingPipelineRegistry()
+def _build_segmentation(pipeline_cfg: List[TransformConfig]) -> Any:
+    """Build segmentation preprocessing pipeline."""
+    return ComposeBuilder.build(
+        pipeline_cfg=pipeline_cfg,
+        scope="mmseg",
+        import_modules=["mmseg.datasets.transforms"],
+    )
+
+
+_PIPELINE_BUILDERS: Dict[str, PipelineBuilder] = {
+    "detection2d": _build_detection2d,
+    "detection3d": _build_detection3d,
+    "classification": _build_classification,
+    "segmentation": _build_segmentation,
+}
+
+# Valid task types
+VALID_TASK_TYPES = list(_PIPELINE_BUILDERS.keys())
+
+
+def _build_pipeline(task_type: str, pipeline_cfg: List[TransformConfig]) -> Any:
+    """Build pipeline for a given task_type using registered builders."""
+    try:
+        builder = _PIPELINE_BUILDERS[task_type]
+    except KeyError:
+        raise ValueError(f"Unknown task_type '{task_type}'. " f"Must be one of {VALID_TASK_TYPES}")
+    return builder(pipeline_cfg)
 
 
 def build_preprocessing_pipeline(
     model_cfg: Config,
     task_type: Optional[str] = None,
-    backend: str = "pytorch",
 ) -> Any:
     """
     Build preprocessing pipeline from model config.
@@ -191,9 +166,6 @@ def build_preprocessing_pipeline(
                    Must be provided either via this argument or via
                    ``model_cfg.task_type`` / ``model_cfg.deploy.task_type``.
                    Recommended: specify in deploy_config.py as ``task_type = "detection3d"``.
-        backend: Target backend ('pytorch', 'onnx', 'tensorrt').
-                 Currently not used, reserved for future backend-specific optimizations.
-
     Returns:
         Pipeline compose object (e.g., mmdet.datasets.transforms.Compose)
 
@@ -211,8 +183,8 @@ def build_preprocessing_pipeline(
     pipeline_cfg = _extract_pipeline_config(model_cfg)
     task_type = _resolve_task_type(model_cfg, task_type)
 
-    logger.info(f"Building preprocessing pipeline with task_type: {task_type}")
-    return _registry.build(task_type, pipeline_cfg)
+    logger.info("Building preprocessing pipeline with task_type: %s", task_type)
+    return _build_pipeline(task_type, pipeline_cfg)
 
 
 def _resolve_task_type(model_cfg: Config, task_type: Optional[str] = None) -> str:
@@ -271,7 +243,7 @@ def _validate_task_type(task_type: str) -> None:
         )
 
 
-def _extract_pipeline_config(model_cfg: Config) -> List:
+def _extract_pipeline_config(model_cfg: Config) -> List[TransformConfig]:
     """
     Extract pipeline configuration from model config.
 

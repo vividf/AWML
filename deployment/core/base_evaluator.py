@@ -6,11 +6,61 @@ a concrete Evaluator that extends this base class to compute task-specific metri
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from dataclasses import dataclass
+from typing import Any, Dict, TypedDict
 
 import numpy as np
 
-from autoware_ml.deployment.core.base_data_loader import BaseDataLoader
+from deployment.core.base_data_loader import BaseDataLoader
+
+
+class EvalResultDict(TypedDict, total=False):
+    """
+    Structured evaluation result used across deployments.
+
+    Attributes:
+        primary_metric: Main scalar metric for quick ranking (e.g., accuracy, mAP).
+        metrics: Flat dictionary of additional scalar metrics.
+        per_class: Optional nested metrics keyed by class/label name.
+        latency: Latency statistics as returned by compute_latency_stats().
+        metadata: Arbitrary metadata that downstream components might need.
+    """
+
+    primary_metric: float
+    metrics: Dict[str, float]
+    per_class: Dict[str, Any]
+    latency: Dict[str, float]
+    metadata: Dict[str, Any]
+
+
+class VerifyResultDict(TypedDict, total=False):
+    """
+    Structured verification outcome shared between runners and evaluators.
+
+    Attributes:
+        summary: Aggregate pass/fail counts.
+        samples: Mapping of sample identifiers to boolean pass/fail states.
+    """
+
+    summary: Dict[str, int]
+    samples: Dict[str, bool]
+    error: str
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """
+    Minimal description of a concrete model artifact to evaluate or verify.
+
+    Attributes:
+        backend: Backend identifier such as 'pytorch', 'onnx', or 'tensorrt'.
+        device: Target device string (e.g., 'cpu', 'cuda:0').
+        path: Filesystem path to the artifact (checkpoint, ONNX file, TensorRT engine).
+    """
+
+    backend: str
+    device: str
+    path: str
 
 
 class BaseEvaluator(ABC):
@@ -34,22 +84,18 @@ class BaseEvaluator(ABC):
     @abstractmethod
     def evaluate(
         self,
-        model_path: str,
+        model: ModelSpec,
         data_loader: BaseDataLoader,
         num_samples: int,
-        backend: str = "pytorch",
-        device: str = "cpu",
         verbose: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> EvalResultDict:
         """
         Run full evaluation on a model.
 
         Args:
-            model_path: Path to model checkpoint/weights
+            model: Specification of the artifact/backend/device triplet to evaluate
             data_loader: DataLoader for loading samples
             num_samples: Number of samples to evaluate
-            backend: Backend to use ('pytorch', 'onnx', 'tensorrt')
-            device: Device to run inference on
             verbose: Whether to print detailed progress
 
         Returns:
@@ -83,7 +129,7 @@ class BaseEvaluator(ABC):
         pass
 
     @abstractmethod
-    def print_results(self, results: Dict[str, Any]) -> None:
+    def print_results(self, results: EvalResultDict) -> None:
         """
         Pretty print evaluation results.
 
@@ -95,17 +141,13 @@ class BaseEvaluator(ABC):
     @abstractmethod
     def verify(
         self,
-        ref_backend: str,
-        ref_device: str,
-        ref_path: str,
-        test_backend: str,
-        test_device: str,
-        test_path: str,
+        reference: ModelSpec,
+        test: ModelSpec,
         data_loader: BaseDataLoader,
         num_samples: int = 1,
         tolerance: float = 0.1,
         verbose: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> VerifyResultDict:
         """
         Verify exported models using scenario-based verification.
 
@@ -114,25 +156,15 @@ class BaseEvaluator(ABC):
         than the legacy verify() method which compares all available backends.
 
         Args:
-            ref_backend: Reference backend name ('pytorch' or 'onnx')
-            ref_device: Device for reference backend (e.g., 'cpu', 'cuda:0')
-            ref_path: Path to reference model (checkpoint for pytorch, model path for onnx)
-            test_backend: Test backend name ('onnx' or 'tensorrt')
-            test_device: Device for test backend (e.g., 'cpu', 'cuda:0')
-            test_path: Path to test model (model path for onnx, engine path for tensorrt)
+            reference: Specification of backend/device/path for the reference model
+            test: Specification for the backend/device/path under test
             data_loader: Data loader for test samples
             num_samples: Number of samples to verify
             tolerance: Maximum allowed difference for verification to pass
             verbose: Whether to print detailed output
 
         Returns:
-            Dictionary containing verification results:
-            {
-                'sample_0': bool (passed/failed),
-                'sample_1': bool (passed/failed),
-                ...
-                'summary': {'passed': int, 'failed': int, 'total': int}
-            }
+            Verification results with pass/fail summary and per-sample outcomes.
         """
         pass
 

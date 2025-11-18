@@ -12,7 +12,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 from mmengine.config import Config
 
-from autoware_ml.deployment.core import BaseDataLoader, BaseDeploymentConfig, BaseEvaluator
+from deployment.core import (
+    BaseDataLoader,
+    BaseDeploymentConfig,
+    BaseEvaluator,
+    ModelSpec,
+)
 
 
 class BaseDeploymentRunner:
@@ -151,14 +156,14 @@ class BaseDeploymentRunner:
         # Use provided exporter (required, cannot be None)
         exporter = self._onnx_exporter
 
-        success = exporter.export(pytorch_model, input_tensor, output_path)
+        try:
+            exporter.export(pytorch_model, input_tensor, output_path)
+        except Exception:
+            self.logger.error("❌ ONNX export failed")
+            raise
 
-        if success:
-            self.logger.info(f"✅ ONNX export successful: {output_path}")
-            return output_path
-        else:
-            self.logger.error(f"❌ ONNX export failed")
-            return None
+        self.logger.info(f"✅ ONNX export successful: {output_path}")
+        return output_path
 
     def export_tensorrt(self, onnx_path: str, **kwargs) -> Optional[str]:
         """
@@ -203,6 +208,12 @@ class BaseDeploymentRunner:
             engine_filename = onnx_filename.replace(".onnx", ".engine")
             output_path = os.path.join(tensorrt_dir, engine_filename)
 
+        # Set CUDA device for TensorRT exportd
+        cuda_device = self.config.export_config.cuda_device
+        device_id = self.config.export_config.get_cuda_device_index()
+        torch.cuda.set_device(device_id)
+        self.logger.info(f"Using CUDA device for TensorRT export: {cuda_device}")
+
         # Get sample input for shape configuration
         sample_idx = self.config.runtime_config.get("sample_idx", 0)
         sample = self.data_loader.load_sample(sample_idx)
@@ -218,19 +229,19 @@ class BaseDeploymentRunner:
         # Use provided exporter (required, cannot be None)
         exporter = self._tensorrt_exporter
 
-        success = exporter.export(
-            model=None,  # Not used for TensorRT
-            sample_input=sample_input,
-            output_path=output_path,
-            onnx_path=onnx_path,
-        )
+        try:
+            exporter.export(
+                model=None,  # Not used for TensorRT
+                sample_input=sample_input,
+                output_path=output_path,
+                onnx_path=onnx_path,
+            )
+        except Exception:
+            self.logger.error("❌ TensorRT export failed")
+            raise
 
-        if success:
-            self.logger.info(f"✅ TensorRT export successful: {output_path}")
-            return output_path
-        else:
-            self.logger.error(f"❌ TensorRT export failed")
-            return None
+        self.logger.info(f"✅ TensorRT export successful: {output_path}")
+        return output_path
 
     def _resolve_pytorch_model(self, backend_cfg: Dict[str, Any]) -> Tuple[Optional[str], bool]:
         """
@@ -420,7 +431,7 @@ class BaseDeploymentRunner:
 
         return model_path, is_valid
 
-    def get_models_to_evaluate(self) -> List[Tuple[str, str, str]]:
+    def get_models_to_evaluate(self) -> List[ModelSpec]:
         """
         Get list of models to evaluate from config.
 
@@ -428,7 +439,7 @@ class BaseDeploymentRunner:
             List of tuples (backend_name, model_path, device)
         """
         backends = self.config.get_evaluation_backends()
-        models_to_evaluate: List[Tuple[str, str, str]] = []
+        models_to_evaluate: List[ModelSpec] = []
 
         for backend_name, backend_cfg in backends.items():
             if not backend_cfg.get("enabled", False):
@@ -446,8 +457,15 @@ class BaseDeploymentRunner:
                 model_path, is_valid = self._resolve_tensorrt_model(backend_cfg)
 
             if is_valid and model_path:
-                models_to_evaluate.append((backend_name, model_path, device))
-                self.logger.info(f"  - {backend_name}: {model_path} (device: {device})")
+                normalized_device = str(device or "cpu")
+                models_to_evaluate.append(
+                    ModelSpec(
+                        backend=backend_name,
+                        device=normalized_device,
+                        path=model_path,
+                    )
+                )
+                self.logger.info(f"  - {backend_name}: {model_path} (device: {normalized_device})")
             elif model_path:
                 self.logger.warning(f"  - {backend_name}: {model_path} (not found or invalid, skipping)")
 
@@ -551,13 +569,12 @@ class BaseDeploymentRunner:
                 continue
 
             # Use policy-based verification interface
+            reference_spec = ModelSpec(backend=ref_backend, device=ref_device, path=ref_path)
+            test_spec = ModelSpec(backend=test_backend, device=test_device, path=test_path)
+
             verification_results = self.evaluator.verify(
-                ref_backend=ref_backend,
-                ref_device=ref_device,
-                ref_path=ref_path,
-                test_backend=test_backend,
-                test_device=test_device,
-                test_path=test_path,
+                reference=reference_spec,
+                test=test_spec,
                 data_loader=self.data_loader,
                 num_samples=num_verify_samples,
                 tolerance=tolerance,
@@ -630,32 +647,37 @@ class BaseDeploymentRunner:
 
         all_results: Dict[str, Any] = {}
 
-        for backend, model_path, backend_device in models_to_evaluate:
+        # TODO(vividf): a bit ungly here, need to refactor
+        for spec in models_to_evaluate:
+            backend = spec.backend
+            backend_device = spec.device
+            model_path = spec.path
 
             if backend in ("pytorch", "onnx"):
-                if backend_device not in (None, "cpu") and not str(backend_device).startswith("cuda"):
+                if backend_device not in ("cpu",) and not str(backend_device).startswith("cuda"):
                     self.logger.warning(
                         f"Unsupported device '{backend_device}' for backend '{backend}'. Falling back to CPU."
                     )
                     backend_device = "cpu"
             elif backend == "tensorrt":
-                if backend_device is None:
-                    backend_device = "cuda:0"
-                if backend_device != "cuda:0":
+                if not backend_device or backend_device == "cpu":
+                    backend_device = self.config.export_config.cuda_device or "cuda:0"
+                if not str(backend_device).startswith("cuda"):
                     self.logger.warning(
-                        f"TensorRT evaluation only supports 'cuda:0'. Overriding device from '{backend_device}' to 'cuda:0'."
+                        f"TensorRT evaluation requires CUDA device. Overriding device from '{backend_device}' to 'cuda:0'."
                     )
                     backend_device = "cuda:0"
 
-            if backend_device is None:
-                backend_device = "cpu"
+            normalized_spec = ModelSpec(
+                backend=backend,
+                device=backend_device or "cpu",
+                path=model_path,
+            )
 
             results = self.evaluator.evaluate(
-                model_path=model_path,
+                model=normalized_spec,
                 data_loader=self.data_loader,
                 num_samples=num_samples,
-                backend=backend,
-                device=backend_device,
                 verbose=verbose_mode,
             )
 
