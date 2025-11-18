@@ -111,20 +111,15 @@ class BaseDeploymentRunner:
         if not self.config.export_config.should_export_onnx():
             return None
 
-        self.logger.info("=" * 80)
-        self.logger.info("Exporting to ONNX (Using Unified ONNXExporter)")
-        self.logger.info("=" * 80)
-
         # Get ONNX settings
         onnx_settings = self.config.get_onnx_settings()
 
-        # Use provided exporter (required, cannot be None)
+        # Use provided exporter
         exporter = self._onnx_exporter
         self.logger.info("=" * 80)
         self.logger.info(f"Exporting to ONNX (Using {type(exporter).__name__})")
         self.logger.info("=" * 80)
 
-        # Standard ONNX export
         # Save to work_dir/onnx/ directory
         onnx_dir = os.path.join(self.config.export_config.work_dir, "onnx")
         os.makedirs(onnx_dir, exist_ok=True)
@@ -153,16 +148,16 @@ class BaseDeploymentRunner:
                 input_tensor = single_input.repeat(batch_size, *([1] * (len(single_input.shape) - 1)))
             self.logger.info(f"Using fixed batch size: {batch_size}")
 
-        # Use provided exporter (required, cannot be None)
+        # Use provided exporter
         exporter = self._onnx_exporter
 
         try:
             exporter.export(pytorch_model, input_tensor, output_path)
         except Exception:
-            self.logger.error("❌ ONNX export failed")
+            self.logger.error("ONNX export failed")
             raise
 
-        self.logger.info(f"✅ ONNX export successful: {output_path}")
+        self.logger.info(f"ONNX export successful: {output_path}")
         return output_path
 
     def export_tensorrt(self, onnx_path: str, **kwargs) -> Optional[str]:
@@ -178,7 +173,6 @@ class BaseDeploymentRunner:
         Returns:
             Path to exported TensorRT engine file/directory, or None if export failed
         """
-        # Standard TensorRT export using TensorRTExporter
         if not self.config.export_config.should_export_tensorrt():
             return None
 
@@ -186,21 +180,18 @@ class BaseDeploymentRunner:
             self.logger.warning("ONNX path not available, skipping TensorRT export")
             return None
 
-        # Use provided exporter (required, cannot be None)
+        # Use provided exporter
         exporter = self._tensorrt_exporter
         self.logger.info("=" * 80)
         self.logger.info(f"Exporting to TensorRT (Using {type(exporter).__name__})")
         self.logger.info("=" * 80)
 
-        # Standard TensorRT export
         # Save to work_dir/tensorrt/ directory
         tensorrt_dir = os.path.join(self.config.export_config.work_dir, "tensorrt")
         os.makedirs(tensorrt_dir, exist_ok=True)
 
         # Determine output path based on ONNX file name
         if os.path.isdir(onnx_path):
-            # For multi-file ONNX (shouldn't happen in standard export, but handle it)
-            # Use the directory name or a default name
             output_path = os.path.join(tensorrt_dir, "model.engine")
         else:
             # Single file: extract filename and change extension
@@ -237,10 +228,10 @@ class BaseDeploymentRunner:
                 onnx_path=onnx_path,
             )
         except Exception:
-            self.logger.error("❌ TensorRT export failed")
+            self.logger.error("TensorRT export failed")
             raise
 
-        self.logger.info(f"✅ TensorRT export successful: {output_path}")
+        self.logger.info(f"TensorRT export successful: {output_path}")
         return output_path
 
     def _resolve_pytorch_model(self, backend_cfg: Dict[str, Any]) -> Tuple[Optional[str], bool]:

@@ -57,8 +57,6 @@ class BaseDeploymentPipeline(ABC):
 
         logger.info(f"Initialized {self.__class__.__name__} on device: {self.device}")
 
-    # ========== Abstract Methods (Must Implement) ==========
-
     @abstractmethod
     def preprocess(self, input_data: Any, **kwargs) -> Any:
         """
@@ -109,8 +107,6 @@ class BaseDeploymentPipeline(ABC):
         """
         pass
 
-    # ========== Concrete Methods (Shared Logic) ==========
-
     def infer(
         self, input_data: Any, metadata: Optional[Dict] = None, return_raw_outputs: bool = False, **kwargs
     ) -> Tuple[Any, float, Dict[str, float]]:
@@ -148,10 +144,10 @@ class BaseDeploymentPipeline(ABC):
         try:
             start_time = time.perf_counter()
 
-            # 1. Preprocess
+            # Preprocess
             preprocessed = self.preprocess(input_data, **kwargs)
 
-            # Unpack preprocess outputs: allow (data, metadata) tuple
+            # Unpack preprocess outputs
             preprocess_metadata = {}
             model_input = preprocessed
             if isinstance(preprocessed, tuple) and len(preprocessed) == 2 and isinstance(preprocessed[1], dict):
@@ -160,18 +156,18 @@ class BaseDeploymentPipeline(ABC):
             preprocess_time = time.perf_counter()
             latency_breakdown["preprocessing_ms"] = (preprocess_time - start_time) * 1000
 
-            # Merge caller metadata (if any) with preprocess metadata (preprocess takes precedence by default)
+            # Merge caller metadata with preprocess metadata
             merged_metadata = {}
             merged_metadata.update(metadata or {})
             merged_metadata.update(preprocess_metadata)
 
-            # 2. Run model (backend-specific)
+            # Run model (backend-specific)
             model_start = time.perf_counter()
             model_output = self.run_model(model_input)
             model_time = time.perf_counter()
             latency_breakdown["model_ms"] = (model_time - model_start) * 1000
 
-            # Merge stage-wise latencies if available (for multi-stage pipelines like CenterPoint)
+            # Merge stage-wise latencies if available
             if hasattr(self, "_stage_latencies") and isinstance(self._stage_latencies, dict):
                 latency_breakdown.update(self._stage_latencies)
                 # Clear for next inference
@@ -179,7 +175,7 @@ class BaseDeploymentPipeline(ABC):
 
             total_latency = (time.perf_counter() - start_time) * 1000
 
-            # 3. Postprocess (optional)
+            # Postprocess (optional)
             if return_raw_outputs:
                 return model_output, total_latency, latency_breakdown
             else:

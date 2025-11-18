@@ -10,6 +10,8 @@ from typing import Any, Mapping, Optional
 
 import torch
 
+from deployment.exporters.base.model_wrappers import BaseModelWrapper
+
 
 class BaseExporter(ABC):
     """
