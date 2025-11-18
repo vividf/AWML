@@ -27,7 +27,7 @@ class BaseExporter(ABC):
     def __init__(
         self,
         config: Mapping[str, Any],
-        model_wrapper: Optional[Any] = None,
+        model_wrapper: Optional[BaseModelWrapper] = None,
         logger: Optional[logging.Logger] = None,
     ):
         """
@@ -59,14 +59,7 @@ class BaseExporter(ABC):
 
         self.logger.info("Applying model wrapper for export")
 
-        # If model_wrapper is a class, instantiate it with the model
-        if isinstance(self._model_wrapper, type):
-            return self._model_wrapper(model)
-        # If model_wrapper is a callable (function or instance with __call__), use it
-        elif callable(self._model_wrapper):
-            return self._model_wrapper(model)
-        else:
-            raise TypeError(f"model_wrapper must be a class or callable, got {type(self._model_wrapper)}")
+        return self._model_wrapper(model)
 
     @abstractmethod
     def export(self, model: torch.nn.Module, sample_input: Any, output_path: str, **kwargs) -> None:
