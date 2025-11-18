@@ -16,12 +16,12 @@ from mmengine.config import Config
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
-from autoware_ml.deployment.core.base_config import parse_base_args
-from autoware_ml.deployment.exporters.calibration.model_wrappers import CalibrationONNXWrapper
-from autoware_ml.deployment.exporters.calibration.onnx_exporter import CalibrationONNXExporter
-from autoware_ml.deployment.exporters.calibration.tensorrt_exporter import CalibrationTensorRTExporter
-from autoware_ml.deployment.runners import CalibrationDeploymentRunner
+from deployment.core import BaseDeploymentConfig, setup_logging
+from deployment.core.base_config import parse_base_args
+from deployment.exporters.calibration.model_wrappers import CalibrationONNXWrapper
+from deployment.exporters.calibration.onnx_exporter import CalibrationONNXExporter
+from deployment.exporters.calibration.tensorrt_exporter import CalibrationTensorRTExporter
+from deployment.runners import CalibrationDeploymentRunner
 from projects.CalibrationStatusClassification.deploy.data_loader import CalibrationDataLoader
 from projects.CalibrationStatusClassification.deploy.evaluator import ClassificationEvaluator
 

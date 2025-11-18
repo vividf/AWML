@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from mmengine.config import Config
 
-from autoware_ml.deployment.core import (
+from deployment.core import (
     BaseEvaluator,
     EvalResultDict,
     ModelSpec,
@@ -83,7 +83,7 @@ class ClassificationEvaluator(BaseEvaluator):
         Returns:
             Dictionary containing evaluation metrics
         """
-        from autoware_ml.deployment.pipelines.calibration import (
+        from deployment.pipelines.calibration import (
             CalibrationONNXPipeline,
             CalibrationPyTorchPipeline,
             CalibrationTensorRTPipeline,
@@ -158,7 +158,7 @@ class ClassificationEvaluator(BaseEvaluator):
         logger: logging.Logger,
     ):
         """Create appropriate pipeline instance."""
-        from autoware_ml.deployment.pipelines.calibration import (
+        from deployment.pipelines.calibration import (
             CalibrationONNXPipeline,
             CalibrationPyTorchPipeline,
             CalibrationTensorRTPipeline,
@@ -380,7 +380,7 @@ class ClassificationEvaluator(BaseEvaluator):
                 'summary': {'passed': int, 'failed': int, 'total': int}
             }
         """
-        from autoware_ml.deployment.pipelines.calibration import (
+        from deployment.pipelines.calibration import (
             CalibrationONNXPipeline,
             CalibrationPyTorchPipeline,
             CalibrationTensorRTPipeline,

@@ -23,9 +23,9 @@
 ```python
 # 在 3 个地方重复实现：
 1. Voxelization (data_preprocessor)
-   - centerpoint_onnx_helper.py: _voxelize_points() 
+   - centerpoint_onnx_helper.py: _voxelize_points()
    - evaluator.py: _run_tensorrt_inference()
-   
+
 2. Input features 准备 (get_input_features)
    - centerpoint_onnx_helper.py: _get_input_features()
    - evaluator.py: _run_tensorrt_inference()
@@ -69,14 +69,14 @@ class YOLOXOptElanEvaluator:
     def evaluate(self, model_path, data_loader, backend):
         # 创建 backend
         backend = self._create_backend(backend, model_path, device)
-        
+
         for i in range(num_samples):
             # 预处理
             input_tensor = data_loader.preprocess(sample)
-            
+
             # 推理（不同backend）
             output, latency = backend.infer(input_tensor)
-            
+
             # 后处理
             predictions = self._parse_predictions(output, img_info)
 ```
@@ -120,14 +120,14 @@ class CalibrationDataLoader:
 class ClassificationEvaluator:
     def evaluate(self, model_path, data_loader, backend):
         backend = self._create_backend(backend, model_path, device)
-        
+
         for idx in range(num_samples):
             # 预处理
             input_tensor = loader.load_and_preprocess(idx)
-            
+
             # 推理
             output, latency = backend.infer(input_tensor)
-            
+
             # 后处理（非常简单）
             predicted_label = int(np.argmax(output[0]))
 ```
@@ -199,33 +199,33 @@ from abc import ABC, abstractmethod
 
 class ComplexModelPipeline(ABC):
     """复杂模型的 Pipeline 抽象（多阶段处理）"""
-    
+
     def __init__(self, pytorch_model, device: str):
         self.pytorch_model = pytorch_model
         self.device = device
-    
+
     # 共享方法
     @abstractmethod
     def preprocess(self, input_data) -> Dict:
         """预处理（PyTorch）"""
         pass
-    
+
     @abstractmethod
     def postprocess(self, outputs, meta) -> List:
         """后处理（PyTorch）"""
         pass
-    
+
     # 差异方法
     @abstractmethod
     def run_stage1(self, features):
         """Stage 1 推理（各 backend 实现）"""
         pass
-    
+
     @abstractmethod
     def run_stage2(self, features):
         """Stage 2 推理（各 backend 实现）"""
         pass
-    
+
     # 主流程
     def infer(self, input_data, meta):
         preprocessed = self.preprocess(input_data)
@@ -238,7 +238,7 @@ class ComplexModelPipeline(ABC):
 class CenterPointPyTorchPipeline(ComplexModelPipeline):
     def run_stage1(self, features):
         return self.pytorch_model.pts_voxel_encoder(features)
-    
+
     def run_stage2(self, features):
         return self.pytorch_model.pts_backbone(features)
 ```
@@ -255,28 +255,28 @@ class CenterPointPyTorchPipeline(ComplexModelPipeline):
 ```python
 class StandardDetectionEvaluator(BaseEvaluator):
     """标准检测模型评估器（可选的统一接口）"""
-    
+
     def __init__(self, model_cfg, class_names):
         self.model_cfg = model_cfg
         self.class_names = class_names
         self.postprocessor = self._create_postprocessor()
-    
+
     def evaluate(self, model_path, data_loader, backend):
         # 统一的评估流程
         backend = self._create_backend(backend, model_path)
-        
+
         for sample in data_loader:
             # 预处理（data_loader 负责）
             input_tensor = data_loader.preprocess(sample)
-            
+
             # 推理（backend 负责）
             output, latency = backend.infer(input_tensor)
-            
+
             # 后处理（postprocessor 负责）
             predictions = self.postprocessor.decode(output, sample)
-        
+
         return metrics
-    
+
     def _create_postprocessor(self):
         """创建后处理器（可以是统一的 YOLOX postprocessor）"""
         return YOLOXPostProcessor(self.model_cfg)
@@ -304,12 +304,12 @@ class StandardDetectionEvaluator(BaseEvaluator):
 class ClassificationEvaluator(BaseEvaluator):
     def evaluate(self, model_path, data_loader, backend):
         backend = self._create_backend(backend, model_path)
-        
+
         for sample in data_loader:
             input_tensor = data_loader.preprocess(sample)
             output, latency = backend.infer(input_tensor)
             prediction = np.argmax(output)  # 简单后处理
-        
+
         return metrics
 ```
 
@@ -362,14 +362,14 @@ class ClassificationEvaluator(BaseEvaluator):
 # 创建可复用的 YOLOX postprocessor
 class YOLOXPostProcessor:
     """统一的 YOLOX 后处理器"""
-    
+
     def __init__(self, num_classes, img_size, score_thr, nms_thr):
         self.num_classes = num_classes
         self.img_size = img_size
         self.score_thr = score_thr
         self.nms_thr = nms_thr
         self.priors = generate_yolox_priors(img_size)
-    
+
     def decode(self, output, img_info):
         """解码 YOLOX 输出"""
         # 统一的解码逻辑
@@ -387,7 +387,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             score_thr=0.01,
             nms_thr=0.65
         )
-    
+
     def evaluate(self, ...):
         for sample in data_loader:
             output, latency = backend.infer(input_tensor)
@@ -487,7 +487,7 @@ Level 1 (Simple):     Calibration → 保持现状
 ### 5.3 实施路线图
 
 #### Phase 1: CenterPoint 重构（2-3 天）
-1. 创建 `autoware_ml/deployment/pipelines/`
+1. 创建 `deployment/pipelines/`
 2. 实现 CenterPoint Pipeline 基类和子类
 3. 更新 evaluator
 4. 测试验证
@@ -521,7 +521,7 @@ Calibration:    优秀（保持现状）
 ### 长期愿景
 
 ```
-autoware_ml/deployment/
+deployment/
 ├── core/                    # 核心基类
 │   ├── base_evaluator.py
 │   ├── base_backend.py
@@ -581,4 +581,3 @@ autoware_ml/deployment/
 - ❌ **对 Calibration**：不好（过度工程化）
 
 **建议采用分层设计，而非一刀切的统一 Pipeline。**
-

@@ -15,7 +15,7 @@ from mmengine.config import Config
 from autoware_ml.calibration_classification.datasets.transforms.calibration_classification_transform import (
     CalibrationClassificationTransform,
 )
-from autoware_ml.deployment.core import BaseDataLoader
+from deployment.core import BaseDataLoader
 
 
 class CalibrationDataLoader(BaseDataLoader):
@@ -193,4 +193,3 @@ class CalibrationDataLoader(BaseDataLoader):
             "gt_label": gt_label,
             "miscalibration_probability": self.miscalibration_probability,
         }
-

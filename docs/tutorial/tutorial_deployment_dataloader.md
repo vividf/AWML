@@ -64,7 +64,7 @@ class BaseDataLoader(ABC):
 使用 `build_preprocessing_pipeline()` 從 model config 自動建立 MMDet pipeline：
 
 ```python
-from autoware_ml.deployment.core import build_preprocessing_pipeline
+from deployment.core import build_preprocessing_pipeline
 
 # 從 model config 建立 pipeline
 pipeline = build_preprocessing_pipeline(model_cfg)
@@ -108,8 +108,8 @@ load_sample(index)
 建立 `projects/{PROJECT}/deploy/data_loader.py`：
 
 ```python
-from autoware_ml.deployment.core import BaseDataLoader
-from autoware_ml.deployment.core import build_preprocessing_pipeline
+from deployment.core import BaseDataLoader
+from deployment.core import build_preprocessing_pipeline
 from mmengine.config import Config
 import torch
 
@@ -229,8 +229,8 @@ def get_ground_truth(self, index: int) -> Dict[str, Any]:
 ```python
 # projects/YOLOX/deploy/data_loader.py
 
-from autoware_ml.deployment.core import BaseDataLoader
-from autoware_ml.deployment.core import build_preprocessing_pipeline
+from deployment.core import BaseDataLoader
+from deployment.core import build_preprocessing_pipeline
 from pycocotools.coco import COCO
 import os
 import torch
@@ -295,8 +295,8 @@ class YOLOXDataLoader(BaseDataLoader):
 ```python
 # projects/CenterPoint/deploy/data_loader.py
 
-from autoware_ml.deployment.core import BaseDataLoader
-from autoware_ml.deployment.core import build_preprocessing_pipeline
+from deployment.core import BaseDataLoader
+from deployment.core import build_preprocessing_pipeline
 import pickle
 import torch
 
@@ -367,7 +367,7 @@ class CenterPointDataLoader(BaseDataLoader):
 # projects/YOLOX/deploy/main.py
 
 from mmengine.config import Config
-from autoware_ml.deployment.core import BaseDeploymentConfig
+from deployment.core import BaseDeploymentConfig
 from .data_loader import YOLOXDataLoader
 
 def main(args):

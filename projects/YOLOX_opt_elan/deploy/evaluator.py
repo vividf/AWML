@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from mmengine.config import Config
 
-from autoware_ml.deployment.core import (
+from deployment.core import (
     BaseEvaluator,
     EvalResultDict,
     ModelSpec,
@@ -144,7 +144,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 'summary': {'passed': int, 'failed': int, 'total': int}
             }
         """
-        from autoware_ml.deployment.pipelines.yolox import (
+        from deployment.pipelines.yolox import (
             YOLOXONNXPipeline,
             YOLOXPyTorchPipeline,
             YOLOXTensorRTPipeline,
@@ -501,7 +501,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         """Create YOLOX Pipeline for the specified backend."""
         import os
 
-        from autoware_ml.deployment.pipelines.yolox import (
+        from deployment.pipelines.yolox import (
             YOLOXONNXPipeline,
             YOLOXPyTorchPipeline,
             YOLOXTensorRTPipeline,

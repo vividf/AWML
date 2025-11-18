@@ -16,11 +16,11 @@ from mmengine.config import Config
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from autoware_ml.deployment.core import BaseDeploymentConfig, setup_logging
-from autoware_ml.deployment.core.base_config import parse_base_args
-from autoware_ml.deployment.exporters import CenterPointONNXExporter, CenterPointTensorRTExporter
-from autoware_ml.deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapper
-from autoware_ml.deployment.runners import CenterPointDeploymentRunner
+from deployment.core import BaseDeploymentConfig, setup_logging
+from deployment.core.base_config import parse_base_args
+from deployment.exporters import CenterPointONNXExporter, CenterPointTensorRTExporter
+from deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapper
+from deployment.runners import CenterPointDeploymentRunner
 from projects.CenterPoint.deploy.data_loader import CenterPointDataLoader
 from projects.CenterPoint.deploy.evaluator import CenterPointEvaluator
 

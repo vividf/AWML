@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from mmengine.config import Config
 
-from autoware_ml.deployment.core import BaseDataLoader, build_preprocessing_pipeline
+from deployment.core import BaseDataLoader, build_preprocessing_pipeline
 
 
 class YOLOXOptElanDataLoader(BaseDataLoader):
@@ -166,8 +166,7 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
         # Validate expected format (MMDet 3.x format)
         if "inputs" not in results:
             raise ValueError(
-                f"Expected 'inputs' key in pipeline results (MMDet 3.x format). "
-                f"Found keys: {list(results.keys())}"
+                f"Expected 'inputs' key in pipeline results (MMDet 3.x format). " f"Found keys: {list(results.keys())}"
             )
 
         inputs = results["inputs"]
@@ -178,18 +177,14 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
         elif isinstance(inputs, np.ndarray):
             tensor = torch.from_numpy(inputs)
         else:
-            raise ValueError(
-                f"Unexpected type for 'inputs': {type(inputs)}. "
-                f"Expected torch.Tensor or np.ndarray."
-            )
+            raise ValueError(f"Unexpected type for 'inputs': {type(inputs)}. " f"Expected torch.Tensor or np.ndarray.")
 
         # Ensure batch dimension
         if tensor.ndim == 3:
             tensor = tensor.unsqueeze(0)
         elif tensor.ndim != 4:
             raise ValueError(
-                f"Expected tensor with 3 or 4 dimensions (C, H, W) or (B, C, H, W), "
-                f"got shape {tensor.shape}"
+                f"Expected tensor with 3 or 4 dimensions (C, H, W) or (B, C, H, W), " f"got shape {tensor.shape}"
             )
 
         # Convert to float32 if still in uint8 (ByteTensor)
@@ -202,23 +197,22 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
     def _calculate_scale_factor(self, orig_height: int, orig_width: int) -> List[float]:
         """
         Calculate scale factor for coordinate transformation.
-        
+
         This matches MMDetection's Resize transform behavior.
         """
         # Model input size is 960x960 for YOLOX_opt_elan
         target_size = (960, 960)
-        
+
         # Calculate scale factors (same as MMDetection Resize with keep_ratio=True)
         scale_w = target_size[1] / orig_width
         scale_h = target_size[0] / orig_height
-        
+
         # Use the smaller scale to maintain aspect ratio
         scale = min(scale_w, scale_h)
-        
+
         # Return scale factor in format [scale_w, scale_h, scale_w, scale_h]
         # This matches MMDetection's PackDetInputs format
         return [scale, scale, scale, scale]
-
 
     def get_num_samples(self) -> int:
         """
@@ -228,7 +222,6 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
             Number of images in the dataset
         """
         return len(self.data_list)
-
 
     def get_ground_truth(self, index: int) -> Dict[str, Any]:
         """

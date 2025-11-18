@@ -48,7 +48,7 @@ YOLOXTensorRTPipeline (concrete, extends YOLOXDeploymentPipeline)
 ### Pipeline Implementation
 
 ```
-autoware_ml/deployment/pipelines/yolox/
+deployment/pipelines/yolox/
 ├── __init__.py                    ✅ Export all pipeline classes
 ├── yolox_pipeline.py              ✅ Base class for YOLOX (extends Detection2DPipeline)
 ├── yolox_pytorch.py               ✅ PyTorch backend implementation
@@ -74,7 +74,7 @@ projects/YOLOX_opt_elan/
 All pipelines now have the same interface:
 
 ```python
-from autoware_ml.deployment.pipelines.yolox import (
+from deployment.pipelines.yolox import (
     YOLOXPyTorchPipeline,
     YOLOXONNXPipeline,
     YOLOXTensorRTPipeline,
@@ -144,7 +144,7 @@ def run_model(self, preprocessed_input: torch.Tensor) -> np.ndarray:
 
 ```python
 from mmdet.apis import init_detector
-from autoware_ml.deployment.pipelines.yolox import YOLOXPyTorchPipeline
+from deployment.pipelines.yolox import YOLOXPyTorchPipeline
 import cv2
 
 # Load model
@@ -170,7 +170,7 @@ for pred in predictions:
 ### Example 2: ONNX Inference
 
 ```python
-from autoware_ml.deployment.pipelines.yolox import YOLOXONNXPipeline
+from deployment.pipelines.yolox import YOLOXONNXPipeline
 import cv2
 
 # Create pipeline
@@ -189,7 +189,7 @@ predictions, latency = pipeline.infer(image)
 ### Example 3: Cross-Backend Verification
 
 ```python
-from autoware_ml.deployment.pipelines.yolox import (
+from deployment.pipelines.yolox import (
     YOLOXPyTorchPipeline,
     YOLOXONNXPipeline,
     YOLOXTensorRTPipeline,
@@ -219,7 +219,7 @@ print(f"TensorRT: {len(tensorrt_preds)} detections, {tensorrt_latency:.2f}ms")
 ### Example 4: Benchmarking
 
 ```python
-from autoware_ml.deployment.pipelines.yolox import YOLOXTensorRTPipeline
+from deployment.pipelines.yolox import YOLOXTensorRTPipeline
 import cv2
 
 pipeline = YOLOXTensorRTPipeline(
@@ -243,7 +243,7 @@ print(f"Max latency: {stats['max_ms']:.2f} ms")
 
 ```python
 # Complex setup
-from autoware_ml.deployment.exporters import ONNXExporter
+from deployment.exporters import ONNXExporter
 
 exporter = ONNXExporter(model, ...)
 exporter.export(...)
@@ -264,7 +264,7 @@ tensorrt_output = execute_tensorrt(...)
 
 ```python
 # Simple and unified
-from autoware_ml.deployment.pipelines.yolox import YOLOXONNXPipeline
+from deployment.pipelines.yolox import YOLOXONNXPipeline
 
 pipeline = YOLOXONNXPipeline(onnx_path='model.onnx')
 
@@ -327,7 +327,7 @@ stats = pipeline.benchmark(image, num_iterations=100)  # Benchmarking
 ✅ **Use the new pipeline architecture from the start**
 
 ```python
-from autoware_ml.deployment.pipelines.yolox import (
+from deployment.pipelines.yolox import (
     YOLOXPyTorchPipeline,
     YOLOXONNXPipeline,
     YOLOXTensorRTPipeline,
@@ -340,7 +340,7 @@ from autoware_ml.deployment.pipelines.yolox import (
 
 ### What Was Done
 
-1. ✅ Created 4 new pipeline files under `autoware_ml/deployment/pipelines/yolox/`
+1. ✅ Created 4 new pipeline files under `deployment/pipelines/yolox/`
 2. ✅ Implemented PyTorch, ONNX, and TensorRT backends
 3. ✅ Created `main_pipeline.py` demonstrating the new architecture
 4. ✅ Maintained backward compatibility with existing code
@@ -364,4 +364,3 @@ from autoware_ml.deployment.pipelines.yolox import (
 | Interface consistency | **100%** (all backends identical) |
 
 **This is a highly successful migration that significantly improves code quality and maintainability!** 🎉
-

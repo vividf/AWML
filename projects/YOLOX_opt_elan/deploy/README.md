@@ -254,6 +254,6 @@ custom_imports = dict(
 
 ## References
 
-- [Autoware ML Deployment Framework](../../../autoware_ml/deployment/README.md)
+- [Autoware ML Deployment Framework](../../../deployment/README.md)
 - [YOLOX Paper](https://arxiv.org/abs/2107.08430)
 - [T4Dataset Documentation](../../../docs/design/architecture_dataset.md)

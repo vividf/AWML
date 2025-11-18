@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from mmengine.config import Config
 
-from autoware_ml.deployment.core import BaseDataLoader, build_preprocessing_pipeline
+from deployment.core import BaseDataLoader, build_preprocessing_pipeline
 
 
 class CenterPointDataLoader(BaseDataLoader):
@@ -137,21 +137,21 @@ class CenterPointDataLoader(BaseDataLoader):
             # Try alternative key
             lidar_path = info.get("lidar_path", info.get("velodyne_path", ""))
             lidar_points = {"lidar_path": lidar_path}
-        
+
         # Add data_root to lidar_path if it's relative
-        if 'lidar_path' in lidar_points and not lidar_points['lidar_path'].startswith('/'):
+        if "lidar_path" in lidar_points and not lidar_points["lidar_path"].startswith("/"):
             # Get data_root from model config
-            data_root = getattr(self.model_cfg, 'data_root', 'data/t4dataset/')
+            data_root = getattr(self.model_cfg, "data_root", "data/t4dataset/")
             # Ensure data_root ends with '/'
-            if not data_root.endswith('/'):
-                data_root += '/'
+            if not data_root.endswith("/"):
+                data_root += "/"
             # Check if the path already starts with data_root to avoid duplication
-            if not lidar_points['lidar_path'].startswith(data_root):
-                lidar_points['lidar_path'] = data_root + lidar_points['lidar_path']
+            if not lidar_points["lidar_path"].startswith(data_root):
+                lidar_points["lidar_path"] = data_root + lidar_points["lidar_path"]
 
         # Extract annotations (if available)
         instances = info.get("instances", [])
-        
+
         sample = {
             "lidar_points": lidar_points,
             "sample_idx": info.get("sample_idx", index),
@@ -163,14 +163,14 @@ class CenterPointDataLoader(BaseDataLoader):
             # Extract 3D bounding boxes and labels from instances
             gt_bboxes_3d = []
             gt_labels_3d = []
-            
+
             for instance in instances:
                 if "bbox_3d" in instance and "bbox_label_3d" in instance:
                     # Check if bbox is valid
                     if instance.get("bbox_3d_isvalid", True):
                         gt_bboxes_3d.append(instance["bbox_3d"])
                         gt_labels_3d.append(instance["bbox_label_3d"])
-            
+
             if gt_bboxes_3d:
                 sample["gt_bboxes_3d"] = np.array(gt_bboxes_3d, dtype=np.float32)
                 sample["gt_labels_3d"] = np.array(gt_labels_3d, dtype=np.int64)
@@ -205,17 +205,17 @@ class CenterPointDataLoader(BaseDataLoader):
         results = self.pipeline(sample)
 
         # Validate expected format (MMDet3D 3.x format)
-        if 'inputs' not in results:
+        if "inputs" not in results:
             raise ValueError(
                 f"Expected 'inputs' key in pipeline results (MMDet3D 3.x format). "
                 f"Found keys: {list(results.keys())}. "
                 f"Please ensure your test pipeline includes Pack3DDetInputs transform."
             )
 
-        pipeline_inputs = results['inputs']
+        pipeline_inputs = results["inputs"]
 
         # For CenterPoint, pipeline should output 'points' (voxelization happens in data_preprocessor)
-        if 'points' not in pipeline_inputs:
+        if "points" not in pipeline_inputs:
             available_keys = list(pipeline_inputs.keys())
             raise ValueError(
                 f"Expected 'points' key in pipeline inputs for CenterPoint. "
@@ -225,7 +225,7 @@ class CenterPointDataLoader(BaseDataLoader):
             )
 
         # Extract points
-        points = pipeline_inputs['points']
+        points = pipeline_inputs["points"]
         if isinstance(points, torch.Tensor):
             points_tensor = points.to(self.device)
         elif isinstance(points, np.ndarray):
@@ -239,8 +239,7 @@ class CenterPointDataLoader(BaseDataLoader):
                     points_tensor = torch.from_numpy(points[0]).to(self.device)
                 else:
                     raise ValueError(
-                        f"Unexpected type for points[0]: {type(points[0])}. "
-                        f"Expected torch.Tensor or np.ndarray."
+                        f"Unexpected type for points[0]: {type(points[0])}. " f"Expected torch.Tensor or np.ndarray."
                     )
             else:
                 raise ValueError("Empty points list in pipeline output.")
@@ -253,14 +252,10 @@ class CenterPointDataLoader(BaseDataLoader):
         # Validate points shape
         if points_tensor.ndim != 2:
             raise ValueError(
-                f"Expected points tensor with shape [N, point_features], "
-                f"got shape {points_tensor.shape}"
+                f"Expected points tensor with shape [N, point_features], " f"got shape {points_tensor.shape}"
             )
 
         return {"points": points_tensor}
-
-
-
 
     def _load_point_cloud(self, lidar_path: str) -> np.ndarray:
         """
@@ -291,8 +286,6 @@ class CenterPointDataLoader(BaseDataLoader):
             Number of samples in the dataset
         """
         return len(self.data_infos)
-
-
 
     def get_ground_truth(self, index: int) -> Dict[str, Any]:
         """

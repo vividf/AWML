@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from mmengine.config import Config
 
-from autoware_ml.deployment.core import (
+from deployment.core import (
     BaseEvaluator,
     EvalResultDict,
     ModelSpec,
@@ -478,7 +478,7 @@ class CenterPointEvaluator(BaseEvaluator):
         """Create Pipeline instance for the specified backend."""
         try:
             # Import Pipeline classes
-            from autoware_ml.deployment.pipelines import (
+            from deployment.pipelines import (
                 CenterPointONNXPipeline,
                 CenterPointPyTorchPipeline,
                 CenterPointTensorRTPipeline,
