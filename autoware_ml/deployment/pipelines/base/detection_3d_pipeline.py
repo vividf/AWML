@@ -5,15 +5,14 @@ This module provides the base class for 3D object detection pipelines,
 implementing common functionality for point cloud-based detection models like CenterPoint.
 """
 
-from abc import abstractmethod
-from typing import List, Dict, Tuple, Any
 import logging
+from abc import abstractmethod
+from typing import Any, Dict, List, Tuple
 
-import torch
 import numpy as np
+import torch
 
 from autoware_ml.deployment.pipelines.base.base_pipeline import BaseDeploymentPipeline
-
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +20,12 @@ logger = logging.getLogger(__name__)
 class Detection3DPipeline(BaseDeploymentPipeline):
     """
     Base class for 3D object detection pipelines.
-    
+
     Provides common functionality for 3D detection tasks including:
     - Point cloud preprocessing (voxelization, normalization)
     - Postprocessing (NMS, coordinate transformation)
     - Standard 3D detection output format
-    
+
     Expected output format:
         List[Dict] where each dict contains:
         {
@@ -36,20 +35,20 @@ class Detection3DPipeline(BaseDeploymentPipeline):
             'class_name': str                     # Class name (optional)
         }
     """
-    
+
     def __init__(
-        self, 
+        self,
         model: Any,
         device: str = "cpu",
         num_classes: int = 10,
         class_names: List[str] = None,
         point_cloud_range: List[float] = None,
         voxel_size: List[float] = None,
-        backend_type: str = "unknown"
+        backend_type: str = "unknown",
     ):
         """
         Initialize 3D detection pipeline.
-        
+
         Args:
             model: Model object
             device: Device for inference
@@ -59,29 +58,25 @@ class Detection3DPipeline(BaseDeploymentPipeline):
             voxel_size: Voxel size [vx, vy, vz]
             backend_type: Backend type
         """
-        super().__init__(model, device, task_type="detection_3d", backend_type=backend_type)
-        
+        super().__init__(model, device, task_type="detection3d", backend_type=backend_type)
+
         self.num_classes = num_classes
         self.class_names = class_names or [f"class_{i}" for i in range(num_classes)]
         self.point_cloud_range = point_cloud_range
         self.voxel_size = voxel_size
-    
-    def preprocess(
-        self, 
-        points: torch.Tensor,
-        **kwargs
-    ) -> Dict[str, torch.Tensor]:
+
+    def preprocess(self, points: torch.Tensor, **kwargs) -> Dict[str, torch.Tensor]:
         """
         Standard 3D detection preprocessing.
-        
+
         Note: For 3D detection, preprocessing is often model-specific
         (voxelization, pillar generation, etc.), so this method should
         be overridden by specific implementations.
-        
+
         Args:
             points: Input point cloud [N, point_features]
             **kwargs: Additional preprocessing parameters
-            
+
         Returns:
             Dictionary containing preprocessed data
         """
@@ -89,22 +84,22 @@ class Detection3DPipeline(BaseDeploymentPipeline):
             "preprocess() must be implemented by specific 3D detector pipeline.\n"
             "3D detection preprocessing varies significantly between models."
         )
-    
+
     def run_model(self, preprocessed_input: Any) -> Any:
         """
         Run 3D detection model (backend-specific).
-        
+
         **Note**: This method is intentionally not abstract for 3D detection pipelines.
-        
+
         Most 3D detection models use a **multi-stage inference pipeline** rather than
         a single model call:
-        
+
         ```
         Points → Voxel Encoder → Middle Encoder → Backbone/Head → Postprocess
         ```
-        
+
         For 3D detection pipelines
-        
+
         *Implement `run_model()` (Recommended)*
         - Implement all stages in `run_model()`:
           - `run_voxel_encoder()` - backend-specific voxel encoding
@@ -113,17 +108,17 @@ class Detection3DPipeline(BaseDeploymentPipeline):
         - Return final head outputs
         - Use base class `infer()` for unified pipeline orchestration
 
-        
+
         Args:
             preprocessed_input: Preprocessed data (usually Dict from preprocess())
-            
+
         Returns:
             Model output (backend-specific format, usually List[torch.Tensor] for head outputs)
-            
+
         Raises:
             NotImplementedError: Default implementation raises error.
                 Subclasses should implement `run_model()` with all stages.
-                
+
         Example:
             See `CenterPointDeploymentPipeline.run_model()` for a complete multi-stage
             implementation example.
@@ -135,23 +130,19 @@ class Detection3DPipeline(BaseDeploymentPipeline):
             "Please implement run_model() with all stages. "
             "See CenterPointDeploymentPipeline.run_model() for an example implementation."
         )
-    
-    def postprocess(
-        self, 
-        model_output: Any,
-        metadata: Dict = None
-    ) -> List[Dict]:
+
+    def postprocess(self, model_output: Any, metadata: Dict = None) -> List[Dict]:
         """
         Standard 3D detection postprocessing.
-        
+
         Note: For 3D detection, postprocessing is often model-specific
         (CenterPoint uses predict_by_feat, PointPillars uses different logic),
         so this method should be overridden by specific implementations.
-        
+
         Args:
             model_output: Raw model output
             metadata: Preprocessing metadata
-            
+
         Returns:
             List of 3D detections in standard format
         """
@@ -159,4 +150,3 @@ class Detection3DPipeline(BaseDeploymentPipeline):
             "postprocess() must be implemented by specific 3D detector pipeline.\n"
             "3D detection postprocessing varies significantly between models."
         )
-
