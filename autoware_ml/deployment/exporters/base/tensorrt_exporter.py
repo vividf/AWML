@@ -174,7 +174,9 @@ class TensorRTExporter(BaseExporter):
                 # CenterPoint voxel encoder input: input_features
                 print("#################### DEBUGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG ########################")
                 print("!!!!!!!!!!!!!!!!!!VOXEL ENCODER!!!!!!!!!!!!!!!!!!!")
+                print("input shape: ", input_shape)
                 # VIVID(VOXEL ENCODER)
+                # VIVID(input shape:  [10000, 32, 11])
                 min_shape = [1000, 32, 11]  # Minimum voxels
                 opt_shape = [10000, 32, 11]  # Optimal voxels
                 max_shape = [50000, 32, 11]  # Maximum voxels
@@ -185,6 +187,8 @@ class TensorRTExporter(BaseExporter):
             ):  # CenterPoint backbone input: (batch, 32, height, width)
                 print("#################### DEBUGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG ########################")
                 print("!!!!!!!!!!!!!!!!!!BACKBONE!!!!!!!!!!!!!!!!!!!")
+                print("input shape: ", input_shape)
+                # VIVID(input shape:  [1, 32, 200, 200])
                 # VIVID(BACKBONE)
                 # Backbone input: spatial_features - use dynamic dimensions for H, W
                 # NOTE: Actual evaluation data can produce up to 760x760, so use 800x800 for max_shape

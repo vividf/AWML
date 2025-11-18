@@ -23,16 +23,13 @@ export = dict(
     # - 'both' : export PyTorch -> ONNX -> TensorRT
     # - 'none' : no export (only evaluation / verification on existing artifacts)
     mode="both",
-
     # ---- Common options ----------------------------------------------------
     work_dir="work_dirs/centerpoint_deployment",
-
     # ---- Source for ONNX export --------------------------------------------
     # Rule:
     # - mode in ['onnx', 'both']  -> checkpoint_path MUST be provided
     # - mode == 'trt'             -> checkpoint_path is ignored
     checkpoint_path="work_dirs/centerpoint/best_checkpoint.pth",
-
     # ---- ONNX source when building TensorRT only ---------------------------
     # Rule:
     # - mode == 'trt'  -> onnx_path MUST be provided (file or directory)
@@ -47,7 +44,7 @@ runtime_io = dict(
     # Path to info.pkl file
     info_file="data/t4dataset/info/t4dataset_j6gen2_infos_val.pkl",
     # Sample index for export (use first sample)
-    sample_idx=0,
+    sample_idx=1,
 )
 
 # ============================================================================
@@ -58,22 +55,18 @@ model_io = dict(
     input_name="voxels",
     input_shape=(32, 4),  # (max_points_per_voxel, point_dim); batch dim added automatically
     input_dtype="float32",
-
     # Additional inputs for 3D detection
     additional_inputs=[
-        dict(name="num_points", shape=(-1,), dtype="int32"),     # (num_voxels,)
-        dict(name="coors", shape=(-1, 4), dtype="int32"),        # (num_voxels, 4) = (batch, z, y, x)
+        dict(name="num_points", shape=(-1,), dtype="int32"),  # (num_voxels,)
+        dict(name="coors", shape=(-1, 4), dtype="int32"),  # (num_voxels, 4) = (batch, z, y, x)
     ],
-
     # Outputs (head tensors)
     output_name="reg",  # Primary output name
     additional_outputs=["height", "dim", "rot", "vel", "hm"],
-
     # Batch size configuration
     # - int  : fixed batch size
     # - None : dynamic batch size with dynamic_axes
     batch_size=None,
-
     # Dynamic axes when batch_size=None
     dynamic_axes={
         "voxels": {0: "num_voxels"},
@@ -118,9 +111,8 @@ backend_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=1,      # Number of samples to evaluate
+    num_samples=1,  # Number of samples to evaluate
     verbose=True,
-
     # Decide which backends to evaluate and on which devices.
     # Note:
     # - tensorrt.device MUST be a CUDA device (e.g., 'cuda:0')
@@ -132,7 +124,6 @@ evaluation = dict(
             device="cuda:0",  # or 'cpu'
             checkpoint="work_dirs/centerpoint/best_checkpoint.pth",
         ),
-
         # ONNX evaluation
         onnx=dict(
             enabled=True,
@@ -140,7 +131,6 @@ evaluation = dict(
             # If None: pipeline will infer from export.work_dir / onnx_config.save_file
             model_dir=None,
         ),
-
         # TensorRT evaluation
         tensorrt=dict(
             enabled=True,
@@ -160,21 +150,18 @@ evaluation = dict(
 verification = dict(
     # Master switch to enable/disable verification
     enabled=True,
-
     tolerance=1e-1,
     num_verify_samples=1,
-
     # Device aliases for flexible device management
-    # 
+    #
     # Benefits of using aliases:
     # - Change all CPU verifications to "cuda:1"? Just update devices["cpu"] = "cuda:1"
     # - Switch ONNX verification device? Just update devices["cuda"] = "cuda:1"
     # - Scenarios reference these aliases (e.g., ref_device="cpu", test_device="cuda")
     devices=dict(
-        cpu="cpu",      # Alias for CPU device
+        cpu="cpu",  # Alias for CPU device
         cuda="cuda:0",  # Alias for CUDA device (can be changed to cuda:1, cuda:2, etc.)
     ),
-
     # Verification scenarios per export mode
     #
     # Each policy is a list of comparison pairs:
