@@ -35,7 +35,7 @@ class BaseDeploymentPipeline(ABC):
     Attributes:
         model: Model object (PyTorch model, ONNX session, TensorRT engine, etc.)
         device: Device for inference
-        task_type: Type of task ("detection_2d", "detection_3d", "classification", etc.)
+        task_type: Type of task ("detection2d", "detection3d", "classification", etc.)
         backend_type: Type of backend ("pytorch", "onnx", "tensorrt", etc.)
     """
 
@@ -53,6 +53,7 @@ class BaseDeploymentPipeline(ABC):
         self.device = torch.device(device) if isinstance(device, str) else device
         self.task_type = task_type
         self.backend_type = backend_type
+        self._stage_latencies: Dict[str, float] = {}
 
         logger.info(f"Initialized {self.__class__.__name__} on device: {self.device}")
 
@@ -145,7 +146,7 @@ class BaseDeploymentPipeline(ABC):
         latency_breakdown: Dict[str, float] = {}
 
         try:
-            start_time = time.time()
+            start_time = time.perf_counter()
 
             # 1. Preprocess
             preprocessed = self.preprocess(input_data, **kwargs)
@@ -156,7 +157,7 @@ class BaseDeploymentPipeline(ABC):
             if isinstance(preprocessed, tuple) and len(preprocessed) == 2 and isinstance(preprocessed[1], dict):
                 model_input, preprocess_metadata = preprocessed
 
-            preprocess_time = time.time()
+            preprocess_time = time.perf_counter()
             latency_breakdown["preprocessing_ms"] = (preprocess_time - start_time) * 1000
 
             # Merge caller metadata (if any) with preprocess metadata (preprocess takes precedence by default)
@@ -165,9 +166,9 @@ class BaseDeploymentPipeline(ABC):
             merged_metadata.update(preprocess_metadata)
 
             # 2. Run model (backend-specific)
-            model_start = time.time()
+            model_start = time.perf_counter()
             model_output = self.run_model(model_input)
-            model_time = time.time()
+            model_time = time.perf_counter()
             latency_breakdown["model_ms"] = (model_time - model_start) * 1000
 
             # Merge stage-wise latencies if available (for multi-stage pipelines like CenterPoint)
@@ -176,82 +177,23 @@ class BaseDeploymentPipeline(ABC):
                 # Clear for next inference
                 self._stage_latencies = {}
 
-            total_latency = (time.time() - start_time) * 1000
+            total_latency = (time.perf_counter() - start_time) * 1000
 
             # 3. Postprocess (optional)
             if return_raw_outputs:
                 return model_output, total_latency, latency_breakdown
             else:
-                postprocess_start = time.time()
+                postprocess_start = time.perf_counter()
                 predictions = self.postprocess(model_output, merged_metadata)
-                postprocess_time = time.time()
+                postprocess_time = time.perf_counter()
                 latency_breakdown["postprocessing_ms"] = (postprocess_time - postprocess_start) * 1000
 
-                total_latency = (time.time() - start_time) * 1000
+                total_latency = (time.perf_counter() - start_time) * 1000
                 return predictions, total_latency, latency_breakdown
 
-        except Exception as e:
-            logger.error(f"Inference failed: {e}")
-            import traceback
-
-            traceback.print_exc()
+        except Exception:
+            logger.exception("Inference failed.")
             raise
-
-    def warmup(self, input_data: Any, num_iterations: int = 10):
-        """
-        Warmup the model with dummy inputs.
-
-        Useful for stabilizing latency measurements, especially for GPU models.
-
-        Args:
-            input_data: Sample input for warmup
-            num_iterations: Number of warmup iterations
-        """
-        logger.info(f"Warming up {self.__class__.__name__} with {num_iterations} iterations...")
-
-        for i in range(num_iterations):
-            try:
-                self.infer(input_data)
-            except Exception as e:
-                logger.warning(f"Warmup iteration {i} failed: {e}")
-
-        logger.info("Warmup completed")
-
-    def benchmark(self, input_data: Any, num_iterations: int = 100) -> Dict[str, float]:
-        """
-        Benchmark inference performance.
-
-        Args:
-            input_data: Sample input for benchmarking
-            num_iterations: Number of benchmark iterations
-
-        Returns:
-            Dictionary with latency statistics (mean, std, min, max)
-        """
-        logger.info(f"Benchmarking {self.__class__.__name__} with {num_iterations} iterations...")
-
-        # Warmup first
-        self.warmup(input_data, num_iterations=10)
-
-        # Benchmark
-        latencies = []
-        for _ in range(num_iterations):
-            _, latency, _ = self.infer(input_data)
-            latencies.append(latency)
-
-        import numpy as np
-
-        results = {
-            "mean_ms": np.mean(latencies),
-            "std_ms": np.std(latencies),
-            "min_ms": np.min(latencies),
-            "max_ms": np.max(latencies),
-            "median_ms": np.median(latencies),
-        }
-
-        logger.info(f"Benchmark results: {results['mean_ms']:.2f} ± {results['std_ms']:.2f} ms")
-
-        return results
 
     def __repr__(self):
         return (
@@ -266,6 +208,10 @@ class BaseDeploymentPipeline(ABC):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
+        """Context manager exit.
+
+        Subclasses can override this to release backend resources
+        (e.g., TensorRT contexts, ONNX sessions, CUDA streams).
+        """
         # Cleanup resources if needed
         pass

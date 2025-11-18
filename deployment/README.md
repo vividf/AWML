@@ -22,7 +22,7 @@ The AWML Deployment Framework provides a standardized approach to model deployme
 
 ### Design Principles
 
-1. **Unified Interface**: Single entry point (`DeploymentRunner`) for all deployment tasks
+1. **Unified Interface**: Shared base runner (`BaseDeploymentRunner`) with project-specific subclasses
 2. **Task-Agnostic Core**: Base classes that work across detection, classification, and segmentation
 3. **Backend Flexibility**: Support for PyTorch, ONNX, and TensorRT backends
 4. **Pipeline Architecture**: Shared preprocessing/postprocessing with backend-specific inference
@@ -43,9 +43,9 @@ The AWML Deployment Framework provides a standardized approach to model deployme
 └──────────────────┬──────────────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────────────┐
-│           DeploymentRunner (Unified Runner)             │
+│ BaseDeploymentRunner + Project Runners                  │
 │  - Coordinates export → verification → evaluation      │
-│  - Manages model loading, export, verification         │
+│  - Each project extends the base class for custom logic│
 └──────────────────┬──────────────────────────────────────┘
                    │
         ┌──────────┴──────────┐
@@ -71,20 +71,19 @@ The AWML Deployment Framework provides a standardized approach to model deployme
 
 ### Core Components
 
-#### 1. **DeploymentRunner**
-The unified runner that orchestrates the complete deployment workflow:
+#### 1. **BaseDeploymentRunner & Project Runners**
+`BaseDeploymentRunner` orchestrates the complete deployment workflow, while each project provides a thin subclass (`CenterPointDeploymentRunner`, `YOLOXDeploymentRunner`, `CalibrationDeploymentRunner`) that plugs in model-specific logic.
 
-- **Model Loading**: Loads PyTorch models from checkpoints
-- **Export**: Exports to ONNX and/or TensorRT using project-specific exporters
+- **Model Loading**: Implemented by each project runner to load PyTorch checkpoints
+- **Export**: Uses injected ONNX/TensorRT exporters that encapsulate wrapper logic
 - **Verification**: Scenario-based verification across backends
 - **Evaluation**: Performance metrics and latency statistics
 
 **Required Parameters:**
 - `onnx_exporter`: Project-specific ONNX exporter instance (e.g., `YOLOXONNXExporter`, `CenterPointONNXExporter`)
 - `tensorrt_exporter`: Project-specific TensorRT exporter instance (e.g., `YOLOXTensorRTExporter`, `CenterPointTensorRTExporter`)
-- `model_wrapper`: Project-specific model wrapper class (e.g., `YOLOXONNXWrapper`, `CenterPointONNXWrapper`)
 
-All exporters and wrappers are explicitly created and passed to the runner, following the dependency injection pattern.
+Exporters receive their corresponding `model_wrapper` during construction. Runners never implicitly create exporters/wrappers—everything is injected for clarity and testability.
 
 #### 2. **Base Classes**
 
@@ -108,11 +107,11 @@ All exporters and wrappers are explicitly created and passed to the runner, foll
   - **`ONNXExporter`**: Standard ONNX export with model wrapping support
   - **`TensorRTExporter`**: TensorRT engine building with precision policies
   - **`BaseModelWrapper`**: Abstract base class for model wrappers
-  - **`IdentityWrapper`**: Default wrapper that doesn't modify model output
+  - **`IdentityWrapper`**: Provided wrapper that doesn't modify model output
 
 - **Project-Specific Exporters**:
   - **YOLOX** (`exporters/yolox/`):
-    - **`YOLOXONNXExporter`**: Inherits base ONNX exporter (uses `YOLOXONNXWrapper`)
+    - **`YOLOXONNXExporter`**: Inherits base ONNX exporter (requires `YOLOXONNXWrapper`)
     - **`YOLOXTensorRTExporter`**: Inherits base TensorRT exporter
     - **`YOLOXONNXWrapper`**: Transforms YOLOX output to Tier4-compatible format
   - **CenterPoint** (`exporters/centerpoint/`):
@@ -120,7 +119,7 @@ All exporters and wrappers are explicitly created and passed to the runner, foll
     - **`CenterPointTensorRTExporter`**: Extends base exporter for multi-file TensorRT export
     - **`CenterPointONNXWrapper`**: Identity wrapper (no transformation needed)
   - **Calibration** (`exporters/calibration/`):
-    - **`CalibrationONNXExporter`**: Inherits base ONNX exporter (uses `IdentityWrapper`)
+    - **`CalibrationONNXExporter`**: Inherits base ONNX exporter (requires `IdentityWrapper`)
     - **`CalibrationTensorRTExporter`**: Inherits base TensorRT exporter
     - **`CalibrationONNXWrapper`**: Identity wrapper (no transformation needed)
 
@@ -230,42 +229,48 @@ python projects/CalibrationStatusClassification/deploy/main.py \
     checkpoint.pth
 ```
 
-### Creating DeploymentRunner
+### Creating a Project Runner
 
-All projects follow the dependency injection pattern, explicitly creating exporters and wrappers:
+All projects follow the dependency injection pattern: explicitly create exporters (with their wrappers) and pass them to a project-specific runner subclass of `BaseDeploymentRunner`. Example (YOLOX):
 
 ```python
-from autoware_ml.deployment.runners import DeploymentRunner
-from autoware_ml.deployment.exporters.yolox.onnx_exporter import YOLOXONNXExporter
-from autoware_ml.deployment.exporters.yolox.tensorrt_exporter import YOLOXTensorRTExporter
-from autoware_ml.deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
+from deployment.runners import YOLOXDeploymentRunner
+from deployment.exporters.yolox.onnx_exporter import YOLOXONNXExporter
+from deployment.exporters.yolox.tensorrt_exporter import YOLOXTensorRTExporter
+from deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
 
 # Create project-specific exporters
 onnx_settings = config.get_onnx_settings()
 trt_settings = config.get_tensorrt_settings()
 
-onnx_exporter = YOLOXONNXExporter(onnx_settings, logger)
-tensorrt_exporter = YOLOXTensorRTExporter(trt_settings, logger)
+onnx_exporter = YOLOXONNXExporter(
+    onnx_settings,
+    model_wrapper=YOLOXONNXWrapper,
+    logger=logger,
+)
+tensorrt_exporter = YOLOXTensorRTExporter(
+    trt_settings,
+    model_wrapper=YOLOXONNXWrapper,
+    logger=logger,
+)
 
-# Create runner with required exporters and wrapper
-runner = DeploymentRunner(
+# Instantiate the project runner
+runner = YOLOXDeploymentRunner(
     data_loader=data_loader,
     evaluator=evaluator,
     config=config,
     model_cfg=model_cfg,
     logger=logger,
-    load_model_fn=load_pytorch_model,
     onnx_exporter=onnx_exporter,        # Required
     tensorrt_exporter=tensorrt_exporter, # Required
-    model_wrapper=YOLOXONNXWrapper,     # Required
 )
 ```
 
 **Key Points:**
-- All exporters and wrappers must be explicitly created
-- `onnx_exporter`, `tensorrt_exporter`, and `model_wrapper` are **required** (cannot be None)
-- Each project uses its own specific exporter and wrapper classes
-- This ensures clear dependencies and better type safety
+- Exporters (and their wrappers) must be explicitly created in the entry point
+- `onnx_exporter` and `tensorrt_exporter` are **required** arguments for every runner
+- Each project uses its own specific exporter, wrapper, data loader, evaluator, and runner class
+- This explicit wiring keeps dependencies clear and improves testability
 
 ### Command-Line Arguments
 
@@ -422,10 +427,10 @@ See project-specific configs:
 **Key Files:**
 - `projects/CenterPoint/deploy/main.py`
 - `projects/CenterPoint/deploy/evaluator.py`
-- `autoware_ml/deployment/pipelines/centerpoint/`
-- `autoware_ml/deployment/exporters/centerpoint/onnx_exporter.py`
-- `autoware_ml/deployment/exporters/centerpoint/tensorrt_exporter.py`
-- `autoware_ml/deployment/exporters/centerpoint/model_wrappers.py`
+- `deployment/pipelines/centerpoint/`
+- `deployment/exporters/centerpoint/onnx_exporter.py`
+- `deployment/exporters/centerpoint/tensorrt_exporter.py`
+- `deployment/exporters/centerpoint/model_wrappers.py`
 
 **Pipeline Structure:**
 ```
@@ -441,17 +446,17 @@ run_backbone_head() → postprocess()
 - ReLU6 → ReLU replacement for ONNX compatibility
 
 **Exporter and Wrapper:**
-- `YOLOXONNXExporter`: Inherits base ONNX exporter, uses `YOLOXONNXWrapper` by default
+- `YOLOXONNXExporter`: Inherits base ONNX exporter and requires explicit `YOLOXONNXWrapper`
 - `YOLOXTensorRTExporter`: Inherits base TensorRT exporter
 - `YOLOXONNXWrapper`: Transforms output from `(1, 8, 120, 120)` to `(1, 18900, 13)` format
 
 **Key Files:**
 - `projects/YOLOX_opt_elan/deploy/main.py`
 - `projects/YOLOX_opt_elan/deploy/evaluator.py`
-- `autoware_ml/deployment/pipelines/yolox/`
-- `autoware_ml/deployment/exporters/yolox/onnx_exporter.py`
-- `autoware_ml/deployment/exporters/yolox/tensorrt_exporter.py`
-- `autoware_ml/deployment/exporters/yolox/model_wrappers.py`
+- `deployment/pipelines/yolox/`
+- `deployment/exporters/yolox/onnx_exporter.py`
+- `deployment/exporters/yolox/tensorrt_exporter.py`
+- `deployment/exporters/yolox/model_wrappers.py`
 
 **Pipeline Structure:**
 ```
@@ -473,10 +478,10 @@ preprocess() → run_model() → postprocess()
 **Key Files:**
 - `projects/CalibrationStatusClassification/deploy/main.py`
 - `projects/CalibrationStatusClassification/deploy/evaluator.py`
-- `autoware_ml/deployment/pipelines/calibration/`
-- `autoware_ml/deployment/exporters/calibration/onnx_exporter.py`
-- `autoware_ml/deployment/exporters/calibration/tensorrt_exporter.py`
-- `autoware_ml/deployment/exporters/calibration/model_wrappers.py`
+- `deployment/pipelines/calibration/`
+- `deployment/exporters/calibration/onnx_exporter.py`
+- `deployment/exporters/calibration/tensorrt_exporter.py`
+- `deployment/exporters/calibration/model_wrappers.py`
 
 **Pipeline Structure:**
 ```
@@ -649,7 +654,7 @@ evaluation = dict(
 ## File Structure
 
 ```
-autoware_ml/deployment/
+deployment/
 ├── core/                          # Core base classes
 │   ├── base_config.py            # Configuration management
 │   ├── base_data_loader.py        # Data loader interface
@@ -698,7 +703,10 @@ autoware_ml/deployment/
 │       └── calibration_tensorrt.py
 │
 └── runners/                       # Deployment runners
-    └── deployment_runner.py       # Unified deployment runner
+    ├── deployment_runner.py       # BaseDeploymentRunner
+    ├── centerpoint_runner.py      # CenterPointDeploymentRunner
+    ├── yolox_runner.py            # YOLOXDeploymentRunner
+    └── calibration_runner.py      # CalibrationDeploymentRunner
 
 projects/
 ├── CenterPoint/deploy/
@@ -736,7 +744,7 @@ projects/
 ### 2. Model Export
 
 - Always explicitly create project-specific exporters in `main.py`
-- Always provide required `model_wrapper` parameter to `DeploymentRunner`
+- Always provide required `model_wrapper` parameter when constructing exporters
 - Use project-specific wrapper classes (e.g., `YOLOXONNXWrapper`, `CenterPointONNXWrapper`)
 - Follow the unified architecture pattern: each model has `onnx_exporter.py`, `tensorrt_exporter.py`, and `model_wrappers.py`
 - Simple models: inherit base exporters, use custom wrappers if needed
@@ -759,7 +767,7 @@ exporters/{model}/
 **Pattern 1: Simple Models** (YOLOX, Calibration)
 - Inherit base exporters (no special logic needed)
 - Use custom wrappers if output format transformation is required
-- Example: `YOLOXONNXExporter` inherits `ONNXExporter`, uses `YOLOXONNXWrapper`
+- Example: `YOLOXONNXExporter` inherits `ONNXExporter`, requires `YOLOXONNXWrapper`
 
 **Pattern 2: Complex Models** (CenterPoint)
 - Extend base exporters for special requirements (e.g., multi-file export)
@@ -771,21 +779,29 @@ exporters/{model}/
 All projects should follow this pattern:
 
 ```python
-# 1. Import project-specific exporters and wrappers
-from autoware_ml.deployment.exporters.yolox.onnx_exporter import YOLOXONNXExporter
-from autoware_ml.deployment.exporters.yolox.tensorrt_exporter import YOLOXTensorRTExporter
-from autoware_ml.deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
+# 1. Import project-specific exporters, wrappers, and runner
+from deployment.exporters.yolox.onnx_exporter import YOLOXONNXExporter
+from deployment.exporters.yolox.tensorrt_exporter import YOLOXTensorRTExporter
+from deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
+from deployment.runners import YOLOXDeploymentRunner
 
 # 2. Create exporters with settings
-onnx_exporter = YOLOXONNXExporter(onnx_settings, logger)
-tensorrt_exporter = YOLOXTensorRTExporter(trt_settings, logger)
+onnx_exporter = YOLOXONNXExporter(
+    onnx_settings,
+    model_wrapper=YOLOXONNXWrapper,
+    logger=logger,
+)
+tensorrt_exporter = YOLOXTensorRTExporter(
+    trt_settings,
+    model_wrapper=YOLOXONNXWrapper,
+    logger=logger,
+)
 
-# 3. Pass to DeploymentRunner (all required)
-runner = DeploymentRunner(
+# 3. Pass exporters to the project runner (all required)
+runner = YOLOXDeploymentRunner(
     ...,
     onnx_exporter=onnx_exporter,        # Required
     tensorrt_exporter=tensorrt_exporter, # Required
-    model_wrapper=YOLOXONNXWrapper,     # Required
 )
 ```
 
@@ -878,7 +894,7 @@ When adding a new project:
 5. **Add entry point script**
    - Create `projects/{project}/deploy/main.py`
    - Follow dependency injection pattern: explicitly create exporters and wrappers
-   - Pass all required parameters to `DeploymentRunner`
+   - Pass exporters to the appropriate project runner (inherits `BaseDeploymentRunner`)
 
 6. **Update documentation**
    - Add project to README's "Project-Specific Implementations" section

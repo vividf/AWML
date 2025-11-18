@@ -7,36 +7,60 @@ Task-specific deployment configs should extend BaseDeploymentConfig.
 
 import argparse
 import logging
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
+import torch
 from mmengine.config import Config
 
 # Constants
-DEFAULT_VERIFICATION_TOLERANCE = 1e-3
 DEFAULT_WORKSPACE_SIZE = 1 << 30  # 1 GB
+
+
+class PrecisionPolicy(str, Enum):
+    """Precision policy options for TensorRT."""
+
+    AUTO = "auto"
+    FP16 = "fp16"
+    FP32_TF32 = "fp32_tf32"
+    EXPLICIT_INT8 = "explicit_int8"
+    STRONGLY_TYPED = "strongly_typed"
+
 
 # Precision policy mapping for TensorRT
 PRECISION_POLICIES = {
-    "auto": {},  # No special flags, TensorRT decides
-    "fp16": {"FP16": True},
-    "fp32_tf32": {"TF32": True},  # TF32 for FP32 operations
-    "explicit_int8": {"INT8": True},
-    "strongly_typed": {"STRONGLY_TYPED": True},  # Network creation flag
+    PrecisionPolicy.AUTO.value: {},  # No special flags, TensorRT decides
+    PrecisionPolicy.FP16.value: {"FP16": True},
+    PrecisionPolicy.FP32_TF32.value: {"TF32": True},  # TF32 for FP32 operations
+    PrecisionPolicy.EXPLICIT_INT8.value: {"INT8": True},
+    PrecisionPolicy.STRONGLY_TYPED.value: {"STRONGLY_TYPED": True},  # Network creation flag
 }
 
 
+@dataclass
 class ExportConfig:
     """Configuration for model export settings."""
 
-    def __init__(self, config_dict: Dict[str, Any]):
-        self.mode = config_dict.get("mode", "both")
-        # Note: verify has been moved to verification.enabled in v2 config format
-        # Device is optional in v2 format (devices are specified per-backend in evaluation/verification)
-        # Default to cuda:0 for backward compatibility
-        self.device = config_dict.get("device", "cuda:0")
-        self.work_dir = config_dict.get("work_dir", "work_dirs")
-        self.checkpoint_path = config_dict.get("checkpoint_path")
-        self.onnx_path = config_dict.get("onnx_path")
+    mode: str = "both"
+    work_dir: str = "work_dirs"
+    checkpoint_path: Optional[str] = None
+    onnx_path: Optional[str] = None
+    cuda_device: str = "cuda:0"
+
+    def __post_init__(self) -> None:
+        self.cuda_device = self._parse_cuda_device(self.cuda_device)
+
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> "ExportConfig":
+        """Create ExportConfig from dict."""
+        return cls(
+            mode=config_dict.get("mode", cls.mode),
+            work_dir=config_dict.get("work_dir", cls.work_dir),
+            checkpoint_path=config_dict.get("checkpoint_path"),
+            onnx_path=config_dict.get("onnx_path"),
+            cuda_device=config_dict.get("cuda_device", cls.cuda_device),
+        )
 
     def should_export_onnx(self) -> bool:
         """Check if ONNX export is requested."""
@@ -46,32 +70,82 @@ class ExportConfig:
         """Check if TensorRT export is requested."""
         return self.mode in ["trt", "both"]
 
+    @staticmethod
+    def _parse_cuda_device(device: Optional[str]) -> str:
+        """Parse and normalize CUDA device string to 'cuda:N' format."""
+        if device is None:
+            return "cuda:0"
 
+        if not isinstance(device, str):
+            raise ValueError("cuda_device must be a string (e.g., 'cuda:0')")
+
+        normalized = device.strip().lower()
+        if normalized == "":
+            normalized = "cuda:0"
+
+        if normalized == "cuda":
+            normalized = "cuda:0"
+
+        if not normalized.startswith("cuda"):
+            raise ValueError(f"Invalid cuda_device '{device}'. Must start with 'cuda'")
+
+        if ":" in normalized:
+            suffix = normalized.split(":", 1)[1]
+            suffix = suffix.strip()
+            if suffix == "":
+                suffix = "0"
+            if not suffix.isdigit():
+                raise ValueError(f"Invalid CUDA device index in '{device}'")
+            device_id = int(suffix)
+        else:
+            device_id = 0
+
+        if device_id < 0:
+            raise ValueError("CUDA device index must be non-negative")
+
+        return f"cuda:{device_id}"
+
+    def get_cuda_device_index(self) -> int:
+        """Return CUDA device index as integer."""
+        return int(self.cuda_device.split(":", 1)[1])
+
+
+@dataclass
 class RuntimeConfig:
     """Configuration for runtime I/O settings."""
 
-    def __init__(self, config_dict: Dict[str, Any]):
-        self._config = config_dict
+    data: Dict[str, Any]
+
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> "RuntimeConfig":
+        return cls(config_dict)
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a runtime configuration value."""
-        return self._config.get(key, default)
+        return self.data.get(key, default)
 
     def __getitem__(self, key: str) -> Any:
         """Dictionary-style access to runtime config."""
-        return self._config[key]
+        return self.data[key]
 
 
+@dataclass
 class BackendConfig:
     """Configuration for backend-specific settings."""
 
-    def __init__(self, config_dict: Dict[str, Any]):
-        self.common_config = config_dict.get("common_config", {})
-        self.model_inputs = config_dict.get("model_inputs", [])
+    common_config: Dict[str, Any] = field(default_factory=dict)
+    model_inputs: List[Dict[str, Any]] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> "BackendConfig":
+        return cls(
+            common_config=config_dict.get("common_config", {}),
+            model_inputs=config_dict.get("model_inputs", []),
+        )
 
     def get_precision_policy(self) -> str:
         """Get precision policy name."""
-        return self.common_config.get("precision_policy", "auto")
+        return self.common_config.get("precision_policy", PrecisionPolicy.AUTO.value)
 
     def get_precision_flags(self) -> Dict[str, bool]:
         """Get TensorRT precision flags for the configured policy."""
@@ -102,9 +176,11 @@ class BaseDeploymentConfig:
         self._validate_config()
 
         # Initialize config sections
-        self.export_config = ExportConfig(deploy_cfg.get("export", {}))
-        self.runtime_config = RuntimeConfig(deploy_cfg.get("runtime_io", {}))
-        self.backend_config = BackendConfig(deploy_cfg.get("backend_config", {}))
+        self.export_config = ExportConfig.from_dict(deploy_cfg.get("export", {}))
+        self.runtime_config = RuntimeConfig.from_dict(deploy_cfg.get("runtime_io", {}))
+        self.backend_config = BackendConfig.from_dict(deploy_cfg.get("backend_config", {}))
+
+        self._validate_cuda_device()
 
     def _validate_config(self) -> None:
         """Validate configuration structure and required fields."""
@@ -123,11 +199,51 @@ class BaseDeploymentConfig:
         # Validate precision policy if present
         backend_cfg = self.deploy_cfg.get("backend_config", {})
         common_cfg = backend_cfg.get("common_config", {})
-        precision_policy = common_cfg.get("precision_policy", "auto")
+        precision_policy = common_cfg.get("precision_policy", PrecisionPolicy.AUTO.value)
         if precision_policy not in PRECISION_POLICIES:
             raise ValueError(
                 f"Invalid precision_policy '{precision_policy}'. " f"Must be one of {list(PRECISION_POLICIES.keys())}"
             )
+
+    def _validate_cuda_device(self) -> None:
+        """Validate CUDA device availability once at config stage."""
+        if not self._needs_cuda_device():
+            return
+
+        cuda_device = self.export_config.cuda_device
+        device_idx = self.export_config.get_cuda_device_index()
+
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA device is required (TensorRT export/verification/evaluation enabled) "
+                "but torch.cuda.is_available() returned False."
+            )
+
+        device_count = torch.cuda.device_count()
+        if device_idx >= device_count:
+            raise ValueError(
+                f"Requested CUDA device '{cuda_device}' but only {device_count} CUDA device(s) are available."
+            )
+
+    def _needs_cuda_device(self) -> bool:
+        """Determine if current deployment config requires a CUDA device."""
+        if self.export_config.should_export_tensorrt():
+            return True
+
+        evaluation_cfg = self.deploy_cfg.get("evaluation", {})
+        backends_cfg = evaluation_cfg.get("backends", {})
+        tensorrt_backend = backends_cfg.get("tensorrt", {})
+        if tensorrt_backend.get("enabled", False):
+            return True
+
+        verification_cfg = self.deploy_cfg.get("verification", {})
+        scenarios_cfg = verification_cfg.get("scenarios", {})
+        for scenario_list in scenarios_cfg.values():
+            for scenario in scenario_list:
+                if scenario.get("ref_backend") == "tensorrt" or scenario.get("test_backend") == "tensorrt":
+                    return True
+
+        return False
 
     @property
     def evaluation_config(self) -> Dict:
@@ -240,80 +356,6 @@ class BaseDeploymentConfig:
             "model_inputs": self.backend_config.model_inputs,
         }
 
-    def update_batch_size(self, batch_size: int) -> None:
-        """
-        Update batch size in backend config model_inputs.
-
-        Args:
-            batch_size: New batch size to set
-        """
-        if batch_size is not None:
-            # Check if model_inputs already has TensorRT-specific configuration
-            existing_model_inputs = self.backend_config.model_inputs
-
-            # If model_inputs is None or empty, generate from model_io
-            if existing_model_inputs is None or len(existing_model_inputs) == 0:
-                # Get model_io configuration
-                model_io = self.deploy_cfg.get("model_io", {})
-                input_name = model_io.get("input_name", "input")
-                input_shape = model_io.get("input_shape", (3, 960, 960))
-                input_dtype = model_io.get("input_dtype", "float32")
-
-                # Create model_inputs list
-                model_inputs = []
-
-                # Add primary input
-                full_shape = (batch_size,) + input_shape
-                model_inputs.append(
-                    dict(
-                        name=input_name,
-                        shape=full_shape,
-                        dtype=input_dtype,
-                    )
-                )
-
-                # Add additional inputs if specified
-                additional_inputs = model_io.get("additional_inputs", [])
-                for additional_input in additional_inputs:
-                    if isinstance(additional_input, dict):
-                        add_name = additional_input.get("name", "input")
-                        add_shape = additional_input.get("shape", (-1,))
-                        add_dtype = additional_input.get("dtype", "float32")
-
-                        # Handle dynamic shapes (e.g., (-1,) for variable length)
-                        if isinstance(add_shape, tuple) and len(add_shape) > 0 and add_shape[0] == -1:
-                            # Keep dynamic shape for variable length inputs
-                            full_add_shape = add_shape
-                        else:
-                            # Add batch dimension for fixed shapes
-                            full_add_shape = (batch_size,) + add_shape
-
-                        model_inputs.append(
-                            dict(
-                                name=add_name,
-                                shape=full_add_shape,
-                                dtype=add_dtype,
-                            )
-                        )
-
-                # Update model_inputs in backend config
-                self.backend_config.model_inputs = model_inputs
-            else:
-                # If model_inputs already exists (e.g., TensorRT shape ranges),
-                # update batch size in existing shapes if they are simple shapes
-                for model_input in existing_model_inputs:
-                    if isinstance(model_input, dict) and "shape" in model_input:
-                        # Simple shape format: {"name": "input", "shape": (batch, ...), "dtype": "float32"}
-                        if isinstance(model_input["shape"], tuple) and len(model_input["shape"]) > 0:
-                            # Update batch dimension (first dimension)
-                            shape = list(model_input["shape"])
-                            shape[0] = batch_size
-                            model_input["shape"] = tuple(shape)
-                    elif isinstance(model_input, dict) and "input_shapes" in model_input:
-                        # TensorRT shape ranges format: {"input_shapes": {"input": {"min_shape": [...], ...}}}
-                        # For TensorRT shape ranges, we don't modify batch size as it's handled by dynamic_axes
-                        pass
-
 
 def setup_logging(level: str = "INFO") -> logging.Logger:
     """
@@ -347,13 +389,12 @@ def parse_base_args(parser: Optional[argparse.ArgumentParser] = None) -> argpars
 
     parser.add_argument("deploy_cfg", help="Deploy config path")
     parser.add_argument("model_cfg", help="Model config path")
-    parser.add_argument(
-        "checkpoint", nargs="?", default=None, help="Model checkpoint path (optional when mode='none')"
-    )
-
     # Optional overrides
-    parser.add_argument("--work-dir", help="Override output directory from config")
-    parser.add_argument("--device", help="Override device from config")
-    parser.add_argument("--log-level", default="INFO", choices=list(logging._nameToLevel.keys()), help="Logging level")
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level",
+    )
 
     return parser
