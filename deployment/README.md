@@ -401,6 +401,24 @@ evaluation = dict(
 )
 ```
 
+#### Backend Enum
+
+To avoid backend name typos, `deployment.core.Backend` now enumerates the supported values:
+
+```python
+from deployment.core import Backend
+
+evaluation = dict(
+    backends={
+        Backend.PYTORCH: {"enabled": True, "device": "cpu"},
+        Backend.ONNX: {"enabled": True, "device": "cpu"},
+        Backend.TENSORRT: {"enabled": True, "device": "cuda:0"},
+    }
+)
+```
+
+Configuration dictionaries accept either raw strings or `Backend` enum members, so teams can adopt the enum incrementally without breaking existing configs.
+
 ### Configuration Examples
 
 See project-specific configs:

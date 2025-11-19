@@ -12,6 +12,7 @@ import torch
 from mmengine.config import Config
 
 from deployment.core import (
+    Backend,
     BaseEvaluator,
     EvalResultDict,
     ModelSpec,
@@ -164,11 +165,11 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         }
 
         # Enforce device scenarios
-        if ref_backend == "pytorch" and ref_device.startswith("cuda"):
+        if ref_backend is Backend.PYTORCH and ref_device.startswith("cuda"):
             logger.warning("PyTorch verification is forced to CPU; overriding device to 'cpu'")
             ref_device = "cpu"
 
-        if test_backend == "tensorrt":
+        if test_backend is Backend.TENSORRT:
             if not test_device.startswith("cuda"):
                 logger.warning("TensorRT verification requires CUDA device. Skipping verification.")
                 results["error"] = "TensorRT requires CUDA"
@@ -180,15 +181,15 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         logger.info("\n" + "=" * 60)
         logger.info("YOLOX_opt_elan Model Verification (Policy-Based)")
         logger.info("=" * 60)
-        logger.info(f"Reference: {ref_backend} on {ref_device} - {ref_path}")
-        logger.info(f"Test: {test_backend} on {test_device} - {test_path}")
+        logger.info(f"Reference: {ref_backend.value} on {ref_device} - {ref_path}")
+        logger.info(f"Test: {test_backend.value} on {test_device} - {test_path}")
         logger.info(f"Number of samples: {num_samples}")
         logger.info(f"Tolerance: {tolerance}")
         logger.info("=" * 60)
 
         # Create reference pipeline
-        logger.info(f"\nInitializing {ref_backend} reference pipeline...")
-        if ref_backend == "pytorch":
+        logger.info(f"\nInitializing {ref_backend.value} reference pipeline...")
+        if ref_backend is Backend.PYTORCH:
             # Use PyTorch model injected by runner
             pytorch_model = self.pytorch_model
             if pytorch_model is None:
@@ -211,7 +212,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 num_classes=len(self.class_names),
                 class_names=self.class_names,
             )
-        elif ref_backend == "onnx":
+        elif ref_backend is Backend.ONNX:
             ref_pipeline = YOLOXONNXPipeline(
                 onnx_path=ref_path, device=ref_device, num_classes=len(self.class_names), class_names=self.class_names
             )
@@ -226,15 +227,15 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             return results
 
         # Create test pipeline
-        logger.info(f"\nInitializing {test_backend} test pipeline...")
-        if test_backend == "onnx":
+        logger.info(f"\nInitializing {test_backend.value} test pipeline...")
+        if test_backend is Backend.ONNX:
             test_pipeline = YOLOXONNXPipeline(
                 onnx_path=test_path,
                 device=test_device,
                 num_classes=len(self.class_names),
                 class_names=self.class_names,
             )
-        elif test_backend == "tensorrt":
+        elif test_backend is Backend.TENSORRT:
             test_pipeline = YOLOXTensorRTPipeline(
                 engine_path=test_path,
                 device=test_device,
@@ -295,8 +296,8 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 )
 
                 # Verify test backend against reference
-                ref_name = f"{ref_backend} ({ref_device})"
-                test_name = f"{test_backend} ({test_device})"
+                ref_name = f"{ref_backend.value} ({ref_device})"
+                test_name = f"{test_backend.value} ({test_device})"
                 passed = self._verify_single_backend(
                     test_pipeline,
                     test_input_tensor,
@@ -489,7 +490,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 logger.info(f"  Sample {idx}: {len(predictions)} predictions, {len(ground_truths)} ground truths")
 
             # GPU cleanup for TensorRT
-            if backend == "tensorrt" and idx % GPU_CLEANUP_INTERVAL == 0:
+            if backend is Backend.TENSORRT and idx % GPU_CLEANUP_INTERVAL == 0:
                 torch.cuda.empty_cache()
 
         # Compute metrics
@@ -541,7 +542,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         model_path = model.path
         device = model.device
 
-        if backend == "pytorch":
+        if backend is Backend.PYTORCH:
             # Use PyTorch model injected by runner
             model = self.pytorch_model
             if model is None:
@@ -564,7 +565,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 num_classes=num_classes,
                 class_names=class_names,
             )
-        elif backend == "onnx":
+        elif backend is Backend.ONNX:
             if not (os.path.isfile(model_path) and model_path.endswith(".onnx")):
                 raise ValueError("ONNX evaluation expects a .onnx file path")
             return YOLOXONNXPipeline(
@@ -573,7 +574,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 num_classes=num_classes,
                 class_names=class_names,
             )
-        elif backend == "tensorrt":
+        elif backend is Backend.TENSORRT:
             if not (os.path.isfile(model_path) and (model_path.endswith(".engine") or model_path.endswith(".trt"))):
                 raise ValueError("TensorRT evaluation expects an engine (.engine/.trt) file path")
             return YOLOXTensorRTPipeline(
@@ -583,7 +584,7 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 class_names=class_names,
             )
         else:
-            raise ValueError(f"Unknown backend: {backend}")
+            raise ValueError(f"Unknown backend: {backend.value}")
 
     def _parse_predictions(self, output: np.ndarray, img_info: Dict) -> List[Dict]:
         """

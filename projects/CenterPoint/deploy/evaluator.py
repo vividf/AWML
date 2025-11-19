@@ -12,6 +12,7 @@ import torch
 from mmengine.config import Config
 
 from deployment.core import (
+    Backend,
     BaseEvaluator,
     EvalResultDict,
     ModelSpec,
@@ -141,11 +142,11 @@ class CenterPointEvaluator(BaseEvaluator):
         }
 
         # Enforce device scenarios
-        if ref_backend == "pytorch" and ref_device.startswith("cuda"):
+        if ref_backend is Backend.PYTORCH and ref_device.startswith("cuda"):
             logger.warning("PyTorch verification is forced to CPU; overriding device to 'cpu'")
             ref_device = "cpu"
 
-        if test_backend == "tensorrt":
+        if test_backend is Backend.TENSORRT:
             if not test_device.startswith("cuda"):
                 logger.warning("TensorRT verification requires CUDA device. Skipping verification.")
                 results["error"] = "TensorRT requires CUDA"
@@ -157,26 +158,26 @@ class CenterPointEvaluator(BaseEvaluator):
         logger.info("\n" + "=" * 60)
         logger.info("CenterPoint Model Verification (Policy-Based)")
         logger.info("=" * 60)
-        logger.info(f"Reference: {ref_backend} on {ref_device} - {ref_path}")
-        logger.info(f"Test: {test_backend} on {test_device} - {test_path}")
+        logger.info(f"Reference: {ref_backend.value} on {ref_device} - {ref_path}")
+        logger.info(f"Test: {test_backend.value} on {test_device} - {test_path}")
         logger.info(f"Number of samples: {num_samples}")
         logger.info(f"Tolerance: {tolerance}")
         logger.info("=" * 60)
 
         # Create reference pipeline
-        logger.info(f"\nInitializing {ref_backend} reference pipeline...")
+        logger.info(f"\nInitializing {ref_backend.value} reference pipeline...")
         ref_pipeline = self._create_pipeline(reference, logger)
         if ref_pipeline is None:
-            logger.error(f"Failed to create {ref_backend} reference pipeline")
-            results["error"] = f"Failed to create {ref_backend} reference pipeline"
+            logger.error(f"Failed to create {ref_backend.value} reference pipeline")
+            results["error"] = f"Failed to create {ref_backend.value} reference pipeline"
             return results
 
         # Create test pipeline
-        logger.info(f"\nInitializing {test_backend} test pipeline...")
+        logger.info(f"\nInitializing {test_backend.value} test pipeline...")
         test_pipeline = self._create_pipeline(test, logger)
         if test_pipeline is None:
-            logger.error(f"Failed to create {test_backend} test pipeline")
-            results["error"] = f"Failed to create {test_backend} test pipeline"
+            logger.error(f"Failed to create {test_backend.value} test pipeline")
+            results["error"] = f"Failed to create {test_backend.value} test pipeline"
             return results
 
         # Verify each sample
@@ -199,15 +200,15 @@ class CenterPointEvaluator(BaseEvaluator):
                 sample_meta = sample.get("metainfo", {})
 
                 # Get reference outputs
-                logger.info(f"\nRunning {ref_backend} reference ({ref_device})...")
+                logger.info(f"\nRunning {ref_backend.value} reference ({ref_device})...")
                 try:
                     ref_outputs, ref_latency, _ = ref_pipeline.infer(points, sample_meta, return_raw_outputs=True)
-                    logger.info(f"  {ref_backend} latency: {ref_latency:.2f} ms")
+                    logger.info(f"  {ref_backend.value} latency: {ref_latency:.2f} ms")
                     logger.info(
-                        f"  {ref_backend} output: {len(ref_outputs) if isinstance(ref_outputs, (list, tuple)) else 1} head outputs"
+                        f"  {ref_backend.value} output: {len(ref_outputs) if isinstance(ref_outputs, (list, tuple)) else 1} head outputs"
                     )
                 except Exception as e:
-                    logger.error(f"  {ref_backend} inference failed: {e}")
+                    logger.error(f"  {ref_backend.value} inference failed: {e}")
                     import traceback
 
                     traceback.print_exc()
@@ -215,8 +216,8 @@ class CenterPointEvaluator(BaseEvaluator):
                     continue
 
                 # Verify test backend against reference
-                ref_name = f"{ref_backend} ({ref_device})"
-                test_name = f"{test_backend} ({test_device})"
+                ref_name = f"{ref_backend.value} ({ref_device})"
+                test_name = f"{test_backend.value} ({test_device})"
                 passed = self._verify_single_backend(
                     test_pipeline,
                     points,
@@ -517,15 +518,15 @@ class CenterPointEvaluator(BaseEvaluator):
             logger.info(f"Using PyTorch model (injected by runner) on {target_device}")
 
             # Create pipeline based on backend
-            if backend == "pytorch":
+            if backend is Backend.PYTORCH:
                 return CenterPointPyTorchPipeline(pytorch_model, device=device_str)
 
-            elif backend == "onnx":
+            elif backend is Backend.ONNX:
                 # ONNX pipeline uses ONNX Runtime for voxel encoder and head;
                 # PyTorch model is used for preprocessing/middle encoder/postprocessing.
                 return CenterPointONNXPipeline(pytorch_model, onnx_dir=model_path, device=device_str)
 
-            elif backend == "tensorrt":
+            elif backend is Backend.TENSORRT:
                 # TensorRT requires CUDA
                 if not str(device).startswith("cuda"):
                     logger.warning("TensorRT requires CUDA device, skipping TensorRT evaluation")
@@ -533,7 +534,7 @@ class CenterPointEvaluator(BaseEvaluator):
                 return CenterPointTensorRTPipeline(pytorch_model, tensorrt_dir=model_path, device=device_str)
 
         except Exception as e:
-            logger.error(f"Failed to create {backend} Pipeline: {e}")
+            logger.error(f"Failed to create {backend.value} Pipeline: {e}")
             import traceback
 
             traceback.print_exc()

@@ -14,6 +14,7 @@ import torch
 from mmengine.config import Config
 
 from deployment.core import (
+    Backend,
     BaseEvaluator,
     EvalResultDict,
     ModelSpec,
@@ -132,7 +133,7 @@ class ClassificationEvaluator(BaseEvaluator):
                 latencies.extend(lat)
 
                 # Clear GPU memory periodically for TensorRT
-                if backend == "tensorrt" and idx % GPU_CLEANUP_INTERVAL == 0:
+                if backend is Backend.TENSORRT and idx % GPU_CLEANUP_INTERVAL == 0:
                     self._clear_gpu_memory()
 
             except Exception as e:
@@ -147,7 +148,7 @@ class ClassificationEvaluator(BaseEvaluator):
 
         # Compute metrics
         results = self._compute_metrics(predictions, ground_truths, probabilities, latencies)
-        results["backend"] = backend
+        results["backend"] = backend.value
         results["num_samples"] = len(predictions)
 
         return results
@@ -168,7 +169,7 @@ class ClassificationEvaluator(BaseEvaluator):
         device = model_spec.device
         model_path = model_spec.path
 
-        if backend == "pytorch":
+        if backend is Backend.PYTORCH:
             # Use PyTorch model injected by runner
             model = self.pytorch_model
             if model is None:
@@ -188,18 +189,18 @@ class ClassificationEvaluator(BaseEvaluator):
             return CalibrationPyTorchPipeline(
                 pytorch_model=model, device=device, num_classes=2, class_names=["miscalibrated", "calibrated"]
             )
-        elif backend == "onnx":
+        elif backend is Backend.ONNX:
             logger.info(f"Loading ONNX model from {model_path}")
             return CalibrationONNXPipeline(
                 onnx_path=model_path, device=device, num_classes=2, class_names=["miscalibrated", "calibrated"]
             )
-        elif backend == "tensorrt":
+        elif backend is Backend.TENSORRT:
             logger.info(f"Loading TensorRT engine from {model_path}")
             return CalibrationTensorRTPipeline(
                 engine_path=model_path, device=device, num_classes=2, class_names=["miscalibrated", "calibrated"]
             )
         else:
-            raise ValueError(f"Unsupported backend: {backend}")
+            raise ValueError(f"Unsupported backend: {backend.value}")
 
     def _process_sample_with_pipeline(
         self,
@@ -400,11 +401,11 @@ class ClassificationEvaluator(BaseEvaluator):
         }
 
         # Enforce device scenarios
-        if ref_backend == "pytorch" and ref_device.startswith("cuda"):
+        if ref_backend is Backend.PYTORCH and ref_device.startswith("cuda"):
             logger.warning("PyTorch verification is forced to CPU; overriding device to 'cpu'")
             ref_device = "cpu"
 
-        if test_backend == "tensorrt":
+        if test_backend is Backend.TENSORRT:
             if not test_device.startswith("cuda"):
                 logger.warning("TensorRT verification requires CUDA device. Skipping verification.")
                 results["error"] = "TensorRT requires CUDA"
@@ -416,15 +417,15 @@ class ClassificationEvaluator(BaseEvaluator):
         logger.info("\n" + "=" * 60)
         logger.info("CalibrationStatusClassification Model Verification (Policy-Based)")
         logger.info("=" * 60)
-        logger.info(f"Reference: {ref_backend} on {ref_device} - {ref_path}")
-        logger.info(f"Test: {test_backend} on {test_device} - {test_path}")
+        logger.info(f"Reference: {ref_backend.value} on {ref_device} - {ref_path}")
+        logger.info(f"Test: {test_backend.value} on {test_device} - {test_path}")
         logger.info(f"Number of samples: {num_samples}")
         logger.info(f"Tolerance: {tolerance}")
         logger.info("=" * 60)
 
         # Create reference pipeline
-        logger.info(f"\nInitializing {ref_backend} reference pipeline...")
-        if ref_backend == "pytorch":
+        logger.info(f"\nInitializing {ref_backend.value} reference pipeline...")
+        if ref_backend is Backend.PYTORCH:
             # Use PyTorch model injected by runner
             pytorch_model = self.pytorch_model
             if pytorch_model is None:
@@ -447,38 +448,38 @@ class ClassificationEvaluator(BaseEvaluator):
                 num_classes=2,
                 class_names=["miscalibrated", "calibrated"],
             )
-        elif ref_backend == "onnx":
+        elif ref_backend is Backend.ONNX:
             ref_pipeline = CalibrationONNXPipeline(
                 onnx_path=ref_path, device=ref_device, num_classes=2, class_names=["miscalibrated", "calibrated"]
             )
         else:
-            logger.error(f"Unsupported reference backend: {ref_backend}")
-            results["error"] = f"Unsupported reference backend: {ref_backend}"
+            logger.error(f"Unsupported reference backend: {ref_backend.value}")
+            results["error"] = f"Unsupported reference backend: {ref_backend.value}"
             return results
 
         if ref_pipeline is None:
-            logger.error(f"Failed to create {ref_backend} reference pipeline")
-            results["error"] = f"Failed to create {ref_backend} reference pipeline"
+            logger.error(f"Failed to create {ref_backend.value} reference pipeline")
+            results["error"] = f"Failed to create {ref_backend.value} reference pipeline"
             return results
 
         # Create test pipeline
-        logger.info(f"\nInitializing {test_backend} test pipeline...")
-        if test_backend == "onnx":
+        logger.info(f"\nInitializing {test_backend.value} test pipeline...")
+        if test_backend is Backend.ONNX:
             test_pipeline = CalibrationONNXPipeline(
                 onnx_path=test_path, device=test_device, num_classes=2, class_names=["miscalibrated", "calibrated"]
             )
-        elif test_backend == "tensorrt":
+        elif test_backend is Backend.TENSORRT:
             test_pipeline = CalibrationTensorRTPipeline(
                 engine_path=test_path, device=test_device, num_classes=2, class_names=["miscalibrated", "calibrated"]
             )
         else:
-            logger.error(f"Unsupported test backend: {test_backend}")
-            results["error"] = f"Unsupported test backend: {test_backend}"
+            logger.error(f"Unsupported test backend: {test_backend.value}")
+            results["error"] = f"Unsupported test backend: {test_backend.value}"
             return results
 
         if test_pipeline is None:
-            logger.error(f"Failed to create {test_backend} test pipeline")
-            results["error"] = f"Failed to create {test_backend} test pipeline"
+            logger.error(f"Failed to create {test_backend.value} test pipeline")
+            results["error"] = f"Failed to create {test_backend.value} test pipeline"
             return results
 
         # Verify each sample
@@ -499,13 +500,13 @@ class ClassificationEvaluator(BaseEvaluator):
                     input_tensor = input_tensor.to(ref_device_obj)
 
                 # Get reference outputs
-                logger.info(f"\nRunning {ref_backend} reference ({ref_device})...")
+                logger.info(f"\nRunning {ref_backend.value} reference ({ref_device})...")
                 try:
                     ref_output, ref_latency, _ = ref_pipeline.infer(input_tensor, return_raw_outputs=True)
-                    logger.info(f"  {ref_backend} latency: {ref_latency:.2f} ms")
-                    logger.info(f"  {ref_backend} output shape: {ref_output.shape}")
+                    logger.info(f"  {ref_backend.value} latency: {ref_latency:.2f} ms")
+                    logger.info(f"  {ref_backend.value} output shape: {ref_output.shape}")
                 except Exception as e:
-                    logger.error(f"  {ref_backend} inference failed: {e}")
+                    logger.error(f"  {ref_backend.value} inference failed: {e}")
                     import traceback
 
                     traceback.print_exc()
@@ -519,8 +520,8 @@ class ClassificationEvaluator(BaseEvaluator):
                 )
 
                 # Verify test backend against reference
-                ref_name = f"{ref_backend} ({ref_device})"
-                test_name = f"{test_backend} ({test_device})"
+                ref_name = f"{ref_backend.value} ({ref_device})"
+                test_name = f"{test_backend.value} ({test_device})"
                 passed = self._verify_single_backend(
                     test_pipeline, test_input_tensor, ref_output, ref_latency, tolerance, test_name, logger
                 )

@@ -12,6 +12,7 @@ from typing import Any, Dict, TypedDict
 import numpy as np
 
 from deployment.core.artifacts import Artifact
+from deployment.core.backend import Backend
 from deployment.core.base_data_loader import BaseDataLoader
 
 
@@ -59,7 +60,7 @@ class ModelSpec:
         artifact: Filesystem representation of the produced model.
     """
 
-    backend: str
+    backend: Backend
     device: str
     artifact: Artifact
 

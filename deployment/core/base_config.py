@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 import torch
 from mmengine.config import Config
 
+from deployment.core.backend import Backend
+
 # Constants
 DEFAULT_WORKSPACE_SIZE = 1 << 30  # 1 GB
 
@@ -234,15 +236,26 @@ class BaseDeploymentConfig:
 
         evaluation_cfg = self.deploy_cfg.get("evaluation", {})
         backends_cfg = evaluation_cfg.get("backends", {})
-        tensorrt_backend = backends_cfg.get("tensorrt", {})
+        tensorrt_backend = backends_cfg.get(Backend.TENSORRT.value) or backends_cfg.get(Backend.TENSORRT, {})
         if tensorrt_backend.get("enabled", False):
             return True
 
         verification_cfg = self.deploy_cfg.get("verification", {})
         scenarios_cfg = verification_cfg.get("scenarios", {})
+
+        def _maybe_backend(value: Any) -> Optional[Backend]:
+            if not value:
+                return None
+            try:
+                return Backend.from_value(value)
+            except (ValueError, TypeError):
+                return None
+
         for scenario_list in scenarios_cfg.values():
             for scenario in scenario_list:
-                if scenario.get("ref_backend") == "tensorrt" or scenario.get("test_backend") == "tensorrt":
+                ref_backend = _maybe_backend(scenario.get("ref_backend"))
+                test_backend = _maybe_backend(scenario.get("test_backend"))
+                if Backend.TENSORRT in (ref_backend, test_backend):
                     return True
 
         return False
