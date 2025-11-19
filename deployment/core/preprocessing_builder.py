@@ -247,26 +247,13 @@ def _extract_pipeline_config(model_cfg: Config) -> List[TransformConfig]:
     Raises:
         ValueError: If no valid pipeline found
     """
-    pipeline_paths = [
-        ("test_dataloader", "dataset", "pipeline"),
-        ("test_dataloader", "dataset", "dataset", "pipeline"),  # nested dataset wrappers
-        ("test_pipeline",),
-    ]
+    try:
+        pipeline_cfg = model_cfg["test_pipeline"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError("No test pipeline found in config. Expected pipeline at: test_pipeline.") from exc
 
-    for path in pipeline_paths:
-        cfg = model_cfg
-        try:
-            for key in path:
-                cfg = cfg[key]
-        except (KeyError, TypeError):
-            continue
+    if not pipeline_cfg:
+        raise ValueError("test_pipeline is defined but empty. Please provide a valid test pipeline.")
 
-        if cfg:
-            logger.info("Found test pipeline at: %s", ".".join(path))
-            return cfg
-
-    raise ValueError(
-        "No test pipeline found in config. "
-        "Expected pipeline at one of: test_dataloader.dataset.pipeline, "
-        "test_dataloader.dataset.dataset.pipeline, test_pipeline."
-    )
+    logger.info("Found test pipeline at: test_pipeline")
+    return pipeline_cfg
