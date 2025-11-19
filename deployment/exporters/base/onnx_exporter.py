@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import onnx
 import onnxsim
@@ -43,6 +43,15 @@ class ONNXExporter(BaseExporter):
         model: torch.nn.Module,
         sample_input: Any,
         output_path: str,
+        *,
+        input_names: Optional[List[str]] = None,
+        output_names: Optional[List[str]] = None,
+        dynamic_axes: Optional[Dict[str, Dict[int, str]]] = None,
+        simplify: Optional[bool] = None,
+        opset_version: Optional[int] = None,
+        export_params: Optional[bool] = None,
+        keep_initializers_as_inputs: Optional[bool] = None,
+        verbose: Optional[bool] = None,
     ) -> None:
         """
         Export model to ONNX format.
@@ -51,19 +60,43 @@ class ONNXExporter(BaseExporter):
             model: PyTorch model to export
             sample_input: Sample input tensor
             output_path: Path to save ONNX model
-            config_override: Optional config overrides for this specific export
+            input_names: Optional per-export input names
+            output_names: Optional per-export output names
+            dynamic_axes: Optional per-export dynamic axes mapping
+            simplify: Optional override for ONNX simplification flag
+            opset_version: Optional opset override
+            export_params: Optional export_params override
+            keep_initializers_as_inputs: Optional override for ONNX flag
+            verbose: Optional override for verbose flag
 
         Raises:
             RuntimeError: If export fails
         """
+        # Merge per-export overrides with base configuration
+        export_cfg: Dict[str, Any] = dict(self.config)
+        overrides = {
+            "input_names": input_names,
+            "output_names": output_names,
+            "dynamic_axes": dynamic_axes,
+            "simplify": simplify,
+            "opset_version": opset_version,
+            "export_params": export_params,
+            "keep_initializers_as_inputs": keep_initializers_as_inputs,
+            "verbose": verbose,
+        }
+        for key, value in overrides.items():
+            if value is not None:
+                export_cfg[key] = value
+
         # Apply model wrapper if configured
         model = self.prepare_model(model)
         model.eval()
 
         self.logger.info("Exporting model to ONNX format...")
-        self.logger.info(f"  Input shape: {sample_input.shape}")
+        if hasattr(sample_input, "shape"):
+            self.logger.info(f"  Input shape: {sample_input.shape}")
         self.logger.info(f"  Output path: {output_path}")
-        self.logger.info(f"  Opset version: {self.config.get('opset_version', 16)}")
+        self.logger.info(f"  Opset version: {export_cfg.get('opset_version', 16)}")
 
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
@@ -74,20 +107,20 @@ class ONNXExporter(BaseExporter):
                     model,
                     sample_input,
                     output_path,
-                    export_params=self.config.get("export_params", True),
-                    keep_initializers_as_inputs=self.config.get("keep_initializers_as_inputs", False),
-                    opset_version=self.config.get("opset_version", 16),
-                    do_constant_folding=self.config.get("do_constant_folding", True),
-                    input_names=self.config.get("input_names", ["input"]),
-                    output_names=self.config.get("output_names", ["output"]),
-                    dynamic_axes=self.config.get("dynamic_axes"),
-                    verbose=self.config.get("verbose", False),
+                    export_params=export_cfg.get("export_params", True),
+                    keep_initializers_as_inputs=export_cfg.get("keep_initializers_as_inputs", False),
+                    opset_version=export_cfg.get("opset_version", 16),
+                    do_constant_folding=export_cfg.get("do_constant_folding", True),
+                    input_names=export_cfg.get("input_names", ["input"]),
+                    output_names=export_cfg.get("output_names", ["output"]),
+                    dynamic_axes=export_cfg.get("dynamic_axes"),
+                    verbose=export_cfg.get("verbose", False),
                 )
 
             self.logger.info(f"ONNX export completed: {output_path}")
 
             # Optional model simplification
-            if self.config.get("simplify", True):
+            if export_cfg.get("simplify", True):
                 self._simplify_model(output_path)
 
         except Exception as e:

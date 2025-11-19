@@ -46,6 +46,7 @@ class ExportConfig:
     work_dir: str = "work_dirs"
     checkpoint_path: Optional[str] = None
     onnx_path: Optional[str] = None
+    tensorrt_path: Optional[str] = None
     cuda_device: str = "cuda:0"
 
     def __post_init__(self) -> None:
@@ -59,6 +60,7 @@ class ExportConfig:
             work_dir=config_dict.get("work_dir", cls.work_dir),
             checkpoint_path=config_dict.get("checkpoint_path"),
             onnx_path=config_dict.get("onnx_path"),
+            tensorrt_path=config_dict.get("tensorrt_path"),
             cuda_device=config_dict.get("cuda_device", cls.cuda_device),
         )
 
