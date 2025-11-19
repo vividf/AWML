@@ -11,6 +11,7 @@ from typing import Any, Dict, TypedDict
 
 import numpy as np
 
+from deployment.core.artifacts import Artifact
 from deployment.core.base_data_loader import BaseDataLoader
 
 
@@ -55,12 +56,22 @@ class ModelSpec:
     Attributes:
         backend: Backend identifier such as 'pytorch', 'onnx', or 'tensorrt'.
         device: Target device string (e.g., 'cpu', 'cuda:0').
-        path: Filesystem path to the artifact (checkpoint, ONNX file, TensorRT engine).
+        artifact: Filesystem representation of the produced model.
     """
 
     backend: str
     device: str
-    path: str
+    artifact: Artifact
+
+    @property
+    def path(self) -> str:
+        """Backward-compatible access to artifact path."""
+        return self.artifact.path
+
+    @property
+    def multi_file(self) -> bool:
+        """True if the artifact represents a multi-file bundle."""
+        return self.artifact.multi_file
 
 
 class BaseEvaluator(ABC):
