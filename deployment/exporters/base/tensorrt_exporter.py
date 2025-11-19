@@ -86,7 +86,7 @@ class TensorRTExporter(BaseExporter):
         # Apply precision flags to builder config
         for flag_name, enabled in policy_flags.items():
             if flag_name == "STRONGLY_TYPED":
-                continue  # Already handled
+                continue
             if enabled and hasattr(trt.BuilderFlag, flag_name):
                 builder_config.set_flag(getattr(trt.BuilderFlag, flag_name))
                 self.logger.info(f"BuilderFlag.{flag_name} enabled")

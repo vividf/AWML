@@ -4,12 +4,7 @@ Preprocessing pipeline builder for deployment data loaders.
 This module provides functions to extract and build preprocessing pipelines
 from MMDet/MMDet3D/MMPretrain configs for use in deployment data loaders.
 
-NOTE: This module is compatible with the new pipeline architecture (BaseDeploymentPipeline).
-They serve complementary purposes:
-- preprocessing_builder.py: Builds MMDet/MMDet3D preprocessing pipelines for data loaders
-- New pipeline architecture: Handles inference pipeline (preprocess → run_model → postprocess)
-Data flow: DataLoader (uses preprocessing_builder) → Preprocessed Data → Pipeline (new architecture) → Predictions
-See PIPELINE_BUILDER_INTEGRATION_ANALYSIS.md for detailed analysis.
+This module is compatible with the BaseDeploymentPipeline.
 """
 
 import logging
@@ -158,10 +153,7 @@ def build_preprocessing_pipeline(
 
     Args:
         model_cfg: Model configuration containing test pipeline definition.
-                   Can have pipeline defined in one of these locations:
                    - model_cfg.test_dataloader.dataset.pipeline
-                   - model_cfg.test_pipeline
-                   - model_cfg.val_dataloader.dataset.pipeline
         task_type: Explicit task type ('detection2d', 'detection3d', 'classification', 'segmentation').
                    Must be provided either via this argument or via
                    ``model_cfg.task_type`` / ``model_cfg.deploy.task_type``.
@@ -170,7 +162,7 @@ def build_preprocessing_pipeline(
         Pipeline compose object (e.g., mmdet.datasets.transforms.Compose)
 
     Raises:
-        ValueError: If no valid test pipeline found in config or invalid task_type
+    ValueError: If no valid test pipeline found in config or invalid task_type
         ImportError: If required transform packages are not available
 
     Examples:
@@ -201,7 +193,6 @@ def _resolve_task_type(model_cfg: Config, task_type: Optional[str] = None) -> st
     Raises:
         ValueError: If task_type cannot be resolved
     """
-    # Priority: function argument > model_cfg.task_type > model_cfg.deploy.task_type
     if task_type is not None:
         _validate_task_type(task_type)
         return task_type
@@ -256,29 +247,26 @@ def _extract_pipeline_config(model_cfg: Config) -> List[TransformConfig]:
     Raises:
         ValueError: If no valid pipeline found
     """
-    # Try different possible locations for pipeline config
-    pipeline_locations = [
-        # Primary location: test_dataloader
+    pipeline_paths = [
         ("test_dataloader", "dataset", "pipeline"),
-        # Alternative: direct test_pipeline
+        ("test_dataloader", "dataset", "dataset", "pipeline"),  # nested dataset wrappers
         ("test_pipeline",),
-        # Fallback: val_dataloader
-        ("val_dataloader", "dataset", "pipeline"),
     ]
 
-    for location in pipeline_locations:
+    for path in pipeline_paths:
+        cfg = model_cfg
         try:
-            cfg = model_cfg
-            for key in location:
+            for key in path:
                 cfg = cfg[key]
-            if cfg:
-                logger.info(f"Found test pipeline at: {'.'.join(location)}")
-                return cfg
         except (KeyError, TypeError):
             continue
+
+        if cfg:
+            logger.info("Found test pipeline at: %s", ".".join(path))
+            return cfg
 
     raise ValueError(
         "No test pipeline found in config. "
         "Expected pipeline at one of: test_dataloader.dataset.pipeline, "
-        "test_pipeline, or val_dataloader.dataset.pipeline"
+        "test_dataloader.dataset.dataset.pipeline, test_pipeline."
     )

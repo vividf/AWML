@@ -12,12 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 from mmengine.config import Config
 
-from deployment.core import (
-    BaseDataLoader,
-    BaseDeploymentConfig,
-    BaseEvaluator,
-    ModelSpec,
-)
+from deployment.core import Artifact, BaseDataLoader, BaseDeploymentConfig, BaseEvaluator, ModelSpec
 
 
 class BaseDeploymentRunner:
@@ -75,6 +70,7 @@ class BaseDeploymentRunner:
         self.logger = logger
         self._onnx_exporter = onnx_exporter
         self._tensorrt_exporter = tensorrt_exporter
+        self.artifacts: Dict[str, Artifact] = {}
 
     def load_pytorch_model(self, checkpoint_path: str, **kwargs) -> Any:
         """
@@ -94,7 +90,7 @@ class BaseDeploymentRunner:
         """
         raise NotImplementedError(f"{self.__class__.__name__}.load_pytorch_model() must be implemented by subclasses.")
 
-    def export_onnx(self, pytorch_model: Any, **kwargs) -> Optional[str]:
+    def export_onnx(self, pytorch_model: Any, **kwargs) -> Optional[Artifact]:
         """
         Export model to ONNX format.
 
@@ -105,26 +101,18 @@ class BaseDeploymentRunner:
             **kwargs: Additional project-specific arguments
 
         Returns:
-            Path to exported ONNX file/directory, or None if export failed
+            Artifact describing the exported ONNX output, or None if skipped
         """
-        # Standard ONNX export using ONNXExporter
         if not self.config.export_config.should_export_onnx():
             return None
 
-        self.logger.info("=" * 80)
-        self.logger.info("Exporting to ONNX (Using Unified ONNXExporter)")
-        self.logger.info("=" * 80)
-
-        # Get ONNX settings
         onnx_settings = self.config.get_onnx_settings()
 
-        # Use provided exporter (required, cannot be None)
         exporter = self._onnx_exporter
         self.logger.info("=" * 80)
         self.logger.info(f"Exporting to ONNX (Using {type(exporter).__name__})")
         self.logger.info("=" * 80)
 
-        # Standard ONNX export
         # Save to work_dir/onnx/ directory
         onnx_dir = os.path.join(self.config.export_config.work_dir, "onnx")
         os.makedirs(onnx_dir, exist_ok=True)
@@ -153,19 +141,20 @@ class BaseDeploymentRunner:
                 input_tensor = single_input.repeat(batch_size, *([1] * (len(single_input.shape) - 1)))
             self.logger.info(f"Using fixed batch size: {batch_size}")
 
-        # Use provided exporter (required, cannot be None)
-        exporter = self._onnx_exporter
-
         try:
             exporter.export(pytorch_model, input_tensor, output_path)
         except Exception:
-            self.logger.error("❌ ONNX export failed")
+            self.logger.error("ONNX export failed")
             raise
 
-        self.logger.info(f"✅ ONNX export successful: {output_path}")
-        return output_path
+        multi_file = bool(self.config.onnx_config.get("multi_file", False))
+        artifact_path = onnx_dir if multi_file else output_path
+        artifact = Artifact(path=artifact_path, multi_file=multi_file)
+        self.artifacts["onnx"] = artifact
+        self.logger.info(f"ONNX export successful: {artifact.path}")
+        return artifact
 
-    def export_tensorrt(self, onnx_path: str, **kwargs) -> Optional[str]:
+    def export_tensorrt(self, onnx_path: str, **kwargs) -> Optional[Artifact]:
         """
         Export ONNX model to TensorRT engine.
 
@@ -176,9 +165,8 @@ class BaseDeploymentRunner:
             **kwargs: Additional project-specific arguments
 
         Returns:
-            Path to exported TensorRT engine file/directory, or None if export failed
+            Artifact describing the exported TensorRT output, or None if skipped
         """
-        # Standard TensorRT export using TensorRTExporter
         if not self.config.export_config.should_export_tensorrt():
             return None
 
@@ -186,24 +174,19 @@ class BaseDeploymentRunner:
             self.logger.warning("ONNX path not available, skipping TensorRT export")
             return None
 
-        # Use provided exporter (required, cannot be None)
         exporter = self._tensorrt_exporter
         self.logger.info("=" * 80)
         self.logger.info(f"Exporting to TensorRT (Using {type(exporter).__name__})")
         self.logger.info("=" * 80)
 
-        # Standard TensorRT export
         # Save to work_dir/tensorrt/ directory
         tensorrt_dir = os.path.join(self.config.export_config.work_dir, "tensorrt")
         os.makedirs(tensorrt_dir, exist_ok=True)
 
         # Determine output path based on ONNX file name
         if os.path.isdir(onnx_path):
-            # For multi-file ONNX (shouldn't happen in standard export, but handle it)
-            # Use the directory name or a default name
             output_path = os.path.join(tensorrt_dir, "model.engine")
         else:
-            # Single file: extract filename and change extension
             onnx_filename = os.path.basename(onnx_path)
             engine_filename = onnx_filename.replace(".onnx", ".engine")
             output_path = os.path.join(tensorrt_dir, engine_filename)
@@ -222,28 +205,25 @@ class BaseDeploymentRunner:
         if isinstance(sample_input, (list, tuple)):
             sample_input = sample_input[0]  # Use first input for shape
 
-        # Note: trt_settings are read from exporter.config in TensorRTExporter._configure_input_shapes
-        # The exporter's config should already include model_inputs if backend_config is properly set up
-        # No need to pass trt_settings here as the exporter reads from self.config
-
-        # Use provided exporter (required, cannot be None)
         exporter = self._tensorrt_exporter
 
         try:
             exporter.export(
-                model=None,  # Not used for TensorRT
+                model=None,
                 sample_input=sample_input,
                 output_path=output_path,
                 onnx_path=onnx_path,
             )
         except Exception:
-            self.logger.error("❌ TensorRT export failed")
+            self.logger.error("TensorRT export failed")
             raise
 
-        self.logger.info(f"✅ TensorRT export successful: {output_path}")
-        return output_path
+        artifact = Artifact(path=output_path, multi_file=False)
+        self.artifacts["tensorrt"] = artifact
+        self.logger.info(f"TensorRT export successful: {artifact.path}")
+        return artifact
 
-    def _resolve_pytorch_model(self, backend_cfg: Dict[str, Any]) -> Tuple[Optional[str], bool]:
+    def _resolve_pytorch_artifact(self, backend_cfg: Dict[str, Any]) -> Tuple[Optional[Artifact], bool]:
         """
         Resolve PyTorch model path from backend config.
 
@@ -251,16 +231,56 @@ class BaseDeploymentRunner:
             backend_cfg: Backend configuration dictionary
 
         Returns:
-            Tuple of (model_path, is_valid)
+            Tuple of (artifact, is_valid).
+            artifact is an `Artifact` instance if a path could be resolved, otherwise None.
         """
-        model_path = backend_cfg.get("checkpoint")
-        if model_path:
-            is_valid = os.path.exists(model_path) and os.path.isfile(model_path)
-        else:
-            is_valid = False
-        return model_path, is_valid
+        artifact = self.artifacts.get("pytorch")
+        if artifact:
+            return artifact, artifact.exists()
 
-    def _resolve_onnx_model(self, backend_cfg: Dict[str, Any]) -> Tuple[Optional[str], bool]:
+        model_path = backend_cfg.get("checkpoint") or self.config.export_config.checkpoint_path
+        if not model_path:
+            return None, False
+
+        artifact = Artifact(path=model_path, multi_file=False)
+        return artifact, artifact.exists()
+
+    def _artifact_from_path(self, backend: str, path: str) -> Artifact:
+        existing = self.artifacts.get(backend)
+        if existing and existing.path == path:
+            return existing
+
+        multi_file = os.path.isdir(path) if path and os.path.exists(path) else False
+        return Artifact(path=path, multi_file=multi_file)
+
+    def _build_model_spec(self, backend: str, artifact: Artifact, device: str) -> ModelSpec:
+        return ModelSpec(
+            backend=backend,
+            device=device,
+            artifact=artifact,
+        )
+
+    def _normalize_device_for_backend(self, backend: str, device: Optional[str]) -> str:
+        normalized_device = str(device or "cpu")
+
+        if backend in ("pytorch", "onnx"):
+            if normalized_device not in ("cpu",) and not normalized_device.startswith("cuda"):
+                self.logger.warning(
+                    f"Unsupported device '{normalized_device}' for backend '{backend}'. Falling back to CPU."
+                )
+                normalized_device = "cpu"
+        elif backend == "tensorrt":
+            if not normalized_device or normalized_device == "cpu":
+                normalized_device = self.config.export_config.cuda_device or "cuda:0"
+            if not normalized_device.startswith("cuda"):
+                self.logger.warning(
+                    f"TensorRT evaluation requires CUDA device. Overriding device from '{normalized_device}' to 'cuda:0'."
+                )
+                normalized_device = "cuda:0"
+
+        return normalized_device
+
+    def _resolve_onnx_artifact(self, backend_cfg: Dict[str, Any]) -> Tuple[Optional[Artifact], bool]:
         """
         Resolve ONNX model path from backend config.
 
@@ -268,79 +288,21 @@ class BaseDeploymentRunner:
             backend_cfg: Backend configuration dictionary
 
         Returns:
-            Tuple of (model_path, is_valid)
+            Tuple of (artifact, is_valid).
+            artifact is an `Artifact` instance if a path could be resolved, otherwise None.
         """
-        model_path = backend_cfg.get("model_dir")
-        multi_file = self.config.onnx_config.get("multi_file", False)
-        save_file = self.config.onnx_config.get("save_file", "model.onnx")
+        artifact = self.artifacts.get("onnx")
+        if artifact:
+            return artifact, artifact.exists()
 
-        # If model_dir is explicitly set in config
-        if model_path is not None:
-            if os.path.exists(model_path):
-                if os.path.isfile(model_path):
-                    # Single file ONNX
-                    is_valid = model_path.endswith(".onnx") and not multi_file
-                elif os.path.isdir(model_path):
-                    # Directory: valid if multi_file is True, or if it contains ONNX files
-                    if multi_file:
-                        is_valid = True
-                    else:
-                        # Single file mode: find the ONNX file in directory
-                        onnx_files = [f for f in os.listdir(model_path) if f.endswith(".onnx")]
-                        if onnx_files:
-                            expected_file = os.path.join(model_path, save_file)
-                            if os.path.exists(expected_file):
-                                model_path = expected_file
-                            else:
-                                model_path = os.path.join(model_path, onnx_files[0])
-                            is_valid = True
-                        else:
-                            is_valid = False
-                else:
-                    is_valid = False
-            else:
-                is_valid = False
-            return model_path, is_valid
+        explicit_path = backend_cfg.get("model_dir") or self.config.export_config.onnx_path
+        if explicit_path:
+            fallback_artifact = Artifact(path=explicit_path, multi_file=os.path.isdir(explicit_path))
+            return fallback_artifact, fallback_artifact.exists()
 
-        # Infer from export config
-        work_dir = self.config.export_config.work_dir
-        onnx_dir = os.path.join(work_dir, "onnx")
+        return None, False
 
-        if os.path.exists(onnx_dir) and os.path.isdir(onnx_dir):
-            onnx_files = [f for f in os.listdir(onnx_dir) if f.endswith(".onnx")]
-            if onnx_files:
-                if multi_file:
-                    model_path = onnx_dir
-                    is_valid = True
-                else:
-                    # Single file ONNX: use the save_file if it exists, otherwise use the first ONNX file found
-                    expected_file = os.path.join(onnx_dir, save_file)
-                    if os.path.exists(expected_file):
-                        model_path = expected_file
-                    else:
-                        model_path = os.path.join(onnx_dir, onnx_files[0])
-                    is_valid = True
-            else:
-                if multi_file:
-                    model_path = onnx_dir
-                    is_valid = True
-                else:
-                    # Try single file path
-                    model_path = os.path.join(onnx_dir, save_file)
-                    is_valid = os.path.exists(model_path) and model_path.endswith(".onnx")
-        else:
-            if multi_file:
-                # Multi-file ONNX: return directory even if it doesn't exist yet
-                model_path = onnx_dir
-                is_valid = True
-            else:
-                # Fallback: try in work_dir directly (for backward compatibility)
-                model_path = os.path.join(work_dir, save_file)
-                is_valid = os.path.exists(model_path) and model_path.endswith(".onnx")
-
-        return model_path, is_valid
-
-    def _resolve_tensorrt_model(self, backend_cfg: Dict[str, Any]) -> Tuple[Optional[str], bool]:
+    def _resolve_tensorrt_artifact(self, backend_cfg: Dict[str, Any]) -> Tuple[Optional[Artifact], bool]:
         """
         Resolve TensorRT model path from backend config.
 
@@ -348,95 +310,26 @@ class BaseDeploymentRunner:
             backend_cfg: Backend configuration dictionary
 
         Returns:
-            Tuple of (model_path, is_valid)
+            Tuple of (artifact, is_valid).
+            artifact is an `Artifact` instance if a path could be resolved, otherwise None.
         """
-        model_path = backend_cfg.get("engine_dir")
-        multi_file = self.config.onnx_config.get("multi_file", False)
-        onnx_save_file = self.config.onnx_config.get("save_file", "model.onnx")
-        expected_engine = onnx_save_file.replace(".onnx", ".engine")
+        artifact = self.artifacts.get("tensorrt")
+        if artifact:
+            return artifact, artifact.exists()
 
-        # If engine_dir is explicitly set in config
-        if model_path is not None:
-            if os.path.exists(model_path):
-                if os.path.isfile(model_path):
-                    # Single file TensorRT
-                    is_valid = (model_path.endswith(".engine") or model_path.endswith(".trt")) and not multi_file
-                elif os.path.isdir(model_path):
-                    # Directory: valid if multi_file is True, or if it contains engine files
-                    if multi_file:
-                        is_valid = True
-                    else:
-                        # Single file mode: find the engine file in directory
-                        engine_files = [f for f in os.listdir(model_path) if f.endswith(".engine")]
-                        if engine_files:
-                            expected_path = os.path.join(model_path, expected_engine)
-                            if os.path.exists(expected_path):
-                                model_path = expected_path
-                            else:
-                                model_path = os.path.join(model_path, engine_files[0])
-                            is_valid = True
-                        else:
-                            is_valid = False
-                else:
-                    is_valid = False
-            else:
-                is_valid = False
-            return model_path, is_valid
+        explicit_path = backend_cfg.get("engine_dir") or self.config.export_config.tensorrt_path
+        if explicit_path:
+            fallback_artifact = Artifact(path=explicit_path, multi_file=os.path.isdir(explicit_path))
+            return fallback_artifact, fallback_artifact.exists()
 
-        # Infer from export config
-        work_dir = self.config.export_config.work_dir
-        engine_dir = os.path.join(work_dir, "tensorrt")
-
-        if os.path.exists(engine_dir) and os.path.isdir(engine_dir):
-            engine_files = [f for f in os.listdir(engine_dir) if f.endswith(".engine")]
-            if engine_files:
-                if multi_file:
-                    model_path = engine_dir
-                    is_valid = True
-                else:
-                    # Single file TensorRT: use the engine file matching ONNX filename
-                    expected_path = os.path.join(engine_dir, expected_engine)
-                    if os.path.exists(expected_path):
-                        model_path = expected_path
-                    else:
-                        # Fallback: use the first engine file found
-                        model_path = os.path.join(engine_dir, engine_files[0])
-                    is_valid = True
-            else:
-                if multi_file:
-                    model_path = engine_dir
-                    is_valid = True
-                else:
-                    is_valid = False
-        else:
-            if multi_file:
-                # Multi-file TensorRT: return directory even if it doesn't exist yet
-                model_path = engine_dir
-                is_valid = True
-            else:
-                # Fallback: try in work_dir directly (for backward compatibility)
-                if os.path.exists(work_dir) and os.path.isdir(work_dir):
-                    engine_files = [f for f in os.listdir(work_dir) if f.endswith(".engine")]
-                    if engine_files:
-                        expected_path = os.path.join(work_dir, expected_engine)
-                        if os.path.exists(expected_path):
-                            model_path = expected_path
-                        else:
-                            model_path = os.path.join(work_dir, engine_files[0])
-                        is_valid = True
-                    else:
-                        is_valid = False
-                else:
-                    is_valid = False
-
-        return model_path, is_valid
+        return None, False
 
     def get_models_to_evaluate(self) -> List[ModelSpec]:
         """
         Get list of models to evaluate from config.
 
         Returns:
-            List of tuples (backend_name, model_path, device)
+            List of `ModelSpec` instances describing models to evaluate.
         """
         backends = self.config.get_evaluation_backends()
         models_to_evaluate: List[ModelSpec] = []
@@ -445,29 +338,23 @@ class BaseDeploymentRunner:
             if not backend_cfg.get("enabled", False):
                 continue
 
-            device = backend_cfg.get("device", "cpu")
-            model_path = None
+            device = str(backend_cfg.get("device", "cpu") or "cpu")
+            artifact: Optional[Artifact] = None
             is_valid = False
 
             if backend_name == "pytorch":
-                model_path, is_valid = self._resolve_pytorch_model(backend_cfg)
+                artifact, is_valid = self._resolve_pytorch_artifact(backend_cfg)
             elif backend_name == "onnx":
-                model_path, is_valid = self._resolve_onnx_model(backend_cfg)
+                artifact, is_valid = self._resolve_onnx_artifact(backend_cfg)
             elif backend_name == "tensorrt":
-                model_path, is_valid = self._resolve_tensorrt_model(backend_cfg)
+                artifact, is_valid = self._resolve_tensorrt_artifact(backend_cfg)
 
-            if is_valid and model_path:
-                normalized_device = str(device or "cpu")
-                models_to_evaluate.append(
-                    ModelSpec(
-                        backend=backend_name,
-                        device=normalized_device,
-                        path=model_path,
-                    )
-                )
-                self.logger.info(f"  - {backend_name}: {model_path} (device: {normalized_device})")
-            elif model_path:
-                self.logger.warning(f"  - {backend_name}: {model_path} (not found or invalid, skipping)")
+            if is_valid and artifact:
+                spec = self._build_model_spec(backend_name, artifact, device)
+                models_to_evaluate.append(spec)
+                self.logger.info(f"  - {backend_name}: {artifact.path} (device: {device})")
+            elif artifact is not None:
+                self.logger.warning(f"  - {backend_name}: {artifact.path} (not found or invalid, skipping)")
 
         return models_to_evaluate
 
@@ -558,19 +445,26 @@ class BaseDeploymentRunner:
                 ref_path = pytorch_checkpoint
             elif ref_backend == "onnx":
                 ref_path = onnx_path
+            elif ref_backend == "tensorrt":
+                ref_path = tensorrt_path
 
             if test_backend == "onnx":
                 test_path = onnx_path
             elif test_backend == "tensorrt":
                 test_path = tensorrt_path
+            elif test_backend == "pytorch":
+                test_path = pytorch_checkpoint
 
             if not ref_path or not test_path:
                 self.logger.warning(f"  Skipping: missing paths (ref={ref_path}, test={test_path})")
                 continue
 
+            ref_artifact = self._artifact_from_path(ref_backend, ref_path)
+            test_artifact = self._artifact_from_path(test_backend, test_path)
+
             # Use policy-based verification interface
-            reference_spec = ModelSpec(backend=ref_backend, device=ref_device, path=ref_path)
-            test_spec = ModelSpec(backend=test_backend, device=test_device, path=test_path)
+            reference_spec = self._build_model_spec(ref_backend, ref_artifact, ref_device)
+            test_spec = self._build_model_spec(test_backend, test_artifact, test_device)
 
             verification_results = self.evaluator.verify(
                 reference=reference_spec,
@@ -593,16 +487,16 @@ class BaseDeploymentRunner:
                 total_failed += failed
 
                 if failed == 0:
-                    self.logger.info(f"  ✅ Policy {i+1} passed ({passed} comparisons)")
+                    self.logger.info(f"Policy {i+1} passed ({passed} comparisons)")
                 else:
-                    self.logger.warning(f"  ⚠️  Policy {i+1} failed ({failed}/{passed+failed} comparisons)")
+                    self.logger.warning(f"Policy {i+1} failed ({failed}/{passed+failed} comparisons)")
 
         # Overall summary
         self.logger.info("\n" + "=" * 80)
         if total_failed == 0:
-            self.logger.info(f"✅ All verifications passed! ({total_passed} total)")
+            self.logger.info(f"All verifications passed! ({total_passed} total)")
         else:
-            self.logger.warning(f"⚠️  {total_failed}/{total_passed + total_failed} verifications failed")
+            self.logger.warning(f"{total_failed}/{total_passed + total_failed} verifications failed")
         self.logger.info("=" * 80)
 
         all_results["summary"] = {
@@ -647,32 +541,11 @@ class BaseDeploymentRunner:
 
         all_results: Dict[str, Any] = {}
 
-        # TODO(vividf): a bit ungly here, need to refactor
         for spec in models_to_evaluate:
             backend = spec.backend
-            backend_device = spec.device
-            model_path = spec.path
+            backend_device = self._normalize_device_for_backend(backend, spec.device)
 
-            if backend in ("pytorch", "onnx"):
-                if backend_device not in ("cpu",) and not str(backend_device).startswith("cuda"):
-                    self.logger.warning(
-                        f"Unsupported device '{backend_device}' for backend '{backend}'. Falling back to CPU."
-                    )
-                    backend_device = "cpu"
-            elif backend == "tensorrt":
-                if not backend_device or backend_device == "cpu":
-                    backend_device = self.config.export_config.cuda_device or "cuda:0"
-                if not str(backend_device).startswith("cuda"):
-                    self.logger.warning(
-                        f"TensorRT evaluation requires CUDA device. Overriding device from '{backend_device}' to 'cuda:0'."
-                    )
-                    backend_device = "cuda:0"
-
-            normalized_spec = ModelSpec(
-                backend=backend,
-                device=backend_device or "cpu",
-                path=model_path,
-            )
+            normalized_spec = self._build_model_spec(backend, spec.artifact, backend_device)
 
             results = self.evaluator.evaluate(
                 model=normalized_spec,
@@ -780,6 +653,7 @@ class BaseDeploymentRunner:
             try:
                 pytorch_model = self.load_pytorch_model(checkpoint_path, **kwargs)
                 results["pytorch_model"] = pytorch_model
+                self.artifacts["pytorch"] = Artifact(path=checkpoint_path)
 
                 # Single-direction injection: write model to evaluator via setter (never read from it)
                 if hasattr(self.evaluator, "set_pytorch_model"):
@@ -799,6 +673,7 @@ class BaseDeploymentRunner:
                 try:
                     pytorch_model = self.load_pytorch_model(checkpoint_path, **kwargs)
                     results["pytorch_model"] = pytorch_model
+                    self.artifacts["pytorch"] = Artifact(path=checkpoint_path)
 
                     # Single-direction injection: write model to evaluator via setter (never read from it)
                     if hasattr(self.evaluator, "set_pytorch_model"):
@@ -809,24 +684,28 @@ class BaseDeploymentRunner:
                     return results
 
             try:
-                onnx_path = self.export_onnx(pytorch_model, **kwargs)
-                results["onnx_path"] = onnx_path
+                onnx_artifact = self.export_onnx(pytorch_model, **kwargs)
+                if onnx_artifact:
+                    results["onnx_path"] = onnx_artifact.path
             except Exception as e:
                 self.logger.error(f"Failed to export ONNX: {e}")
 
         # Export TensorRT if requested
         if should_export_trt:
-            onnx_source = results["onnx_path"] or external_onnx_path
-            if not onnx_source:
+            onnx_path = results["onnx_path"] or external_onnx_path
+            if not onnx_path:
                 self.logger.error(
                     "TensorRT export requires an ONNX path. Please set export.onnx_path in config or enable ONNX export."
                 )
                 return results
             else:
-                results["onnx_path"] = onnx_source  # Ensure verification/evaluation can use this path
+                results["onnx_path"] = onnx_path  # Ensure verification/evaluation can use this path
+                if onnx_path and os.path.exists(onnx_path):
+                    self.artifacts["onnx"] = Artifact(path=onnx_path, multi_file=os.path.isdir(onnx_path))
                 try:
-                    tensorrt_path = self.export_tensorrt(onnx_source, **kwargs)
-                    results["tensorrt_path"] = tensorrt_path
+                    tensorrt_artifact = self.export_tensorrt(onnx_path, **kwargs)
+                    if tensorrt_artifact:
+                        results["tensorrt_path"] = tensorrt_artifact.path
                 except Exception as e:
                     self.logger.error(f"Failed to export TensorRT: {e}")
 
@@ -837,12 +716,14 @@ class BaseDeploymentRunner:
                 onnx_path = eval_models.get("onnx")
                 if onnx_path and os.path.exists(onnx_path):
                     results["onnx_path"] = onnx_path
+                    self.artifacts["onnx"] = Artifact(path=onnx_path, multi_file=os.path.isdir(onnx_path))
                 elif onnx_path:
                     self.logger.warning(f"ONNX file from config does not exist: {onnx_path}")
             if not results["tensorrt_path"]:
                 tensorrt_path = eval_models.get("tensorrt")
                 if tensorrt_path and os.path.exists(tensorrt_path):
                     results["tensorrt_path"] = tensorrt_path
+                    self.artifacts["tensorrt"] = Artifact(path=tensorrt_path, multi_file=os.path.isdir(tensorrt_path))
                 elif tensorrt_path:
                     self.logger.warning(f"TensorRT engine from config does not exist: {tensorrt_path}")
 
