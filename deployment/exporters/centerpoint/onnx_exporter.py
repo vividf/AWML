@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 
 import torch
 
+from deployment.exporters.base.configs import ONNXExportConfig
 from deployment.exporters.base.onnx_exporter import ONNXExporter
 
 
@@ -28,7 +29,7 @@ class CenterPointONNXExporter(ONNXExporter):
 
     def __init__(
         self,
-        config: Dict[str, Any],
+        config: ONNXExportConfig,
         model_wrapper: Optional[Any] = None,
         logger: logging.Logger = None,
     ):
@@ -36,7 +37,7 @@ class CenterPointONNXExporter(ONNXExporter):
         Initialize CenterPoint ONNX exporter.
 
         Args:
-            config: ONNX export configuration
+            config: ONNX export configuration dataclass instance.
             model_wrapper: Optional model wrapper class
             logger: Optional logger instance
         """
@@ -100,7 +101,7 @@ class CenterPointONNXExporter(ONNXExporter):
                         "input_features": {0: "num_voxels", 1: "num_max_points"},
                         "pillar_features": {0: "num_voxels"},
                     },
-                    simplify=self.config.get("simplify", True),
+                    simplify=self.config.simplify,
                 )
             except Exception:
                 self.logger.error("Failed to export voxel encoder")
@@ -137,7 +138,7 @@ class CenterPointONNXExporter(ONNXExporter):
                     dynamic_axes={
                         "spatial_features": {0: "batch_size", 2: "height", 3: "width"},
                     },
-                    simplify=self.config.get("simplify", True),
+                    simplify=self.config.simplify,
                 )
             except Exception:
                 self.logger.error("Failed to export backbone+neck+head")

@@ -8,6 +8,7 @@ Calibration uses the standard ONNX export flow without special modifications.
 import logging
 from typing import Any, Dict, Optional
 
+from deployment.exporters.base.configs import ONNXExportConfig
 from deployment.exporters.base.onnx_exporter import ONNXExporter
 
 
@@ -24,7 +25,7 @@ class CalibrationONNXExporter(ONNXExporter):
 
     def __init__(
         self,
-        config: Dict[str, Any],
+        config: ONNXExportConfig,
         model_wrapper: Optional[Any] = None,
         logger: logging.Logger = None,
     ):
@@ -32,7 +33,7 @@ class CalibrationONNXExporter(ONNXExporter):
         Initialize Calibration ONNX exporter.
 
         Args:
-            config: ONNX export configuration
+            config: ONNX export configuration dataclass instance.
             model_wrapper: Optional model wrapper class
             logger: Optional logger instance
         """

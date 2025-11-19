@@ -6,8 +6,8 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 import tensorrt as trt
 import torch
 
-from deployment.core.base_config import TensorRTModelInputConfig, TensorRTProfileConfig
 from deployment.exporters.base.base_exporter import BaseExporter
+from deployment.exporters.base.configs import TensorRTExportConfig, TensorRTModelInputConfig, TensorRTProfileConfig
 
 
 class TensorRTExporter(BaseExporter):
@@ -19,7 +19,7 @@ class TensorRTExporter(BaseExporter):
 
     def __init__(
         self,
-        config: Dict[str, Any],
+        config: TensorRTExportConfig,
         model_wrapper: Optional[Any] = None,
         logger: logging.Logger = None,
     ):
@@ -27,7 +27,7 @@ class TensorRTExporter(BaseExporter):
         Initialize TensorRT exporter.
 
         Args:
-            config: TensorRT export configuration
+            config: TensorRT export configuration dataclass instance.
             model_wrapper: Optional model wrapper class (usually not needed for TensorRT)
             logger: Optional logger instance
         """
@@ -57,8 +57,8 @@ class TensorRTExporter(BaseExporter):
         if onnx_path is None:
             raise ValueError("onnx_path is required for TensorRT export")
 
-        precision_policy = self.config.get("precision_policy", "auto")
-        policy_flags = self.config.get("policy_flags", {})
+        precision_policy = self.config.precision_policy
+        policy_flags = self.config.policy_flags
 
         self.logger.info(f"Building TensorRT engine with precision policy: {precision_policy}")
         self.logger.info(f"  ONNX source: {onnx_path}")
@@ -71,14 +71,14 @@ class TensorRTExporter(BaseExporter):
         builder = trt.Builder(trt_logger)
         builder_config = builder.create_builder_config()
 
-        max_workspace_size = self.config.get("max_workspace_size", 1 << 30)
+        max_workspace_size = self.config.max_workspace_size
         builder_config.set_memory_pool_limit(pool=trt.MemoryPoolType.WORKSPACE, pool_size=max_workspace_size)
 
         # Create network with appropriate flags
         flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
 
         # Handle strongly typed flag (network creation flag)
-        if policy_flags.get("STRONGLY_TYPED"):
+        if policy_flags.get("STRONGLY_TYPED", False):
             flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
             self.logger.info("Using strongly typed TensorRT network creation")
 
@@ -133,19 +133,13 @@ class TensorRTExporter(BaseExporter):
         network: trt.INetworkDefinition = None,
     ) -> None:
         """Configure input shapes for TensorRT optimization profile."""
-        model_inputs_cfg = self.config.get("model_inputs")
+        model_inputs_cfg = self.config.model_inputs
 
         if not model_inputs_cfg:
             raise ValueError("model_inputs is not set in the config")
 
-        if isinstance(model_inputs_cfg, TensorRTModelInputConfig):
-            input_entries = (model_inputs_cfg,)
-        elif isinstance(model_inputs_cfg, (list, tuple)):
-            input_entries = tuple(model_inputs_cfg)
-        else:
-            input_entries = (model_inputs_cfg,)
-
-        first_entry = input_entries[0]
+        # model_inputs is already a Tuple[TensorRTModelInputConfig, ...]
+        first_entry = model_inputs_cfg[0]
         input_shapes = self._extract_input_shapes(first_entry)
 
         if not input_shapes:

@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 
 import torch
 
+from deployment.exporters.base.configs import TensorRTExportConfig
 from deployment.exporters.base.tensorrt_exporter import TensorRTExporter
 
 
@@ -26,12 +27,17 @@ class CenterPointTensorRTExporter(TensorRTExporter):
     2. pts_backbone_neck_head.onnx → pts_backbone_neck_head.engine
     """
 
-    def __init__(self, config: Dict[str, Any], model_wrapper: Optional[Any] = None, logger: logging.Logger = None):
+    def __init__(
+        self,
+        config: TensorRTExportConfig,
+        model_wrapper: Optional[Any] = None,
+        logger: logging.Logger = None,
+    ):
         """
         Initialize CenterPoint TensorRT exporter.
 
         Args:
-            config: TensorRT export configuration
+            config: TensorRT export configuration dataclass instance.
             model_wrapper: Optional model wrapper class
             logger: Optional logger instance
         """

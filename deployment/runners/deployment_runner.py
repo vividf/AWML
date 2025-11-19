@@ -148,7 +148,7 @@ class BaseDeploymentRunner:
         # Save to work_dir/onnx/ directory
         onnx_dir = os.path.join(self.config.export_config.work_dir, "onnx")
         os.makedirs(onnx_dir, exist_ok=True)
-        output_path = os.path.join(onnx_dir, onnx_settings["save_file"])
+        output_path = os.path.join(onnx_dir, onnx_settings.save_file)
 
         # Get sample input
         sample_idx = self.config.runtime_config.get("sample_idx", 0)
@@ -156,7 +156,7 @@ class BaseDeploymentRunner:
         single_input = self.data_loader.preprocess(sample)
 
         # Get batch size from configuration
-        batch_size = onnx_settings.get("batch_size", 1)
+        batch_size = onnx_settings.batch_size
         if batch_size is None:
             input_tensor = single_input
             self.logger.info("Using dynamic batch size")

@@ -6,6 +6,7 @@ YOLOX uses the standard ONNX export flow with a model wrapper.
 import logging
 from typing import Any, Dict, Optional
 
+from deployment.exporters.base.configs import ONNXExportConfig
 from deployment.exporters.base.onnx_exporter import ONNXExporter
 
 
@@ -22,7 +23,7 @@ class YOLOXONNXExporter(ONNXExporter):
 
     def __init__(
         self,
-        config: Dict[str, Any],
+        config: ONNXExportConfig,
         model_wrapper: Optional[Any] = None,
         logger: logging.Logger = None,
     ):
@@ -30,7 +31,7 @@ class YOLOXONNXExporter(ONNXExporter):
         Initialize YOLOX ONNX exporter.
 
         Args:
-            config: ONNX export configuration
+            config: ONNX export configuration dataclass instance.
             model_wrapper: Optional model wrapper class (e.g., YOLOXONNXWrapper)
             logger: Optional logger instance
         """

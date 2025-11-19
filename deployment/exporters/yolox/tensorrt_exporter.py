@@ -8,6 +8,7 @@ YOLOX uses the standard TensorRT export flow.
 import logging
 from typing import Any, Dict, Optional
 
+from deployment.exporters.base.configs import TensorRTExportConfig
 from deployment.exporters.base.tensorrt_exporter import TensorRTExporter
 
 
@@ -24,7 +25,7 @@ class YOLOXTensorRTExporter(TensorRTExporter):
 
     def __init__(
         self,
-        config: Dict[str, Any],
+        config: TensorRTExportConfig,
         model_wrapper: Optional[Any] = None,
         logger: logging.Logger = None,
     ):
@@ -32,7 +33,7 @@ class YOLOXTensorRTExporter(TensorRTExporter):
         Initialize YOLOX TensorRT exporter.
 
         Args:
-            config: TensorRT export configuration
+            config: TensorRT export configuration dataclass instance.
             model_wrapper: Optional model wrapper class (usually not needed for TensorRT)
             logger: Optional logger instance
         """

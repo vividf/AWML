@@ -1,6 +1,7 @@
 """Model exporters for different backends."""
 
 from deployment.exporters.base.base_exporter import BaseExporter
+from deployment.exporters.base.configs import ONNXExportConfig, TensorRTExportConfig
 from deployment.exporters.base.model_wrappers import (
     BaseModelWrapper,
     IdentityWrapper,
@@ -19,6 +20,8 @@ from deployment.exporters.yolox.tensorrt_exporter import YOLOXTensorRTExporter
 
 __all__ = [
     "BaseExporter",
+    "ONNXExportConfig",
+    "TensorRTExportConfig",
     "ONNXExporter",
     "TensorRTExporter",
     "CenterPointONNXExporter",

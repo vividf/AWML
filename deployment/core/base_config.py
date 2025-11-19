@@ -16,6 +16,11 @@ import torch
 from mmengine.config import Config
 
 from deployment.core.backend import Backend
+from deployment.exporters.base.configs import (
+    ONNXExportConfig,
+    TensorRTExportConfig,
+    TensorRTModelInputConfig,
+)
 
 # Constants
 DEFAULT_WORKSPACE_SIZE = 1 << 30  # 1 GB
@@ -160,47 +165,6 @@ class RuntimeConfig:
     def __getitem__(self, key: str) -> Any:
         """Dictionary-style access to runtime config."""
         return self.data[key]
-
-
-@dataclass(frozen=True)
-class TensorRTProfileConfig:
-    """Optimization profile description for a TensorRT input tensor."""
-
-    min_shape: Tuple[int, ...] = field(default_factory=tuple)
-    opt_shape: Tuple[int, ...] = field(default_factory=tuple)
-    max_shape: Tuple[int, ...] = field(default_factory=tuple)
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "TensorRTProfileConfig":
-        return cls(
-            min_shape=cls._normalize_shape(data.get("min_shape")),
-            opt_shape=cls._normalize_shape(data.get("opt_shape")),
-            max_shape=cls._normalize_shape(data.get("max_shape")),
-        )
-
-    @staticmethod
-    def _normalize_shape(shape: Optional[Iterable[int]]) -> Tuple[int, ...]:
-        if shape is None:
-            return tuple()
-        return tuple(int(dim) for dim in shape)
-
-    def has_complete_profile(self) -> bool:
-        return bool(self.min_shape and self.opt_shape and self.max_shape)
-
-
-@dataclass(frozen=True)
-class TensorRTModelInputConfig:
-    """Typed container for TensorRT model input shape settings."""
-
-    input_shapes: Mapping[str, TensorRTProfileConfig] = field(default_factory=_empty_mapping)
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "TensorRTModelInputConfig":
-        input_shapes_raw = data.get("input_shapes", {}) or {}
-        profile_map = {
-            name: TensorRTProfileConfig.from_dict(shape_dict or {}) for name, shape_dict in input_shapes_raw.items()
-        }
-        return cls(input_shapes=MappingProxyType(profile_map))
 
 
 @dataclass(frozen=True)
@@ -448,12 +412,12 @@ class BaseDeploymentConfig:
         """Get task type for pipeline building."""
         return self.deploy_cfg.get("task_type")
 
-    def get_onnx_settings(self) -> Dict[str, Any]:
+    def get_onnx_settings(self) -> ONNXExportConfig:
         """
         Get ONNX export settings.
 
         Returns:
-            Dictionary containing ONNX export parameters
+            ONNXExportConfig instance containing ONNX export parameters
         """
         onnx_config = self.onnx_config
         model_io = self.deploy_cfg.get("model_io", {})
@@ -482,38 +446,39 @@ class BaseDeploymentConfig:
             if isinstance(additional_output, str):
                 output_names.append(additional_output)
 
-        settings = {
+        settings_dict = {
             "opset_version": onnx_config.get("opset_version", 16),
             "do_constant_folding": onnx_config.get("do_constant_folding", True),
-            "input_names": input_names,
-            "output_names": output_names,
+            "input_names": tuple(input_names),
+            "output_names": tuple(output_names),
             "dynamic_axes": dynamic_axes,
             "export_params": onnx_config.get("export_params", True),
             "keep_initializers_as_inputs": onnx_config.get("keep_initializers_as_inputs", False),
+            "verbose": onnx_config.get("verbose", False),
             "save_file": onnx_config.get("save_file", "model.onnx"),
-            "decode_in_inference": onnx_config.get("decode_in_inference", True),
             "batch_size": batch_size,
         }
 
-        # Include model_wrapper config if present in onnx_config
-        if "model_wrapper" in onnx_config:
-            settings["model_wrapper"] = onnx_config["model_wrapper"]
+        # Note: simplify is typically True by default, but can be overridden
+        if "simplify" in onnx_config:
+            settings_dict["simplify"] = onnx_config["simplify"]
 
-        return settings
+        return ONNXExportConfig.from_mapping(settings_dict)
 
-    def get_tensorrt_settings(self) -> Dict[str, Any]:
+    def get_tensorrt_settings(self) -> TensorRTExportConfig:
         """
         Get TensorRT export settings with precision policy support.
 
         Returns:
-            Dictionary containing TensorRT export parameters
+            TensorRTExportConfig instance containing TensorRT export parameters
         """
-        return {
+        settings_dict = {
             "max_workspace_size": self.backend_config.get_max_workspace_size(),
             "precision_policy": self.backend_config.get_precision_policy(),
             "policy_flags": self.backend_config.get_precision_flags(),
             "model_inputs": self.backend_config.model_inputs,
         }
+        return TensorRTExportConfig.from_mapping(settings_dict)
 
 
 def setup_logging(level: str = "INFO") -> logging.Logger:
