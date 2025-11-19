@@ -1,11 +1,12 @@
 """TensorRT model exporter."""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 import tensorrt as trt
 import torch
 
+from deployment.core.base_config import TensorRTModelInputConfig, TensorRTProfileConfig
 from deployment.exporters.base.base_exporter import BaseExporter
 
 
@@ -131,47 +132,83 @@ class TensorRTExporter(BaseExporter):
         sample_input: Any,
         network: trt.INetworkDefinition = None,
     ) -> None:
-        """
-        Configure input shapes for TensorRT optimization profile.
+        """Configure input shapes for TensorRT optimization profile."""
+        model_inputs_cfg = self.config.get("model_inputs")
 
-        Args:
-            profile: TensorRT optimization profile
-            sample_input: Sample input tensor
-            network: TensorRT network definition (optional, used to get actual input names)
-        """
-        model_inputs = self.config.get("model_inputs", [])
-
-        if model_inputs:
-            # VIVID(calibration classifier)
-            print("model inputs: ", model_inputs)
-            input_shapes = model_inputs[0].get("input_shapes", {})
-            for input_name, shapes in input_shapes.items():
-                min_shape = shapes.get("min_shape")
-                opt_shape = shapes.get("opt_shape")
-                max_shape = shapes.get("max_shape")
-
-                if min_shape is None:
-                    if sample_input is None:
-                        raise ValueError(f"min_shape missing for {input_name} and sample_input is not provided")
-                    min_shape = list(sample_input.shape)
-
-                if opt_shape is None:
-                    if sample_input is None:
-                        raise ValueError(f"opt_shape missing for {input_name} and sample_input is not provided")
-                    opt_shape = list(sample_input.shape)
-
-                if max_shape is None:
-                    if sample_input is None:
-                        raise ValueError(f"max_shape missing for {input_name} and sample_input is not provided")
-                    max_shape = list(sample_input.shape)
-
-                self.logger.info(f"Setting {input_name} shapes - min: {min_shape}, opt: {opt_shape}, max: {max_shape}")
-                profile.set_shape(input_name, min_shape, opt_shape, max_shape)
-        else:
+        if not model_inputs_cfg:
             raise ValueError("model_inputs is not set in the config")
+
+        if isinstance(model_inputs_cfg, TensorRTModelInputConfig):
+            input_entries = (model_inputs_cfg,)
+        elif isinstance(model_inputs_cfg, (list, tuple)):
+            input_entries = tuple(model_inputs_cfg)
+        else:
+            input_entries = (model_inputs_cfg,)
+
+        first_entry = input_entries[0]
+        input_shapes = self._extract_input_shapes(first_entry)
+
+        if not input_shapes:
+            raise ValueError("TensorRT model_inputs[0] missing 'input_shapes' definitions")
+
+        for input_name, profile_cfg in input_shapes.items():
+            min_shape, opt_shape, max_shape = self._resolve_profile_shapes(profile_cfg, sample_input, input_name)
+            self.logger.info(f"Setting {input_name} shapes - min: {min_shape}, opt: {opt_shape}, max: {max_shape}")
+            profile.set_shape(input_name, min_shape, opt_shape, max_shape)
 
     def _log_parser_errors(self, parser: trt.OnnxParser) -> None:
         """Log TensorRT parser errors."""
         self.logger.error("Failed to parse ONNX model")
         for error in range(parser.num_errors):
             self.logger.error(f"Parser error: {parser.get_error(error)}")
+
+    def _extract_input_shapes(self, entry: Any) -> Mapping[str, Any]:
+        if isinstance(entry, TensorRTModelInputConfig):
+            return entry.input_shapes
+        if isinstance(entry, Mapping):
+            return entry.get("input_shapes", {}) or {}
+        raise TypeError(f"Unsupported TensorRT model input entry: {type(entry)}")
+
+    def _resolve_profile_shapes(
+        self,
+        profile_cfg: Any,
+        sample_input: Any,
+        input_name: str,
+    ) -> Sequence[Sequence[int]]:
+        if isinstance(profile_cfg, TensorRTProfileConfig):
+            min_shape = self._shape_to_list(profile_cfg.min_shape)
+            opt_shape = self._shape_to_list(profile_cfg.opt_shape)
+            max_shape = self._shape_to_list(profile_cfg.max_shape)
+        elif isinstance(profile_cfg, Mapping):
+            min_shape = self._shape_to_list(profile_cfg.get("min_shape"))
+            opt_shape = self._shape_to_list(profile_cfg.get("opt_shape"))
+            max_shape = self._shape_to_list(profile_cfg.get("max_shape"))
+        else:
+            raise TypeError(f"Unsupported TensorRT profile type for input '{input_name}': {type(profile_cfg)}")
+
+        return (
+            self._ensure_shape(min_shape, sample_input, input_name, "min"),
+            self._ensure_shape(opt_shape, sample_input, input_name, "opt"),
+            self._ensure_shape(max_shape, sample_input, input_name, "max"),
+        )
+
+    @staticmethod
+    def _shape_to_list(shape: Optional[Sequence[int]]) -> Optional[Sequence[int]]:
+        if shape is None:
+            return None
+        return [int(dim) for dim in shape]
+
+    def _ensure_shape(
+        self,
+        shape: Optional[Sequence[int]],
+        sample_input: Any,
+        input_name: str,
+        bucket: str,
+    ) -> Sequence[int]:
+        if shape:
+            return list(shape)
+        if sample_input is None or not hasattr(sample_input, "shape"):
+            raise ValueError(f"{bucket}_shape missing for {input_name} and sample_input is not provided")
+        inferred = list(sample_input.shape)
+        self.logger.debug("Falling back to sample_input.shape=%s for %s:%s", inferred, input_name, bucket)
+        return inferred

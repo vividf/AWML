@@ -163,17 +163,60 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class TensorRTProfileConfig:
+    """Optimization profile description for a TensorRT input tensor."""
+
+    min_shape: Tuple[int, ...] = field(default_factory=tuple)
+    opt_shape: Tuple[int, ...] = field(default_factory=tuple)
+    max_shape: Tuple[int, ...] = field(default_factory=tuple)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "TensorRTProfileConfig":
+        return cls(
+            min_shape=cls._normalize_shape(data.get("min_shape")),
+            opt_shape=cls._normalize_shape(data.get("opt_shape")),
+            max_shape=cls._normalize_shape(data.get("max_shape")),
+        )
+
+    @staticmethod
+    def _normalize_shape(shape: Optional[Iterable[int]]) -> Tuple[int, ...]:
+        if shape is None:
+            return tuple()
+        return tuple(int(dim) for dim in shape)
+
+    def has_complete_profile(self) -> bool:
+        return bool(self.min_shape and self.opt_shape and self.max_shape)
+
+
+@dataclass(frozen=True)
+class TensorRTModelInputConfig:
+    """Typed container for TensorRT model input shape settings."""
+
+    input_shapes: Mapping[str, TensorRTProfileConfig] = field(default_factory=_empty_mapping)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "TensorRTModelInputConfig":
+        input_shapes_raw = data.get("input_shapes", {}) or {}
+        profile_map = {
+            name: TensorRTProfileConfig.from_dict(shape_dict or {}) for name, shape_dict in input_shapes_raw.items()
+        }
+        return cls(input_shapes=MappingProxyType(profile_map))
+
+
+@dataclass(frozen=True)
 class BackendConfig:
     """Configuration for backend-specific settings."""
 
     common_config: Mapping[str, Any] = field(default_factory=_empty_mapping)
-    model_inputs: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+    model_inputs: Tuple[TensorRTModelInputConfig, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "BackendConfig":
         common_config = dict(config_dict.get("common_config", {}))
         model_inputs_raw: Iterable[Dict[str, Any]] = config_dict.get("model_inputs", []) or []
-        model_inputs: Tuple[Mapping[str, Any], ...] = tuple(MappingProxyType(dict(item)) for item in model_inputs_raw)
+        model_inputs: Tuple[TensorRTModelInputConfig, ...] = tuple(
+            TensorRTModelInputConfig.from_dict(item) for item in model_inputs_raw
+        )
         return cls(
             common_config=MappingProxyType(common_config),
             model_inputs=model_inputs,
