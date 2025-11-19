@@ -55,9 +55,9 @@ def main():
     logger.info("YOLOX_opt_elan Deployment Pipeline")
     logger.info("=" * 80)
     logger.info("Deployment Configuration:")
-    logger.info(f"  Export mode: {config.export_config.mode}")
+    logger.info(f"  Export mode: {config.export_config.mode.value}")
     logger.info(f"  Work dir: {config.export_config.work_dir}")
-    logger.info(f"  Verify: {config.verification_config.get('enabled', False)}")
+    logger.info(f"  Verify: {config.verification_config.enabled}")
     logger.info(f"  CUDA device (TensorRT): {config.export_config.cuda_device}")
 
     # Create data loader

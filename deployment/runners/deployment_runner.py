@@ -7,12 +7,31 @@ across different projects, while allowing project-specific customization.
 
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 
 import torch
 from mmengine.config import Config
 
 from deployment.core import Artifact, Backend, BaseDataLoader, BaseDeploymentConfig, BaseEvaluator, ModelSpec
+
+
+class DeploymentResultDict(TypedDict, total=False):
+    """
+    Standardized structure returned by `BaseDeploymentRunner.run()`.
+
+    Keys:
+        pytorch_model: In-memory model instance loaded from the checkpoint (if requested).
+        onnx_path: Filesystem path to the exported ONNX artifact (single file or directory).
+        tensorrt_path: Filesystem path to the exported TensorRT engine.
+        verification_results: Arbitrary dictionary produced by `BaseEvaluator.verify()`.
+        evaluation_results: Arbitrary dictionary produced by `BaseEvaluator.evaluate()`.
+    """
+
+    pytorch_model: Optional[Any]
+    onnx_path: Optional[str]
+    tensorrt_path: Optional[str]
+    verification_results: Dict[str, Any]
+    evaluation_results: Dict[str, Any]
 
 
 class BaseDeploymentRunner:
@@ -394,7 +413,7 @@ class BaseDeploymentRunner:
         verification_cfg = self.config.verification_config
 
         # Check master switches
-        if not verification_cfg.get("enabled", True):
+        if not verification_cfg.enabled:
             self.logger.info("Verification disabled (verification.enabled=False), skipping...")
             return {}
 
@@ -402,14 +421,12 @@ class BaseDeploymentRunner:
         scenarios = self.config.get_verification_scenarios(export_mode)
 
         if not scenarios:
-            self.logger.info(f"No verification scenarios for export mode '{export_mode}', skipping...")
+            self.logger.info(f"No verification scenarios for export mode '{export_mode.value}', skipping...")
             return {}
 
         # Check if any scenario actually needs PyTorch checkpoint
         needs_pytorch = any(
-            Backend.from_value(policy.get("ref_backend")) is Backend.PYTORCH
-            or Backend.from_value(policy.get("test_backend")) is Backend.PYTORCH
-            for policy in scenarios
+            policy.ref_backend is Backend.PYTORCH or policy.test_backend is Backend.PYTORCH for policy in scenarios
         )
 
         if needs_pytorch and not pytorch_checkpoint:
@@ -418,12 +435,12 @@ class BaseDeploymentRunner:
             )
             return {}
 
-        num_verify_samples = verification_cfg.get("num_verify_samples", 3)
-        tolerance = verification_cfg.get("tolerance", 0.1)
-        devices_map = verification_cfg.get("devices", {}) or {}
+        num_verify_samples = verification_cfg.num_verify_samples
+        tolerance = verification_cfg.tolerance
+        devices_map = verification_cfg.devices or {}
 
         self.logger.info("=" * 80)
-        self.logger.info(f"Running Verification (mode: {export_mode})")
+        self.logger.info(f"Running Verification (mode: {export_mode.value})")
         self.logger.info("=" * 80)
 
         all_results = {}
@@ -431,12 +448,12 @@ class BaseDeploymentRunner:
         total_failed = 0
 
         for i, policy in enumerate(scenarios):
-            ref_backend = Backend.from_value(policy["ref_backend"])
+            ref_backend = policy.ref_backend
             # Resolve device using alias system:
             # - Scenarios use aliases (e.g., "cpu", "cuda") for flexibility
             # - Actual device strings are defined in verification["devices"]
             # - This allows easy device switching: change devices["cpu"] to affect all CPU verifications
-            ref_device_key = policy["ref_device"]
+            ref_device_key = policy.ref_device
             if ref_device_key in devices_map:
                 ref_device = devices_map[ref_device_key]
             else:
@@ -444,8 +461,8 @@ class BaseDeploymentRunner:
                 ref_device = ref_device_key
                 self.logger.warning(f"Device alias '{ref_device_key}' not found in devices map, using as-is")
 
-            test_backend = Backend.from_value(policy["test_backend"])
-            test_device_key = policy["test_device"]
+            test_backend = policy.test_backend
+            test_device_key = policy.test_device
             if test_device_key in devices_map:
                 test_device = devices_map[test_device_key]
             else:
@@ -540,7 +557,7 @@ class BaseDeploymentRunner:
         """
         eval_config = self.config.evaluation_config
 
-        if not eval_config.get("enabled", False):
+        if not eval_config.enabled:
             self.logger.info("Evaluation disabled, skipping...")
             return {}
 
@@ -554,11 +571,11 @@ class BaseDeploymentRunner:
             self.logger.warning("No models found for evaluation")
             return {}
 
-        num_samples = eval_config.get("num_samples", 10)
+        num_samples = eval_config.num_samples
         if num_samples == -1:
             num_samples = self.data_loader.get_num_samples()
 
-        verbose_mode = eval_config.get("verbose", False)
+        verbose_mode = eval_config.verbose
 
         all_results: Dict[str, Any] = {}
 
@@ -603,7 +620,7 @@ class BaseDeploymentRunner:
 
         return all_results
 
-    def run(self, checkpoint_path: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+    def run(self, checkpoint_path: Optional[str] = None, **kwargs) -> DeploymentResultDict:
         """
         Execute the complete deployment workflow.
 
@@ -612,7 +629,7 @@ class BaseDeploymentRunner:
             **kwargs: Additional project-specific arguments
 
         Returns:
-            Dictionary containing deployment results
+            DeploymentResultDict: Structured summary of all deployment artifacts and reports.
         """
         results = {
             "pytorch_model": None,
@@ -641,20 +658,19 @@ class BaseDeploymentRunner:
 
         # Check if PyTorch evaluation is needed
         needs_pytorch_eval = False
-        if eval_config.get("enabled", False):
-            models_to_eval = eval_config.get("models", {})
+        if eval_config.enabled:
+            models_to_eval = eval_config.models
             if self._get_backend_entry(models_to_eval, Backend.PYTORCH):
                 needs_pytorch_eval = True
 
         # Check if PyTorch is needed for verification
         needs_pytorch_for_verification = False
-        if verification_cfg.get("enabled", False):
+        if verification_cfg.enabled:
             export_mode = self.config.export_config.mode
             scenarios = self.config.get_verification_scenarios(export_mode)
             if scenarios:
                 needs_pytorch_for_verification = any(
-                    Backend.from_value(policy.get("ref_backend")) is Backend.PYTORCH
-                    or Backend.from_value(policy.get("test_backend")) is Backend.PYTORCH
+                    policy.ref_backend is Backend.PYTORCH or policy.test_backend is Backend.PYTORCH
                     for policy in scenarios
                 )
 
@@ -733,7 +749,7 @@ class BaseDeploymentRunner:
 
         # Get model paths from evaluation config if not exported
         if not results["onnx_path"] or not results["tensorrt_path"]:
-            eval_models = self.config.evaluation_config.get("models", {})
+            eval_models = self.config.evaluation_config.models
             if not results["onnx_path"]:
                 onnx_path = self._get_backend_entry(eval_models, Backend.ONNX)
                 if onnx_path and os.path.exists(onnx_path):
