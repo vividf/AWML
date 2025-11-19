@@ -9,6 +9,7 @@ import logging
 import os
 from typing import Any, Optional
 
+from deployment.core import Artifact
 from deployment.exporters.centerpoint.onnx_exporter import CenterPointONNXExporter
 from deployment.exporters.centerpoint.tensorrt_exporter import CenterPointTensorRTExporter
 from deployment.runners.deployment_runner import BaseDeploymentRunner
@@ -71,7 +72,7 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
 
         return model
 
-    def export_onnx(self, pytorch_model: Any, **kwargs) -> Optional[str]:
+    def export_onnx(self, pytorch_model: Any, **kwargs) -> Optional[Artifact]:
         """
         Export CenterPoint model to ONNX format (multi-file).
 
@@ -82,7 +83,7 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             **kwargs: Additional project-specific arguments
 
         Returns:
-            Path to exported ONNX directory, or None if export failed
+            Artifact describing the ONNX directory, or None if skipped
         """
         if not self.config.export_config.should_export_onnx():
             return None
@@ -114,10 +115,12 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             self.logger.error(f"❌ ONNX export failed")
             raise
 
-        self.logger.info(f"✅ ONNX export successful: {output_dir}")
-        return output_dir
+        artifact = Artifact(path=output_dir, multi_file=True)
+        self.artifacts["onnx"] = artifact
+        self.logger.info(f"✅ ONNX export successful: {artifact.path}")
+        return artifact
 
-    def export_tensorrt(self, onnx_path: str, **kwargs) -> Optional[str]:
+    def export_tensorrt(self, onnx_path: str, **kwargs) -> Optional[Artifact]:
         """
         Export CenterPoint ONNX models to TensorRT engines (multi-file).
 
@@ -128,7 +131,7 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             **kwargs: Additional project-specific arguments
 
         Returns:
-            Path to exported TensorRT directory, or None if export failed
+            Artifact describing the TensorRT directory, or None if skipped
         """
         if not self.config.export_config.should_export_tensorrt():
             return None
@@ -165,5 +168,7 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             self.logger.error(f"❌ TensorRT export failed")
             raise
 
-        self.logger.info(f"✅ TensorRT export successful: {output_dir}")
-        return output_dir
+        artifact = Artifact(path=output_dir, multi_file=True)
+        self.artifacts["tensorrt"] = artifact
+        self.logger.info(f"✅ TensorRT export successful: {artifact.path}")
+        return artifact

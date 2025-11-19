@@ -47,7 +47,6 @@ class CenterPointONNXExporter(ONNXExporter):
         model: torch.nn.Module,  # CenterPointONNX model
         sample_input: Any = None,  # Not used, kept for interface compatibility
         output_path: str = None,  # Not used, kept for interface compatibility
-        config_override: Dict[str, Any] = None,  # Not used, kept for interface compatibility
         data_loader=None,
         output_dir: str = None,
         sample_idx: int = 0,
@@ -61,7 +60,6 @@ class CenterPointONNXExporter(ONNXExporter):
             model: CenterPointONNX model instance
             sample_input: Not used (kept for interface compatibility)
             output_path: Not used (kept for interface compatibility)
-            config_override: Not used (kept for interface compatibility)
             data_loader: Data loader for getting real input samples
             output_dir: Directory to save ONNX files
             sample_idx: Index of sample to use for export
@@ -90,24 +88,19 @@ class CenterPointONNXExporter(ONNXExporter):
 
             # Export voxel encoder
             self.logger.info("\n[1/2] Exporting voxel encoder...")
-            voxel_encoder_config = {
-                **self.config,
-                "input_names": ["input_features"],
-                "output_names": ["pillar_features"],
-                "dynamic_axes": {
-                    "input_features": {0: "num_voxels", 1: "num_max_points"},
-                    "pillar_features": {0: "num_voxels"},
-                },
-                "simplify": self.config.get("simplify", True),
-            }
-
             voxel_encoder_path = os.path.join(output_dir, "pts_voxel_encoder.onnx")
             try:
                 super().export(
                     model=model.pts_voxel_encoder,
                     sample_input=input_features,
                     output_path=voxel_encoder_path,
-                    config_override=voxel_encoder_config,
+                    input_names=["input_features"],
+                    output_names=["pillar_features"],
+                    dynamic_axes={
+                        "input_features": {0: "num_voxels", 1: "num_max_points"},
+                        "pillar_features": {0: "num_voxels"},
+                    },
+                    simplify=self.config.get("simplify", True),
                 )
             except Exception:
                 self.logger.error("Failed to export voxel encoder")
@@ -133,23 +126,18 @@ class CenterPointONNXExporter(ONNXExporter):
                 # Default output names for CenterPoint
                 output_names = ["reg", "height", "dim", "rot", "vel", "heatmap"]
 
-            backbone_config = {
-                **self.config,
-                "input_names": ["spatial_features"],
-                "output_names": output_names,
-                "dynamic_axes": {
-                    "spatial_features": {0: "batch_size", 2: "height", 3: "width"},
-                },
-                "simplify": self.config.get("simplify", True),
-            }
-
             backbone_path = os.path.join(output_dir, "pts_backbone_neck_head.onnx")
             try:
                 super().export(
                     model=backbone_neck_head,
                     sample_input=x,
                     output_path=backbone_path,
-                    config_override=backbone_config,
+                    input_names=["spatial_features"],
+                    output_names=output_names,
+                    dynamic_axes={
+                        "spatial_features": {0: "batch_size", 2: "height", 3: "width"},
+                    },
+                    simplify=self.config.get("simplify", True),
                 )
             except Exception:
                 self.logger.error("Failed to export backbone+neck+head")

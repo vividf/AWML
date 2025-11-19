@@ -165,7 +165,7 @@ class CenterPointEvaluator(BaseEvaluator):
 
         # Create reference pipeline
         logger.info(f"\nInitializing {ref_backend} reference pipeline...")
-        ref_pipeline = self._create_pipeline(ModelSpec(backend=ref_backend, device=ref_device, path=ref_path), logger)
+        ref_pipeline = self._create_pipeline(reference, logger)
         if ref_pipeline is None:
             logger.error(f"Failed to create {ref_backend} reference pipeline")
             results["error"] = f"Failed to create {ref_backend} reference pipeline"
@@ -173,9 +173,7 @@ class CenterPointEvaluator(BaseEvaluator):
 
         # Create test pipeline
         logger.info(f"\nInitializing {test_backend} test pipeline...")
-        test_pipeline = self._create_pipeline(
-            ModelSpec(backend=test_backend, device=test_device, path=test_path), logger
-        )
+        test_pipeline = self._create_pipeline(test, logger)
         if test_pipeline is None:
             logger.error(f"Failed to create {test_backend} test pipeline")
             results["error"] = f"Failed to create {test_backend} test pipeline"
