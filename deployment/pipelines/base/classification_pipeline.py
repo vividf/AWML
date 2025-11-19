@@ -78,7 +78,7 @@ class ClassificationPipeline(BaseDeploymentPipeline):
         Returns:
             Preprocessed tensor [1, C, H, W]
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def run_model(self, preprocessed_input: torch.Tensor) -> torch.Tensor:
@@ -91,7 +91,7 @@ class ClassificationPipeline(BaseDeploymentPipeline):
         Returns:
             Model output (logits) [1, num_classes]
         """
-        pass
+        raise NotImplementedError
 
     def postprocess(self, model_output: torch.Tensor, metadata: Dict = None, top_k: int = 5) -> Dict:
         """

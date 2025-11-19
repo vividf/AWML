@@ -63,7 +63,7 @@ class BaseDataLoader(ABC):
             IndexError: If index is out of range
             FileNotFoundError: If sample data files don't exist
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def preprocess(self, sample: SampleData) -> torch.Tensor:
@@ -80,7 +80,7 @@ class BaseDataLoader(ABC):
         Raises:
             ValueError: If sample format is invalid
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def get_num_samples(self) -> int:
@@ -90,4 +90,4 @@ class BaseDataLoader(ABC):
         Returns:
             Total number of samples available
         """
-        pass
+        raise NotImplementedError

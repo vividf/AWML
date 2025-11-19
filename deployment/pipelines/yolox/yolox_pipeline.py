@@ -177,7 +177,7 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
             Model output [1, num_predictions, 4+1+num_classes]
             Format: [bbox_reg(4), objectness(1), class_scores(num_classes)]
         """
-        pass
+        raise NotImplementedError
 
     # ========== Postprocessing Methods ==========
 

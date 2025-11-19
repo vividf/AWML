@@ -77,4 +77,4 @@ class BaseExporter(ABC):
         Raises:
             RuntimeError: If export fails
         """
-        pass
+        raise NotImplementedError

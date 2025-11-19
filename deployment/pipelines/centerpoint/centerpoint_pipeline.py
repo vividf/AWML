@@ -241,7 +241,7 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
         Returns:
             voxel_features: Voxel features [N_voxels, feature_dim]
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def run_backbone_head(self, spatial_features: torch.Tensor) -> List[torch.Tensor]:
@@ -257,7 +257,7 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
         Returns:
             List of head outputs: [heatmap, reg, height, dim, rot, vel]
         """
-        pass
+        raise NotImplementedError
 
     # ========== Main Inference Pipeline ==========
 

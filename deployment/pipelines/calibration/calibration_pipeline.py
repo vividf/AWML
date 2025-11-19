@@ -113,7 +113,7 @@ class CalibrationDeploymentPipeline(ClassificationPipeline):
         Returns:
             Model output (logits) [1, num_classes]
         """
-        pass
+        raise NotImplementedError
 
     def postprocess(self, model_output: torch.Tensor, metadata: Dict = None, top_k: int = 2) -> Dict:
         """

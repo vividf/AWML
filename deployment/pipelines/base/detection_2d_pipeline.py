@@ -79,7 +79,7 @@ class Detection2DPipeline(BaseDeploymentPipeline):
             - preprocessed_tensor: [1, C, H, W]
             - preprocessing_metadata: Dict with preprocessing information
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def run_model(self, preprocessed_input: torch.Tensor) -> Any:
@@ -92,7 +92,7 @@ class Detection2DPipeline(BaseDeploymentPipeline):
         Returns:
             Model output (backend-specific format)
         """
-        pass
+        raise NotImplementedError
 
     def postprocess(self, model_output: Any, metadata: Dict = None) -> List[Dict]:
         """

@@ -138,7 +138,7 @@ class BaseEvaluator(ABC):
                 "avg_latency_ms": 15.3,
             }
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def print_results(self, results: EvalResultDict) -> None:
@@ -148,7 +148,7 @@ class BaseEvaluator(ABC):
         Args:
             results: Results dictionary returned by evaluate()
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def verify(
@@ -178,7 +178,7 @@ class BaseEvaluator(ABC):
         Returns:
             Verification results with pass/fail summary and per-sample outcomes.
         """
-        pass
+        raise NotImplementedError
 
     def compute_latency_stats(self, latencies: list) -> Dict[str, float]:
         """
