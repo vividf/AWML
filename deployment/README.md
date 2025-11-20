@@ -75,15 +75,15 @@ The AWML Deployment Framework provides a standardized approach to model deployme
 `BaseDeploymentRunner` orchestrates the complete deployment workflow, while each project provides a thin subclass (`CenterPointDeploymentRunner`, `YOLOXDeploymentRunner`, `CalibrationDeploymentRunner`) that plugs in model-specific logic.
 
 - **Model Loading**: Implemented by each project runner to load PyTorch checkpoints
-- **Export**: Uses injected ONNX/TensorRT exporters that encapsulate wrapper logic
+- **Export**: Uses lazily constructed ONNX/TensorRT exporters (via `ExporterFactory`) informed by wrapper classes and optional workflows
 - **Verification**: Scenario-based verification across backends
 - **Evaluation**: Performance metrics and latency statistics
 
 **Required Parameters:**
-- `onnx_exporter`: Project-specific ONNX exporter instance (e.g., `YOLOXONNXExporter`, `CenterPointONNXExporter`)
-- `tensorrt_exporter`: Project-specific TensorRT exporter instance (e.g., `YOLOXTensorRTExporter`, `CenterPointTensorRTExporter`)
+- `onnx_wrapper_cls`: Optional model wrapper class for ONNX export (required unless a workflow performs the export)
+- `onnx_workflow` / `tensorrt_workflow`: Optional workflow objects for specialized multi-file exports
 
-Exporters receive their corresponding `model_wrapper` during construction. Runners never implicitly create exporters/wrappers—everything is injected for clarity and testability.
+Runners own exporter initialization and reuse, ensuring consistent logging/configuration while keeping project entry points lightweight.
 
 #### 2. **Core Components** (in `core/`)
 
@@ -98,12 +98,13 @@ Exporters receive their corresponding `model_wrapper` during construction. Runne
 - **`Detection3DPipeline`**: Base pipeline for 3D detection tasks
 - **`ClassificationPipeline`**: Base pipeline for classification tasks
 
-#### 3. **Exporters**
+#### 3. **Exporters & Workflows**
 
-**Unified Architecture**: All projects follow a consistent structure with three files per model:
-- `{model}/onnx_exporter.py`: Project-specific ONNX exporter
-- `{model}/tensorrt_exporter.py`: Project-specific TensorRT exporter
-- `{model}/model_wrappers.py`: Project-specific model wrapper
+**Unified Architecture**:
+- Exporters are created lazily by `ExporterFactory`, so project entry points only declare wrappers/workflows and never wire exporters manually.
+- Base workflow interfaces live in `exporters/workflows/base.py`, enabling complex projects to orchestrate multi-stage exports without forking the base exporters.
+- Simple projects rely directly on the base exporters with optional wrappers.
+- Complex projects (CenterPoint) assemble workflows (`onnx_workflow.py`, `tensorrt_workflow.py`) that orchestrate multiple single-file exports using the base exporters via composition.
 
 - **Base Exporters** (in `exporters/base/`):
   - **`BaseExporter`**: Abstract base class for all exporters
@@ -117,23 +118,23 @@ Exporters receive their corresponding `model_wrapper` during construction. Runne
     - **`TensorRTModelInputConfig`**: Configuration for TensorRT input shapes
     - **`TensorRTProfileConfig`**: Optimization profile configuration for dynamic shapes
 
-- **Project-Specific Exporters**:
+- **Factory & Workflow Interfaces**:
+  - **`ExporterFactory`** (`exporters/base/factory.py`): Builds `ONNXExporter`/`TensorRTExporter` instances using `BaseDeploymentConfig` settings, ensuring consistent logging and configuration.
+  - **`OnnxExportWorkflow` / `TensorRTExportWorkflow`** (`exporters/workflows/base.py`): Abstract contracts for orchestrating complex, multi-artifact exports.
+
+- **Project-Specific Wrappers & Workflows**:
   - **YOLOX** (`exporters/yolox/`):
-    - **`YOLOXONNXExporter`**: Inherits base ONNX exporter (requires `YOLOXONNXWrapper`)
-    - **`YOLOXTensorRTExporter`**: Inherits base TensorRT exporter
-    - **`YOLOXONNXWrapper`**: Transforms YOLOX output to Tier4-compatible format
+    - **`YOLOXONNXWrapper`**: Transforms YOLOX output to Tier4-compatible format; paired with base exporters created by the factory.
   - **CenterPoint** (`exporters/centerpoint/`):
-    - **`CenterPointONNXExporter`**: Extends base exporter for multi-file ONNX export
-    - **`CenterPointTensorRTExporter`**: Extends base exporter for multi-file TensorRT export
+    - **`CenterPointONNXExportWorkflow`**: Composes the generic `ONNXExporter` to emit multiple ONNX files
+    - **`CenterPointTensorRTExportWorkflow`**: Composes the generic `TensorRTExporter` to build multiple engines
     - **`CenterPointONNXWrapper`**: Identity wrapper (no transformation needed)
   - **Calibration** (`exporters/calibration/`):
-    - **`CalibrationONNXExporter`**: Inherits base ONNX exporter (requires `IdentityWrapper`)
-    - **`CalibrationTensorRTExporter`**: Inherits base TensorRT exporter
-    - **`CalibrationONNXWrapper`**: Identity wrapper (no transformation needed)
+    - **`CalibrationONNXWrapper`**: Identity wrapper (no transformation needed); paired with the base exporters from the factory
 
 **Architecture Pattern**:
-- **Simple models** (YOLOX, Calibration): Inherit base exporters, use custom wrappers if needed
-- **Complex models** (CenterPoint): Extend base exporters for special logic (e.g., multi-file export), use IdentityWrapper
+- **Simple models** (YOLOX, Calibration): Instantiate the generic base exporters via `ExporterFactory` and supply custom wrappers when needed; no subclassing required.
+- **Complex models** (CenterPoint): Keep base exporters generic and layer workflows for multi-file orchestration, still using wrappers as needed.
 
 #### 4. **Pipelines**
 
@@ -236,28 +237,11 @@ python projects/CalibrationStatusClassification/deploy/main.py \
 
 ### Creating a Project Runner
 
-All projects follow the dependency injection pattern: explicitly create exporters (with their wrappers) and pass them to a project-specific runner subclass of `BaseDeploymentRunner`. Example (YOLOX):
+Projects now pass lightweight configuration objects (wrapper classes and optional workflows) into the runner. The runner owns exporter construction through `ExporterFactory` and creates the exporters lazily. Example (YOLOX):
 
 ```python
-from deployment.runners import YOLOXDeploymentRunner
-from deployment.exporters.yolox.onnx_exporter import YOLOXONNXExporter
-from deployment.exporters.yolox.tensorrt_exporter import YOLOXTensorRTExporter
 from deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
-
-# Create project-specific exporters
-onnx_settings = config.get_onnx_settings()
-trt_settings = config.get_tensorrt_settings()
-
-onnx_exporter = YOLOXONNXExporter(
-    onnx_settings,
-    model_wrapper=YOLOXONNXWrapper,
-    logger=logger,
-)
-tensorrt_exporter = YOLOXTensorRTExporter(
-    trt_settings,
-    model_wrapper=YOLOXONNXWrapper,
-    logger=logger,
-)
+from deployment.runners import YOLOXDeploymentRunner
 
 # Instantiate the project runner
 runner = YOLOXDeploymentRunner(
@@ -266,16 +250,15 @@ runner = YOLOXDeploymentRunner(
     config=config,
     model_cfg=model_cfg,
     logger=logger,
-    onnx_exporter=onnx_exporter,        # Required
-    tensorrt_exporter=tensorrt_exporter, # Required
+    onnx_wrapper_cls=YOLOXONNXWrapper,
 )
 ```
 
 **Key Points:**
-- Exporters (and their wrappers) must be explicitly created in the entry point
-- `onnx_exporter` and `tensorrt_exporter` are **required** arguments for every runner
-- Each project uses its own specific exporter, wrapper, data loader, evaluator, and runner class
-- This explicit wiring keeps dependencies clear and improves testability
+- Pass wrapper classes (and optional workflows) instead of exporter instances
+- Exporters are constructed lazily inside `BaseDeploymentRunner` via `ExporterFactory`
+- Projects still control model-specific behavior by choosing wrappers/workflows
+- Entry points remain simple while keeping dependencies explicit
 
 ### Command-Line Arguments
 
@@ -481,21 +464,21 @@ See project-specific configs:
 ### CenterPoint (3D Detection)
 
 **Features:**
-- Multi-file ONNX export (voxel encoder + backbone/head)
+- Multi-file ONNX export (voxel encoder + backbone/head) orchestrated via workflows
 - ONNX-compatible model configuration
-- Custom exporters for complex model structure
+- Composed exporters for complex model structure
 
-**Exporter and Wrapper:**
-- `CenterPointONNXExporter`: Extends base exporter for multi-file ONNX export
-- `CenterPointTensorRTExporter`: Extends base exporter for multi-file TensorRT export
+**Workflows and Wrapper:**
+- `CenterPointONNXExportWorkflow`: Drives multiple ONNX exports using the generic `ONNXExporter`
+- `CenterPointTensorRTExportWorkflow`: Converts each ONNX file with the generic `TensorRTExporter`
 - `CenterPointONNXWrapper`: Identity wrapper (no output transformation)
 
 **Key Files:**
 - `projects/CenterPoint/deploy/main.py`
 - `projects/CenterPoint/deploy/evaluator.py`
 - `deployment/pipelines/centerpoint/`
-- `deployment/exporters/centerpoint/onnx_exporter.py`
-- `deployment/exporters/centerpoint/tensorrt_exporter.py`
+- `deployment/exporters/centerpoint/onnx_workflow.py`
+- `deployment/exporters/centerpoint/tensorrt_workflow.py`
 - `deployment/exporters/centerpoint/model_wrappers.py`
 
 **Pipeline Structure:**
@@ -511,17 +494,15 @@ run_backbone_head() → postprocess()
 - Model wrapper for ONNX-compatible output format
 - ReLU6 → ReLU replacement for ONNX compatibility
 
-**Exporter and Wrapper:**
-- `YOLOXONNXExporter`: Inherits base ONNX exporter and requires explicit `YOLOXONNXWrapper`
-- `YOLOXTensorRTExporter`: Inherits base TensorRT exporter
+**Export + Wrapper:**
+- `ONNXExporter`: Generic exporter instantiated with `YOLOXONNXWrapper`
+- `TensorRTExporter`: Generic exporter instantiated with the same wrapper
 - `YOLOXONNXWrapper`: Transforms output from `(1, 8, 120, 120)` to `(1, 18900, 13)` format
 
 **Key Files:**
 - `projects/YOLOX_opt_elan/deploy/main.py`
 - `projects/YOLOX_opt_elan/deploy/evaluator.py`
 - `deployment/pipelines/yolox/`
-- `deployment/exporters/yolox/onnx_exporter.py`
-- `deployment/exporters/yolox/tensorrt_exporter.py`
 - `deployment/exporters/yolox/model_wrappers.py`
 
 **Pipeline Structure:**
@@ -536,17 +517,15 @@ preprocess() → run_model() → postprocess()
 - Simple single-file ONNX export
 - Calibrated/miscalibrated data loader variants
 
-**Exporter and Wrapper:**
-- `CalibrationONNXExporter`: Inherits base ONNX exporter, uses `IdentityWrapper` by default
-- `CalibrationTensorRTExporter`: Inherits base TensorRT exporter
+**Export + Wrapper:**
+- `ONNXExporter`: Generic exporter instantiated with `CalibrationONNXWrapper`
+- `TensorRTExporter`: Generic exporter instantiated with the same wrapper
 - `CalibrationONNXWrapper`: Identity wrapper (no output transformation)
 
 **Key Files:**
 - `projects/CalibrationStatusClassification/deploy/main.py`
 - `projects/CalibrationStatusClassification/deploy/evaluator.py`
 - `deployment/pipelines/calibration/`
-- `deployment/exporters/calibration/onnx_exporter.py`
-- `deployment/exporters/calibration/tensorrt_exporter.py`
 - `deployment/exporters/calibration/model_wrappers.py`
 
 **Pipeline Structure:**
@@ -733,20 +712,19 @@ deployment/
 │   ├── base/                      # Base exporter classes
 │   │   ├── base_exporter.py       # Exporter base class
 │   │   ├── configs.py             # Typed configuration classes (ONNXExportConfig, TensorRTExportConfig)
+│   │   ├── factory.py             # ExporterFactory that builds ONNX/TensorRT exporters
 │   │   ├── onnx_exporter.py       # ONNX exporter base class
 │   │   ├── tensorrt_exporter.py   # TensorRT exporter base class
 │   │   └── model_wrappers.py      # Base model wrappers (BaseModelWrapper, IdentityWrapper)
-│   ├── centerpoint/               # CenterPoint exporters (extends base)
-│   │   ├── onnx_exporter.py       # CenterPoint ONNX exporter (multi-file export)
-│   │   ├── tensorrt_exporter.py   # CenterPoint TensorRT exporter (multi-file export)
-│   │   └── model_wrappers.py      # CenterPoint model wrappers (IdentityWrapper)
-│   ├── yolox/                     # YOLOX exporters (inherits base)
-│   │   ├── onnx_exporter.py       # YOLOX ONNX exporter (inherits base)
-│   │   ├── tensorrt_exporter.py   # YOLOX TensorRT exporter (inherits base)
+│   ├── workflows/                 # Workflow interfaces
+│   │   └── base.py                # OnnxExportWorkflow & TensorRTExportWorkflow ABCs
+│   ├── centerpoint/               # CenterPoint-specific helpers (compose base exporters)
+│   │   ├── model_wrappers.py      # CenterPoint model wrappers (IdentityWrapper)
+│   │   ├── onnx_workflow.py       # CenterPoint multi-file ONNX workflow
+│   │   └── tensorrt_workflow.py   # CenterPoint multi-file TensorRT workflow
+│   ├── yolox/                     # YOLOX wrappers (paired with base exporters)
 │   │   └── model_wrappers.py      # YOLOX model wrappers (YOLOXONNXWrapper)
-│   └── calibration/               # CalibrationStatusClassification exporters (inherits base)
-│       ├── onnx_exporter.py       # Calibration ONNX exporter (inherits base)
-│       ├── tensorrt_exporter.py   # Calibration TensorRT exporter (inherits base)
+│   └── calibration/               # CalibrationStatusClassification wrappers
 │       └── model_wrappers.py      # Calibration model wrappers (IdentityWrapper)
 │
 ├── pipelines/                     # Task-specific pipelines
@@ -812,74 +790,59 @@ projects/
 
 ### 2. Model Export
 
-- Always explicitly create project-specific exporters in `main.py`
-- Always provide required `model_wrapper` parameter when constructing exporters
-- Use project-specific wrapper classes (e.g., `YOLOXONNXWrapper`, `CenterPointONNXWrapper`)
-- Follow the unified architecture pattern: each model has `onnx_exporter.py`, `tensorrt_exporter.py`, and `model_wrappers.py`
-- Simple models: inherit base exporters, use custom wrappers if needed
-- Complex models: extend base exporters for special logic, use IdentityWrapper if no transformation needed
-- Always verify ONNX export before TensorRT conversion
-- Use appropriate precision policies for TensorRT
-- Test with multiple samples during export
+- Pass wrapper classes (and optional workflows) into project runners; `ExporterFactory` constructs ONNX/TensorRT exporters using deployment configs.
+- Keep wrapper definitions in `exporters/{model}/model_wrappers.py`; reuse `IdentityWrapper` when no transformation is needed.
+- Introduce workflow modules (`exporters/{model}/onnx_workflow.py`, `tensorrt_workflow.py`) only when orchestration beyond single-file export is required.
+- Simple models: rely on generic base exporters + wrappers; no subclassing or custom exporters.
+- Complex models: implement workflow classes that drive multiple calls into the generic exporters while keeping exporter logic centralized.
+- Always verify ONNX export before TensorRT conversion and prefer multiple samples to validate stability.
+- Use appropriate precision policies for TensorRT (auto/fp16/fp32_tf32/strongly_typed) based on deployment constraints.
 
 ### 2.1. Unified Architecture Pattern
 
-All projects follow a unified structure with three files per model:
+All projects follow a unified structure, with simple models sticking to exporter modules and complex models layering workflows on top:
 
 ```
 exporters/{model}/
-├── onnx_exporter.py       # Project-specific ONNX exporter
-├── tensorrt_exporter.py   # Project-specific TensorRT exporter
-└── model_wrappers.py      # Project-specific model wrapper
+├── model_wrappers.py      # Project-specific model wrapper
+├── [optional] onnx_workflow.py       # Workflow orchestrating base exporter calls
+├── [optional] tensorrt_workflow.py   # Workflow orchestrating base exporter calls
 ```
 
 **Pattern 1: Simple Models** (YOLOX, Calibration)
-- Inherit base exporters (no special logic needed)
+- Instantiate the generic base exporters (no subclassing needed)
 - Use custom wrappers if output format transformation is required
-- Example: `YOLOXONNXExporter` inherits `ONNXExporter`, requires `YOLOXONNXWrapper`
+- Example: YOLOX uses `ONNXExporter` + `YOLOXONNXWrapper`
 
 **Pattern 2: Complex Models** (CenterPoint)
-- Extend base exporters for special requirements (e.g., multi-file export)
+- Keep base exporters generic but introduce workflow classes for special requirements (e.g., multi-file export)
 - Use IdentityWrapper if no output transformation needed
-- Example: `CenterPointONNXExporter` extends `ONNXExporter` for multi-file export
+- Example: `CenterPointONNXExportWorkflow` composes `ONNXExporter` to produce multiple ONNX files
 
 ### 2.2. Dependency Injection Pattern
 
 All projects should follow this pattern:
 
 ```python
-# 1. Import project-specific exporters, wrappers, and runner
-from deployment.exporters.yolox.onnx_exporter import YOLOXONNXExporter
-from deployment.exporters.yolox.tensorrt_exporter import YOLOXTensorRTExporter
+# 1. Import wrappers/workflows and runner
 from deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
 from deployment.runners import YOLOXDeploymentRunner
 
-# 2. Create exporters with settings
-onnx_exporter = YOLOXONNXExporter(
-    onnx_settings,
-    model_wrapper=YOLOXONNXWrapper,
-    logger=logger,
-)
-tensorrt_exporter = YOLOXTensorRTExporter(
-    trt_settings,
-    model_wrapper=YOLOXONNXWrapper,
-    logger=logger,
-)
-
-# 3. Pass exporters to the project runner (all required)
+# 2. Instantiate the runner with wrapper classes (TensorRT uses base exporter directly)
 runner = YOLOXDeploymentRunner(
     ...,
-    onnx_exporter=onnx_exporter,        # Required
-    tensorrt_exporter=tensorrt_exporter, # Required
+    onnx_wrapper_cls=YOLOXONNXWrapper,
 )
 ```
 
+Complex projects (e.g., CenterPoint) can additionally provide workflow instances, which the runner will use before falling back to the standard exporter flow.
+
 **Benefits:**
-- Clear dependencies: All components are visible in `main.py`
-- Type safety: IDE can provide better type hints
+- Clear dependencies: All components and hooks are visible in `main.py`
+- Lazy exporter creation: Avoids redundant exporter wiring across projects
 - No hidden dependencies: No global registry or string-based lookups
-- Easy testing: Can inject mock objects for testing
-- Unified structure: All models follow the same architectural pattern
+- Easy testing: Provide mock wrappers/workflows if needed
+- Unified structure: All models follow the same architectural pattern while supporting workflows
 
 ### 3. Verification
 
@@ -946,11 +909,9 @@ When adding a new project:
    - Implement `BaseDataLoader` for data loading
 
 2. **Create exporters following unified architecture pattern**
-   - Create `exporters/{model}/onnx_exporter.py` (inherit or extend `ONNXExporter`)
-   - Create `exporters/{model}/tensorrt_exporter.py` (inherit or extend `TensorRTExporter`)
-   - Create `exporters/{model}/model_wrappers.py` (use `IdentityWrapper` or implement custom wrapper)
-   - **Simple models**: Inherit base exporters, use custom wrapper if output transformation needed
-   - **Complex models**: Extend base exporters for special logic (e.g., multi-file export)
+   - Add `exporters/{model}/model_wrappers.py` (reuse `IdentityWrapper` or implement custom wrapper)
+   - Introduce `exporters/{model}/onnx_workflow.py` / `tensorrt_workflow.py` only if you need multi-stage orchestration; otherwise rely on the base exporters created by `ExporterFactory`
+   - Prefer composition over inheritance—extend the workflows, not the base exporters, unless a new backend capability is required
 
 3. **Implement task-specific pipeline** (if needed)
    - Inherit from appropriate base pipeline (`Detection2DPipeline`, `Detection3DPipeline`, `ClassificationPipeline`)
