@@ -1,11 +1,16 @@
 """Core components for deployment framework."""
 
 from deployment.core.artifacts import Artifact
+from deployment.core.backend import Backend
 from deployment.core.base_config import (
     BackendConfig,
     BaseDeploymentConfig,
+    EvaluationConfig,
     ExportConfig,
+    ExportMode,
     RuntimeConfig,
+    VerificationConfig,
+    VerificationScenario,
     parse_base_args,
     setup_logging,
 )
@@ -19,10 +24,15 @@ from deployment.core.base_evaluator import (
 from deployment.core.preprocessing_builder import build_preprocessing_pipeline
 
 __all__ = [
+    "Backend",
     "BaseDeploymentConfig",
     "ExportConfig",
+    "ExportMode",
     "RuntimeConfig",
     "BackendConfig",
+    "EvaluationConfig",
+    "VerificationConfig",
+    "VerificationScenario",
     "setup_logging",
     "parse_base_args",
     "BaseDataLoader",

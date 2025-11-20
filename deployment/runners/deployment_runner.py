@@ -7,12 +7,31 @@ across different projects, while allowing project-specific customization.
 
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 
 import torch
 from mmengine.config import Config
 
-from deployment.core import Artifact, BaseDataLoader, BaseDeploymentConfig, BaseEvaluator, ModelSpec
+from deployment.core import Artifact, Backend, BaseDataLoader, BaseDeploymentConfig, BaseEvaluator, ModelSpec
+
+
+class DeploymentResultDict(TypedDict, total=False):
+    """
+    Standardized structure returned by `BaseDeploymentRunner.run()`.
+
+    Keys:
+        pytorch_model: In-memory model instance loaded from the checkpoint (if requested).
+        onnx_path: Filesystem path to the exported ONNX artifact (single file or directory).
+        tensorrt_path: Filesystem path to the exported TensorRT engine.
+        verification_results: Arbitrary dictionary produced by `BaseEvaluator.verify()`.
+        evaluation_results: Arbitrary dictionary produced by `BaseEvaluator.evaluate()`.
+    """
+
+    pytorch_model: Optional[Any]
+    onnx_path: Optional[str]
+    tensorrt_path: Optional[str]
+    verification_results: Dict[str, Any]
+    evaluation_results: Dict[str, Any]
 
 
 class BaseDeploymentRunner:
@@ -72,6 +91,19 @@ class BaseDeploymentRunner:
         self._tensorrt_exporter = tensorrt_exporter
         self.artifacts: Dict[str, Artifact] = {}
 
+    @staticmethod
+    def _get_backend_entry(mapping: Optional[Dict[Any, Any]], backend: Backend) -> Any:
+        """
+        Fetch a config value that may be keyed by either string literals or Backend enums.
+        """
+        if not mapping:
+            return None
+
+        if backend.value in mapping:
+            return mapping[backend.value]
+
+        return mapping.get(backend)
+
     def load_pytorch_model(self, checkpoint_path: str, **kwargs) -> Any:
         """
         Load PyTorch model from checkpoint.
@@ -116,7 +148,7 @@ class BaseDeploymentRunner:
         # Save to work_dir/onnx/ directory
         onnx_dir = os.path.join(self.config.export_config.work_dir, "onnx")
         os.makedirs(onnx_dir, exist_ok=True)
-        output_path = os.path.join(onnx_dir, onnx_settings["save_file"])
+        output_path = os.path.join(onnx_dir, onnx_settings.save_file)
 
         # Get sample input
         sample_idx = self.config.runtime_config.get("sample_idx", 0)
@@ -124,7 +156,7 @@ class BaseDeploymentRunner:
         single_input = self.data_loader.preprocess(sample)
 
         # Get batch size from configuration
-        batch_size = onnx_settings.get("batch_size", 1)
+        batch_size = onnx_settings.batch_size
         if batch_size is None:
             input_tensor = single_input
             self.logger.info("Using dynamic batch size")
@@ -150,7 +182,7 @@ class BaseDeploymentRunner:
         multi_file = bool(self.config.onnx_config.get("multi_file", False))
         artifact_path = onnx_dir if multi_file else output_path
         artifact = Artifact(path=artifact_path, multi_file=multi_file)
-        self.artifacts["onnx"] = artifact
+        self.artifacts[Backend.ONNX.value] = artifact
         self.logger.info(f"ONNX export successful: {artifact.path}")
         return artifact
 
@@ -219,7 +251,7 @@ class BaseDeploymentRunner:
             raise
 
         artifact = Artifact(path=output_path, multi_file=False)
-        self.artifacts["tensorrt"] = artifact
+        self.artifacts[Backend.TENSORRT.value] = artifact
         self.logger.info(f"TensorRT export successful: {artifact.path}")
         return artifact
 
@@ -234,7 +266,7 @@ class BaseDeploymentRunner:
             Tuple of (artifact, is_valid).
             artifact is an `Artifact` instance if a path could be resolved, otherwise None.
         """
-        artifact = self.artifacts.get("pytorch")
+        artifact = self.artifacts.get(Backend.PYTORCH.value)
         if artifact:
             return artifact, artifact.exists()
 
@@ -245,36 +277,40 @@ class BaseDeploymentRunner:
         artifact = Artifact(path=model_path, multi_file=False)
         return artifact, artifact.exists()
 
-    def _artifact_from_path(self, backend: str, path: str) -> Artifact:
-        existing = self.artifacts.get(backend)
+    def _artifact_from_path(self, backend: Union[str, Backend], path: str) -> Artifact:
+        backend_enum = Backend.from_value(backend)
+        existing = self.artifacts.get(backend_enum.value)
         if existing and existing.path == path:
             return existing
 
         multi_file = os.path.isdir(path) if path and os.path.exists(path) else False
         return Artifact(path=path, multi_file=multi_file)
 
-    def _build_model_spec(self, backend: str, artifact: Artifact, device: str) -> ModelSpec:
+    def _build_model_spec(self, backend: Union[str, Backend], artifact: Artifact, device: str) -> ModelSpec:
+        backend_enum = Backend.from_value(backend)
         return ModelSpec(
-            backend=backend,
+            backend=backend_enum,
             device=device,
             artifact=artifact,
         )
 
-    def _normalize_device_for_backend(self, backend: str, device: Optional[str]) -> str:
+    def _normalize_device_for_backend(self, backend: Union[str, Backend], device: Optional[str]) -> str:
+        backend_enum = Backend.from_value(backend)
         normalized_device = str(device or "cpu")
 
-        if backend in ("pytorch", "onnx"):
+        if backend_enum in (Backend.PYTORCH, Backend.ONNX):
             if normalized_device not in ("cpu",) and not normalized_device.startswith("cuda"):
                 self.logger.warning(
-                    f"Unsupported device '{normalized_device}' for backend '{backend}'. Falling back to CPU."
+                    f"Unsupported device '{normalized_device}' for backend '{backend_enum.value}'. Falling back to CPU."
                 )
                 normalized_device = "cpu"
-        elif backend == "tensorrt":
+        elif backend_enum is Backend.TENSORRT:
             if not normalized_device or normalized_device == "cpu":
                 normalized_device = self.config.export_config.cuda_device or "cuda:0"
             if not normalized_device.startswith("cuda"):
                 self.logger.warning(
-                    f"TensorRT evaluation requires CUDA device. Overriding device from '{normalized_device}' to 'cuda:0'."
+                    "TensorRT evaluation requires CUDA device. Overriding device "
+                    f"from '{normalized_device}' to 'cuda:0'."
                 )
                 normalized_device = "cuda:0"
 
@@ -291,7 +327,7 @@ class BaseDeploymentRunner:
             Tuple of (artifact, is_valid).
             artifact is an `Artifact` instance if a path could be resolved, otherwise None.
         """
-        artifact = self.artifacts.get("onnx")
+        artifact = self.artifacts.get(Backend.ONNX.value)
         if artifact:
             return artifact, artifact.exists()
 
@@ -313,7 +349,7 @@ class BaseDeploymentRunner:
             Tuple of (artifact, is_valid).
             artifact is an `Artifact` instance if a path could be resolved, otherwise None.
         """
-        artifact = self.artifacts.get("tensorrt")
+        artifact = self.artifacts.get(Backend.TENSORRT.value)
         if artifact:
             return artifact, artifact.exists()
 
@@ -334,7 +370,8 @@ class BaseDeploymentRunner:
         backends = self.config.get_evaluation_backends()
         models_to_evaluate: List[ModelSpec] = []
 
-        for backend_name, backend_cfg in backends.items():
+        for backend_key, backend_cfg in backends.items():
+            backend_enum = Backend.from_value(backend_key)
             if not backend_cfg.get("enabled", False):
                 continue
 
@@ -342,19 +379,19 @@ class BaseDeploymentRunner:
             artifact: Optional[Artifact] = None
             is_valid = False
 
-            if backend_name == "pytorch":
+            if backend_enum is Backend.PYTORCH:
                 artifact, is_valid = self._resolve_pytorch_artifact(backend_cfg)
-            elif backend_name == "onnx":
+            elif backend_enum is Backend.ONNX:
                 artifact, is_valid = self._resolve_onnx_artifact(backend_cfg)
-            elif backend_name == "tensorrt":
+            elif backend_enum is Backend.TENSORRT:
                 artifact, is_valid = self._resolve_tensorrt_artifact(backend_cfg)
 
             if is_valid and artifact:
-                spec = self._build_model_spec(backend_name, artifact, device)
+                spec = self._build_model_spec(backend_enum, artifact, device)
                 models_to_evaluate.append(spec)
-                self.logger.info(f"  - {backend_name}: {artifact.path} (device: {device})")
+                self.logger.info(f"  - {backend_enum.value}: {artifact.path} (device: {device})")
             elif artifact is not None:
-                self.logger.warning(f"  - {backend_name}: {artifact.path} (not found or invalid, skipping)")
+                self.logger.warning(f"  - {backend_enum.value}: {artifact.path} (not found or invalid, skipping)")
 
         return models_to_evaluate
 
@@ -376,7 +413,7 @@ class BaseDeploymentRunner:
         verification_cfg = self.config.verification_config
 
         # Check master switches
-        if not verification_cfg.get("enabled", True):
+        if not verification_cfg.enabled:
             self.logger.info("Verification disabled (verification.enabled=False), skipping...")
             return {}
 
@@ -384,12 +421,12 @@ class BaseDeploymentRunner:
         scenarios = self.config.get_verification_scenarios(export_mode)
 
         if not scenarios:
-            self.logger.info(f"No verification scenarios for export mode '{export_mode}', skipping...")
+            self.logger.info(f"No verification scenarios for export mode '{export_mode.value}', skipping...")
             return {}
 
         # Check if any scenario actually needs PyTorch checkpoint
         needs_pytorch = any(
-            policy.get("ref_backend") == "pytorch" or policy.get("test_backend") == "pytorch" for policy in scenarios
+            policy.ref_backend is Backend.PYTORCH or policy.test_backend is Backend.PYTORCH for policy in scenarios
         )
 
         if needs_pytorch and not pytorch_checkpoint:
@@ -398,12 +435,12 @@ class BaseDeploymentRunner:
             )
             return {}
 
-        num_verify_samples = verification_cfg.get("num_verify_samples", 3)
-        tolerance = verification_cfg.get("tolerance", 0.1)
-        devices_map = verification_cfg.get("devices", {}) or {}
+        num_verify_samples = verification_cfg.num_verify_samples
+        tolerance = verification_cfg.tolerance
+        devices_map = verification_cfg.devices or {}
 
         self.logger.info("=" * 80)
-        self.logger.info(f"Running Verification (mode: {export_mode})")
+        self.logger.info(f"Running Verification (mode: {export_mode.value})")
         self.logger.info("=" * 80)
 
         all_results = {}
@@ -411,12 +448,12 @@ class BaseDeploymentRunner:
         total_failed = 0
 
         for i, policy in enumerate(scenarios):
-            ref_backend = policy["ref_backend"]
+            ref_backend = policy.ref_backend
             # Resolve device using alias system:
             # - Scenarios use aliases (e.g., "cpu", "cuda") for flexibility
             # - Actual device strings are defined in verification["devices"]
             # - This allows easy device switching: change devices["cpu"] to affect all CPU verifications
-            ref_device_key = policy["ref_device"]
+            ref_device_key = policy.ref_device
             if ref_device_key in devices_map:
                 ref_device = devices_map[ref_device_key]
             else:
@@ -424,8 +461,8 @@ class BaseDeploymentRunner:
                 ref_device = ref_device_key
                 self.logger.warning(f"Device alias '{ref_device_key}' not found in devices map, using as-is")
 
-            test_backend = policy["test_backend"]
-            test_device_key = policy["test_device"]
+            test_backend = policy.test_backend
+            test_device_key = policy.test_device
             if test_device_key in devices_map:
                 test_device = devices_map[test_device_key]
             else:
@@ -434,25 +471,26 @@ class BaseDeploymentRunner:
                 self.logger.warning(f"Device alias '{test_device_key}' not found in devices map, using as-is")
 
             self.logger.info(
-                f"\nScenarios {i+1}/{len(scenarios)}: {ref_backend}({ref_device}) vs {test_backend}({test_device})"
+                f"\nScenarios {i+1}/{len(scenarios)}: "
+                f"{ref_backend.value}({ref_device}) vs {test_backend.value}({test_device})"
             )
 
             # Resolve model paths based on backend
             ref_path = None
             test_path = None
 
-            if ref_backend == "pytorch":
+            if ref_backend is Backend.PYTORCH:
                 ref_path = pytorch_checkpoint
-            elif ref_backend == "onnx":
+            elif ref_backend is Backend.ONNX:
                 ref_path = onnx_path
-            elif ref_backend == "tensorrt":
+            elif ref_backend is Backend.TENSORRT:
                 ref_path = tensorrt_path
 
-            if test_backend == "onnx":
+            if test_backend is Backend.ONNX:
                 test_path = onnx_path
-            elif test_backend == "tensorrt":
+            elif test_backend is Backend.TENSORRT:
                 test_path = tensorrt_path
-            elif test_backend == "pytorch":
+            elif test_backend is Backend.PYTORCH:
                 test_path = pytorch_checkpoint
 
             if not ref_path or not test_path:
@@ -476,7 +514,7 @@ class BaseDeploymentRunner:
             )
 
             # Extract results for this specific comparison
-            policy_key = f"{ref_backend}_{ref_device}_vs_{test_backend}_{test_device}"
+            policy_key = f"{ref_backend.value}_{ref_device}_vs_{test_backend.value}_{test_device}"
             all_results[policy_key] = verification_results
 
             if "summary" in verification_results:
@@ -519,7 +557,7 @@ class BaseDeploymentRunner:
         """
         eval_config = self.config.evaluation_config
 
-        if not eval_config.get("enabled", False):
+        if not eval_config.enabled:
             self.logger.info("Evaluation disabled, skipping...")
             return {}
 
@@ -533,11 +571,11 @@ class BaseDeploymentRunner:
             self.logger.warning("No models found for evaluation")
             return {}
 
-        num_samples = eval_config.get("num_samples", 10)
+        num_samples = eval_config.num_samples
         if num_samples == -1:
             num_samples = self.data_loader.get_num_samples()
 
-        verbose_mode = eval_config.get("verbose", False)
+        verbose_mode = eval_config.verbose
 
         all_results: Dict[str, Any] = {}
 
@@ -554,9 +592,9 @@ class BaseDeploymentRunner:
                 verbose=verbose_mode,
             )
 
-            all_results[backend] = results
+            all_results[backend.value] = results
 
-            self.logger.info(f"\n{backend.upper()} Results:")
+            self.logger.info(f"\n{backend.value.upper()} Results:")
             self.evaluator.print_results(results)
 
         if len(all_results) > 1:
@@ -564,8 +602,8 @@ class BaseDeploymentRunner:
             self.logger.info("Cross-Backend Comparison")
             self.logger.info("=" * 80)
 
-            for backend, results in all_results.items():
-                self.logger.info(f"\n{backend.upper()}:")
+            for backend_label, results in all_results.items():
+                self.logger.info(f"\n{backend_label.upper()}:")
                 if results and "error" not in results:
                     if "accuracy" in results:
                         self.logger.info(f"  Accuracy: {results.get('accuracy', 0):.4f}")
@@ -582,7 +620,7 @@ class BaseDeploymentRunner:
 
         return all_results
 
-    def run(self, checkpoint_path: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+    def run(self, checkpoint_path: Optional[str] = None, **kwargs) -> DeploymentResultDict:
         """
         Execute the complete deployment workflow.
 
@@ -591,7 +629,7 @@ class BaseDeploymentRunner:
             **kwargs: Additional project-specific arguments
 
         Returns:
-            Dictionary containing deployment results
+            DeploymentResultDict: Structured summary of all deployment artifacts and reports.
         """
         results = {
             "pytorch_model": None,
@@ -620,19 +658,19 @@ class BaseDeploymentRunner:
 
         # Check if PyTorch evaluation is needed
         needs_pytorch_eval = False
-        if eval_config.get("enabled", False):
-            models_to_eval = eval_config.get("models", {})
-            if models_to_eval.get("pytorch"):
+        if eval_config.enabled:
+            models_to_eval = eval_config.models
+            if self._get_backend_entry(models_to_eval, Backend.PYTORCH):
                 needs_pytorch_eval = True
 
         # Check if PyTorch is needed for verification
         needs_pytorch_for_verification = False
-        if verification_cfg.get("enabled", False):
+        if verification_cfg.enabled:
             export_mode = self.config.export_config.mode
             scenarios = self.config.get_verification_scenarios(export_mode)
             if scenarios:
                 needs_pytorch_for_verification = any(
-                    policy.get("ref_backend") == "pytorch" or policy.get("test_backend") == "pytorch"
+                    policy.ref_backend is Backend.PYTORCH or policy.test_backend is Backend.PYTORCH
                     for policy in scenarios
                 )
 
@@ -653,7 +691,7 @@ class BaseDeploymentRunner:
             try:
                 pytorch_model = self.load_pytorch_model(checkpoint_path, **kwargs)
                 results["pytorch_model"] = pytorch_model
-                self.artifacts["pytorch"] = Artifact(path=checkpoint_path)
+                self.artifacts[Backend.PYTORCH.value] = Artifact(path=checkpoint_path)
 
                 # Single-direction injection: write model to evaluator via setter (never read from it)
                 if hasattr(self.evaluator, "set_pytorch_model"):
@@ -673,7 +711,7 @@ class BaseDeploymentRunner:
                 try:
                     pytorch_model = self.load_pytorch_model(checkpoint_path, **kwargs)
                     results["pytorch_model"] = pytorch_model
-                    self.artifacts["pytorch"] = Artifact(path=checkpoint_path)
+                    self.artifacts[Backend.PYTORCH.value] = Artifact(path=checkpoint_path)
 
                     # Single-direction injection: write model to evaluator via setter (never read from it)
                     if hasattr(self.evaluator, "set_pytorch_model"):
@@ -701,7 +739,7 @@ class BaseDeploymentRunner:
             else:
                 results["onnx_path"] = onnx_path  # Ensure verification/evaluation can use this path
                 if onnx_path and os.path.exists(onnx_path):
-                    self.artifacts["onnx"] = Artifact(path=onnx_path, multi_file=os.path.isdir(onnx_path))
+                    self.artifacts[Backend.ONNX.value] = Artifact(path=onnx_path, multi_file=os.path.isdir(onnx_path))
                 try:
                     tensorrt_artifact = self.export_tensorrt(onnx_path, **kwargs)
                     if tensorrt_artifact:
@@ -711,19 +749,21 @@ class BaseDeploymentRunner:
 
         # Get model paths from evaluation config if not exported
         if not results["onnx_path"] or not results["tensorrt_path"]:
-            eval_models = self.config.evaluation_config.get("models", {})
+            eval_models = self.config.evaluation_config.models
             if not results["onnx_path"]:
-                onnx_path = eval_models.get("onnx")
+                onnx_path = self._get_backend_entry(eval_models, Backend.ONNX)
                 if onnx_path and os.path.exists(onnx_path):
                     results["onnx_path"] = onnx_path
-                    self.artifacts["onnx"] = Artifact(path=onnx_path, multi_file=os.path.isdir(onnx_path))
+                    self.artifacts[Backend.ONNX.value] = Artifact(path=onnx_path, multi_file=os.path.isdir(onnx_path))
                 elif onnx_path:
                     self.logger.warning(f"ONNX file from config does not exist: {onnx_path}")
             if not results["tensorrt_path"]:
-                tensorrt_path = eval_models.get("tensorrt")
+                tensorrt_path = self._get_backend_entry(eval_models, Backend.TENSORRT)
                 if tensorrt_path and os.path.exists(tensorrt_path):
                     results["tensorrt_path"] = tensorrt_path
-                    self.artifacts["tensorrt"] = Artifact(path=tensorrt_path, multi_file=os.path.isdir(tensorrt_path))
+                    self.artifacts[Backend.TENSORRT.value] = Artifact(
+                        path=tensorrt_path, multi_file=os.path.isdir(tensorrt_path)
+                    )
                 elif tensorrt_path:
                     self.logger.warning(f"TensorRT engine from config does not exist: {tensorrt_path}")
 
