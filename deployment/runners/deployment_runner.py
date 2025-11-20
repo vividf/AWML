@@ -278,7 +278,7 @@ class BaseDeploymentRunner:
             engine_filename = onnx_filename.replace(".onnx", ".engine")
             output_path = os.path.join(tensorrt_dir, engine_filename)
 
-        # Set CUDA device for TensorRT exportd
+        # Set CUDA device for TensorRT export
         cuda_device = self.config.export_config.cuda_device
         device_id = self.config.export_config.get_cuda_device_index()
         torch.cuda.set_device(device_id)
@@ -543,7 +543,7 @@ class BaseDeploymentRunner:
                 self.logger.warning(f"Device alias '{test_device_key}' not found in devices map, using as-is")
 
             self.logger.info(
-                f"\nScenarios {i+1}/{len(scenarios)}: "
+                f"\nScenario {i+1}/{len(scenarios)}: "
                 f"{ref_backend.value}({ref_device}) vs {test_backend.value}({test_device})"
             )
 
