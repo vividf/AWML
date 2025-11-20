@@ -3,7 +3,7 @@
 import logging
 import os
 from dataclasses import replace
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import onnx
 import onnxsim
@@ -39,6 +39,32 @@ class ONNXExporter(BaseExporter):
             logger: Optional logger instance
         """
         super().__init__(config, model_wrapper=model_wrapper, logger=logger)
+        self._validate_config(config)
+
+    def _validate_config(self, config: ONNXExportConfig) -> None:
+        """
+        Validate ONNX export configuration.
+
+        Args:
+            config: Configuration to validate
+
+        Raises:
+            ValueError: If configuration is invalid
+        """
+        if config.opset_version < 11:
+            raise ValueError(f"opset_version must be >= 11, got {config.opset_version}")
+
+        if not config.input_names:
+            raise ValueError("input_names cannot be empty")
+
+        if not config.output_names:
+            raise ValueError("output_names cannot be empty")
+
+        if len(config.input_names) != len(set(config.input_names)):
+            raise ValueError("input_names contains duplicates")
+
+        if len(config.output_names) != len(set(config.output_names)):
+            raise ValueError("output_names contains duplicates")
 
     def export(
         self,
@@ -46,14 +72,7 @@ class ONNXExporter(BaseExporter):
         sample_input: Any,
         output_path: str,
         *,
-        input_names: Optional[List[str]] = None,
-        output_names: Optional[List[str]] = None,
-        dynamic_axes: Optional[Dict[str, Dict[int, str]]] = None,
-        simplify: Optional[bool] = None,
-        opset_version: Optional[int] = None,
-        export_params: Optional[bool] = None,
-        keep_initializers_as_inputs: Optional[bool] = None,
-        verbose: Optional[bool] = None,
+        config_override: Optional[ONNXExportConfig] = None,
     ) -> None:
         """
         Export model to ONNX format.
@@ -62,41 +81,77 @@ class ONNXExporter(BaseExporter):
             model: PyTorch model to export
             sample_input: Sample input tensor
             output_path: Path to save ONNX model
-            input_names: Optional per-export input names
-            output_names: Optional per-export output names
-            dynamic_axes: Optional per-export dynamic axes mapping
-            simplify: Optional override for ONNX simplification flag
-            opset_version: Optional opset override
-            export_params: Optional export_params override
-            keep_initializers_as_inputs: Optional override for ONNX flag
-            verbose: Optional override for verbose flag
+            config_override: Optional configuration override. If provided, will be merged
+                           with base config using dataclasses.replace.
+
+        Raises:
+            RuntimeError: If export fails
+            ValueError: If configuration is invalid
+        """
+        model = self._prepare_for_onnx(model)
+        export_cfg = self._build_export_config(config_override)
+        self._do_onnx_export(model, sample_input, output_path, export_cfg)
+        if export_cfg.simplify:
+            self._simplify_model(output_path)
+
+    def _prepare_for_onnx(self, model: torch.nn.Module) -> torch.nn.Module:
+        """
+        Prepare model for ONNX export.
+
+        Applies model wrapper if configured and sets model to eval mode.
+
+        Args:
+            model: PyTorch model to prepare
+
+        Returns:
+            Prepared model ready for ONNX export
+        """
+        model = self.prepare_model(model)
+        model.eval()
+        return model
+
+    def _build_export_config(self, config_override: Optional[ONNXExportConfig] = None) -> ONNXExportConfig:
+        """
+        Build export configuration by merging base config with override.
+
+        Args:
+            config_override: Optional configuration override. If provided, all fields
+                           from the override will replace corresponding fields in base config.
+
+        Returns:
+            Merged configuration ready for export
+
+        Raises:
+            ValueError: If merged configuration is invalid
+        """
+        if config_override is None:
+            export_cfg = self.config
+        else:
+            export_cfg = replace(self.config, **config_override.__dict__)
+
+        # Validate merged config
+        self._validate_config(export_cfg)
+        return export_cfg
+
+    def _do_onnx_export(
+        self,
+        model: torch.nn.Module,
+        sample_input: Any,
+        output_path: str,
+        export_cfg: ONNXExportConfig,
+    ) -> None:
+        """
+        Perform ONNX export using torch.onnx.export.
+
+        Args:
+            model: Prepared PyTorch model
+            sample_input: Sample input tensor
+            output_path: Path to save ONNX model
+            export_cfg: Export configuration
 
         Raises:
             RuntimeError: If export fails
         """
-        # Merge per-export overrides with base configuration using dataclasses.replace
-        export_cfg = self.config
-        if input_names is not None:
-            export_cfg = replace(export_cfg, input_names=tuple(input_names))
-        if output_names is not None:
-            export_cfg = replace(export_cfg, output_names=tuple(output_names))
-        if dynamic_axes is not None:
-            export_cfg = replace(export_cfg, dynamic_axes=dynamic_axes)
-        if simplify is not None:
-            export_cfg = replace(export_cfg, simplify=simplify)
-        if opset_version is not None:
-            export_cfg = replace(export_cfg, opset_version=opset_version)
-        if export_params is not None:
-            export_cfg = replace(export_cfg, export_params=export_params)
-        if keep_initializers_as_inputs is not None:
-            export_cfg = replace(export_cfg, keep_initializers_as_inputs=keep_initializers_as_inputs)
-        if verbose is not None:
-            export_cfg = replace(export_cfg, verbose=verbose)
-
-        # Apply model wrapper if configured
-        model = self.prepare_model(model)
-        model.eval()
-
         self.logger.info("Exporting model to ONNX format...")
         if hasattr(sample_input, "shape"):
             self.logger.info(f"  Input shape: {sample_input.shape}")
@@ -123,10 +178,6 @@ class ONNXExporter(BaseExporter):
                 )
 
             self.logger.info(f"ONNX export completed: {output_path}")
-
-            # Optional model simplification
-            if export_cfg.simplify:
-                self._simplify_model(output_path)
 
         except Exception as e:
             self.logger.error(f"ONNX export failed: {e}")

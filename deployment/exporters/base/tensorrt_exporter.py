@@ -1,11 +1,12 @@
 """TensorRT model exporter."""
 
 import logging
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import tensorrt as trt
 import torch
 
+from deployment.core.artifacts import Artifact
 from deployment.exporters.base.base_exporter import BaseExporter
 from deployment.exporters.base.configs import TensorRTExportConfig, TensorRTModelInputConfig, TensorRTProfileConfig
 
@@ -40,7 +41,7 @@ class TensorRTExporter(BaseExporter):
         sample_input: Any,
         output_path: str,
         onnx_path: str = None,
-    ) -> None:
+    ) -> Artifact:
         """
         Export ONNX model to TensorRT engine.
 
@@ -50,6 +51,9 @@ class TensorRTExporter(BaseExporter):
             output_path: Path to save TensorRT engine
             onnx_path: Path to source ONNX model
 
+        Returns:
+            Artifact object representing the exported TensorRT engine
+
         Raises:
             RuntimeError: If export fails
             ValueError: If ONNX path is missing
@@ -58,17 +62,68 @@ class TensorRTExporter(BaseExporter):
             raise ValueError("onnx_path is required for TensorRT export")
 
         precision_policy = self.config.precision_policy
-        policy_flags = self.config.policy_flags
-
         self.logger.info(f"Building TensorRT engine with precision policy: {precision_policy}")
         self.logger.info(f"  ONNX source: {onnx_path}")
         self.logger.info(f"  Engine output: {output_path}")
 
+        return self._export_single_file(onnx_path, output_path, sample_input)
+
+    def _export_single_file(
+        self,
+        onnx_path: str,
+        output_path: str,
+        sample_input: Any,
+    ) -> Artifact:
+        """
+        Export a single ONNX file to TensorRT engine.
+
+        This method handles the complete export workflow with proper resource management.
+
+        Args:
+            onnx_path: Path to source ONNX model
+            output_path: Path to save TensorRT engine
+            sample_input: Sample input for shape configuration
+
+        Returns:
+            Artifact object representing the exported TensorRT engine
+
+        Raises:
+            RuntimeError: If export fails
+        """
         # Initialize TensorRT
         trt_logger = trt.Logger(trt.Logger.WARNING)
         trt.init_libnvinfer_plugins(trt_logger, "")
 
         builder = trt.Builder(trt_logger)
+        try:
+            builder_config, network, parser = self._create_builder_and_network(builder, trt_logger)
+            try:
+                self._parse_onnx(parser, network, onnx_path)
+                self._configure_input_profiles(builder, builder_config, network, sample_input)
+                serialized_engine = self._build_engine(builder, builder_config, network)
+                self._save_engine(serialized_engine, output_path)
+                return Artifact(path=output_path, multi_file=False)
+            finally:
+                del parser
+                del network
+        finally:
+            del builder
+
+    def _create_builder_and_network(
+        self,
+        builder: trt.Builder,
+        trt_logger: trt.Logger,
+    ) -> Tuple[trt.IBuilderConfig, trt.INetworkDefinition, trt.OnnxParser]:
+        """
+        Create builder config, network, and parser.
+
+        Args:
+            builder: TensorRT builder instance
+            trt_logger: TensorRT logger instance
+
+        Returns:
+            Tuple of (builder_config, network, parser)
+        """
         builder_config = builder.create_builder_config()
 
         max_workspace_size = self.config.max_workspace_size
@@ -78,6 +133,7 @@ class TensorRTExporter(BaseExporter):
         flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
 
         # Handle strongly typed flag (network creation flag)
+        policy_flags = self.config.policy_flags
         if policy_flags.get("STRONGLY_TYPED", False):
             flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
             self.logger.info("Using strongly typed TensorRT network creation")
@@ -92,39 +148,103 @@ class TensorRTExporter(BaseExporter):
                 builder_config.set_flag(getattr(trt.BuilderFlag, flag_name))
                 self.logger.info(f"BuilderFlag.{flag_name} enabled")
 
-        # Parse ONNX model first to get network structure
         parser = trt.OnnxParser(network, trt_logger)
 
-        try:
-            with open(onnx_path, "rb") as f:
-                if not parser.parse(f.read()):
-                    self._log_parser_errors(parser)
-                    raise RuntimeError("TensorRT export failed: unable to parse ONNX file")
-                self.logger.info("Successfully parsed ONNX file")
+        return builder_config, network, parser
 
-            # Setup optimization profile after parsing ONNX to get actual input names
-            profile = builder.create_optimization_profile()
-            self._configure_input_shapes(profile, sample_input, network)
-            builder_config.add_optimization_profile(profile)
+    def _parse_onnx(
+        self,
+        parser: trt.OnnxParser,
+        network: trt.INetworkDefinition,
+        onnx_path: str,
+    ) -> None:
+        """
+        Parse ONNX model into TensorRT network.
 
-            # Build engine
-            self.logger.info("Building TensorRT engine (this may take a while)...")
-            serialized_engine = builder.build_serialized_network(network, builder_config)
+        Args:
+            parser: TensorRT ONNX parser instance
+            network: TensorRT network definition
+            onnx_path: Path to ONNX model file
 
-            if serialized_engine is None:
-                self.logger.error("Failed to build TensorRT engine")
-                raise RuntimeError("TensorRT export failed: builder returned None")
+        Raises:
+            RuntimeError: If parsing fails
+        """
+        with open(onnx_path, "rb") as f:
+            if not parser.parse(f.read()):
+                self._log_parser_errors(parser)
+                raise RuntimeError("TensorRT export failed: unable to parse ONNX file")
+        self.logger.info("Successfully parsed ONNX file")
 
-            # Save engine
-            with open(output_path, "wb") as f:
-                f.write(serialized_engine)
+    def _configure_input_profiles(
+        self,
+        builder: trt.Builder,
+        builder_config: trt.IBuilderConfig,
+        network: trt.INetworkDefinition,
+        sample_input: Any,
+    ) -> None:
+        """
+        Configure TensorRT optimization profiles for input shapes.
 
-            self.logger.info(f"TensorRT engine saved to {output_path}")
-            self.logger.info(f"Engine max workspace size: {max_workspace_size / (1024**3):.2f} GB")
+        Creates an optimization profile and configures min/opt/max shapes for each input.
+        See `_configure_input_shapes` for details on shape configuration.
 
-        except Exception as e:
-            self.logger.error(f"TensorRT export failed: {e}")
-            raise RuntimeError("TensorRT export failed") from e
+        Args:
+            builder: TensorRT builder instance
+            builder_config: TensorRT builder config
+            network: TensorRT network definition
+            sample_input: Sample input for shape configuration
+        """
+        profile = builder.create_optimization_profile()
+        self._configure_input_shapes(profile, sample_input, network)
+        builder_config.add_optimization_profile(profile)
+
+    def _build_engine(
+        self,
+        builder: trt.Builder,
+        builder_config: trt.IBuilderConfig,
+        network: trt.INetworkDefinition,
+    ) -> bytes:
+        """
+        Build TensorRT engine from network.
+
+        Args:
+            builder: TensorRT builder instance
+            builder_config: TensorRT builder config
+            network: TensorRT network definition
+
+        Returns:
+            Serialized engine as bytes
+
+        Raises:
+            RuntimeError: If engine building fails
+        """
+        self.logger.info("Building TensorRT engine (this may take a while)...")
+        serialized_engine = builder.build_serialized_network(network, builder_config)
+
+        if serialized_engine is None:
+            self.logger.error("Failed to build TensorRT engine")
+            raise RuntimeError("TensorRT export failed: builder returned None")
+
+        return serialized_engine
+
+    def _save_engine(
+        self,
+        serialized_engine: bytes,
+        output_path: str,
+    ) -> None:
+        """
+        Save serialized TensorRT engine to file.
+
+        Args:
+            serialized_engine: Serialized engine bytes
+            output_path: Path to save engine file
+        """
+        with open(output_path, "wb") as f:
+            f.write(serialized_engine)
+
+        max_workspace_size = self.config.max_workspace_size
+        self.logger.info(f"TensorRT engine saved to {output_path}")
+        self.logger.info(f"Engine max workspace size: {max_workspace_size / (1024**3):.2f} GB")
 
     def _configure_input_shapes(
         self,
@@ -132,7 +252,18 @@ class TensorRTExporter(BaseExporter):
         sample_input: Any,
         network: trt.INetworkDefinition = None,
     ) -> None:
-        """Configure input shapes for TensorRT optimization profile."""
+        """
+        Configure input shapes for TensorRT optimization profile.
+
+        Note:
+            This is separate from ONNX `dynamic_axes`:
+
+            - `dynamic_axes` controls symbolic dimensions in the ONNX graph.
+            - Here, `min/opt/max` shapes define TensorRT optimization profiles,
+              i.e., the allowed and optimized runtime shapes for each input.
+
+            They are complementary but independent.
+        """
         model_inputs_cfg = self.config.model_inputs
 
         if not model_inputs_cfg:

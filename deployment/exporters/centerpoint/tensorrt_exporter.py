@@ -114,15 +114,14 @@ class CenterPointTensorRTExporter(TensorRTExporter):
 
             self.logger.info(f"\nConverting {onnx_file} to TensorRT...")
 
-            # Export to TensorRT using parent class method
+            # Export to TensorRT using parent class's single-file export method
             try:
-                super().export(
-                    model=None,
-                    sample_input=None,
-                    output_path=trt_path,
+                artifact = self._export_single_file(
                     onnx_path=onnx_file_path,
+                    output_path=trt_path,
+                    sample_input=None,
                 )
-                self.logger.info(f"✅ TensorRT engine saved: {trt_path}")
+                self.logger.info(f"✅ TensorRT engine saved: {artifact.path}")
                 success_count += 1
             except Exception as exc:
                 self.logger.error(f"❌ Failed to convert {onnx_file} to TensorRT")
