@@ -70,8 +70,8 @@ class BaseDeploymentRunner:
             config: Deployment configuration
             model_cfg: Model configuration
             logger: Logger instance
-            onnx_exporter: Required ONNX exporter instance (e.g., CenterPointONNXExporter, YOLOXONNXExporter)
-            tensorrt_exporter: Required TensorRT exporter instance (e.g., CenterPointTensorRTExporter, YOLOXTensorRTExporter)
+            onnx_exporter: Required ONNX exporter instance (e.g., ONNXExporter, YOLOXONNXExporter)
+            tensorrt_exporter: Required TensorRT exporter instance (e.g., TensorRTExporter, YOLOXTensorRTExporter)
 
         Raises:
             ValueError: If onnx_exporter or tensorrt_exporter is None

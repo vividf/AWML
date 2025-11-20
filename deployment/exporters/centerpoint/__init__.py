@@ -1,11 +1,11 @@
-"""CenterPoint-specific exporters and model wrappers."""
+"""CenterPoint-specific exporter workflows and model wrappers."""
 
 from deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapper
-from deployment.exporters.centerpoint.onnx_exporter import CenterPointONNXExporter
-from deployment.exporters.centerpoint.tensorrt_exporter import CenterPointTensorRTExporter
+from deployment.exporters.centerpoint.onnx_workflow import CenterPointONNXExportWorkflow
+from deployment.exporters.centerpoint.tensorrt_workflow import CenterPointTensorRTExportWorkflow
 
 __all__ = [
-    "CenterPointONNXExporter",
-    "CenterPointTensorRTExporter",
     "CenterPointONNXWrapper",
+    "CenterPointONNXExportWorkflow",
+    "CenterPointTensorRTExportWorkflow",
 ]

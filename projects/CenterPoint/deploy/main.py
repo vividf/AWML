@@ -18,7 +18,7 @@ sys.path.insert(0, str(project_root))
 
 from deployment.core import BaseDeploymentConfig, setup_logging
 from deployment.core.base_config import parse_base_args
-from deployment.exporters import CenterPointONNXExporter, CenterPointTensorRTExporter
+from deployment.exporters import ONNXExporter, TensorRTExporter
 from deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapper
 from deployment.runners import CenterPointDeploymentRunner
 from projects.CenterPoint.deploy.data_loader import CenterPointDataLoader
@@ -93,12 +93,12 @@ def main():
     onnx_settings = config.get_onnx_settings()
     trt_settings = config.get_tensorrt_settings()
 
-    onnx_exporter = CenterPointONNXExporter(
+    onnx_exporter = ONNXExporter(
         onnx_settings,
         model_wrapper=CenterPointONNXWrapper,
         logger=logger,
     )
-    tensorrt_exporter = CenterPointTensorRTExporter(
+    tensorrt_exporter = TensorRTExporter(
         trt_settings,
         model_wrapper=CenterPointONNXWrapper,
         logger=logger,

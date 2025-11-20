@@ -10,8 +10,8 @@ import os
 from typing import Any, Optional
 
 from deployment.core import Artifact
-from deployment.exporters.centerpoint.onnx_exporter import CenterPointONNXExporter
-from deployment.exporters.centerpoint.tensorrt_exporter import CenterPointTensorRTExporter
+from deployment.exporters.centerpoint.onnx_workflow import CenterPointONNXExportWorkflow
+from deployment.exporters.centerpoint.tensorrt_workflow import CenterPointTensorRTExportWorkflow
 from deployment.runners.deployment_runner import BaseDeploymentRunner
 from projects.CenterPoint.deploy.utils import build_centerpoint_onnx_model
 
@@ -21,11 +21,37 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
     CenterPoint-specific deployment runner.
 
     Handles CenterPoint-specific requirements:
-    - Multi-file ONNX export (voxel encoder + backbone/neck/head)
-    - Multi-file TensorRT export
-    - Uses CenterPoint-specific exporters with special export signatures
+    - Multi-file ONNX export (voxel encoder + backbone/neck/head) via workflow
+    - Multi-file TensorRT export via workflow
+    - Uses generic ONNX/TensorRT exporters composed into CenterPoint workflows
     - ONNX-compatible model loading
     """
+
+    def __init__(
+        self,
+        data_loader,
+        evaluator,
+        config,
+        model_cfg,
+        logger: logging.Logger,
+        onnx_exporter,
+        tensorrt_exporter,
+    ):
+        super().__init__(
+            data_loader=data_loader,
+            evaluator=evaluator,
+            config=config,
+            model_cfg=model_cfg,
+            logger=logger,
+            onnx_exporter=onnx_exporter,
+            tensorrt_exporter=tensorrt_exporter,
+        )
+
+        self._onnx_workflow = CenterPointONNXExportWorkflow(exporter=self._onnx_exporter, logger=self.logger)
+        self._tensorrt_workflow = CenterPointTensorRTExportWorkflow(
+            exporter=self._tensorrt_exporter,
+            logger=self.logger,
+        )
 
     def load_pytorch_model(
         self,
@@ -88,15 +114,6 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         if not self.config.export_config.should_export_onnx():
             return None
 
-        self.logger.info("=" * 80)
-        self.logger.info("Exporting CenterPoint to ONNX (Multi-file)")
-        self.logger.info("=" * 80)
-
-        # Verify exporter is CenterPoint-specific
-        if not isinstance(self._onnx_exporter, CenterPointONNXExporter):
-            self.logger.error("CenterPointDeploymentRunner requires CenterPointONNXExporter")
-            return None
-
         # Verify model is ONNX-compatible
         if not hasattr(pytorch_model, "_extract_features"):
             self.logger.error("❌ ONNX export requires an ONNX-compatible model (CenterPointONNX).")
@@ -106,10 +123,12 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         output_dir = os.path.join(self.config.export_config.work_dir, "onnx")
         os.makedirs(output_dir, exist_ok=True)
 
-        # Use CenterPoint-specific export signature
         try:
-            self._onnx_exporter.export(
-                model=pytorch_model, data_loader=self.data_loader, output_dir=output_dir, sample_idx=0
+            self._onnx_workflow.export(
+                model=pytorch_model,
+                data_loader=self.data_loader,
+                output_dir=output_dir,
+                sample_idx=0,
             )
         except Exception:
             self.logger.error(f"❌ ONNX export failed")
@@ -140,15 +159,6 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             self.logger.warning("ONNX path not available, skipping TensorRT export")
             return None
 
-        self.logger.info("=" * 80)
-        self.logger.info("Exporting CenterPoint to TensorRT (Multi-file)")
-        self.logger.info("=" * 80)
-
-        # Verify exporter is CenterPoint-specific
-        if not isinstance(self._tensorrt_exporter, CenterPointTensorRTExporter):
-            self.logger.error("CenterPointDeploymentRunner requires CenterPointTensorRTExporter")
-            return None
-
         # CenterPoint requires ONNX directory, not a single file
         if not os.path.isdir(onnx_path):
             self.logger.error("CenterPoint requires ONNX directory, not a single file")
@@ -158,11 +168,11 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         output_dir = os.path.join(self.config.export_config.work_dir, "tensorrt")
         os.makedirs(output_dir, exist_ok=True)
 
-        # Use CenterPoint-specific export signature
-        # TensorRT export uses configured CUDA device
         try:
-            self._tensorrt_exporter.export(
-                onnx_dir=onnx_path, output_dir=output_dir, device=self.config.export_config.cuda_device
+            self._tensorrt_workflow.export(
+                onnx_dir=onnx_path,
+                output_dir=output_dir,
+                device=self.config.export_config.cuda_device,
             )
         except Exception:
             self.logger.error(f"❌ TensorRT export failed")
