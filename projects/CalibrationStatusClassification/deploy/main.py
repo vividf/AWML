@@ -18,9 +18,8 @@ sys.path.insert(0, str(project_root))
 
 from deployment.core import BaseDeploymentConfig, setup_logging
 from deployment.core.base_config import parse_base_args
+from deployment.exporters import ONNXExporter, TensorRTExporter
 from deployment.exporters.calibration.model_wrappers import CalibrationONNXWrapper
-from deployment.exporters.calibration.onnx_exporter import CalibrationONNXExporter
-from deployment.exporters.calibration.tensorrt_exporter import CalibrationTensorRTExporter
 from deployment.runners import CalibrationDeploymentRunner
 from projects.CalibrationStatusClassification.deploy.data_loader import CalibrationDataLoader
 from projects.CalibrationStatusClassification.deploy.evaluator import ClassificationEvaluator
@@ -83,16 +82,16 @@ def main():
     # Create evaluator
     evaluator = ClassificationEvaluator(model_cfg)
 
-    # Create Calibration-specific exporters
+    # Create Calibration exporters
     onnx_settings = config.get_onnx_settings()
     trt_settings = config.get_tensorrt_settings()
 
-    onnx_exporter = CalibrationONNXExporter(
+    onnx_exporter = ONNXExporter(
         onnx_settings,
         model_wrapper=CalibrationONNXWrapper,
         logger=logger,
     )
-    tensorrt_exporter = CalibrationTensorRTExporter(
+    tensorrt_exporter = TensorRTExporter(
         trt_settings,
         model_wrapper=CalibrationONNXWrapper,
         logger=logger,

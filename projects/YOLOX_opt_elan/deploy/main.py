@@ -18,9 +18,8 @@ sys.path.insert(0, str(project_root))
 
 from deployment.core import BaseDeploymentConfig, setup_logging
 from deployment.core.base_config import parse_base_args
+from deployment.exporters import ONNXExporter, TensorRTExporter
 from deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
-from deployment.exporters.yolox.onnx_exporter import YOLOXONNXExporter
-from deployment.exporters.yolox.tensorrt_exporter import YOLOXTensorRTExporter
 from deployment.runners import YOLOXDeploymentRunner
 from projects.YOLOX_opt_elan.deploy.data_loader import YOLOXOptElanDataLoader
 from projects.YOLOX_opt_elan.deploy.evaluator import YOLOXOptElanEvaluator
@@ -74,16 +73,16 @@ def main():
     # Create evaluator
     evaluator = YOLOXOptElanEvaluator(model_cfg, model_cfg_path=model_cfg_path)
 
-    # Create YOLOX-specific exporters with wrapper
+    # Create YOLOX exporters with wrapper
     onnx_settings = config.get_onnx_settings()
     trt_settings = config.get_tensorrt_settings()
 
-    onnx_exporter = YOLOXONNXExporter(
+    onnx_exporter = ONNXExporter(
         onnx_settings,
         model_wrapper=YOLOXONNXWrapper,
         logger=logger,
     )
-    tensorrt_exporter = YOLOXTensorRTExporter(
+    tensorrt_exporter = TensorRTExporter(
         trt_settings,
         model_wrapper=YOLOXONNXWrapper,
         logger=logger,
