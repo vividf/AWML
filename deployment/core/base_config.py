@@ -37,7 +37,6 @@ class PrecisionPolicy(str, Enum):
     AUTO = "auto"
     FP16 = "fp16"
     FP32_TF32 = "fp32_tf32"
-    EXPLICIT_INT8 = "explicit_int8"
     STRONGLY_TYPED = "strongly_typed"
 
 
@@ -69,7 +68,6 @@ PRECISION_POLICIES = {
     PrecisionPolicy.AUTO.value: {},  # No special flags, TensorRT decides
     PrecisionPolicy.FP16.value: {"FP16": True},
     PrecisionPolicy.FP32_TF32.value: {"TF32": True},  # TF32 for FP32 operations
-    PrecisionPolicy.EXPLICIT_INT8.value: {"INT8": True},
     PrecisionPolicy.STRONGLY_TYPED.value: {"STRONGLY_TYPED": True},  # Network creation flag
 }
 

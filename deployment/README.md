@@ -209,7 +209,7 @@ Support for different TensorRT precision modes:
 - `auto`: TensorRT decides automatically
 - `fp16`: FP16 precision
 - `fp32_tf32`: FP32 with TF32 acceleration
-- `explicit_int8`: INT8 quantization
+- `strongly_typed`: Enable strongly-typed TensorRT networks (all tensor dtypes must be explicitly defined; no implicit casting).
 
 ---
 
@@ -371,7 +371,7 @@ onnx_config = dict(
 # Backend configuration
 backend_config = dict(
     common_config=dict(
-        precision_policy="auto",  # "auto", "fp16", "fp32_tf32", "explicit_int8"
+        precision_policy="auto",  # "auto", "fp16", "fp32_tf32", "strongly_typed"
         max_workspace_size=1 << 30,  # 1 GB
     ),
 )
