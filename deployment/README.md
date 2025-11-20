@@ -85,16 +85,18 @@ The AWML Deployment Framework provides a standardized approach to model deployme
 
 Exporters receive their corresponding `model_wrapper` during construction. Runners never implicitly create exporters/wrappers—everything is injected for clarity and testability.
 
-#### 2. **Base Classes**
+#### 2. **Core Components** (in `core/`)
 
 - **`BaseDeploymentConfig`**: Configuration container for deployment settings
+- **`Backend`**: Enum for supported backends (PyTorch, ONNX, TensorRT)
+- **`Artifact`**: Dataclass representing deployment artifacts (ONNX/TensorRT outputs)
 - **`BaseEvaluator`**: Abstract interface for task-specific evaluation
 - **`BaseDataLoader`**: Abstract interface for data loading
+- **`build_preprocessing_pipeline`**: Utility to extract preprocessing pipelines from MMDet/MMDet3D configs
 - **`BaseDeploymentPipeline`**: Abstract pipeline for inference (in `pipelines/base/`)
 - **`Detection2DPipeline`**: Base pipeline for 2D detection tasks
 - **`Detection3DPipeline`**: Base pipeline for 3D detection tasks
 - **`ClassificationPipeline`**: Base pipeline for classification tasks
-- **`build_preprocessing_pipeline`**: Utility to extract preprocessing pipelines from MMDet/MMDet3D configs
 
 #### 3. **Exporters**
 
@@ -104,10 +106,16 @@ Exporters receive their corresponding `model_wrapper` during construction. Runne
 - `{model}/model_wrappers.py`: Project-specific model wrapper
 
 - **Base Exporters** (in `exporters/base/`):
+  - **`BaseExporter`**: Abstract base class for all exporters
   - **`ONNXExporter`**: Standard ONNX export with model wrapping support
   - **`TensorRTExporter`**: TensorRT engine building with precision policies
   - **`BaseModelWrapper`**: Abstract base class for model wrappers
   - **`IdentityWrapper`**: Provided wrapper that doesn't modify model output
+  - **`configs.py`**: Typed configuration classes:
+    - **`ONNXExportConfig`**: Typed schema for ONNX exporter configuration
+    - **`TensorRTExportConfig`**: Typed schema for TensorRT exporter configuration
+    - **`TensorRTModelInputConfig`**: Configuration for TensorRT input shapes
+    - **`TensorRTProfileConfig`**: Optimization profile configuration for dynamic shapes
 
 - **Project-Specific Exporters**:
   - **YOLOX** (`exporters/yolox/`):
@@ -213,20 +221,17 @@ Support for different TensorRT precision modes:
 # CenterPoint deployment
 python projects/CenterPoint/deploy/main.py \
     configs/deploy_config.py \
-    configs/model_config.py \
-    checkpoint.pth
+    configs/model_config.py
 
 # YOLOX deployment
 python projects/YOLOX_opt_elan/deploy/main.py \
     configs/deploy_config.py \
-    configs/model_config.py \
-    checkpoint.pth
+    configs/model_config.py
 
 # Calibration deployment
 python projects/CalibrationStatusClassification/deploy/main.py \
     configs/deploy_config.py \
-    configs/model_config.py \
-    checkpoint.pth
+    configs/model_config.py
 ```
 
 ### Creating a Project Runner
@@ -403,7 +408,7 @@ evaluation = dict(
 
 #### Backend Enum
 
-To avoid backend name typos, `deployment.core.Backend` now enumerates the supported values:
+To avoid backend name typos, `deployment.core.Backend` enumerates the supported values:
 
 ```python
 from deployment.core import Backend
@@ -418,6 +423,49 @@ evaluation = dict(
 ```
 
 Configuration dictionaries accept either raw strings or `Backend` enum members, so teams can adopt the enum incrementally without breaking existing configs.
+
+#### Typed Exporter Configurations
+
+The framework provides typed configuration classes in `deployment.exporters.base.configs` for better type safety and validation:
+
+```python
+from deployment.exporters.base.configs import (
+    ONNXExportConfig,
+    TensorRTExportConfig,
+    TensorRTModelInputConfig,
+    TensorRTProfileConfig,
+)
+
+# ONNX configuration with typed schema
+onnx_config = ONNXExportConfig(
+    input_names=("input",),
+    output_names=("output",),
+    opset_version=16,
+    do_constant_folding=True,
+    simplify=True,
+    save_file="model.onnx",
+    batch_size=1,
+)
+
+# TensorRT configuration with typed schema
+trt_config = TensorRTExportConfig(
+    precision_policy="auto",
+    max_workspace_size=1 << 30,
+    model_inputs=(
+        TensorRTModelInputConfig(
+            input_shapes={
+                "input": TensorRTProfileConfig(
+                    min_shape=(1, 3, 960, 960),
+                    opt_shape=(1, 3, 960, 960),
+                    max_shape=(1, 3, 960, 960),
+                )
+            }
+        ),
+    ),
+)
+```
+
+These typed configs can be created from dictionaries using `from_mapping()` or `from_dict()` class methods, providing a bridge between configuration files and type-safe code.
 
 ### Configuration Examples
 
@@ -673,8 +721,10 @@ evaluation = dict(
 
 ```
 deployment/
-├── core/                          # Core base classes
-│   ├── base_config.py            # Configuration management
+├── core/                          # Core base classes and utilities
+│   ├── artifacts.py               # Artifact descriptors (ONNX/TensorRT outputs)
+│   ├── backend.py                 # Backend enum (PyTorch, ONNX, TensorRT)
+│   ├── base_config.py             # Configuration management
 │   ├── base_data_loader.py        # Data loader interface
 │   ├── base_evaluator.py          # Evaluator interface
 │   └── preprocessing_builder.py   # Preprocessing pipeline builder
@@ -682,6 +732,7 @@ deployment/
 ├── exporters/                     # Model exporters (unified structure)
 │   ├── base/                      # Base exporter classes
 │   │   ├── base_exporter.py       # Exporter base class
+│   │   ├── configs.py             # Typed configuration classes (ONNXExportConfig, TensorRTExportConfig)
 │   │   ├── onnx_exporter.py       # ONNX exporter base class
 │   │   ├── tensorrt_exporter.py   # TensorRT exporter base class
 │   │   └── model_wrappers.py      # Base model wrappers (BaseModelWrapper, IdentityWrapper)
