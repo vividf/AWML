@@ -46,7 +46,7 @@ class BaseModelWrapper(nn.Module, ABC):
 
         Must be implemented by subclasses to define ONNX-specific output format.
         """
-        pass
+        raise NotImplementedError
 
     def get_config(self) -> Dict[str, Any]:
         """Get wrapper configuration."""

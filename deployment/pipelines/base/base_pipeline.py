@@ -72,7 +72,7 @@ class BaseDeploymentPipeline(ABC):
         Returns:
             Preprocessed data ready for model
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def run_model(self, preprocessed_input: Any) -> Union[Any, Tuple]:
@@ -88,7 +88,7 @@ class BaseDeploymentPipeline(ABC):
         Returns:
             Model output (raw tensors or backend-specific format)
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def postprocess(self, model_output: Any, metadata: Dict = None) -> Any:
@@ -105,7 +105,7 @@ class BaseDeploymentPipeline(ABC):
         Returns:
             Final predictions in standard format
         """
-        pass
+        raise NotImplementedError
 
     def infer(
         self, input_data: Any, metadata: Optional[Dict] = None, return_raw_outputs: bool = False, **kwargs

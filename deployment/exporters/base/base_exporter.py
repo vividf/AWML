@@ -6,10 +6,11 @@ Provides a unified interface for exporting models to different formats.
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Mapping, Optional
+from typing import Any, Optional
 
 import torch
 
+from deployment.exporters.base.configs import BaseExporterConfig
 from deployment.exporters.base.model_wrappers import BaseModelWrapper
 
 
@@ -28,7 +29,7 @@ class BaseExporter(ABC):
 
     def __init__(
         self,
-        config: Mapping[str, Any],
+        config: BaseExporterConfig,
         model_wrapper: Optional[BaseModelWrapper] = None,
         logger: Optional[logging.Logger] = None,
     ):
@@ -36,13 +37,14 @@ class BaseExporter(ABC):
         Initialize exporter.
 
         Args:
-            config: Configuration dictionary for export settings
+            config: Typed export configuration dataclass (e.g., ``ONNXExportConfig``,
+                ``TensorRTExportConfig``). This ensures type safety and clear schema.
             model_wrapper: Optional model wrapper class or callable.
                          If a class is provided, it will be instantiated with the model.
                          If an instance is provided, it should be a callable that takes a model.
             logger: Optional logger instance
         """
-        self.config = config
+        self.config: BaseExporterConfig = config
         self.logger = logger or logging.getLogger(__name__)
         self._model_wrapper = model_wrapper
 
@@ -77,4 +79,4 @@ class BaseExporter(ABC):
         Raises:
             RuntimeError: If export fails
         """
-        pass
+        raise NotImplementedError

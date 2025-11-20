@@ -153,7 +153,7 @@ def build_preprocessing_pipeline(
 
     Args:
         model_cfg: Model configuration containing test pipeline definition.
-                   - model_cfg.test_dataloader.dataset.pipeline
+                   Supports config (``model_cfg.test_pipeline``)
         task_type: Explicit task type ('detection2d', 'detection3d', 'classification', 'segmentation').
                    Must be provided either via this argument or via
                    ``model_cfg.task_type`` / ``model_cfg.deploy.task_type``.

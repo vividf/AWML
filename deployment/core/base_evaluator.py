@@ -12,6 +12,7 @@ from typing import Any, Dict, TypedDict
 import numpy as np
 
 from deployment.core.artifacts import Artifact
+from deployment.core.backend import Backend
 from deployment.core.base_data_loader import BaseDataLoader
 
 
@@ -59,7 +60,7 @@ class ModelSpec:
         artifact: Filesystem representation of the produced model.
     """
 
-    backend: str
+    backend: Backend
     device: str
     artifact: Artifact
 
@@ -137,7 +138,7 @@ class BaseEvaluator(ABC):
                 "avg_latency_ms": 15.3,
             }
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def print_results(self, results: EvalResultDict) -> None:
@@ -147,7 +148,7 @@ class BaseEvaluator(ABC):
         Args:
             results: Results dictionary returned by evaluate()
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def verify(
@@ -177,7 +178,7 @@ class BaseEvaluator(ABC):
         Returns:
             Verification results with pass/fail summary and per-sample outcomes.
         """
-        pass
+        raise NotImplementedError
 
     def compute_latency_stats(self, latencies: list) -> Dict[str, float]:
         """
