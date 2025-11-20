@@ -1,20 +1,21 @@
 """
 CenterPoint TensorRT export workflow using composition.
-
-This workflow converts the CenterPoint multi-file ONNX export into multiple
-TensorRT engines without subclassing the TensorRTExporter directly.
 """
+
+from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from typing import Callable, Optional, Union
 
 import torch
 
+from deployment.core import Artifact, BaseDataLoader, BaseDeploymentConfig
 from deployment.exporters.base.tensorrt_exporter import TensorRTExporter
+from deployment.exporters.workflows.base import TensorRTExportWorkflow
 
 
-class CenterPointTensorRTExportWorkflow:
+class CenterPointTensorRTExportWorkflow(TensorRTExportWorkflow):
     """
     CenterPoint TensorRT export workflow.
 
@@ -23,16 +24,26 @@ class CenterPointTensorRTExportWorkflow:
     - pts_backbone_neck_head.onnx → pts_backbone_neck_head.engine
     """
 
-    def __init__(self, exporter: TensorRTExporter, logger: Optional[logging.Logger] = None):
-        self._exporter = exporter
+    def __init__(
+        self,
+        exporter: Union[TensorRTExporter, Callable[[], TensorRTExporter]],
+        logger: Optional[logging.Logger] = None,
+    ):
+        self._exporter_provider = exporter
+        self._exporter_cache: Optional[TensorRTExporter] = None
         self.logger = logger or logging.getLogger(__name__)
 
     def export(
         self,
-        onnx_dir: str,
-        output_dir: Optional[str] = None,
-        device: str = "cuda:0",
-    ) -> None:
+        *,
+        onnx_path: str,
+        output_dir: str,
+        config: BaseDeploymentConfig,
+        device: str,
+        data_loader: BaseDataLoader,
+        **_: object,
+    ) -> Artifact:
+        onnx_dir = onnx_path
         if device is None:
             raise ValueError("CUDA device must be provided for TensorRT export")
 
@@ -43,8 +54,6 @@ class CenterPointTensorRTExportWorkflow:
         if onnx_dir is None:
             raise ValueError("onnx_dir must be provided for CenterPoint TensorRT export")
 
-        if output_dir is None:
-            output_dir = os.path.join(onnx_dir, "tensorrt")
         os.makedirs(output_dir, exist_ok=True)
 
         onnx_files = [
@@ -61,7 +70,7 @@ class CenterPointTensorRTExportWorkflow:
 
             self.logger.info(f"\nConverting {onnx_file} to TensorRT...")
 
-            artifact = self._exporter.export(
+            artifact = self._get_exporter().export(
                 model=None,
                 sample_input=None,
                 output_path=trt_path,
@@ -70,3 +79,12 @@ class CenterPointTensorRTExportWorkflow:
             self.logger.info(f"TensorRT engine saved: {artifact.path}")
 
         self.logger.info(f"All TensorRT engines exported successfully to {output_dir}")
+        return Artifact(path=output_dir, multi_file=True)
+
+    def _get_exporter(self) -> TensorRTExporter:
+        if self._exporter_cache is None:
+            exporter = self._exporter_provider() if callable(self._exporter_provider) else self._exporter_provider
+            if exporter is None:
+                raise RuntimeError("CenterPoint TensorRT workflow requires a TensorRTExporter instance")
+            self._exporter_cache = exporter
+        return self._exporter_cache

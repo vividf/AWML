@@ -18,7 +18,6 @@ sys.path.insert(0, str(project_root))
 
 from deployment.core import BaseDeploymentConfig, setup_logging
 from deployment.core.base_config import parse_base_args
-from deployment.exporters import ONNXExporter, TensorRTExporter
 from deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapper
 from deployment.runners import CenterPointDeploymentRunner
 from projects.CenterPoint.deploy.data_loader import CenterPointDataLoader
@@ -89,21 +88,6 @@ def main():
         model_cfg=model_cfg,  # original cfg; will be updated to ONNX cfg by runner
     )
 
-    # Create exporters
-    onnx_settings = config.get_onnx_settings()
-    trt_settings = config.get_tensorrt_settings()
-
-    onnx_exporter = ONNXExporter(
-        onnx_settings,
-        model_wrapper=CenterPointONNXWrapper,
-        logger=logger,
-    )
-    tensorrt_exporter = TensorRTExporter(
-        trt_settings,
-        model_wrapper=CenterPointONNXWrapper,
-        logger=logger,
-    )
-
     # Create CenterPoint-specific runner
     # Runner will load model and inject it into evaluator
     runner = CenterPointDeploymentRunner(
@@ -112,8 +96,7 @@ def main():
         config=config,
         model_cfg=model_cfg,  # original cfg; runner will convert to ONNX cfg in load_pytorch_model()
         logger=logger,
-        onnx_exporter=onnx_exporter,
-        tensorrt_exporter=tensorrt_exporter,
+        onnx_wrapper_cls=CenterPointONNXWrapper,
     )
 
     # Execute deployment workflow

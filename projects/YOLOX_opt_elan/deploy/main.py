@@ -18,7 +18,6 @@ sys.path.insert(0, str(project_root))
 
 from deployment.core import BaseDeploymentConfig, setup_logging
 from deployment.core.base_config import parse_base_args
-from deployment.exporters import ONNXExporter, TensorRTExporter
 from deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
 from deployment.runners import YOLOXDeploymentRunner
 from projects.YOLOX_opt_elan.deploy.data_loader import YOLOXOptElanDataLoader
@@ -73,21 +72,6 @@ def main():
     # Create evaluator
     evaluator = YOLOXOptElanEvaluator(model_cfg, model_cfg_path=model_cfg_path)
 
-    # Create YOLOX exporters with wrapper
-    onnx_settings = config.get_onnx_settings()
-    trt_settings = config.get_tensorrt_settings()
-
-    onnx_exporter = ONNXExporter(
-        onnx_settings,
-        model_wrapper=YOLOXONNXWrapper,
-        logger=logger,
-    )
-    tensorrt_exporter = TensorRTExporter(
-        trt_settings,
-        model_wrapper=YOLOXONNXWrapper,
-        logger=logger,
-    )
-
     checkpoint_path = config.export_config.checkpoint_path
     if not checkpoint_path and config.export_config.should_export_onnx():
         logger.error("Checkpoint path must be provided in export.checkpoint_path for ONNX/TensorRT export.")
@@ -100,8 +84,7 @@ def main():
         config=config,
         model_cfg=model_cfg,
         logger=logger,
-        onnx_exporter=onnx_exporter,
-        tensorrt_exporter=tensorrt_exporter,
+        onnx_wrapper_cls=YOLOXONNXWrapper,
     )
 
     # Execute deployment workflow

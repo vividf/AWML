@@ -7,12 +7,17 @@ across different projects, while allowing project-specific customization.
 
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, TypedDict, Union
 
 import torch
 from mmengine.config import Config
 
 from deployment.core import Artifact, Backend, BaseDataLoader, BaseDeploymentConfig, BaseEvaluator, ModelSpec
+from deployment.exporters.base.factory import ExporterFactory
+from deployment.exporters.base.model_wrappers import BaseModelWrapper
+from deployment.exporters.base.onnx_exporter import ONNXExporter
+from deployment.exporters.base.tensorrt_exporter import TensorRTExporter
+from deployment.exporters.workflows.base import OnnxExportWorkflow, TensorRTExportWorkflow
 
 
 class DeploymentResultDict(TypedDict, total=False):
@@ -58,8 +63,9 @@ class BaseDeploymentRunner:
         config: BaseDeploymentConfig,
         model_cfg: Config,
         logger: logging.Logger,
-        onnx_exporter: Any = None,
-        tensorrt_exporter: Any = None,
+        onnx_wrapper_cls: Optional[Type[BaseModelWrapper]] = None,
+        onnx_workflow: Optional[OnnxExportWorkflow] = None,
+        tensorrt_workflow: Optional[TensorRTExportWorkflow] = None,
     ):
         """
         Initialize base deployment runner.
@@ -70,26 +76,48 @@ class BaseDeploymentRunner:
             config: Deployment configuration
             model_cfg: Model configuration
             logger: Logger instance
-            onnx_exporter: Required ONNX exporter instance (e.g., ONNXExporter with project wrapper)
-            tensorrt_exporter: Required TensorRT exporter instance (e.g., TensorRTExporter with project wrapper)
-
-        Raises:
-            ValueError: If onnx_exporter or tensorrt_exporter is None
+            onnx_wrapper_cls: Optional ONNX model wrapper class for exporter creation
+            onnx_workflow: Optional specialized ONNX workflow
+            tensorrt_workflow: Optional specialized TensorRT workflow
         """
-        # Validate required exporters
-        if onnx_exporter is None:
-            raise ValueError("onnx_exporter is required and cannot be None")
-        if tensorrt_exporter is None:
-            raise ValueError("tensorrt_exporter is required and cannot be None")
-
         self.data_loader = data_loader
         self.evaluator = evaluator
         self.config = config
         self.model_cfg = model_cfg
         self.logger = logger
-        self._onnx_exporter = onnx_exporter
-        self._tensorrt_exporter = tensorrt_exporter
+        self._onnx_wrapper_cls = onnx_wrapper_cls
+        self._onnx_exporter: Optional[ONNXExporter] = None
+        self._tensorrt_exporter: Optional[TensorRTExporter] = None
+        self._onnx_workflow = onnx_workflow
+        self._tensorrt_workflow = tensorrt_workflow
         self.artifacts: Dict[str, Artifact] = {}
+
+    def _get_onnx_exporter(self) -> ONNXExporter:
+        """
+        Lazily instantiate and return the ONNX exporter.
+        """
+
+        if self._onnx_exporter is None:
+            if self._onnx_wrapper_cls is None:
+                raise RuntimeError("ONNX wrapper class not provided. Cannot create ONNX exporter.")
+            self._onnx_exporter = ExporterFactory.create_onnx_exporter(
+                config=self.config,
+                wrapper_cls=self._onnx_wrapper_cls,
+                logger=self.logger,
+            )
+        return self._onnx_exporter
+
+    def _get_tensorrt_exporter(self) -> TensorRTExporter:
+        """
+        Lazily instantiate and return the TensorRT exporter.
+        """
+
+        if self._tensorrt_exporter is None:
+            self._tensorrt_exporter = ExporterFactory.create_tensorrt_exporter(
+                config=self.config,
+                logger=self.logger,
+            )
+        return self._tensorrt_exporter
 
     @staticmethod
     def _get_backend_entry(mapping: Optional[Dict[Any, Any]], backend: Backend) -> Any:
@@ -126,7 +154,7 @@ class BaseDeploymentRunner:
         """
         Export model to ONNX format.
 
-        Uses the provided ONNX exporter instance.
+        Uses either a specialized workflow or the standard ONNX exporter.
 
         Args:
             pytorch_model: PyTorch model to export
@@ -138,20 +166,44 @@ class BaseDeploymentRunner:
         if not self.config.export_config.should_export_onnx():
             return None
 
-        onnx_settings = self.config.get_onnx_settings()
+        if self._onnx_workflow is None and self._onnx_wrapper_cls is None:
+            raise RuntimeError("ONNX export requested but no wrapper class or workflow provided.")
 
-        exporter = self._onnx_exporter
-        self.logger.info("=" * 80)
-        self.logger.info(f"Exporting to ONNX (Using {type(exporter).__name__})")
-        self.logger.info("=" * 80)
+        onnx_settings = self.config.get_onnx_settings()
+        sample_idx = self.config.runtime_config.get("sample_idx", 0)
 
         # Save to work_dir/onnx/ directory
         onnx_dir = os.path.join(self.config.export_config.work_dir, "onnx")
         os.makedirs(onnx_dir, exist_ok=True)
         output_path = os.path.join(onnx_dir, onnx_settings.save_file)
 
+        if self._onnx_workflow is not None:
+            self.logger.info("=" * 80)
+            self.logger.info(f"Exporting to ONNX via workflow ({type(self._onnx_workflow).__name__})")
+            self.logger.info("=" * 80)
+            try:
+                artifact = self._onnx_workflow.export(
+                    model=pytorch_model,
+                    data_loader=self.data_loader,
+                    output_dir=onnx_dir,
+                    config=self.config,
+                    sample_idx=sample_idx,
+                    **kwargs,
+                )
+            except Exception:
+                self.logger.error("ONNX export workflow failed")
+                raise
+
+            self.artifacts[Backend.ONNX.value] = artifact
+            self.logger.info(f"ONNX export successful: {artifact.path}")
+            return artifact
+
+        exporter = self._get_onnx_exporter()
+        self.logger.info("=" * 80)
+        self.logger.info(f"Exporting to ONNX (Using {type(exporter).__name__})")
+        self.logger.info("=" * 80)
+
         # Get sample input
-        sample_idx = self.config.runtime_config.get("sample_idx", 0)
         sample = self.data_loader.load_sample(sample_idx)
         single_input = self.data_loader.preprocess(sample)
 
@@ -190,7 +242,7 @@ class BaseDeploymentRunner:
         """
         Export ONNX model to TensorRT engine.
 
-        Uses the provided TensorRT exporter instance.
+        Uses either a specialized workflow or the standard TensorRT exporter.
 
         Args:
             onnx_path: Path to ONNX model file/directory
@@ -206,9 +258,12 @@ class BaseDeploymentRunner:
             self.logger.warning("ONNX path not available, skipping TensorRT export")
             return None
 
-        exporter = self._tensorrt_exporter
+        exporter_label = None if self._tensorrt_workflow else type(self._get_tensorrt_exporter()).__name__
         self.logger.info("=" * 80)
-        self.logger.info(f"Exporting to TensorRT (Using {type(exporter).__name__})")
+        if self._tensorrt_workflow:
+            self.logger.info(f"Exporting to TensorRT via workflow ({type(self._tensorrt_workflow).__name__})")
+        else:
+            self.logger.info(f"Exporting to TensorRT (Using {exporter_label})")
         self.logger.info("=" * 80)
 
         # Save to work_dir/tensorrt/ directory
@@ -237,10 +292,28 @@ class BaseDeploymentRunner:
         if isinstance(sample_input, (list, tuple)):
             sample_input = sample_input[0]  # Use first input for shape
 
-        exporter = self._tensorrt_exporter
+        if self._tensorrt_workflow is not None:
+            try:
+                artifact = self._tensorrt_workflow.export(
+                    onnx_path=onnx_path,
+                    output_dir=tensorrt_dir,
+                    config=self.config,
+                    device=cuda_device,
+                    data_loader=self.data_loader,
+                    **kwargs,
+                )
+            except Exception:
+                self.logger.error("TensorRT export workflow failed")
+                raise
+
+            self.artifacts[Backend.TENSORRT.value] = artifact
+            self.logger.info(f"TensorRT export successful: {artifact.path}")
+            return artifact
+
+        exporter = self._get_tensorrt_exporter()
 
         try:
-            exporter.export(
+            artifact = exporter.export(
                 model=None,
                 sample_input=sample_input,
                 output_path=output_path,
@@ -250,7 +323,6 @@ class BaseDeploymentRunner:
             self.logger.error("TensorRT export failed")
             raise
 
-        artifact = Artifact(path=output_path, multi_file=False)
         self.artifacts[Backend.TENSORRT.value] = artifact
         self.logger.info(f"TensorRT export successful: {artifact.path}")
         return artifact
