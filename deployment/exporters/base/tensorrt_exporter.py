@@ -188,11 +188,29 @@ class TensorRTExporter(BaseExporter):
         Creates an optimization profile and configures min/opt/max shapes for each input.
         See `_configure_input_shapes` for details on shape configuration.
 
+        Note:
+            ONNX `dynamic_axes` and TensorRT profiles serve different purposes:
+
+            - **ONNX dynamic_axes**: Used during ONNX export to define which dimensions
+              are symbolic (dynamic) in the ONNX graph. This allows the ONNX model to
+              accept inputs of varying sizes at those dimensions.
+
+            - **TensorRT profile**: Defines the runtime shape envelope (min/opt/max) that
+              TensorRT will optimize for. TensorRT builds kernels optimized for shapes
+              within this envelope. The profile must be compatible with the ONNX dynamic
+              axes, but they are configured separately and serve different roles:
+              - dynamic_axes: Export-time graph structure
+              - TRT profile: Runtime optimization envelope
+
+            They are related but not equivalent. The ONNX model may have dynamic axes,
+            but TensorRT still needs explicit min/opt/max shapes to build optimized kernels.
+
         Args:
             builder: TensorRT builder instance
             builder_config: TensorRT builder config
             network: TensorRT network definition
-            sample_input: Sample input for shape configuration
+            sample_input: Sample input for shape configuration (typically obtained via
+                         BaseDataLoader.get_shape_sample())
         """
         profile = builder.create_optimization_profile()
         self._configure_input_shapes(profile, sample_input, network)
@@ -256,15 +274,60 @@ class TensorRTExporter(BaseExporter):
         Configure input shapes for TensorRT optimization profile.
 
         Note:
-            This is separate from ONNX `dynamic_axes`:
+            ONNX dynamic_axes is used for export; TRT profile is the runtime envelope;
+            they are related but not equivalent.
 
-            - `dynamic_axes` controls symbolic dimensions in the ONNX graph.
-            - Here, `min/opt/max` shapes define TensorRT optimization profiles,
-              i.e., the allowed and optimized runtime shapes for each input.
+            - **ONNX dynamic_axes**: Controls symbolic dimensions in the ONNX graph during
+              export. Defines which dimensions can vary at runtime in the ONNX model.
 
-            They are complementary but independent.
+            - **TensorRT profile (min/opt/max)**: Defines the runtime shape envelope that
+              TensorRT optimizes for. TensorRT builds kernels optimized for shapes within
+              this envelope. The profile must be compatible with the ONNX dynamic axes,
+              but they are configured separately:
+              - dynamic_axes: Export-time graph structure (what dimensions are variable)
+              - TRT profile: Runtime optimization envelope (what shapes to optimize for)
+
+            They are complementary but independent. The ONNX model may have dynamic axes,
+            but TensorRT still needs explicit min/opt/max shapes to build optimized kernels.
+
+        Raises:
+            ValueError: If neither model_inputs config nor sample_input is provided
         """
         model_inputs_cfg = self.config.model_inputs
+
+        # Validate that we have shape information
+        if not model_inputs_cfg or not model_inputs_cfg[0].input_shapes:
+            if sample_input is None:
+                raise ValueError(
+                    "TensorRT export requires shape information. Please provide either:\n"
+                    "  1. Explicit 'model_inputs' with 'input_shapes' (min/opt/max) in config, OR\n"
+                    "  2. A 'sample_input' tensor for automatic shape inference\n"
+                    "\n"
+                    "Current config has:\n"
+                    f"  - model_inputs: {model_inputs_cfg}\n"
+                    f"  - sample_input: {sample_input}\n"
+                    "\n"
+                    "Example config:\n"
+                    "  backend_config = dict(\n"
+                    "      model_inputs=[\n"
+                    "          dict(\n"
+                    "              input_shapes={\n"
+                    "                  'input': dict(\n"
+                    "                      min_shape=(1, 3, 960, 960),\n"
+                    "                      opt_shape=(1, 3, 960, 960),\n"
+                    "                      max_shape=(1, 3, 960, 960),\n"
+                    "                  )\n"
+                    "              }\n"
+                    "          )\n"
+                    "      ]\n"
+                    "  )"
+                )
+            # If we have sample_input but no config, we could infer shapes
+            # For now, just require explicit config
+            self.logger.warning(
+                "sample_input provided but no explicit model_inputs config. "
+                "TensorRT export may fail if ONNX has dynamic dimensions."
+            )
 
         if not model_inputs_cfg:
             raise ValueError("model_inputs is not set in the config")

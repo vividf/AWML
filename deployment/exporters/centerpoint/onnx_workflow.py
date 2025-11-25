@@ -1,38 +1,57 @@
 """
 CenterPoint ONNX export workflow using composition.
+
+This workflow orchestrates multi-file ONNX export for CenterPoint models.
+It uses the ModelComponentExtractor pattern to keep model-specific logic
+separate from the generic export workflow.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from dataclasses import replace
-from typing import Any, Callable, Optional, Tuple, Union
+from typing import Any, Optional
 
 import torch
 
 from deployment.core import Artifact, BaseDataLoader, BaseDeploymentConfig
-from deployment.exporters.base.configs import ONNXExportConfig
-from deployment.exporters.base.onnx_exporter import ONNXExporter
+from deployment.exporters.base.factory import ExporterFactory
+from deployment.exporters.base.model_wrappers import IdentityWrapper
 from deployment.exporters.workflows.base import OnnxExportWorkflow
+from deployment.exporters.workflows.interfaces import ModelComponentExtractor
 
 
 class CenterPointONNXExportWorkflow(OnnxExportWorkflow):
     """
     CenterPoint ONNX export workflow.
 
-    Orchestrates multi-file ONNX export using a generic ONNXExporter.
+    Orchestrates multi-file ONNX export using a generic ONNXExporter and
+    CenterPointComponentExtractor for model-specific logic.
+
+    Components exported:
     - voxel encoder → pts_voxel_encoder.onnx
     - backbone+neck+head → pts_backbone_neck_head.onnx
     """
 
     def __init__(
         self,
-        exporter: Union[ONNXExporter, Callable[[], ONNXExporter]],
+        exporter_factory: type[ExporterFactory],
+        component_extractor: ModelComponentExtractor,
+        config: BaseDeploymentConfig,
         logger: Optional[logging.Logger] = None,
     ):
-        self._exporter_provider = exporter
-        self._exporter_cache: Optional[ONNXExporter] = None
+        """
+        Initialize CenterPoint ONNX export workflow.
+
+        Args:
+            exporter_factory: Factory class for creating exporters
+            component_extractor: Extracts model components (injected from projects/)
+            config: Deployment configuration
+            logger: Optional logger instance
+        """
+        self.exporter_factory = exporter_factory
+        self.component_extractor = component_extractor
+        self.config = config
         self.logger = logger or logging.getLogger(__name__)
 
     def export(
@@ -45,132 +64,75 @@ class CenterPointONNXExportWorkflow(OnnxExportWorkflow):
         sample_idx: int = 0,
         **_: Any,
     ) -> Artifact:
-        output_dir = self._resolve_output_dir(output_dir)
-        input_features, voxel_dict = self._extract_features(model, data_loader, sample_idx, output_dir)
-        voxel_encoder_path = self._export_voxel_encoder(model, input_features, output_dir)
-        backbone_path = self._export_backbone_neck_head(model, input_features, voxel_dict, output_dir)
-        self._log_summary(voxel_encoder_path, backbone_path)
-        return Artifact(path=output_dir, multi_file=True)
+        """
+        Export CenterPoint model to multi-file ONNX format.
 
-    def _get_exporter(self) -> ONNXExporter:
-        if self._exporter_cache is None:
-            exporter = self._exporter_provider() if callable(self._exporter_provider) else self._exporter_provider
-            if exporter is None:
-                raise RuntimeError("CenterPoint ONNX workflow requires an ONNXExporter instance")
-            self._exporter_cache = exporter
-        return self._exporter_cache
+        Args:
+            model: CenterPoint PyTorch model
+            data_loader: Data loader for extracting sample features
+            output_dir: Output directory for ONNX files
+            config: Deployment configuration (not used, kept for interface)
+            sample_idx: Sample index to use for feature extraction
 
-    def _get_base_config(self) -> ONNXExportConfig:
-        return self._get_exporter().config
-
-    def _resolve_output_dir(self, output_dir: str) -> str:
-        if not output_dir:
-            raise ValueError("output_dir must be provided for CenterPoint ONNX export")
-
+        Returns:
+            Artifact pointing to output directory with multi_file=True
+        """
+        # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
-        return output_dir
 
-    def _extract_features(
-        self, model: torch.nn.Module, data_loader: Any, sample_idx: int, output_dir: str
-    ) -> Tuple[Any, dict]:
         self.logger.info("=" * 80)
         self.logger.info("Exporting CenterPoint to ONNX (Multi-file)")
         self.logger.info("=" * 80)
         self.logger.info(f"Output directory: {output_dir}")
-        self.logger.info(f"Using real data (sample_idx={sample_idx})")
+        self.logger.info(f"Using sample index: {sample_idx}")
 
+        # Extract features using component extractor helper
+        # This delegates to model's _extract_features method
         try:
-            self.logger.info("Extracting features from real data...")
-            input_features, voxel_dict = model._extract_features(data_loader, sample_idx)
-            return input_features, voxel_dict
+            self.logger.info("Extracting features from sample data...")
+            if hasattr(self.component_extractor, "extract_features"):
+                sample_data = self.component_extractor.extract_features(model, data_loader, sample_idx)
+            else:
+                raise AttributeError("Component extractor must provide extract_features method")
         except Exception as exc:
             self.logger.error(f"Failed to extract features: {exc}")
             raise RuntimeError("Feature extraction failed") from exc
 
-    def _export_voxel_encoder(self, model: torch.nn.Module, input_features: Any, output_dir: str) -> str:
-        self.logger.info("\n[1/2] Exporting voxel encoder...")
-        voxel_encoder_path = os.path.join(output_dir, "pts_voxel_encoder.onnx")
+        # Extract exportable components (delegates all model-specific logic)
+        components = self.component_extractor.extract_components(model, sample_data)
 
-        voxel_encoder_cfg = self._build_voxel_encoder_config(self._get_base_config())
+        # Export each component using generic ONNX exporter
+        exported_paths = []
+        for i, component in enumerate(components, 1):
+            self.logger.info(f"\n[{i}/{len(components)}] Exporting {component.name}...")
 
-        try:
-            self._get_exporter().export(
-                model=model.pts_voxel_encoder,
-                sample_input=input_features,
-                output_path=voxel_encoder_path,
-                config_override=voxel_encoder_cfg,
+            # Create fresh exporter for each component (no caching)
+            exporter = self.exporter_factory.create_onnx_exporter(
+                config=self.config, wrapper_cls=IdentityWrapper, logger=self.logger  # CenterPoint doesn't need wrapper
             )
-            return voxel_encoder_path
-        except Exception as exc:
-            self.logger.error("Failed to export voxel encoder")
-            raise RuntimeError("Voxel encoder export failed") from exc
 
-    def _build_voxel_encoder_config(self, base_config: ONNXExportConfig) -> ONNXExportConfig:
-        return replace(
-            base_config,
-            input_names=("input_features",),
-            output_names=("pillar_features",),
-            dynamic_axes={
-                "input_features": {0: "num_voxels", 1: "num_max_points"},
-                "pillar_features": {0: "num_voxels"},
-            },
-        )
+            # Determine output path
+            output_path = os.path.join(output_dir, f"{component.name}.onnx")
 
-    def _export_backbone_neck_head(
-        self, model: torch.nn.Module, input_features: Any, voxel_dict: dict, output_dir: str
-    ) -> str:
-        self.logger.info("\n[2/2] Exporting backbone + neck + head...")
+            # Export component
+            try:
+                exporter.export(
+                    model=component.module,
+                    sample_input=component.sample_input,
+                    output_path=output_path,
+                    config_override=component.config_override,
+                )
+                exported_paths.append(output_path)
+                self.logger.info(f"✓ Exported {component.name}: {output_path}")
+            except Exception as exc:
+                self.logger.error(f"Failed to export {component.name}")
+                raise RuntimeError(f"{component.name} export failed") from exc
 
-        with torch.no_grad():
-            voxel_features = model.pts_voxel_encoder(input_features).squeeze(1)
-            coors = voxel_dict["coors"]
-            batch_size = coors[-1, 0] + 1
-            spatial_features = model.pts_middle_encoder(voxel_features, coors, batch_size)
-
-        from projects.CenterPoint.models.detectors.centerpoint_onnx import CenterPointHeadONNX
-
-        backbone_neck_head = CenterPointHeadONNX(model.pts_backbone, model.pts_neck, model.pts_bbox_head)
-
-        output_names = self._get_output_names(model)
-
-        backbone_path = os.path.join(output_dir, "pts_backbone_neck_head.onnx")
-        backbone_cfg = self._build_backbone_config(self._get_base_config(), output_names)
-
-        try:
-            self._get_exporter().export(
-                model=backbone_neck_head,
-                sample_input=spatial_features,
-                output_path=backbone_path,
-                config_override=backbone_cfg,
-            )
-            return backbone_path
-        except Exception as exc:
-            self.logger.error("Failed to export backbone+neck+head")
-            raise RuntimeError("Backbone+neck+head export failed") from exc
-
-    def _get_output_names(self, model: torch.nn.Module) -> Tuple[str, ...]:
-        output_names = model.pts_bbox_head.output_names if hasattr(model.pts_bbox_head, "output_names") else None
-        if not output_names:
-            output_names = ["reg", "height", "dim", "rot", "vel", "heatmap"]
-        return tuple(output_names) if isinstance(output_names, (list, tuple)) else (output_names,)
-
-    def _build_backbone_config(
-        self,
-        base_config: ONNXExportConfig,
-        output_names: Tuple[str, ...],
-    ) -> ONNXExportConfig:
-        return replace(
-            base_config,
-            input_names=("spatial_features",),
-            output_names=output_names,
-            dynamic_axes={
-                "spatial_features": {0: "batch_size", 2: "height", 3: "width"},
-            },
-        )
-
-    def _log_summary(self, voxel_encoder_path: str, backbone_path: str) -> None:
+        # Log summary
         self.logger.info("\n" + "=" * 80)
         self.logger.info("✅ CenterPoint ONNX export successful")
         self.logger.info("=" * 80)
-        self.logger.info(f"Voxel Encoder: {voxel_encoder_path}")
-        self.logger.info(f"Backbone+Neck+Head: {backbone_path}")
+        for path in exported_paths:
+            self.logger.info(f"  • {os.path.basename(path)}")
+
+        return Artifact(path=output_dir, multi_file=True)

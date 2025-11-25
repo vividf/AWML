@@ -7,6 +7,7 @@ backend-specific optimizations for voxel encoder and backbone/head.
 """
 
 import logging
+import time
 from abc import abstractmethod
 from typing import Any, Dict, List, Tuple
 
@@ -261,7 +262,7 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
 
     # ========== Main Inference Pipeline ==========
 
-    def run_model(self, preprocessed_input: Dict[str, torch.Tensor]) -> List[torch.Tensor]:
+    def run_model(self, preprocessed_input: Dict[str, torch.Tensor]) -> Tuple[List[torch.Tensor], Dict[str, float]]:
         """
         Run complete multi-stage model inference.
 
@@ -281,30 +282,34 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
                 - 'num_points': Number of points per voxel
 
         Returns:
-            head_outputs: List of head outputs [heatmap, reg, height, dim, rot, vel]
+            Tuple of (head_outputs, stage_latencies):
+            - head_outputs: List of head outputs [heatmap, reg, height, dim, rot, vel]
+            - stage_latencies: Dict mapping stage names to latency in ms
 
         Note:
-            Stage-wise latencies are stored in `self._stage_latencies` and will be
-            merged into the overall latency breakdown by the base class `infer()`.
+            Stage latencies are returned (not stored in instance variable) to avoid
+            race conditions when pipelines are reused across multiple threads.
         """
-        import time
+
+        # Use local variable for thread safety (not instance variable)
+        stage_latencies = {}
 
         # Stage 1: Voxel Encoder (backend-specific)
-        start = time.time()
+        start = time.perf_counter()
         voxel_features = self.run_voxel_encoder(preprocessed_input["input_features"])
-        self._stage_latencies["voxel_encoder_ms"] = (time.time() - start) * 1000
+        stage_latencies["voxel_encoder_ms"] = (time.perf_counter() - start) * 1000
 
-        # Stage 2: Middle Encoder (PyTorch - 所有后端相同)
-        start = time.time()
+        # Stage 2: Middle Encoder (PyTorch - shared across all backends)
+        start = time.perf_counter()
         spatial_features = self.process_middle_encoder(voxel_features, preprocessed_input["coors"])
-        self._stage_latencies["middle_encoder_ms"] = (time.time() - start) * 1000
+        stage_latencies["middle_encoder_ms"] = (time.perf_counter() - start) * 1000
 
         # Stage 3: Backbone + Head (backend-specific)
-        start = time.time()
+        start = time.perf_counter()
         head_outputs = self.run_backbone_head(spatial_features)
-        self._stage_latencies["backbone_head_ms"] = (time.time() - start) * 1000
+        stage_latencies["backbone_head_ms"] = (time.perf_counter() - start) * 1000
 
-        return head_outputs
+        return head_outputs, stage_latencies
 
     def __repr__(self):
         return f"{self.__class__.__name__}(device={self.device})"

@@ -9,7 +9,7 @@ from typing import Any, Optional
 import torch
 from mmpretrain.apis import get_model
 
-from deployment.runners.deployment_runner import BaseDeploymentRunner
+from deployment.runners.core.deployment_runner import BaseDeploymentRunner
 
 
 class CalibrationDeploymentRunner(BaseDeploymentRunner):

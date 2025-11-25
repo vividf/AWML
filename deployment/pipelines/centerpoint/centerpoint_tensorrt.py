@@ -261,30 +261,7 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
                 cuda.memcpy_dtoh_async(output_arrays[output_name], d_outputs[output_name], stream)
 
             stream.synchronize()
-
-            # IMPORTANT: Reorder outputs to match expected order [heatmap, reg, height, dim, rot, vel]
-            # ONNX export uses order: ['reg', 'height', 'dim', 'rot', 'vel', 'heatmap']
-            # But pipeline expects: [heatmap, reg, height, dim, rot, vel]
-            # TensorRT preserves ONNX output order, so we need to reorder based on tensor names
-            expected_order = ["heatmap", "reg", "height", "dim", "rot", "vel"]
-
-            # Create a mapping from output name to index in expected order
-            name_to_index = {
-                name: expected_order.index(name) if name in expected_order else -1 for name in output_names
-            }
-
-            # Check if all outputs are recognized
-            if any(idx == -1 for idx in name_to_index.values()):
-                logger.warning(f"Some output names not recognized: {output_names}")
-                logger.warning("Using TensorRT order as-is (may cause verification failures)")
-                head_outputs = [torch.from_numpy(output_arrays[name]).to(self.device) for name in output_names]
-            else:
-                # Reorder outputs according to expected order
-                reordered_outputs = [None] * len(expected_order)
-                for name in output_names:
-                    idx = name_to_index[name]
-                    reordered_outputs[idx] = torch.from_numpy(output_arrays[name]).to(self.device)
-                head_outputs = reordered_outputs
+            head_outputs = [torch.from_numpy(output_arrays[name]).to(self.device) for name in output_names]
 
             if len(head_outputs) != 6:
                 raise ValueError(f"Expected 6 head outputs, got {len(head_outputs)}")

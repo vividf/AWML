@@ -44,29 +44,25 @@ The AWML Deployment Framework provides a standardized approach to model deployme
                    │
 ┌──────────────────▼──────────────────────────────────────┐
 │ BaseDeploymentRunner + Project Runners                  │
-│  - Coordinates export → verification → evaluation      │
-│  - Each project extends the base class for custom logic│
+│  - Coordinates load → export → verify → evaluate        │
+│  - Delegates to helper orchestrators (see below)        │
+│  - Each project extends the base class for custom logic │
 └──────────────────┬──────────────────────────────────────┘
                    │
-        ┌──────────┴──────────┐
-        │                     │
-┌───────▼────────┐   ┌────────▼────────┐
-│   Exporters    │   │   Evaluators    │
-│  - ONNX        │   │  - Task-specific│
-│  - TensorRT    │   │  - Metrics      │
-│  - Wrappers    │   │                 │
-│  (Unified      │   │                 │
-│   structure)   │   │                 │
-└────────────────┘   └─────────────────┘
-        │                     │
-        └──────────┬──────────┘
-                   │
-┌──────────────────▼──────────────────────────────────────┐
-│              Pipeline Architecture                      │
-│  - BaseDeploymentPipeline                               │
-│  - Task-specific pipelines (Detection2D/3D, Classify)   │
-│  - Backend-specific implementations                     │
-└──────────────────────────────────────────────────────────┘
+        ┌──────────┴────────────┐
+        │                       │
+┌───────▼────────┐     ┌────────▼───────────────┐
+│   Exporters    │     │  Helper Orchestrators │
+│  - ONNX / TRT  │     │  - ArtifactManager     │
+│  - Wrappers    │     │  - VerificationOrch.   │
+│  - Workflows   │     │  - EvaluationOrch.     │
+└────────────────┘     └────────┬───────────────┘
+                                │
+┌───────────────────────────────▼─────────────────────────┐
+│                    Evaluators & Pipelines               │
+│  - BaseDeploymentPipeline + task-specific variants      │
+│  - Backend-specific implementations (PyTorch/ONNX/TRT)  │
+└────────────────────────────────────────────────────────┘
 ```
 
 ### Core Components
@@ -74,16 +70,25 @@ The AWML Deployment Framework provides a standardized approach to model deployme
 #### 1. **BaseDeploymentRunner & Project Runners**
 `BaseDeploymentRunner` orchestrates the complete deployment workflow, while each project provides a thin subclass (`CenterPointDeploymentRunner`, `YOLOXDeploymentRunner`, `CalibrationDeploymentRunner`) that plugs in model-specific logic.
 
-- **Model Loading**: Implemented by each project runner to load PyTorch checkpoints
-- **Export**: Uses lazily constructed ONNX/TensorRT exporters (via `ExporterFactory`) informed by wrapper classes and optional workflows
-- **Verification**: Scenario-based verification across backends
-- **Evaluation**: Performance metrics and latency statistics
+- **ArtifactManager**: registers and resolves PyTorch/ONNX/TensorRT artifacts
+- **VerificationOrchestrator**: runs scenario-based verification (pytorch ↔ onnx ↔ tensorrt)
+- **EvaluationOrchestrator**: runs cross-backend evaluation and summarizes metrics
+
+This keeps project runners lightweight—they primarily:
+
+- Implement **Model Loading** for their project
+- Plug in optional **export workflows** (e.g., CenterPoint multi-file export)
+- Supply **wrapper classes** when ONNX outputs need reshaping
 
 **Required Parameters:**
 - `onnx_wrapper_cls`: Optional model wrapper class for ONNX export (required unless a workflow performs the export)
 - `onnx_workflow` / `tensorrt_workflow`: Optional workflow objects for specialized multi-file exports
 
-Runners own exporter initialization and reuse, ensuring consistent logging/configuration while keeping project entry points lightweight.
+Runners still own exporter initialization via `ExporterFactory`, but orchestrators keep the run loop simple and testable.
+
+**Directory layout**
+- `deployment/runners/core/`: shared runner infrastructure (`BaseDeploymentRunner`, orchestrators, `ArtifactManager`)
+- `deployment/runners/projects/`: thin adapters for each project (CenterPoint, YOLOX, Calibration, …)
 
 #### 2. **Core Components** (in `core/`)
 

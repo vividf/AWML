@@ -6,7 +6,7 @@ This module provides a specialized runner for YOLOX models.
 
 from typing import Any, Optional
 
-from deployment.runners.deployment_runner import BaseDeploymentRunner
+from deployment.runners.core.deployment_runner import BaseDeploymentRunner
 
 
 class YOLOXDeploymentRunner(BaseDeploymentRunner):

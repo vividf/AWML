@@ -6,9 +6,11 @@ providing a baseline for comparison with optimized backends.
 """
 
 import logging
+import time
 from typing import Dict, List, Tuple
 
 import torch
+from mmdet3d.apis import inference_detector
 
 from deployment.pipelines.centerpoint.centerpoint_pipeline import CenterPointDeploymentPipeline
 
@@ -43,7 +45,6 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
         else:
             logger.info("PyTorch pipeline initialized (standard model, using end-to-end inference)")
 
-    # TODO(vividf): check this
     def infer(self, points: torch.Tensor, sample_meta: Dict = None, return_raw_outputs: bool = False) -> Tuple:
         """
         Complete inference pipeline.
@@ -56,8 +57,6 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
             sample_meta: Sample metadata
             return_raw_outputs: If True, return raw head outputs (only for ONNX models)
         """
-        import time
-
         if sample_meta is None:
             sample_meta = {}
 
@@ -75,9 +74,6 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
 
     def _infer_end_to_end(self, points: torch.Tensor, sample_meta: Dict) -> Tuple[List[Dict], float, Dict[str, float]]:
         """End-to-end inference for standard PyTorch models."""
-        import time
-
-        from mmdet3d.apis import inference_detector
 
         start_time = time.time()
 
