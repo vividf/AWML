@@ -84,8 +84,23 @@ def main():
     # Checkpoint path
     # Create evaluator with original model_cfg
     # Runner will convert it to ONNX-compatible config and inject both model_cfg and pytorch_model
+
+    # Get perception evaluation configs from deploy_cfg (for autoware_perception_evaluation metrics)
+    evaluation_config_dict = getattr(deploy_cfg, "perception_evaluator_configs", None)
+    critical_object_filter_config = getattr(deploy_cfg, "critical_object_filter_config", None)
+    frame_pass_fail_config = getattr(deploy_cfg, "frame_pass_fail_config", None)
+    frame_id = getattr(deploy_cfg, "frame_id", "base_link")
+    data_root = getattr(deploy_cfg, "data_root", "data/t4dataset/")
+    class_names = getattr(deploy_cfg, "class_names", None)
+
     evaluator = CenterPointEvaluator(
         model_cfg=model_cfg,  # original cfg; will be updated to ONNX cfg by runner
+        class_names=class_names,
+        evaluation_config_dict=evaluation_config_dict,
+        critical_object_filter_config=critical_object_filter_config,
+        frame_pass_fail_config=frame_pass_fail_config,
+        frame_id=frame_id,
+        data_root=data_root,
     )
 
     # Create CenterPoint-specific runner

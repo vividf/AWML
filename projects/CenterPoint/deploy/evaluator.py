@@ -2,6 +2,7 @@
 CenterPoint Evaluator for deployment.
 
 This module implements evaluation for CenterPoint 3D object detection models.
+Uses autoware_perception_evaluation for consistent metrics with T4MetricV2.
 """
 
 import logging
@@ -14,10 +15,12 @@ from mmengine.config import Config
 from deployment.core import (
     Backend,
     BaseEvaluator,
+    Detection3DMetricsAdapter,
     EvalResultDict,
     ModelSpec,
     VerifyResultDict,
 )
+from deployment.core.metrics.detection_3d_metrics import Detection3DMetricsConfig
 
 from .data_loader import CenterPointDataLoader
 from .utils import build_model_from_cfg
@@ -31,9 +34,8 @@ class CenterPointEvaluator(BaseEvaluator):
     """
     Evaluator for CenterPoint 3D object detection.
 
-    Computes 3D detection metrics including mAP, NDS, and latency statistics.
-
-    Note: For production, should integrate with mmdet3d's evaluation metrics.
+    Computes 3D detection metrics (mAP, mAPH) using autoware_perception_evaluation
+    for consistency with T4MetricV2 used during training.
 
     IMPORTANT:
     - `model_cfg` in __init__ can be the original mmdet3d config.
@@ -46,6 +48,11 @@ class CenterPointEvaluator(BaseEvaluator):
         self,
         model_cfg: Config,
         class_names: List[str] = None,
+        evaluation_config_dict: Optional[Dict[str, Any]] = None,
+        critical_object_filter_config: Optional[Dict[str, Any]] = None,
+        frame_pass_fail_config: Optional[Dict[str, Any]] = None,
+        frame_id: str = "base_link",
+        data_root: str = "data/t4dataset/",
     ):
         """
         Initialize CenterPoint evaluator.
@@ -54,6 +61,22 @@ class CenterPointEvaluator(BaseEvaluator):
             model_cfg: Model configuration (can be original mmdet3d config).
                        Will be updated to ONNX-compatible config by DeploymentRunner.load_pytorch_model().
             class_names: List of class names (optional). If not provided, will be extracted from model_cfg.
+            evaluation_config_dict: Configuration dict for perception evaluation metrics.
+                Example:
+                    {
+                        "evaluation_task": "detection",
+                        "target_labels": ["car", "truck", "bus", "bicycle", "pedestrian"],
+                        "center_distance_bev_thresholds": [0.5, 1.0, 2.0, 4.0],
+                        "plane_distance_thresholds": [2.0, 4.0],
+                        "label_prefix": "autoware",
+                        "max_distance": 121.0,
+                        "min_distance": -121.0,
+                        "min_point_numbers": 0,
+                    }
+            critical_object_filter_config: Config for filtering critical objects.
+            frame_pass_fail_config: Config for pass/fail criteria.
+            frame_id: Frame ID for evaluation (e.g., "base_link").
+            data_root: Root directory of the dataset.
         """
         super().__init__(config={})
 
@@ -67,7 +90,41 @@ class CenterPointEvaluator(BaseEvaluator):
             self.class_names = model_cfg.class_names
         else:
             # Default for T4Dataset
-            self.class_names = ["VEHICLE", "PEDESTRIAN", "CYCLIST"]
+            self.class_names = ["car", "truck", "bus", "bicycle", "pedestrian"]
+
+        # Store evaluation config parameters
+        self._evaluation_config_dict = evaluation_config_dict
+        self._critical_object_filter_config = critical_object_filter_config
+        self._frame_pass_fail_config = frame_pass_fail_config
+        self._frame_id = frame_id
+        self._data_root = data_root
+
+        # Initialize metrics adapter (will be created lazily)
+        self._metrics_adapter: Optional[Detection3DMetricsAdapter] = None
+
+    def _get_metrics_adapter(self) -> Detection3DMetricsAdapter:
+        """Get or create the metrics adapter for evaluation.
+
+        Returns:
+            Detection3DMetricsAdapter instance.
+        """
+        if self._metrics_adapter is None:
+            # Create metrics config
+            metrics_config = Detection3DMetricsConfig(
+                class_names=self.class_names,
+                frame_id=self._frame_id,
+                evaluation_config_dict=self._evaluation_config_dict,
+                critical_object_filter_config=self._critical_object_filter_config,
+                frame_pass_fail_config=self._frame_pass_fail_config,
+            )
+
+            # Create adapter
+            self._metrics_adapter = Detection3DMetricsAdapter(
+                config=metrics_config,
+                data_root=self._data_root,
+            )
+
+        return self._metrics_adapter
 
     def set_onnx_config(self, model_cfg: Config) -> None:
         """
@@ -560,7 +617,6 @@ class CenterPointEvaluator(BaseEvaluator):
 
         return ground_truths
 
-    # TODO(vividf): use autoware_perception_eval in the future
     def _compute_metrics(
         self,
         predictions_list: List[List[Dict]],
@@ -569,10 +625,22 @@ class CenterPointEvaluator(BaseEvaluator):
         logger,
         latency_breakdowns: List[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
-        """Compute evaluation metrics."""
-        logger = logging.getLogger(__name__)
+        """Compute evaluation metrics using autoware_perception_evaluation.
 
-        # Debug metrics
+        This method uses the same metrics computation as T4MetricV2 to ensure
+        consistent evaluation between training and deployment.
+
+        Args:
+            predictions_list: List of predictions per frame.
+            ground_truths_list: List of ground truths per frame.
+            latencies: List of inference latencies.
+            logger: Logger instance.
+            latency_breakdowns: Optional list of stage-wise latency breakdowns.
+
+        Returns:
+            Dictionary containing evaluation metrics.
+        """
+        logger = logging.getLogger(__name__)
 
         # Count total predictions and ground truths
         total_predictions = sum(len(preds) for preds in predictions_list)
@@ -613,15 +681,14 @@ class CenterPointEvaluator(BaseEvaluator):
 
             latency_stats["latency_breakdown"] = stage_stats
 
-        # Try to compute mmdet3d metrics
+        # Compute metrics using autoware_perception_evaluation
         try:
-            map_results = self._compute_simple_3d_map(
+            map_results = self._compute_perception_eval_metrics(
                 predictions_list,
                 ground_truths_list,
-                num_classes=len(self.class_names),
             )
 
-            # Combine results with mmdet3d metrics
+            # Combine results
             results = {
                 "total_predictions": total_predictions,
                 "total_ground_truths": total_ground_truths,
@@ -629,31 +696,99 @@ class CenterPointEvaluator(BaseEvaluator):
                 "per_class_ground_truths": per_class_gts,
                 "latency": latency_stats,
                 "num_samples": len(predictions_list),
-                **map_results,  # Include mAP, NDS, etc.
+                **map_results,
             }
 
-            logger.info("✅ Successfully computed mmdet3d metrics")
+            logger.info("✅ Successfully computed autoware_perception_evaluation metrics")
 
         except Exception as e:
-            logger.warning(f"Failed to compute mmdet3d metrics: {e}")
-            logger.warning("Using simplified metrics instead")
+            logger.warning(f"Failed to compute autoware_perception_evaluation metrics: {e}")
+            logger.warning("Falling back to simple 3D mAP computation")
+            import traceback
 
-            # Fallback to simplified metrics
-            results = {
-                "total_predictions": total_predictions,
-                "total_ground_truths": total_ground_truths,
-                "per_class_predictions": per_class_preds,
-                "per_class_ground_truths": per_class_gts,
-                "latency": latency_stats,
-                "num_samples": len(predictions_list),
-                "mAP": 0.0,
-                "NDS": 0.0,
-                "mATE": 0.0,
-                "mASE": 0.0,
-                "mAOE": 0.0,
-                "mAVE": 0.0,
-                "mAAE": 0.0,
-            }
+            traceback.print_exc()
+
+            # Fallback to simple metrics
+            try:
+                map_results = self._compute_simple_3d_map(
+                    predictions_list,
+                    ground_truths_list,
+                    num_classes=len(self.class_names),
+                )
+                results = {
+                    "total_predictions": total_predictions,
+                    "total_ground_truths": total_ground_truths,
+                    "per_class_predictions": per_class_preds,
+                    "per_class_ground_truths": per_class_gts,
+                    "latency": latency_stats,
+                    "num_samples": len(predictions_list),
+                    **map_results,
+                }
+            except Exception as e2:
+                logger.error(f"Failed to compute simple metrics: {e2}")
+                results = {
+                    "total_predictions": total_predictions,
+                    "total_ground_truths": total_ground_truths,
+                    "per_class_predictions": per_class_preds,
+                    "per_class_ground_truths": per_class_gts,
+                    "latency": latency_stats,
+                    "num_samples": len(predictions_list),
+                    "mAP": 0.0,
+                    "mAPH": 0.0,
+                }
+
+        return results
+
+    def _compute_perception_eval_metrics(
+        self,
+        predictions_list: List[List[Dict]],
+        ground_truths_list: List[List[Dict]],
+    ) -> Dict[str, Any]:
+        """Compute metrics using autoware_perception_evaluation.
+
+        This method uses the Detection3DMetricsAdapter to compute mAP, mAPH
+        and other metrics that are consistent with T4MetricV2.
+
+        Args:
+            predictions_list: List of predictions per frame.
+            ground_truths_list: List of ground truths per frame.
+
+        Returns:
+            Dictionary containing mAP, mAPH, and per-class metrics.
+        """
+        logger = logging.getLogger(__name__)
+
+        # Get or create metrics adapter
+        adapter = self._get_metrics_adapter()
+
+        # Reset adapter for new evaluation
+        adapter.reset()
+
+        # Add all frames
+        for frame_idx, (predictions, ground_truths) in enumerate(zip(predictions_list, ground_truths_list)):
+            adapter.add_frame(
+                predictions=predictions,
+                ground_truths=ground_truths,
+                frame_name=str(frame_idx),
+            )
+
+        # Get summary
+        summary = adapter.get_summary()
+
+        # Extract results
+        results = {
+            "mAP": summary.get("mAP", 0.0),
+            "mAPH": summary.get("mAPH", 0.0),
+            "per_class_ap": summary.get("per_class_ap", {}),
+        }
+
+        # Add detailed metrics with proper naming
+        detailed = summary.get("detailed_metrics", {})
+        for key, value in detailed.items():
+            # Format: "car_AP_center_distance_bev_0.5" -> "car_AP_center_distance_bev_0.5"
+            results[key] = value
+
+        logger.info(f"autoware_perception_evaluation metrics: mAP={results['mAP']:.4f}, mAPH={results['mAPH']:.4f}")
 
         return results
 
@@ -666,18 +801,24 @@ class CenterPointEvaluator(BaseEvaluator):
         """
         print("\n" + "=" * 80)
         print("CenterPoint 3D Object Detection - Evaluation Results")
+        print("(Using autoware_perception_evaluation metrics)")
         print("=" * 80)
 
-        # Detection metrics
-        print(f"\nDetection Metrics:")
-        print(f"  mAP (0.5:0.95): {results.get('mAP', 0.0):.4f}")
-        print(f"  mAP @ IoU=0.50: {results.get('mAP_50', 0.0):.4f}")
-        print(f"  NDS: {results.get('NDS', 0.0):.4f}")
-        print(f"  mATE: {results.get('mATE', 0.0):.4f}")
-        print(f"  mASE: {results.get('mASE', 0.0):.4f}")
-        print(f"  mAOE: {results.get('mAOE', 0.0):.4f}")
-        print(f"  mAVE: {results.get('mAVE', 0.0):.4f}")
-        print(f"  mAAE: {results.get('mAAE', 0.0):.4f}")
+        # Primary metrics
+        print(f"\nPrimary Metrics:")
+        print(f"  mAP:  {results.get('mAP', 0.0):.4f}")
+        print(f"  mAPH: {results.get('mAPH', 0.0):.4f}")
+
+        # Per-threshold metrics (if available)
+        threshold_metrics = {}
+        for key, value in results.items():
+            if key.startswith("mAP_") and not key.startswith("mAPH"):
+                threshold_metrics[key] = value
+
+        if threshold_metrics:
+            print(f"\nmAP by Matching Mode/Threshold:")
+            for key, value in sorted(threshold_metrics.items()):
+                print(f"  {key}: {value:.4f}")
 
         # Per-class AP (show all 3D object classes)
         if "per_class_ap" in results:

@@ -156,6 +156,52 @@ evaluation = dict(
 )
 
 # ============================================================================
+# Metrics Configuration (autoware_perception_evaluation)
+# ============================================================================
+# These configs ensure deployment evaluation uses the same metrics as T4MetricV2
+# during training, providing consistent mAP/mAPH calculations.
+
+# Class names for evaluation
+class_names = ["car", "truck", "bus", "bicycle", "pedestrian"]
+
+# Perception evaluation metrics config (same format as evaluator_metric_configs in training)
+perception_evaluator_configs = dict(
+    evaluation_task="detection",
+    target_labels=class_names,
+    center_distance_bev_thresholds=[0.5, 1.0, 2.0, 4.0],
+    # plane_distance_thresholds is required for the pass fail evaluation
+    plane_distance_thresholds=[2.0, 4.0],
+    iou_2d_thresholds=None,
+    iou_3d_thresholds=None,
+    label_prefix="autoware",
+    max_distance=121.0,
+    min_distance=-121.0,
+    min_point_numbers=0,
+)
+
+# Critical object filter config
+critical_object_filter_config = dict(
+    target_labels=class_names,
+    ignore_attributes=None,
+    max_distance_list=[121.0, 121.0, 121.0, 121.0, 121.0],
+    min_distance_list=[-121.0, -121.0, -121.0, -121.0, -121.0],
+)
+
+# Frame pass/fail config
+frame_pass_fail_config = dict(
+    target_labels=class_names,
+    # Matching thresholds per class (must align with `plane_distance_thresholds` used in evaluation)
+    matching_threshold_list=[2.0, 2.0, 2.0, 2.0, 2.0],
+    confidence_threshold_list=None,
+)
+
+# Frame ID for evaluation (base_link for LiDAR-based detection)
+frame_id = "base_link"
+
+# Data root (for perception_eval compatibility)
+data_root = "data/t4dataset/"
+
+# ============================================================================
 # Verification Configuration
 # ============================================================================
 # This block defines *scenarios* per export.mode, so the pipeline does not

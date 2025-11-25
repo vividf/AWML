@@ -21,6 +21,7 @@ from deployment.core.base_evaluator import (
     ModelSpec,
     VerifyResultDict,
 )
+from deployment.core.metrics import Detection3DMetricsAdapter
 from deployment.core.preprocessing_builder import build_preprocessing_pipeline
 
 __all__ = [
@@ -42,4 +43,5 @@ __all__ = [
     "Artifact",
     "ModelSpec",
     "build_preprocessing_pipeline",
+    "Detection3DMetricsAdapter",
 ]
