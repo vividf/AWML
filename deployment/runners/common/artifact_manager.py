@@ -11,7 +11,7 @@ from typing import Dict, Optional, Tuple
 
 from deployment.core.artifacts import Artifact
 from deployment.core.backend import Backend
-from deployment.core.base_config import BaseDeploymentConfig
+from deployment.core.config.base_config import BaseDeploymentConfig
 
 
 class ArtifactManager:

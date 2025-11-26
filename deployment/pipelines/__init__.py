@@ -21,6 +21,9 @@ from deployment.pipelines.centerpoint import (
     CenterPointTensorRTPipeline,
 )
 
+# Pipeline factory
+from deployment.pipelines.factory import PipelineFactory, PipelineRegistry
+
 # YOLOX pipelines (2D detection)
 from deployment.pipelines.yolox import (
     YOLOXDeploymentPipeline,
@@ -30,6 +33,9 @@ from deployment.pipelines.yolox import (
 )
 
 __all__ = [
+    # Factory
+    "PipelineFactory",
+    "PipelineRegistry",
     # CenterPoint
     "CenterPointDeploymentPipeline",
     "CenterPointPyTorchPipeline",

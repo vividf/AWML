@@ -7,11 +7,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from deployment.exporters.base.factory import ExporterFactory
 from deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapper
 from deployment.exporters.centerpoint.onnx_workflow import CenterPointONNXExportWorkflow
 from deployment.exporters.centerpoint.tensorrt_workflow import CenterPointTensorRTExportWorkflow
-from deployment.runners.core.deployment_runner import BaseDeploymentRunner
+from deployment.exporters.common.factory import ExporterFactory
+from deployment.runners.common.deployment_runner import BaseDeploymentRunner
 from projects.CenterPoint.deploy.component_extractor import CenterPointComponentExtractor
 from projects.CenterPoint.deploy.utils import build_centerpoint_onnx_model
 

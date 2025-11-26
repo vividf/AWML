@@ -9,8 +9,8 @@ import onnx
 import onnxsim
 import torch
 
-from deployment.exporters.base.base_exporter import BaseExporter
-from deployment.exporters.base.configs import ONNXExportConfig
+from deployment.exporters.common.base_exporter import BaseExporter
+from deployment.exporters.common.configs import ONNXExportConfig
 
 
 class ONNXExporter(BaseExporter):

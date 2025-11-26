@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import torch
 
-from deployment.pipelines.base.detection_3d_pipeline import Detection3DPipeline
+from deployment.pipelines.common.detection_3d_pipeline import Detection3DPipeline
 
 logger = logging.getLogger(__name__)
 

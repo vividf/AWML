@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import torch
 
-from deployment.pipelines.base.base_pipeline import BaseDeploymentPipeline
+from deployment.pipelines.common.base_pipeline import BaseDeploymentPipeline
 
 logger = logging.getLogger(__name__)
 

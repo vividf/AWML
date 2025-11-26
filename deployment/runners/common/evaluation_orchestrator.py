@@ -8,10 +8,11 @@ import logging
 from typing import Any, Dict, List
 
 from deployment.core.backend import Backend
-from deployment.core.base_config import BaseDeploymentConfig
-from deployment.core.base_data_loader import BaseDataLoader
-from deployment.core.base_evaluator import BaseEvaluator, ModelSpec
-from deployment.runners.core.artifact_manager import ArtifactManager
+from deployment.core.config.base_config import BaseDeploymentConfig
+from deployment.core.evaluation.base_evaluator import BaseEvaluator
+from deployment.core.evaluation.evaluator_types import ModelSpec
+from deployment.core.io.base_data_loader import BaseDataLoader
+from deployment.runners.common.artifact_manager import ArtifactManager
 
 
 class EvaluationOrchestrator:

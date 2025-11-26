@@ -18,14 +18,14 @@ import torch
 from mmengine.config import Config
 
 from deployment.core import Artifact, Backend, BaseDataLoader, BaseDeploymentConfig, BaseEvaluator, ModelSpec
-from deployment.exporters.base.factory import ExporterFactory
-from deployment.exporters.base.model_wrappers import BaseModelWrapper
-from deployment.exporters.base.onnx_exporter import ONNXExporter
-from deployment.exporters.base.tensorrt_exporter import TensorRTExporter
+from deployment.exporters.common.factory import ExporterFactory
+from deployment.exporters.common.model_wrappers import BaseModelWrapper
+from deployment.exporters.common.onnx_exporter import ONNXExporter
+from deployment.exporters.common.tensorrt_exporter import TensorRTExporter
 from deployment.exporters.workflows.base import OnnxExportWorkflow, TensorRTExportWorkflow
-from deployment.runners.core.artifact_manager import ArtifactManager
-from deployment.runners.core.evaluation_orchestrator import EvaluationOrchestrator
-from deployment.runners.core.verification_orchestrator import VerificationOrchestrator
+from deployment.runners.common.artifact_manager import ArtifactManager
+from deployment.runners.common.evaluation_orchestrator import EvaluationOrchestrator
+from deployment.runners.common.verification_orchestrator import VerificationOrchestrator
 
 
 class DeploymentResultDict(TypedDict, total=False):

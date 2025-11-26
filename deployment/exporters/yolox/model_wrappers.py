@@ -7,7 +7,7 @@ This module provides wrapper classes for YOLOX models to match Tier4 ONNX export
 import torch
 import torch.nn as nn
 
-from deployment.exporters.base.model_wrappers import BaseModelWrapper
+from deployment.exporters.common.model_wrappers import BaseModelWrapper
 
 
 class YOLOXONNXWrapper(BaseModelWrapper):

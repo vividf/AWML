@@ -8,8 +8,8 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from deployment.core.artifacts import Artifact
-from deployment.core.base_config import BaseDeploymentConfig
-from deployment.core.base_data_loader import BaseDataLoader
+from deployment.core.config.base_config import BaseDeploymentConfig
+from deployment.core.io.base_data_loader import BaseDataLoader
 
 
 class OnnxExportWorkflow(ABC):

@@ -31,7 +31,7 @@ export = dict(
     # - 'trt'  : build TensorRT engine from an existing ONNX
     # - 'both' : export PyTorch -> ONNX -> TensorRT
     # - 'none' : no export (only evaluation / verification on existing artifacts)
-    mode="none",
+    mode="both",
     # ---- Common options ----------------------------------------------------
     work_dir="work_dirs/centerpoint_deployment",
     # ---- ONNX source when building TensorRT only ---------------------------

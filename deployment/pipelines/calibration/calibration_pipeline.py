@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import torch
 
-from deployment.pipelines.base.classification_pipeline import ClassificationPipeline
+from deployment.pipelines.common.classification_pipeline import ClassificationPipeline
 
 logger = logging.getLogger(__name__)
 

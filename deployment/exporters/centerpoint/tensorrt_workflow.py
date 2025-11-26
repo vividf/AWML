@@ -14,7 +14,7 @@ from typing import Optional
 import torch
 
 from deployment.core import Artifact, BaseDataLoader, BaseDeploymentConfig
-from deployment.exporters.base.factory import ExporterFactory
+from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.workflows.base import TensorRTExportWorkflow
 
 

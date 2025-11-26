@@ -17,7 +17,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from deployment.core import BaseDeploymentConfig, setup_logging
-from deployment.core.base_config import parse_base_args
+from deployment.core.config.base_config import parse_base_args
 from deployment.exporters.calibration.model_wrappers import CalibrationONNXWrapper
 from deployment.runners import CalibrationDeploymentRunner
 from projects.CalibrationStatusClassification.deploy.data_loader import CalibrationDataLoader

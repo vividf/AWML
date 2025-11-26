@@ -7,8 +7,8 @@ import tensorrt as trt
 import torch
 
 from deployment.core.artifacts import Artifact
-from deployment.exporters.base.base_exporter import BaseExporter
-from deployment.exporters.base.configs import TensorRTExportConfig, TensorRTModelInputConfig, TensorRTProfileConfig
+from deployment.exporters.common.base_exporter import BaseExporter
+from deployment.exporters.common.configs import TensorRTExportConfig, TensorRTModelInputConfig, TensorRTProfileConfig
 
 
 class TensorRTExporter(BaseExporter):

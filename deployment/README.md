@@ -13,6 +13,7 @@ A unified, task-agnostic deployment framework for exporting PyTorch models to ON
 - [Pipeline Architecture](#pipeline-architecture)
 - [Export Workflow](#export-workflow)
 - [Verification & Evaluation](#verification--evaluation)
+- [Core Contract](#core-contract)
 
 ---
 
@@ -26,8 +27,10 @@ The AWML Deployment Framework provides a standardized approach to model deployme
 2. **Task-Agnostic Core**: Base classes that work across detection, classification, and segmentation
 3. **Backend Flexibility**: Support for PyTorch, ONNX, and TensorRT backends
 4. **Pipeline Architecture**: Shared preprocessing/postprocessing with backend-specific inference
-5. **Configuration-Driven**: All settings controlled via config files
+5. **Configuration-Driven**: All settings controlled via config files plus typed dataclasses for defaults
 6. **Dependency Injection**: Explicit creation and injection of exporters and wrappers for better clarity and type safety
+7. **Type-Safe Building Blocks** *(new)*: Task configs, runtime configs, and typed result objects ensure IDE support and prevent runtime surprises
+8. **Extensible Verification** *(new)*: Verification mixin compares arbitrary nested outputs, keeping evaluators thin and future-proof
 
 ---
 
@@ -87,7 +90,7 @@ This keeps project runners lightweight—they primarily:
 Runners still own exporter initialization via `ExporterFactory`, but orchestrators keep the run loop simple and testable.
 
 **Directory layout**
-- `deployment/runners/core/`: shared runner infrastructure (`BaseDeploymentRunner`, orchestrators, `ArtifactManager`)
+- `deployment/runners/common/`: shared runner infrastructure (`BaseDeploymentRunner`, orchestrators, `ArtifactManager`)
 - `deployment/runners/projects/`: thin adapters for each project (CenterPoint, YOLOX, Calibration, …)
 
 #### 2. **Core Components** (in `core/`)
@@ -96,9 +99,16 @@ Runners still own exporter initialization via `ExporterFactory`, but orchestrato
 - **`Backend`**: Enum for supported backends (PyTorch, ONNX, TensorRT)
 - **`Artifact`**: Dataclass representing deployment artifacts (ONNX/TensorRT outputs)
 - **`BaseEvaluator`**: Abstract interface for task-specific evaluation
+- **`VerificationMixin`**: Shared verification workflow with recursive comparison that supports any future output structure
 - **`BaseDataLoader`**: Abstract interface for data loading
 - **`build_preprocessing_pipeline`**: Utility to extract preprocessing pipelines from MMDet/MMDet3D configs
-- **`BaseDeploymentPipeline`**: Abstract pipeline for inference (in `pipelines/base/`)
+- **Typed configuration/value objects**:
+  - `constants.py`: Centralized defaults for export/evaluation/task metadata
+  - `runtime_config.py`: `Detection3D/2D/ClassificationRuntimeConfig` dataclasses for strongly-typed runtime I/O
+  - `task_config.py`: Immutable `TaskConfig` describing per-task pipeline knobs
+  - `results.py`: Typed prediction/evaluation/latency structures for consistent reporting
+- **`BaseDeploymentPipeline`**: Abstract pipeline for inference (in `pipelines/common/`)
+- **`PipelineFactory`**: Centralized creation of backend-specific pipelines to avoid per-evaluator duplication
 - **`Detection2DPipeline`**: Base pipeline for 2D detection tasks
 - **`Detection3DPipeline`**: Base pipeline for 3D detection tasks
 - **`ClassificationPipeline`**: Base pipeline for classification tasks
@@ -111,7 +121,7 @@ Runners still own exporter initialization via `ExporterFactory`, but orchestrato
 - Simple projects rely directly on the base exporters with optional wrappers.
 - Complex projects (CenterPoint) assemble workflows (`onnx_workflow.py`, `tensorrt_workflow.py`) that orchestrate multiple single-file exports using the base exporters via composition.
 
-- **Base Exporters** (in `exporters/base/`):
+- **Base Exporters** (in `exporters/common/`):
   - **`BaseExporter`**: Abstract base class for all exporters
   - **`ONNXExporter`**: Standard ONNX export with model wrapping support
   - **`TensorRTExporter`**: TensorRT engine building with precision policies
@@ -124,7 +134,7 @@ Runners still own exporter initialization via `ExporterFactory`, but orchestrato
     - **`TensorRTProfileConfig`**: Optimization profile configuration for dynamic shapes
 
 - **Factory & Workflow Interfaces**:
-  - **`ExporterFactory`** (`exporters/base/factory.py`): Builds `ONNXExporter`/`TensorRTExporter` instances using `BaseDeploymentConfig` settings, ensuring consistent logging and configuration.
+- **`ExporterFactory`** (`exporters/common/factory.py`): Builds `ONNXExporter`/`TensorRTExporter` instances using `BaseDeploymentConfig` settings, ensuring consistent logging and configuration.
   - **`OnnxExportWorkflow` / `TensorRTExportWorkflow`** (`exporters/workflows/base.py`): Abstract contracts for orchestrating complex, multi-artifact exports.
 
 - **Project-Specific Wrappers & Workflows**:
@@ -144,6 +154,7 @@ Runners still own exporter initialization via `ExporterFactory`, but orchestrato
 #### 4. **Pipelines**
 
 - **`BaseDeploymentPipeline`**: Abstract base with `preprocess() → run_model() → postprocess()`
+- **`PipelineFactory`** *(new)*: Single entry point for building CenterPoint / YOLOX / Calibration pipelines across backends
 - **Task-specific pipelines**: `Detection2DPipeline`, `Detection3DPipeline`, `ClassificationPipeline`
 - **Backend implementations**: PyTorch, ONNX, TensorRT variants for each pipeline
 
@@ -160,7 +171,12 @@ Load Model → Export ONNX → Export TensorRT → Verify → Evaluate
 
 ### 2. Scenario-Based Verification
 
-Flexible verification system that compares outputs between backends:
+Flexible verification system that compares outputs between backends. The shared `VerificationMixin` now:
+
+- Normalizes devices per backend (PyTorch ↔ CPU, TensorRT ↔ `cuda:0`, etc.)
+- Builds reference/test pipelines through `PipelineFactory`
+- Recursively compares arbitrary nested outputs (dicts, lists, tensors, scalars) with per-node logging
+- Allows evaluators to optionally name multi-head outputs via `_get_output_names()`
 
 ```python
 verification = dict(
@@ -178,7 +194,7 @@ verification = dict(
 
 ### 3. Multi-Backend Evaluation
 
-Evaluate models across multiple backends with consistent metrics:
+Evaluate models across multiple backends with consistent, typed metrics. Evaluation outputs now share the same dataclasses (`Detection3DEvaluationMetrics`, `Detection2DEvaluationMetrics`, `ClassificationEvaluationMetrics`) ensuring stable JSON structure.
 
 ```python
 evaluation = dict(
@@ -327,6 +343,13 @@ export = dict(
 
 ### Configuration Structure
 
+Configuration stays dictionary-driven for flexibility, but the framework now layers typed dataclasses on top:
+
+ - **Defaults** pulled from `deployment.core.config.constants`
+- **Runtime I/O** captured through `runtime_config.py`
+- **Task behavior** modeled via immutable `TaskConfig`
+- **Results & metrics** expressed as structured dataclasses (`results.py`)
+
 ```python
 # Task type
 task_type = "detection3d"  # or "detection2d", "classification"
@@ -430,10 +453,10 @@ Configuration dictionaries accept either raw strings or `Backend` enum members, 
 
 #### Typed Exporter Configurations
 
-The framework provides typed configuration classes in `deployment.exporters.base.configs` for better type safety and validation:
+The framework provides typed configuration classes in `deployment.exporters.common.configs` for better type safety and validation:
 
 ```python
-from deployment.exporters.base.configs import (
+from deployment.exporters.common.configs import (
     ONNXExportConfig,
     TensorRTExportConfig,
     TensorRTModelInputConfig,
@@ -496,7 +519,7 @@ See project-specific configs:
 
 **Key Files:**
 - `projects/CenterPoint/deploy/main.py`
-- `projects/CenterPoint/deploy/evaluator.py`
+- `projects/CenterPoint/deploy/evaluator.py` *(now inherits `VerificationMixin` and uses `PipelineFactory`)*
 - `deployment/pipelines/centerpoint/`
 - `deployment/exporters/centerpoint/onnx_workflow.py`
 - `deployment/exporters/centerpoint/tensorrt_workflow.py`
@@ -522,7 +545,7 @@ run_backbone_head() → postprocess()
 
 **Key Files:**
 - `projects/YOLOX_opt_elan/deploy/main.py`
-- `projects/YOLOX_opt_elan/deploy/evaluator.py`
+- `projects/YOLOX_opt_elan/deploy/evaluator.py` *(shares verification/pipeline creation through mixin + factory)*
 - `deployment/pipelines/yolox/`
 - `deployment/exporters/yolox/model_wrappers.py`
 
@@ -545,7 +568,7 @@ preprocess() → run_model() → postprocess()
 
 **Key Files:**
 - `projects/CalibrationStatusClassification/deploy/main.py`
-- `projects/CalibrationStatusClassification/deploy/evaluator.py`
+- `projects/CalibrationStatusClassification/deploy/evaluator.py` *(mix-in verification, typed metrics)*
 - `deployment/pipelines/calibration/`
 - `deployment/exporters/calibration/model_wrappers.py`
 
@@ -560,7 +583,7 @@ preprocess() → run_model() → postprocess()
 
 ### Base Pipeline
 
-All pipelines inherit from `BaseDeploymentPipeline` (located in `pipelines/base/base_pipeline.py`):
+All pipelines inherit from `BaseDeploymentPipeline` (located in `pipelines/common/base_pipeline.py`). Most projects now obtain backend-specific pipeline instances from `PipelineFactory`, keeping evaluator logic minimal:
 
 ```python
 class BaseDeploymentPipeline(ABC):
@@ -589,19 +612,19 @@ class BaseDeploymentPipeline(ABC):
 
 ### Task-Specific Base Pipelines
 
-Located in `pipelines/base/`, these provide task-specific abstractions:
+Located in `pipelines/common/`, these provide task-specific abstractions:
 
-#### Detection2DPipeline (`pipelines/base/detection_2d_pipeline.py`)
+#### Detection2DPipeline (`pipelines/common/detection_2d_pipeline.py`)
 - Shared preprocessing: image resize, normalization, padding
 - Shared postprocessing: bbox decoding, NMS, coordinate transform
 - Backend-specific: model inference
 
-#### Detection3DPipeline (`pipelines/base/detection_3d_pipeline.py`)
+#### Detection3DPipeline (`pipelines/common/detection_3d_pipeline.py`)
 - Shared preprocessing: voxelization, feature extraction
 - Shared postprocessing: 3D bbox decoding, NMS
 - Backend-specific: voxel encoder, backbone/head inference
 
-#### ClassificationPipeline (`pipelines/base/classification_pipeline.py`)
+#### ClassificationPipeline (`pipelines/common/classification_pipeline.py`)
 - Shared preprocessing: image normalization
 - Shared postprocessing: softmax, top-k selection
 - Backend-specific: model inference
@@ -657,7 +680,7 @@ The exporter handles:
 
 ### Verification
 
-Policy-based verification compares outputs between backends:
+Policy-based verification compares outputs between backends using the shared mixin infrastructure:
 
 ```python
 # Verification scenarios example
@@ -678,12 +701,18 @@ verification = dict(
 )
 ```
 
+---
+
+## Core Contract
+
+The responsibilities and allowed dependencies between runners, evaluators, pipelines, the `PipelineFactory`, and metrics adapters are defined in [`deployment/CORE_CONTRACT.md`](./CORE_CONTRACT.md). Adhering to that contract keeps refactors safe and makes it clear where new logic belongs.
+
 **Verification Process:**
 1. Load reference model (PyTorch or ONNX)
 2. Load test model (ONNX or TensorRT)
-3. Run inference on same samples
-4. Compare outputs with tolerance
-5. Report pass/fail for each sample
+3. Run inference on same samples via pipelines resolved by `PipelineFactory`
+4. Recursively compare outputs with per-node tolerance
+5. Report pass/fail for each sample with structured stats
 
 ### Evaluation
 
@@ -724,13 +753,22 @@ deployment/
 ├── core/                          # Core base classes and utilities
 │   ├── artifacts.py               # Artifact descriptors (ONNX/TensorRT outputs)
 │   ├── backend.py                 # Backend enum (PyTorch, ONNX, TensorRT)
-│   ├── base_config.py             # Configuration management
-│   ├── base_data_loader.py        # Data loader interface
-│   ├── base_evaluator.py          # Evaluator interface
-│   └── preprocessing_builder.py   # Preprocessing pipeline builder
+│   ├── config/                    # Configuration subpackage
+│   │   ├── base_config.py         # Deployment config container + CLI helpers
+│   │   ├── constants.py           # Framework-wide defaults (evaluation, export, task)
+│   │   ├── runtime_config.py      # Typed runtime I/O configurations
+│   │   └── task_config.py         # Immutable per-task configuration
+│   ├── evaluation/                # Evaluation subpackage
+│   │   ├── base_evaluator.py      # Evaluator base class + TaskProfile
+│   │   ├── evaluator_types.py     # Shared type definitions
+│   │   ├── results.py             # Typed prediction/metrics data structures
+│   │   └── verification_mixin.py  # Shared verification workflow
+│   └── io/                        # Data loading + preprocessing utilities
+│       ├── base_data_loader.py    # Data loader interface
+│       └── preprocessing_builder.py   # Preprocessing pipeline builder
 │
 ├── exporters/                     # Model exporters (unified structure)
-│   ├── base/                      # Base exporter classes
+│   ├── common/                    # Shared exporter classes
 │   │   ├── base_exporter.py       # Exporter base class
 │   │   ├── configs.py             # Typed configuration classes (ONNXExportConfig, TensorRTExportConfig)
 │   │   ├── factory.py             # ExporterFactory that builds ONNX/TensorRT exporters
@@ -749,11 +787,12 @@ deployment/
 │       └── model_wrappers.py      # Calibration model wrappers (IdentityWrapper)
 │
 ├── pipelines/                     # Task-specific pipelines
-│   ├── base/                      # Base pipeline classes
+│   ├── common/                    # Shared pipeline classes
 │   │   ├── base_pipeline.py       # Pipeline base class
 │   │   ├── detection_2d_pipeline.py   # 2D detection pipeline
 │   │   ├── detection_3d_pipeline.py   # 3D detection pipeline
-│   │   └── classification_pipeline.py # Classification pipeline
+│   │   ├── classification_pipeline.py # Classification pipeline
+│   │   └── factory.py             # PipelineFactory (backend-agnostic construction)
 │   ├── centerpoint/               # CenterPoint pipelines
 │   │   ├── centerpoint_pipeline.py
 │   │   ├── centerpoint_pytorch.py
@@ -771,15 +810,20 @@ deployment/
 │       └── calibration_tensorrt.py
 │
 └── runners/                       # Deployment runners
-    ├── deployment_runner.py       # BaseDeploymentRunner
-    ├── centerpoint_runner.py      # CenterPointDeploymentRunner
-    ├── yolox_runner.py            # YOLOXDeploymentRunner
-    └── calibration_runner.py      # CalibrationDeploymentRunner
+    ├── common/                    # Shared orchestration logic
+    │   ├── deployment_runner.py   # BaseDeploymentRunner
+    │   ├── artifact_manager.py    # Artifact registration/lookup
+    │   ├── evaluation_orchestrator.py
+    │   └── verification_orchestrator.py
+    └── projects/                  # Thin adapters per project
+        ├── centerpoint_runner.py  # CenterPointDeploymentRunner
+        ├── yolox_runner.py        # YOLOXDeploymentRunner
+        └── calibration_runner.py  # CalibrationDeploymentRunner
 
 projects/
 ├── CenterPoint/deploy/
 │   ├── main.py                    # Entry point
-│   ├── evaluator.py               # CenterPoint evaluator
+│   ├── evaluator.py               # CenterPoint evaluator (mix-in + typed metrics)
 │   ├── data_loader.py             # CenterPoint data loader
 │   └── configs/
 │       └── deploy_config.py       # Deployment configuration

@@ -10,8 +10,8 @@ from typing import Any, Optional
 
 import torch
 
-from deployment.exporters.base.configs import BaseExporterConfig
-from deployment.exporters.base.model_wrappers import BaseModelWrapper
+from deployment.exporters.common.configs import BaseExporterConfig
+from deployment.exporters.common.model_wrappers import BaseModelWrapper
 
 
 class BaseExporter(ABC):

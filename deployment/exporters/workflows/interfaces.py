@@ -11,7 +11,7 @@ from typing import Any, List, Optional, Tuple
 
 import torch
 
-from deployment.exporters.base.configs import ONNXExportConfig
+from deployment.exporters.common.configs import ONNXExportConfig
 
 
 @dataclass

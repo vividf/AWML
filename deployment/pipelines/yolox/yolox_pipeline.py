@@ -16,7 +16,7 @@ from mmdet.models.dense_heads.yolox_head import YOLOXHead
 from mmengine.config import ConfigDict
 from mmengine.structures import InstanceData
 
-from deployment.pipelines.base.detection_2d_pipeline import Detection2DPipeline
+from deployment.pipelines.common.detection_2d_pipeline import Detection2DPipeline
 
 logger = logging.getLogger(__name__)
 

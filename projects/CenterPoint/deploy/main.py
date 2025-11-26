@@ -17,7 +17,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from deployment.core import BaseDeploymentConfig, setup_logging
-from deployment.core.base_config import parse_base_args
+from deployment.core.config.base_config import parse_base_args
 from deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapper
 from deployment.runners import CenterPointDeploymentRunner
 from projects.CenterPoint.deploy.data_loader import CenterPointDataLoader
@@ -69,7 +69,7 @@ def main():
 
     # Validate checkpoint path for export
     if config.export_config.should_export_onnx():
-        checkpoint_path = config.export_config.checkpoint_path
+        checkpoint_path = config.checkpoint_path
         if not checkpoint_path:
             logger.error("Checkpoint path must be provided in export.checkpoint_path for ONNX/TensorRT export.")
             return
