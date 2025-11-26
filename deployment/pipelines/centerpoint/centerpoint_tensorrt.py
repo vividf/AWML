@@ -16,11 +16,16 @@ import tensorrt as trt
 import torch
 
 from deployment.pipelines.centerpoint.centerpoint_pipeline import CenterPointDeploymentPipeline
+from deployment.pipelines.common.gpu_resource_mixin import (
+    GPUResourceMixin,
+    TensorRTResourceManager,
+    release_tensorrt_resources,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
+class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipeline):
     """
     TensorRT implementation of CenterPoint pipeline.
 
@@ -28,6 +33,14 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
     while keeping middle encoder in PyTorch (sparse convolution cannot be converted).
 
     Provides maximum inference speed on NVIDIA GPUs with INT8/FP16 optimization.
+
+    Resource Management:
+        This pipeline implements GPUResourceMixin for proper resource cleanup.
+        Use as a context manager for automatic cleanup:
+
+            with CenterPointTensorRTPipeline(...) as pipeline:
+                results = pipeline.infer(data)
+            # Resources automatically released
     """
 
     def __init__(self, pytorch_model, tensorrt_dir: str, device: str = "cuda"):
@@ -48,6 +61,7 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
         self._engines = {}
         self._contexts = {}
         self._logger = trt.Logger(trt.Logger.WARNING)
+        self._cleanup_called = False  # For GPUResourceMixin
 
         self._load_tensorrt_engines()
 
@@ -111,74 +125,67 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
         engine = self._engines["voxel_encoder"]
         context = self._contexts["voxel_encoder"]
 
-        # Check if context is valid
         if context is None:
             raise RuntimeError("voxel_encoder context is None - likely failed to initialize due to GPU OOM")
 
         # Convert to numpy
         input_array = input_features.cpu().numpy().astype(np.float32)
-
-        # Ensure contiguous
         if not input_array.flags["C_CONTIGUOUS"]:
             input_array = np.ascontiguousarray(input_array)
 
         # Get tensor names
-        input_name = None
-        output_name = None
-        for i in range(engine.num_io_tensors):
-            tensor_name = engine.get_tensor_name(i)
-            if engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
-                input_name = tensor_name
-            elif engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.OUTPUT:
-                output_name = tensor_name
-
-        if input_name is None or output_name is None:
-            raise RuntimeError("Could not find input/output tensor names for voxel encoder")
+        input_name, output_name = self._get_io_names(engine, single_output=True)
 
         # Set input shape and get output shape
         context.set_input_shape(input_name, input_array.shape)
         output_shape = context.get_tensor_shape(output_name)
         output_array = np.empty(output_shape, dtype=np.float32)
-
         if not output_array.flags["C_CONTIGUOUS"]:
             output_array = np.ascontiguousarray(output_array)
 
-        # Allocate GPU memory
-        d_input = cuda.mem_alloc(input_array.nbytes)
-        d_output = cuda.mem_alloc(output_array.nbytes)
+        # Use resource manager for automatic cleanup
+        with TensorRTResourceManager() as manager:
+            d_input = manager.allocate(input_array.nbytes)
+            d_output = manager.allocate(output_array.nbytes)
+            stream = manager.get_stream()
 
-        # Create CUDA stream
-        stream = cuda.Stream()
-
-        try:
-            # Set tensor addresses
             context.set_tensor_address(input_name, int(d_input))
             context.set_tensor_address(output_name, int(d_output))
 
-            # Run inference
             cuda.memcpy_htod_async(d_input, input_array, stream)
             context.execute_async_v3(stream_handle=stream.handle)
             cuda.memcpy_dtoh_async(output_array, d_output, stream)
-            stream.synchronize()
+            manager.synchronize()
 
-            # Convert to torch tensor
-            voxel_features = torch.from_numpy(output_array).to(self.device)
+        # Convert to torch tensor
+        voxel_features = torch.from_numpy(output_array).to(self.device)
 
-            # Squeeze middle dimension if present
-            if voxel_features.ndim == 3 and voxel_features.shape[1] == 1:
-                voxel_features = voxel_features.squeeze(1)
+        # Squeeze middle dimension if present
+        if voxel_features.ndim == 3 and voxel_features.shape[1] == 1:
+            voxel_features = voxel_features.squeeze(1)
 
-            return voxel_features
+        return voxel_features
 
-        finally:
-            # Cleanup GPU memory
-            try:
-                d_input.free()
-                d_output.free()
-                # Force PyTorch CUDA cache cleanup
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
+    def _get_io_names(self, engine, single_output: bool = False):
+        """Extract input/output tensor names from TensorRT engine."""
+        input_name = None
+        output_names = []
+
+        for i in range(engine.num_io_tensors):
+            tensor_name = engine.get_tensor_name(i)
+            if engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
+                input_name = tensor_name
+            elif engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.OUTPUT:
+                output_names.append(tensor_name)
+
+        if input_name is None:
+            raise RuntimeError("Could not find input tensor name")
+        if not output_names:
+            raise RuntimeError("Could not find output tensor names")
+
+        if single_output:
+            return input_name, output_names[0]
+        return input_name, output_names
 
     def run_backbone_head(self, spatial_features: torch.Tensor) -> List[torch.Tensor]:
         """
@@ -193,7 +200,6 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
         engine = self._engines["backbone_neck_head"]
         context = self._contexts["backbone_neck_head"]
 
-        # Check if context is valid
         if context is None:
             raise RuntimeError("backbone_neck_head context is None - likely failed to initialize due to GPU OOM")
 
@@ -207,79 +213,52 @@ class CenterPointTensorRTPipeline(CenterPointDeploymentPipeline):
 
         # Convert to numpy
         input_array = spatial_features.cpu().numpy().astype(np.float32)
-
-        # Ensure contiguous
         if not input_array.flags["C_CONTIGUOUS"]:
             input_array = np.ascontiguousarray(input_array)
 
         # Get tensor names
-        input_name = None
-        output_names = []
-        for i in range(engine.num_io_tensors):
-            tensor_name = engine.get_tensor_name(i)
-            if engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
-                input_name = tensor_name
-            elif engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.OUTPUT:
-                output_names.append(tensor_name)
-
-        if input_name is None or not output_names:
-            raise RuntimeError("Could not find input/output tensor names for backbone_neck_head")
+        input_name, output_names = self._get_io_names(engine, single_output=False)
 
         # Set input shape
         context.set_input_shape(input_name, input_array.shape)
 
-        # Get output shapes and allocate memory
+        # Prepare output arrays
         output_arrays = {}
-        d_outputs = {}
-
         for output_name in output_names:
             output_shape = context.get_tensor_shape(output_name)
             output_array = np.empty(output_shape, dtype=np.float32)
             if not output_array.flags["C_CONTIGUOUS"]:
                 output_array = np.ascontiguousarray(output_array)
             output_arrays[output_name] = output_array
-            d_outputs[output_name] = cuda.mem_alloc(output_array.nbytes)
 
-        # Allocate input memory
-        d_input = cuda.mem_alloc(input_array.nbytes)
+        # Use resource manager for automatic cleanup
+        with TensorRTResourceManager() as manager:
+            d_input = manager.allocate(input_array.nbytes)
+            d_outputs = {name: manager.allocate(arr.nbytes) for name, arr in output_arrays.items()}
+            stream = manager.get_stream()
 
-        # Create CUDA stream
-        stream = cuda.Stream()
-
-        try:
-            # Set tensor addresses
             context.set_tensor_address(input_name, int(d_input))
             for output_name in output_names:
                 context.set_tensor_address(output_name, int(d_outputs[output_name]))
 
-            # Run inference
             cuda.memcpy_htod_async(d_input, input_array, stream)
             context.execute_async_v3(stream_handle=stream.handle)
 
-            # Copy outputs
             for output_name in output_names:
                 cuda.memcpy_dtoh_async(output_arrays[output_name], d_outputs[output_name], stream)
 
-            stream.synchronize()
-            head_outputs = [torch.from_numpy(output_arrays[name]).to(self.device) for name in output_names]
+            manager.synchronize()
 
-            if len(head_outputs) != 6:
-                raise ValueError(f"Expected 6 head outputs, got {len(head_outputs)}")
+        head_outputs = [torch.from_numpy(output_arrays[name]).to(self.device) for name in output_names]
 
-            return head_outputs
+        if len(head_outputs) != 6:
+            raise ValueError(f"Expected 6 head outputs, got {len(head_outputs)}")
 
-        finally:
-            # Cleanup GPU memory
-            try:
-                d_input.free()
-                for d_output in d_outputs.values():
-                    d_output.free()
-                # Force PyTorch CUDA cache cleanup
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
+        return head_outputs
 
-    def __del__(self):
-        """Cleanup TensorRT resources."""
-        self._contexts = {}
-        self._engines = {}
+    def _release_gpu_resources(self) -> None:
+        """Release TensorRT engines and contexts (GPUResourceMixin implementation)."""
+        release_tensorrt_resources(
+            engines=getattr(self, "_engines", None),
+            contexts=getattr(self, "_contexts", None),
+        )

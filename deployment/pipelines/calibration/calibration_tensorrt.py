@@ -6,22 +6,34 @@ Requires TensorRT >= 8.5 (uses I/O tensors API).
 """
 
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import List
 
 import numpy as np
 import torch
 
 from deployment.pipelines.calibration.calibration_pipeline import CalibrationDeploymentPipeline
+from deployment.pipelines.common.gpu_resource_mixin import (
+    GPUResourceMixin,
+    release_tensorrt_resources,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class CalibrationTensorRTPipeline(CalibrationDeploymentPipeline):
+class CalibrationTensorRTPipeline(GPUResourceMixin, CalibrationDeploymentPipeline):
     """
     CalibrationStatusClassification TensorRT backend implementation.
 
     This pipeline uses TensorRT for maximum inference performance on NVIDIA GPUs.
     Provides the fastest inference speed for production deployment.
+
+    Resource Management:
+        This pipeline implements GPUResourceMixin for proper resource cleanup.
+        Use as a context manager for automatic cleanup:
+
+            with CalibrationTensorRTPipeline(...) as pipeline:
+                results = pipeline.infer(data)
+            # Resources automatically released
     """
 
     def __init__(
@@ -102,6 +114,7 @@ class CalibrationTensorRTPipeline(CalibrationDeploymentPipeline):
         self.d_output = None
         self.h_output = None
         self.stream = cuda.Stream()
+        self._cleanup_called = False  # For GPUResourceMixin
 
         # Initialize parent with dummy model (we use engine instead)
         super().__init__(
@@ -161,3 +174,24 @@ class CalibrationTensorRTPipeline(CalibrationDeploymentPipeline):
         self.stream.synchronize()
 
         return torch.from_numpy(self.h_output).to(self.device)
+
+    def _release_gpu_resources(self) -> None:
+        """Release TensorRT resources (GPUResourceMixin implementation)."""
+        # Free CUDA device buffers
+        cuda_buffers = []
+        for attr in ("d_input", "d_output"):
+            buf = getattr(self, attr, None)
+            if buf is not None:
+                cuda_buffers.append(buf)
+            setattr(self, attr, None)
+
+        # Release engine and context
+        engines = {"engine": getattr(self, "engine", None)} if hasattr(self, "engine") else None
+        contexts = {"context": getattr(self, "context", None)} if hasattr(self, "context") else None
+
+        release_tensorrt_resources(engines=engines, contexts=contexts, cuda_buffers=cuda_buffers)
+
+        # Clear host buffer
+        self.h_output = None
+        self.engine = None
+        self.context = None

@@ -6,22 +6,34 @@ Requires TensorRT >= 8.5 (uses I/O tensors API).
 """
 
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import torch
 
+from deployment.pipelines.common.gpu_resource_mixin import (
+    GPUResourceMixin,
+    release_tensorrt_resources,
+)
 from deployment.pipelines.yolox.yolox_pipeline import YOLOXDeploymentPipeline
 
 logger = logging.getLogger(__name__)
 
 
-class YOLOXTensorRTPipeline(YOLOXDeploymentPipeline):
+class YOLOXTensorRTPipeline(GPUResourceMixin, YOLOXDeploymentPipeline):
     """
     YOLOX TensorRT backend implementation.
 
     This pipeline uses TensorRT for maximum inference performance on NVIDIA GPUs.
     Provides the fastest inference speed for production deployment.
+
+    Resource Management:
+        This pipeline implements GPUResourceMixin for proper resource cleanup.
+        Use as a context manager for automatic cleanup:
+
+            with YOLOXTensorRTPipeline(...) as pipeline:
+                results = pipeline.infer(data)
+            # Resources automatically released
     """
 
     def __init__(
@@ -100,6 +112,7 @@ class YOLOXTensorRTPipeline(YOLOXDeploymentPipeline):
         self.d_input = None
         self.d_output = None
         self.h_output = None
+        self._cleanup_called = False  # For GPUResourceMixin
 
         # Initialize parent class (pass engine as model)
         super().__init__(
@@ -165,3 +178,24 @@ class YOLOXTensorRTPipeline(YOLOXDeploymentPipeline):
         self.stream.synchronize()
 
         return self.h_output
+
+    def _release_gpu_resources(self) -> None:
+        """Release TensorRT resources (GPUResourceMixin implementation)."""
+        # Free CUDA device buffers
+        cuda_buffers = []
+        for attr in ("d_input", "d_output"):
+            buf = getattr(self, attr, None)
+            if buf is not None:
+                cuda_buffers.append(buf)
+            setattr(self, attr, None)
+
+        # Release engine and context
+        engines = {"engine": getattr(self, "engine", None)} if hasattr(self, "engine") else None
+        contexts = {"context": getattr(self, "context", None)} if hasattr(self, "context") else None
+
+        release_tensorrt_resources(engines=engines, contexts=contexts, cuda_buffers=cuda_buffers)
+
+        # Clear host buffer
+        self.h_output = None
+        self.engine = None
+        self.context = None

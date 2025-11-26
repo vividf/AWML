@@ -109,6 +109,11 @@ class EvaluationOrchestrator:
             except Exception as e:
                 self.logger.error(f"Evaluation failed for {backend.value}: {e}", exc_info=True)
                 all_results[backend.value] = {"error": str(e)}
+            finally:
+                # Ensure CUDA memory is cleaned up between model evaluations
+                from deployment.pipelines.common.gpu_resource_mixin import clear_cuda_memory
+
+                clear_cuda_memory()
 
         # Print cross-backend comparison if multiple backends
         if len(all_results) > 1:

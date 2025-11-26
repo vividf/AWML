@@ -212,6 +212,18 @@ class BaseDeploymentPipeline(ABC):
             logger.exception("Inference failed.")
             raise
 
+    def cleanup(self) -> None:
+        """
+        Cleanup pipeline resources.
+
+        Subclasses should override this to release backend-specific resources
+        (e.g., TensorRT contexts, ONNX sessions, CUDA streams).
+
+        This method is called automatically when using the pipeline as a
+        context manager, or can be called explicitly when done with the pipeline.
+        """
+        pass
+
     def __repr__(self):
         return (
             f"{self.__class__.__name__}("
@@ -225,10 +237,6 @@ class BaseDeploymentPipeline(ABC):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit.
-
-        Subclasses can override this to release backend resources
-        (e.g., TensorRT contexts, ONNX sessions, CUDA streams).
-        """
-        # Cleanup resources if needed
-        pass
+        """Context manager exit - cleanup resources."""
+        self.cleanup()
+        return False

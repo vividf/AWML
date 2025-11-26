@@ -247,6 +247,12 @@ class BaseEvaluator(VerificationMixin, ABC):
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
+        # Cleanup pipeline resources
+        try:
+            pipeline.cleanup()
+        except Exception as e:
+            logger.warning(f"Error during pipeline cleanup: {e}")
+
         return self._build_results(latencies, latency_breakdowns, actual_samples)
 
     # ================== Utilities ==================

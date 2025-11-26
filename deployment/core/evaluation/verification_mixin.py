@@ -384,6 +384,14 @@ class VerificationMixin:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+        # Cleanup pipeline resources - all pipelines now have cleanup() via base class
+        for pipeline in [ref_pipeline, test_pipeline]:
+            if pipeline is not None:
+                try:
+                    pipeline.cleanup()
+                except Exception as e:
+                    logger.warning(f"Error during pipeline cleanup in verification: {e}")
+
         sample_values = results["samples"].values()
         passed_count = sum(1 for v in sample_values if v is True)
         failed_count = sum(1 for v in sample_values if v is False)
