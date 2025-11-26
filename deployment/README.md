@@ -281,9 +281,11 @@ python deploy/main.py \
 
 #### Export ONNX Only
 ```python
+# Top-level checkpoint path - single source of truth
+checkpoint_path = "model.pth"
+
 export = dict(
     mode="onnx",
-    checkpoint_path="model.pth",
     work_dir="work_dirs/deployment",
 )
 ```
@@ -299,15 +301,20 @@ export = dict(
 
 #### Full Export Pipeline
 ```python
+# Top-level checkpoint path - single source of truth
+checkpoint_path = "model.pth"
+
 export = dict(
     mode="both",
-    checkpoint_path="model.pth",
     work_dir="work_dirs/deployment",
 )
 ```
 
 #### Evaluation Only (No Export)
 ```python
+# Top-level checkpoint path - used for PyTorch evaluation
+checkpoint_path = "model.pth"
+
 export = dict(
     mode="none",
     work_dir="work_dirs/deployment",
@@ -324,12 +331,20 @@ export = dict(
 # Task type
 task_type = "detection3d"  # or "detection2d", "classification"
 
+# ============================================================================
+# Checkpoint Path - Single source of truth for PyTorch model
+# ============================================================================
+# This is the main checkpoint path used by:
+# - Export workflow: to load the PyTorch model for ONNX conversion
+# - Evaluation: for PyTorch backend evaluation
+# - Verification: when PyTorch is used as reference or test backend
+checkpoint_path = "model.pth"
+
 # Export configuration
 export = dict(
     mode="both",  # "onnx", "trt", "both", "none"
     work_dir="work_dirs/deployment",
-    checkpoint_path="model.pth",
-    onnx_path=None,  # Optional: for mode="trt"
+    onnx_path=None,  # Optional: for mode="trt" when using existing ONNX
 )
 
 # Runtime I/O settings
@@ -382,12 +397,13 @@ verification = dict(
 )
 
 # Evaluation configuration
+# Note: PyTorch backend uses top-level checkpoint_path (no need to specify here)
 evaluation = dict(
     enabled=True,
     num_samples=100,  # or -1 for all samples
     verbose=False,
     backends={
-        "pytorch": {"enabled": True, "device": "cpu"},
+        "pytorch": {"enabled": True, "device": "cpu"},  # Uses checkpoint_path
         "onnx": {"enabled": True, "device": "cpu"},
         "tensorrt": {"enabled": True, "device": "cuda:0"},
     }

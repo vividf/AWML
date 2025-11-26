@@ -3,11 +3,13 @@ Classification Evaluator for CalibrationStatusClassification.
 
 This module implements the BaseEvaluator interface for evaluating
 calibration status classification models.
+Uses ClassificationMetricsAdapter for consistent metric computation
+with autoware_perception_evaluation formulas.
 """
 
 import gc
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -16,6 +18,8 @@ from mmengine.config import Config
 from deployment.core import (
     Backend,
     BaseEvaluator,
+    ClassificationMetricsAdapter,
+    ClassificationMetricsConfig,
     EvalResultDict,
     ModelSpec,
     VerifyResultDict,
@@ -25,6 +29,7 @@ from .data_loader import CalibrationDataLoader
 
 # Label mapping
 LABELS = {"0": "miscalibrated", "1": "calibrated"}
+CLASS_NAMES = ["miscalibrated", "calibrated"]
 
 # Constants for evaluation
 LOG_INTERVAL = 100  # Log progress every N samples
@@ -35,15 +40,25 @@ class ClassificationEvaluator(BaseEvaluator):
     """
     Evaluator for classification tasks.
 
-    Computes accuracy, per-class metrics, confusion matrix, and latency statistics.
+    Computes accuracy, per-class metrics, confusion matrix, and latency statistics
+    using ClassificationMetricsAdapter for consistent metrics with
+    autoware_perception_evaluation formulas.
     """
 
-    def __init__(self, model_cfg: Config):
+    def __init__(
+        self,
+        model_cfg: Config,
+        class_names: Optional[List[str]] = None,
+        metrics_config: Optional[ClassificationMetricsConfig] = None,
+    ):
         """
         Initialize classification evaluator.
 
         Args:
             model_cfg: Model configuration
+            class_names: List of class names. Defaults to ["miscalibrated", "calibrated"].
+            metrics_config: Optional configuration for the classification metrics adapter.
+                           If not provided, will use default configuration.
 
         IMPORTANT:
         - `pytorch_model` will be injected by DeploymentRunner after model loading.
@@ -52,6 +67,14 @@ class ClassificationEvaluator(BaseEvaluator):
         super().__init__(config={})
         self.model_cfg = model_cfg
         self.pytorch_model: Any = None  # Will be injected by runner after model loading
+
+        # Set class names
+        self.class_names = class_names if class_names is not None else CLASS_NAMES
+
+        # Initialize classification metrics adapter for consistent evaluation
+        if metrics_config is None:
+            metrics_config = ClassificationMetricsConfig(class_names=self.class_names)
+        self.metrics_adapter = ClassificationMetricsAdapter(metrics_config)
 
     def set_pytorch_model(self, pytorch_model: Any) -> None:
         """
@@ -268,42 +291,83 @@ class ClassificationEvaluator(BaseEvaluator):
         probabilities: np.ndarray,
         latencies: np.ndarray,
     ) -> Dict[str, Any]:
-        """Compute all evaluation metrics."""
+        """
+        Compute all evaluation metrics using ClassificationMetricsAdapter.
+
+        This ensures consistent metrics with autoware_perception_evaluation formulas.
+        """
+        logger = logging.getLogger(__name__)
+
         if len(predictions) == 0:
             return {"accuracy": 0.0, "error": "No samples were processed successfully"}
 
-        # Overall accuracy
-        correct = (predictions == ground_truths).sum()
-        accuracy = correct / len(predictions)
+        # Use ClassificationMetricsAdapter for consistent metrics
+        try:
+            # Reset adapter for new evaluation
+            self.metrics_adapter.reset()
 
-        # Per-class metrics
-        per_class_acc = {}
-        per_class_count = {}
-        for cls in np.unique(ground_truths):
-            mask = ground_truths == cls
-            cls_correct = (predictions[mask] == ground_truths[mask]).sum()
-            cls_total = mask.sum()
-            per_class_acc[int(cls)] = cls_correct / cls_total if cls_total > 0 else 0.0
-            per_class_count[int(cls)] = int(cls_total)
+            # Add all samples to the adapter
+            for pred, gt, prob in zip(predictions, ground_truths, probabilities):
+                prob_list = prob.tolist() if isinstance(prob, np.ndarray) else list(prob)
+                self.metrics_adapter.add_frame(
+                    prediction=int(pred),
+                    ground_truth=int(gt),
+                    probabilities=prob_list,
+                )
 
-        # Confusion matrix
-        num_classes = len(np.unique(ground_truths))
-        confusion_matrix = np.zeros((num_classes, num_classes), dtype=int)
-        for gt, pred in zip(ground_truths, predictions):
-            confusion_matrix[int(gt), int(pred)] += 1
+            # Compute metrics using the adapter
+            adapter_metrics = self.metrics_adapter.compute_metrics()
 
-        # Latency statistics
-        latency_stats = self.compute_latency_stats(latencies.tolist())
+            # Get summary and confusion matrix
+            summary = self.metrics_adapter.get_summary()
+            confusion_matrix = self.metrics_adapter.get_confusion_matrix()
 
-        return {
-            "accuracy": float(accuracy),
-            "correct_predictions": int(correct),
-            "total_samples": len(predictions),
-            "per_class_accuracy": per_class_acc,
-            "per_class_count": per_class_count,
-            "confusion_matrix": confusion_matrix.tolist(),
-            "latency_stats": latency_stats,
-        }
+            # Compute latency statistics
+            latency_stats = self.compute_latency_stats(latencies.tolist())
+
+            # Build results dict with adapter metrics
+            results = {
+                "accuracy": adapter_metrics.get("accuracy", 0.0),
+                "precision": adapter_metrics.get("precision", 0.0),
+                "recall": adapter_metrics.get("recall", 0.0),
+                "f1score": adapter_metrics.get("f1score", 0.0),
+                "correct_predictions": adapter_metrics.get("correct_predictions", 0),
+                "total_samples": adapter_metrics.get("total_samples", len(predictions)),
+                "per_class_accuracy": summary.get("per_class_accuracy", {}),
+                "per_class_count": {
+                    i: int(adapter_metrics.get(f"{self.class_names[i]}_num_gt", 0))
+                    for i in range(len(self.class_names))
+                },
+                "confusion_matrix": confusion_matrix.tolist(),
+                "latency_stats": latency_stats,
+                "detailed_metrics": adapter_metrics,
+            }
+
+            logger.info("✅ Successfully computed metrics using ClassificationMetricsAdapter")
+            logger.info(f"   Accuracy: {results['accuracy']:.4f}, F1: {results['f1score']:.4f}")
+
+            return results
+
+        except Exception as e:
+            logger.warning(f"Failed to compute metrics using ClassificationMetricsAdapter: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+            # Fallback to basic computation
+            correct = (predictions == ground_truths).sum()
+            accuracy = correct / len(predictions)
+            latency_stats = self.compute_latency_stats(latencies.tolist())
+
+            return {
+                "accuracy": float(accuracy),
+                "correct_predictions": int(correct),
+                "total_samples": len(predictions),
+                "per_class_accuracy": {},
+                "per_class_count": {},
+                "confusion_matrix": [],
+                "latency_stats": latency_stats,
+            }
 
     def print_results(self, results: EvalResultDict) -> None:
         """
@@ -322,30 +386,45 @@ class ClassificationEvaluator(BaseEvaluator):
 
         logger.info(f"\n{'='*70}")
         logger.info(f"{backend.upper()} Model Evaluation Results")
+        logger.info("(Using ClassificationMetricsAdapter for consistent metrics)")
         logger.info(f"{'='*70}")
 
-        # Overall metrics
-        logger.info(f"Total samples: {results['total_samples']}")
-        logger.info(f"Correct predictions: {results['correct_predictions']}")
-        logger.info(f"Accuracy: {results['accuracy']:.4f} ({results['accuracy']*100:.2f}%)")
+        # Overall metrics (from autoware_perception_evaluation formulas)
+        logger.info(f"\nClassification Metrics:")
+        logger.info(f"  Total samples: {results['total_samples']}")
+        logger.info(f"  Correct predictions: {results['correct_predictions']}")
+        logger.info(f"  Accuracy: {results['accuracy']:.4f} ({results['accuracy']*100:.2f}%)")
+        logger.info(f"  Precision: {results.get('precision', 0.0):.4f}")
+        logger.info(f"  Recall: {results.get('recall', 0.0):.4f}")
+        logger.info(f"  F1 Score: {results.get('f1score', 0.0):.4f}")
 
         # Latency
         logger.info(f"\n{self.format_latency_stats(results['latency_stats'])}")
 
         # Per-class accuracy
-        logger.info(f"\nPer-class accuracy:")
-        for cls, acc in results["per_class_accuracy"].items():
-            count = results["per_class_count"][cls]
-            label = LABELS[str(cls)]
-            logger.info(f"  Class {cls} ({label}): {acc:.4f} ({acc*100:.2f}%) - {count} samples")
+        if results.get("per_class_accuracy"):
+            logger.info(f"\nPer-class accuracy:")
+            for cls_name, acc in results["per_class_accuracy"].items():
+                # Handle both class name (str) and class index (int) keys
+                if isinstance(cls_name, int):
+                    label = LABELS.get(str(cls_name), f"class_{cls_name}")
+                    count = results.get("per_class_count", {}).get(cls_name, 0)
+                else:
+                    label = cls_name
+                    count = results.get("per_class_count", {}).get(
+                        self.class_names.index(cls_name) if cls_name in self.class_names else 0, 0
+                    )
+                logger.info(f"  {label}: {acc:.4f} ({acc*100:.2f}%) - {count} samples")
 
         # Confusion matrix
-        logger.info(f"\nConfusion Matrix:")
-        cm = np.array(results["confusion_matrix"])
-        logger.info(f"  Predicted →")
-        logger.info(f"  GT ↓        {' '.join([f'{i:>8}' for i in range(len(cm))])}")
-        for i, row in enumerate(cm):
-            logger.info(f"  {i:>8}    {' '.join([f'{val:>8}' for val in row])}")
+        if results.get("confusion_matrix"):
+            logger.info(f"\nConfusion Matrix:")
+            cm = np.array(results["confusion_matrix"])
+            if cm.size > 0:
+                logger.info(f"  Predicted →")
+                logger.info(f"  GT ↓        {' '.join([f'{i:>8}' for i in range(len(cm))])}")
+                for i, row in enumerate(cm):
+                    logger.info(f"  {i:>8}    {' '.join([f'{val:>8}' for val in row])}")
 
         logger.info(f"{'='*70}\n")
 

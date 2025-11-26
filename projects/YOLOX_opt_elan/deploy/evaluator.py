@@ -2,6 +2,8 @@
 YOLOX_opt_elan Evaluator for deployment.
 
 This module implements evaluation for YOLOX_opt_elan object detection models.
+Uses autoware_perception_evaluation via Detection2DMetricsAdapter for consistent
+metric computation.
 """
 
 import logging
@@ -14,6 +16,8 @@ from mmengine.config import Config
 from deployment.core import (
     Backend,
     BaseEvaluator,
+    Detection2DMetricsAdapter,
+    Detection2DMetricsConfig,
     EvalResultDict,
     ModelSpec,
     VerifyResultDict,
@@ -65,7 +69,13 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
     specifically for object detection task (8 classes).
     """
 
-    def __init__(self, model_cfg: Config, model_cfg_path: str, class_names: List[str] = None):
+    def __init__(
+        self,
+        model_cfg: Config,
+        model_cfg_path: str,
+        class_names: List[str] = None,
+        metrics_config: Optional[Detection2DMetricsConfig] = None,
+    ):
         """
         Initialize YOLOX_opt_elan evaluator.
 
@@ -73,6 +83,8 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
             model_cfg: Model configuration
             model_cfg_path: Path to model config file
             class_names: List of class names (optional, will try to get from config)
+            metrics_config: Optional configuration for the 2D detection metrics adapter.
+                           If not provided, will use default configuration based on class_names.
 
         IMPORTANT:
         - `pytorch_model` will be injected by DeploymentRunner after model loading.
@@ -100,6 +112,14 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
                 "Config file must contain 'classes' attribute. "
                 "Please ensure your dataset config file (referenced via _base_) defines 'classes'."
             )
+
+        # Initialize 2D detection metrics adapter for consistent evaluation
+        if metrics_config is None:
+            metrics_config = Detection2DMetricsConfig(
+                class_names=self.class_names,
+                iou_thresholds=[0.5, 0.75],  # Pascal VOC style thresholds
+            )
+        self.metrics_adapter = Detection2DMetricsAdapter(metrics_config)
 
     def set_pytorch_model(self, pytorch_model: Any) -> None:
         """
@@ -866,111 +886,61 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         latencies: List[float],
         logger,
     ) -> Dict[str, Any]:
-        """Compute evaluation metrics."""
-        # Use Pascal VOC evaluation to match test.py
-        map_results = self._compute_voc_map(
-            predictions_list,
-            ground_truths_list,
-            num_classes=len(self.class_names),
-        )
+        """
+        Compute evaluation metrics using autoware_perception_evaluation.
 
+        This method uses Detection2DMetricsAdapter to ensure consistent metrics
+        with the autoware_perception_evaluation library.
+        """
         # Compute latency statistics
         latency_stats = self.compute_latency_stats(latencies)
 
-        # Combine results
-        results = {
-            **map_results,
-            "latency": latency_stats,
-            "num_samples": len(predictions_list),
-        }
-
-        return results
-
-    def _compute_voc_map(
-        self,
-        predictions_list: List[List[Dict]],
-        ground_truths_list: List[List[Dict]],
-        num_classes: int,
-    ) -> Dict[str, Any]:
-        """Compute Pascal VOC mAP to match test.py evaluation."""
-        import numpy as np
-        from mmdet.evaluation.functional import eval_map
-
-        # Convert to MMDetection format for eval_map
-        det_results = []
-        annotations = []
-
-        for predictions, ground_truths in zip(predictions_list, ground_truths_list):
-            # Group predictions by class - each class gets a numpy array
-            class_detections = []
-
-            for class_id in range(num_classes):
-                class_preds = []
-                for pred in predictions:
-                    if pred["label"] == class_id:
-                        # Format: [x1, y1, x2, y2, score]
-                        bbox_with_score = pred["bbox"] + [pred["score"]]
-                        class_preds.append(bbox_with_score)
-
-                # Convert to numpy array
-                if class_preds:
-                    class_detections.append(np.array(class_preds))
-                else:
-                    class_detections.append(np.zeros((0, 5)))
-
-            # Convert ground truths to numpy arrays
-            gt_bboxes = []
-            gt_labels = []
-
-            for gt in ground_truths:
-                gt_bboxes.append(gt["bbox"])
-                gt_labels.append(gt["label"])
-
-            det_results.append(class_detections)
-            annotations.append(
-                {
-                    "bboxes": np.array(gt_bboxes) if gt_bboxes else np.zeros((0, 4)),
-                    "labels": np.array(gt_labels) if gt_labels else np.zeros(0, dtype=int),
-                }
-            )
-
-        # Compute Pascal VOC mAP (IoU@0.5)
+        # Use Detection2DMetricsAdapter for consistent metrics
         try:
-            map_results = eval_map(
-                det_results,
-                annotations,
-                iou_thr=0.5,  # Pascal VOC uses IoU@0.5
-                scale_ranges=None,
-                eval_mode="area",  # Use area mode like VOC2012
-            )
+            # Reset adapter for new evaluation
+            self.metrics_adapter.reset()
 
-            # Extract results - eval_map returns (mean_ap, per_class_ap)
-            map_50 = map_results[0]  # mAP@0.5
-            per_class_ap_list = map_results[1]  # Per-class AP@0.5 (list)
+            # Add all frames to the adapter
+            for predictions, ground_truths in zip(predictions_list, ground_truths_list):
+                self.metrics_adapter.add_frame(predictions, ground_truths)
 
-            # Convert per_class_ap list to dict for consistency
-            per_class_ap = {}
-            for i, ap in enumerate(per_class_ap_list):
-                per_class_ap[i] = ap
+            # Compute metrics using autoware_perception_evaluation
+            map_results = self.metrics_adapter.compute_metrics()
 
-            return {
-                "mAP": map_50,
-                "mAP_50": map_50,
-                "mAP_75": map_50,  # Same as mAP_50 for Pascal VOC
-                "per_class_ap": per_class_ap,
+            # Get summary for primary metrics
+            summary = self.metrics_adapter.get_summary()
+
+            # Combine results
+            results = {
+                "mAP": summary.get("mAP", 0.0),
+                "mAP_50": map_results.get("mAP_iou_2d_0.5", summary.get("mAP", 0.0)),
+                "mAP_75": map_results.get("mAP_iou_2d_0.75", 0.0),
+                "per_class_ap": summary.get("per_class_ap", {}),
+                "detailed_metrics": map_results,
+                "latency": latency_stats,
+                "num_samples": len(predictions_list),
             }
 
+            logger.info("Successfully computed metrics using autoware_perception_evaluation")
+            logger.info(f"   mAP: {results['mAP']:.4f}")
+
         except Exception as e:
-            print(f"Error computing VOC mAP: {e}")
+            logger.warning(f"Failed to compute metrics using autoware_perception_evaluation: {e}")
             import traceback
 
             traceback.print_exc()
-            return {
+
+            # Fallback to empty metrics
+            results = {
                 "mAP": 0.0,
                 "mAP_50": 0.0,
                 "mAP_75": 0.0,
-                "per_class_ap": {i: 0.0 for i in range(num_classes)},
+                "per_class_ap": {},
+                "latency": latency_stats,
+                "num_samples": len(predictions_list),
             }
+
+        return results
 
     def print_results(self, results: EvalResultDict) -> None:
         """
@@ -981,19 +951,26 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
         """
         print("\n" + "=" * 80)
         print("YOLOX_opt_elan Object Detection - Evaluation Results")
+        print("(Using autoware_perception_evaluation for consistent metrics)")
         print("=" * 80)
 
-        # Detection metrics
-        print(f"\nDetection Metrics:")
-        print(f"  mAP (0.5:0.95): {results['mAP']:.4f}")
-        print(f"  mAP @ IoU=0.50: {results['mAP_50']:.4f}")
-        print(f"  mAP @ IoU=0.75: {results['mAP_75']:.4f}")
+        # Detection metrics from autoware_perception_evaluation
+        print(f"\nDetection Metrics (autoware_perception_evaluation):")
+        print(f"  mAP: {results.get('mAP', 0.0):.4f}")
+        print(f"  mAP @ IoU=0.50: {results.get('mAP_50', 0.0):.4f}")
+        print(f"  mAP @ IoU=0.75: {results.get('mAP_75', 0.0):.4f}")
 
         # Per-class AP (show all 8 object classes)
         if "per_class_ap" in results:
             print(f"\nPer-Class AP (Object Classes):")
             for class_id, ap in results["per_class_ap"].items():
-                class_name = self.class_names[class_id] if class_id < len(self.class_names) else f"class_{class_id}"
+                # class_id can be string (class name) or int (index)
+                if isinstance(class_id, str):
+                    class_name = class_id
+                elif isinstance(class_id, int) and class_id < len(self.class_names):
+                    class_name = self.class_names[class_id]
+                else:
+                    class_name = f"class_{class_id}"
                 # Handle both numeric and dict AP values
                 if isinstance(ap, dict):
                     ap_value = ap.get("ap", 0.0)

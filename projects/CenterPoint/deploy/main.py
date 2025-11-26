@@ -22,6 +22,7 @@ from deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapp
 from deployment.runners import CenterPointDeploymentRunner
 from projects.CenterPoint.deploy.data_loader import CenterPointDataLoader
 from projects.CenterPoint.deploy.evaluator import CenterPointEvaluator
+from projects.CenterPoint.deploy.utils import extract_t4metric_v2_config
 
 
 def parse_args():
@@ -66,10 +67,12 @@ def main():
     logger.info(f"  Y-axis rotation: {args.rot_y_axis_reference}")
     logger.info(f"  Runner will build ONNX-compatible model internally")
 
-    checkpoint_path = config.export_config.checkpoint_path
-    if not checkpoint_path and config.export_config.should_export_onnx():
-        logger.error("Checkpoint path must be provided in export.checkpoint_path for ONNX/TensorRT export.")
-        return
+    # Validate checkpoint path for export
+    if config.export_config.should_export_onnx():
+        checkpoint_path = config.export_config.checkpoint_path
+        if not checkpoint_path:
+            logger.error("Checkpoint path must be provided in export.checkpoint_path for ONNX/TensorRT export.")
+            return
 
     # Create data loader
     logger.info("\nCreating data loader...")
@@ -81,11 +84,23 @@ def main():
     )
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
-    # Checkpoint path
-    # Create evaluator with original model_cfg
-    # Runner will convert it to ONNX-compatible config and inject both model_cfg and pytorch_model
+    # Extract T4MetricV2 config from model_cfg (if available)
+    # This ensures deployment evaluation uses the same settings as training evaluation
+    logger.info("\nExtracting T4MetricV2 config from model config...")
+    metrics_config = extract_t4metric_v2_config(model_cfg, logger=logger)
+    if metrics_config is None:
+        logger.warning(
+            "T4MetricV2 config not found in model_cfg. "
+            "Using default metrics configuration for deployment evaluation."
+        )
+    else:
+        logger.info("Successfully extracted T4MetricV2 config from model config")
+
+    # Create evaluator with original model_cfg and extracted metrics_config
+    # Runner will convert model_cfg to ONNX-compatible config and inject both model_cfg and pytorch_model
     evaluator = CenterPointEvaluator(
         model_cfg=model_cfg,  # original cfg; will be updated to ONNX cfg by runner
+        metrics_config=metrics_config,  # extracted from model_cfg or None (will use defaults)
     )
 
     # Create CenterPoint-specific runner
@@ -101,7 +116,6 @@ def main():
 
     # Execute deployment workflow
     runner.run(
-        checkpoint_path=checkpoint_path,
         rot_y_axis_reference=args.rot_y_axis_reference,
     )
 

@@ -22,6 +22,7 @@ from deployment.exporters.calibration.model_wrappers import CalibrationONNXWrapp
 from deployment.runners import CalibrationDeploymentRunner
 from projects.CalibrationStatusClassification.deploy.data_loader import CalibrationDataLoader
 from projects.CalibrationStatusClassification.deploy.evaluator import ClassificationEvaluator
+from projects.CalibrationStatusClassification.deploy.utils import extract_classification_metrics_config
 
 
 def parse_args():
@@ -57,10 +58,12 @@ def main():
     logger.info(f"  Verify: {config.verification_config.enabled}")
     logger.info(f"  CUDA device (TensorRT): {config.export_config.cuda_device}")
 
-    checkpoint_path = config.export_config.checkpoint_path
-    if not checkpoint_path and config.export_config.should_export_onnx():
-        logger.error("Checkpoint path must be provided in export.checkpoint_path for ONNX/TensorRT export.")
-        return
+    # Validate checkpoint path for export
+    if config.export_config.should_export_onnx():
+        checkpoint_path = config.export_config.checkpoint_path
+        if not checkpoint_path:
+            logger.error("Checkpoint path must be provided in export.checkpoint_path for ONNX/TensorRT export.")
+            return
 
     # Get info_pkl path
     info_pkl = config.runtime_config.get("info_pkl")
@@ -78,8 +81,13 @@ def main():
     )
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
-    # Create evaluator
-    evaluator = ClassificationEvaluator(model_cfg)
+    # Extract ClassificationMetricsConfig for autoware_perception_evaluation
+    logger.info("\nExtracting Classification metrics config from model config...")
+    metrics_config = extract_classification_metrics_config(model_cfg, logger=logger)
+    logger.info("Successfully created ClassificationMetricsConfig")
+
+    # Create evaluator with extracted metrics_config
+    evaluator = ClassificationEvaluator(model_cfg, metrics_config=metrics_config)
 
     # Create Calibration-specific runner
     runner = CalibrationDeploymentRunner(
@@ -92,7 +100,7 @@ def main():
     )
 
     # Execute deployment workflow
-    runner.run(checkpoint_path=checkpoint_path)
+    runner.run()
 
 
 if __name__ == "__main__":

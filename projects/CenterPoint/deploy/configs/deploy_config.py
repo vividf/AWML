@@ -14,6 +14,15 @@ This config is designed to:
 task_type = "detection3d"
 
 # ============================================================================
+# Checkpoint Path - Single source of truth for PyTorch model
+# ============================================================================
+# This is the main checkpoint path used by:
+# - Export workflow: to load the PyTorch model for ONNX conversion
+# - Evaluation: for PyTorch backend evaluation
+# - Verification: when PyTorch is used as reference or test backend
+checkpoint_path = "work_dirs/centerpoint/best_checkpoint.pth"
+
+# ============================================================================
 # Export Configuration
 # ============================================================================
 export = dict(
@@ -22,14 +31,9 @@ export = dict(
     # - 'trt'  : build TensorRT engine from an existing ONNX
     # - 'both' : export PyTorch -> ONNX -> TensorRT
     # - 'none' : no export (only evaluation / verification on existing artifacts)
-    mode="both",
+    mode="none",
     # ---- Common options ----------------------------------------------------
     work_dir="work_dirs/centerpoint_deployment",
-    # ---- Source for ONNX export --------------------------------------------
-    # Rule:
-    # - mode in ['onnx', 'both']  -> checkpoint_path MUST be provided
-    # - mode == 'trt'             -> checkpoint_path is ignored
-    checkpoint_path="work_dirs/centerpoint/best_checkpoint.pth",
     # ---- ONNX source when building TensorRT only ---------------------------
     # Rule:
     # - mode == 'trt'  -> onnx_path MUST be provided (file or directory)
@@ -131,26 +135,28 @@ evaluation = dict(
     # Note:
     # - tensorrt.device MUST be a CUDA device (e.g., 'cuda:0')
     # - For 'none' export mode, all models must already exist on disk.
+    # - PyTorch backend uses top-level checkpoint_path (no need to specify here)
     backends=dict(
-        # PyTorch evaluation
+        # PyTorch evaluation (uses top-level checkpoint_path)
         pytorch=dict(
             enabled=True,
             device="cuda:0",  # or 'cpu'
-            checkpoint="work_dirs/centerpoint/best_checkpoint.pth",
         ),
         # ONNX evaluation
         onnx=dict(
             enabled=True,
             device="cuda:0",  # 'cpu' or 'cuda:0'
             # If None: pipeline will infer from export.work_dir / onnx_config.save_file
-            model_dir=None,
+            # model_dir=None,
+            model_dir="work_dirs/centerpoint_deployment/onnx/",
         ),
         # TensorRT evaluation
         tensorrt=dict(
             enabled=True,
             device="cuda:0",  # must be CUDA
             # If None: pipeline will infer from export.work_dir + "/tensorrt"
-            engine_dir=None,
+            # engine_dir=None,
+            engine_dir="work_dirs/centerpoint_deployment/tensorrt/",
         ),
     ),
 )
@@ -163,7 +169,7 @@ evaluation = dict(
 # ----------------------------------------------------------------------------
 verification = dict(
     # Master switch to enable/disable verification
-    enabled=True,
+    enabled=False,
     tolerance=1e-1,
     num_verify_samples=1,
     # Device aliases for flexible device management

@@ -62,10 +62,14 @@ class ArtifactManager:
 
     def resolve_pytorch_artifact(self, backend_cfg: Dict) -> Tuple[Optional[Artifact], bool]:
         """
-        Resolve PyTorch model path from backend config or registered artifacts.
+        Resolve PyTorch model path from registered artifacts or config.
+
+        Resolution order:
+        1. Registered artifacts (from previous export/load operations)
+        2. checkpoint_path in config (single source of truth)
 
         Args:
-            backend_cfg: Backend configuration dictionary
+            backend_cfg: Backend configuration dictionary (unused for PyTorch path resolution)
 
         Returns:
             Tuple of (artifact, is_valid).
@@ -76,9 +80,7 @@ class ArtifactManager:
         artifact = self.artifacts.get(Backend.PYTORCH.value)
         if artifact:
             return artifact, artifact.exists()
-
-        # Fallback to checkpoint path from config
-        model_path = backend_cfg.get("checkpoint") or self.config.export_config.checkpoint_path
+        model_path = self.config.checkpoint_path
         if not model_path:
             return None, False
 

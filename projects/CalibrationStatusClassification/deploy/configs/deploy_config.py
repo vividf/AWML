@@ -17,6 +17,15 @@ codebase_config = dict(type="mmpretrain", task="Classification", model_type="end
 task_type = "classification"
 
 # ============================================================================
+# Checkpoint Path - Single source of truth for PyTorch model
+# ============================================================================
+# This is the main checkpoint path used by:
+# - Export workflow: to load the PyTorch model for ONNX conversion
+# - Evaluation: for PyTorch backend evaluation
+# - Verification: when PyTorch is used as reference or test backend
+checkpoint_path = "work_dirs/calibration_classifier/best_accuracy_top1_epoch_28.pth"
+
+# ============================================================================
 # Export Configuration
 # ============================================================================
 export = dict(
@@ -28,11 +37,6 @@ export = dict(
     mode="both",
     # ---- Common options ----------------------------------------------------
     work_dir="work_dirs/calibration_classifier",
-    # ---- Source for ONNX export --------------------------------------------
-    # Rule:
-    # - mode in ['onnx', 'both']  -> checkpoint_path MUST be provided
-    # - mode == 'trt'             -> checkpoint_path is ignored
-    checkpoint_path="work_dirs/calibration_classifier/best_accuracy_top1_epoch_28.pth",  # Set to checkpoint path if needed
     # ---- ONNX source when building TensorRT only ---------------------------
     # Rule:
     # - mode == 'trt'  -> onnx_path MUST be provided (file or directory)
@@ -127,12 +131,12 @@ evaluation = dict(
     # Note:
     # - tensorrt.device MUST be a CUDA device (e.g., 'cuda:0')
     # - For 'none' export mode, all models must already exist on disk.
+    # - PyTorch backend uses top-level checkpoint_path (no need to specify here)
     backends=dict(
-        # PyTorch evaluation
+        # PyTorch evaluation (uses top-level checkpoint_path)
         pytorch=dict(
             enabled=True,
             device="cuda:0",  # or 'cpu'
-            checkpoint="work_dirs/calibration_classifier/best_accuracy_top1_epoch_28.pth",  # Use same checkpoint as export
         ),
         # ONNX evaluation
         onnx=dict(

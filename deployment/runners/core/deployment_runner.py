@@ -402,8 +402,10 @@ class BaseDeploymentRunner:
         # Check if PyTorch evaluation is needed
         needs_pytorch_eval = False
         if eval_config.enabled:
-            models_to_eval = eval_config.models
-            if self._get_backend_entry(models_to_eval, Backend.PYTORCH):
+            backends_cfg = eval_config.backends
+            # Check if PyTorch backend is enabled in evaluation.backends
+            pytorch_cfg = backends_cfg.get(Backend.PYTORCH.value) or backends_cfg.get(Backend.PYTORCH, {})
+            if pytorch_cfg and pytorch_cfg.get("enabled", False):
                 needs_pytorch_eval = True
 
         # Check if PyTorch is needed for verification
@@ -547,12 +549,11 @@ class BaseDeploymentRunner:
             except Exception as e:
                 self.logger.error(f"Failed to export TensorRT: {e}")
 
-    def run(self, checkpoint_path: Optional[str] = None, **kwargs) -> DeploymentResultDict:
+    def run(self, **kwargs) -> DeploymentResultDict:
         """
         Execute the complete deployment workflow.
 
         Args:
-            checkpoint_path: Path to PyTorch checkpoint (optional)
             **kwargs: Additional project-specific arguments
 
         Returns:
@@ -566,12 +567,11 @@ class BaseDeploymentRunner:
             "evaluation_results": {},
         }
 
-        export_mode = self.config.export_config.mode
         should_export_onnx = self.config.export_config.should_export_onnx()
         should_export_trt = self.config.export_config.should_export_tensorrt()
 
-        # Resolve checkpoint / ONNX sources from config if not provided via CLI
-        checkpoint_path = checkpoint_path or self.config.export_config.checkpoint_path
+        # Single source of truth for checkpoint path - from top-level config
+        checkpoint_path = self.config.checkpoint_path
         external_onnx_path = self.config.export_config.onnx_path
 
         # Determine if PyTorch model is needed

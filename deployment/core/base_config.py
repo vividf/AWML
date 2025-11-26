@@ -78,7 +78,6 @@ class ExportConfig:
 
     mode: ExportMode = ExportMode.BOTH
     work_dir: str = "work_dirs"
-    checkpoint_path: Optional[str] = None
     onnx_path: Optional[str] = None
     tensorrt_path: Optional[str] = None
     cuda_device: str = "cuda:0"
@@ -92,7 +91,6 @@ class ExportConfig:
         return cls(
             mode=ExportMode.from_value(config_dict.get("mode", ExportMode.BOTH)),
             work_dir=config_dict.get("work_dir", cls.work_dir),
-            checkpoint_path=config_dict.get("checkpoint_path"),
             onnx_path=config_dict.get("onnx_path"),
             tensorrt_path=config_dict.get("tensorrt_path"),
             cuda_device=config_dict.get("cuda_device", cls.cuda_device),
@@ -285,6 +283,11 @@ class BaseDeploymentConfig:
 
     This class provides a task-agnostic interface for deployment configuration.
     Task-specific configs should extend this class and add task-specific settings.
+
+    Attributes:
+        checkpoint_path: Single source of truth for the PyTorch checkpoint path.
+                        Used by both export (for ONNX conversion) and evaluation
+                        (for PyTorch backend). Defined at top-level of deploy config.
     """
 
     def __init__(self, deploy_cfg: Config):
@@ -296,6 +299,8 @@ class BaseDeploymentConfig:
         """
         self.deploy_cfg = deploy_cfg
         self._validate_config()
+
+        self._checkpoint_path: Optional[str] = deploy_cfg.get("checkpoint_path")
 
         # Initialize config sections
         self.export_config = ExportConfig.from_dict(deploy_cfg.get("export", {}))
@@ -368,6 +373,21 @@ class BaseDeploymentConfig:
                     return True
 
         return False
+
+    @property
+    def checkpoint_path(self) -> Optional[str]:
+        """
+        Get checkpoint path - single source of truth for PyTorch model.
+
+        This path is used by:
+        - Export workflow: to load the PyTorch model for ONNX conversion
+        - Evaluation: for PyTorch backend evaluation
+        - Verification: when PyTorch is used as reference or test backend
+
+        Returns:
+            Path to the PyTorch checkpoint file, or None if not configured
+        """
+        return self._checkpoint_path
 
     @property
     def evaluation_config(self) -> EvaluationConfig:
