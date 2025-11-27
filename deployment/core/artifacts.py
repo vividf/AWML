@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import os
+import os.path as osp
 from dataclasses import dataclass
 
 
@@ -15,4 +15,4 @@ class Artifact:
 
     def exists(self) -> bool:
         """Return True if the artifact path currently exists on disk."""
-        return os.path.exists(self.path)
+        return osp.exists(self.path)

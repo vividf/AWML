@@ -6,7 +6,7 @@ ONNX models, TensorRT engines) across different backends.
 """
 
 import logging
-import os
+import os.path as osp
 from collections.abc import Mapping
 from typing import Any, Dict, Optional, Tuple
 
@@ -97,7 +97,7 @@ class ArtifactManager:
         # Priority 2 & 3: Get path from config
         config_path = self._get_config_path(backend)
         if config_path:
-            is_dir = os.path.isdir(config_path) if os.path.exists(config_path) else False
+            is_dir = osp.isdir(config_path) if osp.exists(config_path) else False
             artifact = Artifact(path=config_path, multi_file=is_dir)
             return artifact, artifact.exists()
 
