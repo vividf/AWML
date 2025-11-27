@@ -236,7 +236,7 @@ class ExportOrchestrator:
         """
         if not checkpoint_path:
             self.logger.error(
-                "Checkpoint required but not provided. " "Please set export.checkpoint_path in config or pass via CLI."
+                "Checkpoint required but not provided. Please set export.checkpoint_path in config or pass via CLI."
             )
             return None
 

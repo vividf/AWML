@@ -296,7 +296,11 @@ class TensorRTExporter(BaseExporter):
         model_inputs_cfg = self.config.model_inputs
 
         # Validate that we have shape information
-        if not model_inputs_cfg or not model_inputs_cfg[0].input_shapes:
+        first_input_shapes = None
+        if model_inputs_cfg:
+            first_input_shapes = self._extract_input_shapes(model_inputs_cfg[0])
+
+        if not model_inputs_cfg or not first_input_shapes:
             if sample_input is None:
                 raise ValueError(
                     "TensorRT export requires shape information. Please provide either:\n"
@@ -334,7 +338,7 @@ class TensorRTExporter(BaseExporter):
 
         # model_inputs is already a Tuple[TensorRTModelInputConfig, ...]
         first_entry = model_inputs_cfg[0]
-        input_shapes = self._extract_input_shapes(first_entry)
+        input_shapes = first_input_shapes
 
         if not input_shapes:
             raise ValueError("TensorRT model_inputs[0] missing 'input_shapes' definitions")
