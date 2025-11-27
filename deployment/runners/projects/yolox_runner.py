@@ -4,12 +4,15 @@ YOLOX-specific deployment runner.
 This module provides a specialized runner for YOLOX models.
 """
 
+from __future__ import annotations
+
 from typing import Any, Optional
 
+from deployment.core.contexts import ExportContext, YOLOXExportContext
 from deployment.runners.common.deployment_runner import BaseDeploymentRunner
 
 
-class YOLOXDeploymentRunner(BaseDeploymentRunner):
+class YOLOXOptElanDeploymentRunner(BaseDeploymentRunner):
     """
     YOLOX-specific deployment runner.
 
@@ -20,8 +23,7 @@ class YOLOXDeploymentRunner(BaseDeploymentRunner):
     def load_pytorch_model(
         self,
         checkpoint_path: str,
-        model_cfg_path: Optional[str] = None,
-        **kwargs: Any,
+        context: ExportContext,
     ) -> Any:
         """
         Load YOLOX PyTorch model from checkpoint.
@@ -31,9 +33,8 @@ class YOLOXDeploymentRunner(BaseDeploymentRunner):
 
         Args:
             checkpoint_path: Path to checkpoint file
-            model_cfg_path: Path to model config file (required for YOLOX)
-            device: Device string (e.g., "cpu", "cuda:0"). Defaults to config device.
-            **kwargs: Additional arguments
+            context: Export context. Use YOLOXExportContext for type-safe access
+                     to model_cfg_path. Falls back to context.extra for compatibility.
 
         Returns:
             Loaded PyTorch model
@@ -41,12 +42,23 @@ class YOLOXDeploymentRunner(BaseDeploymentRunner):
         import torch
         from mmdet.apis import init_detector
 
+        # Extract model_cfg_path from typed context or extra dict
+        model_cfg_path: Optional[str] = None
+        if isinstance(context, YOLOXExportContext):
+            model_cfg_path = context.model_cfg_path
+        else:
+            raise ValueError("context must be a YOLOXExportContext")
+
         if model_cfg_path is None:
             # Try to get from model_cfg if it's a file path
             if hasattr(self.model_cfg, "filename"):
                 model_cfg_path = self.model_cfg.filename
             else:
-                raise ValueError("model_cfg_path is required for YOLOX model loading")
+                raise ValueError(
+                    "model_cfg_path is required for YOLOX model loading. "
+                    "Use YOLOXExportContext(model_cfg_path='path/to/config.py') "
+                    "or ensure model_cfg has a 'filename' attribute."
+                )
 
         model = init_detector(model_cfg_path, checkpoint_path, device="cpu")
         model.eval()

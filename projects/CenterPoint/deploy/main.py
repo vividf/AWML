@@ -18,6 +18,7 @@ sys.path.insert(0, str(project_root))
 
 from deployment.core import BaseDeploymentConfig, setup_logging
 from deployment.core.config.base_config import parse_base_args
+from deployment.core.contexts import CenterPointExportContext
 from deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapper
 from deployment.runners import CenterPointDeploymentRunner
 from projects.CenterPoint.deploy.data_loader import CenterPointDataLoader
@@ -114,10 +115,9 @@ def main():
         onnx_wrapper_cls=CenterPointONNXWrapper,
     )
 
-    # Execute deployment workflow
-    runner.run(
-        rot_y_axis_reference=args.rot_y_axis_reference,
-    )
+    # Execute deployment workflow with typed context
+    context = CenterPointExportContext(rot_y_axis_reference=args.rot_y_axis_reference)
+    runner.run(context=context)
 
     logger.info("\n" + "=" * 80)
     logger.info("Deployment Complete!")

@@ -5,6 +5,8 @@ This module handles all model export logic (PyTorch loading, ONNX export, Tensor
 in a unified orchestrator, keeping the deployment runner thin.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 from dataclasses import dataclass
@@ -15,6 +17,7 @@ import torch
 from deployment.core.artifacts import Artifact
 from deployment.core.backend import Backend
 from deployment.core.config.base_config import BaseDeploymentConfig
+from deployment.core.contexts import ExportContext
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import BaseModelWrapper
@@ -100,7 +103,10 @@ class ExportOrchestrator:
         self._onnx_exporter: Optional[ONNXExporter] = None
         self._tensorrt_exporter: Optional[TensorRTExporter] = None
 
-    def run(self, **kwargs) -> ExportResult:
+    def run(
+        self,
+        context: Optional[ExportContext] = None,
+    ) -> ExportResult:
         """
         Execute the complete export workflow.
 
@@ -112,11 +118,16 @@ class ExportOrchestrator:
         5. Resolves external artifact paths
 
         Args:
-            **kwargs: Additional project-specific arguments passed to model loader
+            context: Typed export context with parameters. If None, a default
+                     ExportContext is created.
 
         Returns:
             ExportResult containing model and artifact paths
         """
+        # Create default context if not provided
+        if context is None:
+            context = ExportContext()
+
         result = ExportResult()
 
         should_export_onnx = self.config.export_config.should_export_onnx()
@@ -130,7 +141,7 @@ class ExportOrchestrator:
         # Step 2: Load PyTorch model if needed
         pytorch_model = None
         if requires_pytorch:
-            pytorch_model = self._load_and_register_pytorch_model(checkpoint_path, **kwargs)
+            pytorch_model = self._load_and_register_pytorch_model(checkpoint_path, context)
             if pytorch_model is None:
                 return result  # Loading failed
             result.pytorch_model = pytorch_model
@@ -142,12 +153,12 @@ class ExportOrchestrator:
                 if not checkpoint_path:
                     self.logger.error("ONNX export requires checkpoint_path but none was provided.")
                     return result
-                pytorch_model = self._load_and_register_pytorch_model(checkpoint_path, **kwargs)
+                pytorch_model = self._load_and_register_pytorch_model(checkpoint_path, context)
                 if pytorch_model is None:
                     return result
                 result.pytorch_model = pytorch_model
 
-            onnx_artifact = self._export_onnx(pytorch_model, **kwargs)
+            onnx_artifact = self._export_onnx(pytorch_model, context)
             if onnx_artifact:
                 result.onnx_path = onnx_artifact.path
 
@@ -167,7 +178,7 @@ class ExportOrchestrator:
                 multi_file = os.path.isdir(onnx_path)
                 self.artifact_manager.register_artifact(Backend.ONNX, Artifact(path=onnx_path, multi_file=multi_file))
 
-            trt_artifact = self._export_tensorrt(onnx_path, **kwargs)
+            trt_artifact = self._export_tensorrt(onnx_path, context)
             if trt_artifact:
                 result.tensorrt_path = trt_artifact.path
 
@@ -208,13 +219,17 @@ class ExportOrchestrator:
 
         return should_export_onnx or needs_pytorch_eval or needs_pytorch_for_verification
 
-    def _load_and_register_pytorch_model(self, checkpoint_path: str, **kwargs) -> Optional[Any]:
+    def _load_and_register_pytorch_model(
+        self,
+        checkpoint_path: str,
+        context: ExportContext,
+    ) -> Optional[Any]:
         """
         Load PyTorch model and register it with artifact manager.
 
         Args:
             checkpoint_path: Path to checkpoint file
-            **kwargs: Additional project-specific arguments
+            context: Export context with project-specific parameters
 
         Returns:
             Loaded PyTorch model, or None if loading failed
@@ -227,7 +242,7 @@ class ExportOrchestrator:
 
         self.logger.info("\nLoading PyTorch model...")
         try:
-            pytorch_model = self._model_loader(checkpoint_path, **kwargs)
+            pytorch_model = self._model_loader(checkpoint_path, context)
             self.artifact_manager.register_artifact(Backend.PYTORCH, Artifact(path=checkpoint_path))
 
             # Inject model to evaluator via setter
@@ -240,7 +255,7 @@ class ExportOrchestrator:
             self.logger.error(f"Failed to load PyTorch model: {e}")
             return None
 
-    def _export_onnx(self, pytorch_model: Any, **kwargs) -> Optional[Artifact]:
+    def _export_onnx(self, pytorch_model: Any, context: ExportContext) -> Optional[Artifact]:
         """
         Export model to ONNX format.
 
@@ -248,7 +263,7 @@ class ExportOrchestrator:
 
         Args:
             pytorch_model: PyTorch model to export
-            **kwargs: Additional project-specific arguments
+            context: Export context with project-specific parameters
 
         Returns:
             Artifact describing the exported ONNX output, or None if skipped
@@ -260,7 +275,8 @@ class ExportOrchestrator:
             raise RuntimeError("ONNX export requested but no wrapper class or workflow provided.")
 
         onnx_settings = self.config.get_onnx_settings()
-        sample_idx = self.config.runtime_config.get("sample_idx", 0)
+        # Use context.sample_idx, fallback to runtime config for backward compatibility
+        sample_idx = context.sample_idx if context.sample_idx != 0 else self.config.runtime_config.get("sample_idx", 0)
 
         # Save to work_dir/onnx/ directory
         onnx_dir = os.path.join(self.config.export_config.work_dir, self.ONNX_DIR_NAME)
@@ -279,7 +295,7 @@ class ExportOrchestrator:
                     output_dir=onnx_dir,
                     config=self.config,
                     sample_idx=sample_idx,
-                    **kwargs,
+                    context=context,
                 )
             except Exception:
                 self.logger.error("ONNX export workflow failed")
@@ -328,7 +344,7 @@ class ExportOrchestrator:
         self.logger.info(f"ONNX export successful: {artifact.path}")
         return artifact
 
-    def _export_tensorrt(self, onnx_path: str, **kwargs) -> Optional[Artifact]:
+    def _export_tensorrt(self, onnx_path: str, context: ExportContext) -> Optional[Artifact]:
         """
         Export ONNX model to TensorRT engine.
 
@@ -336,7 +352,7 @@ class ExportOrchestrator:
 
         Args:
             onnx_path: Path to ONNX model file/directory
-            **kwargs: Additional project-specific arguments
+            context: Export context with project-specific parameters
 
         Returns:
             Artifact describing the exported TensorRT output, or None if skipped
@@ -370,7 +386,7 @@ class ExportOrchestrator:
         self.logger.info(f"Using CUDA device for TensorRT export: {cuda_device}")
 
         # Get sample input for shape configuration
-        sample_idx = self.config.runtime_config.get("sample_idx", 0)
+        sample_idx = context.sample_idx if context.sample_idx != 0 else self.config.runtime_config.get("sample_idx", 0)
         sample_input = self.data_loader.get_shape_sample(sample_idx)
 
         # Use workflow if available
@@ -382,7 +398,7 @@ class ExportOrchestrator:
                     config=self.config,
                     device=cuda_device,
                     data_loader=self.data_loader,
-                    **kwargs,
+                    context=context,
                 )
             except Exception:
                 self.logger.error("TensorRT export workflow failed")

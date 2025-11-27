@@ -10,7 +10,7 @@ import torch.nn as nn
 from deployment.exporters.common.model_wrappers import BaseModelWrapper
 
 
-class YOLOXONNXWrapper(BaseModelWrapper):
+class YOLOXOptElanONNXWrapper(BaseModelWrapper):
     """
     Wrapper for YOLOX model to match Tier4 ONNX export format.
 

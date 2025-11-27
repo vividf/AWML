@@ -14,6 +14,7 @@ from typing import Optional
 import torch
 
 from deployment.core import Artifact, BaseDataLoader, BaseDeploymentConfig
+from deployment.core.contexts import ExportContext
 from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.workflows.base import TensorRTExportWorkflow
 
@@ -53,7 +54,7 @@ class CenterPointTensorRTExportWorkflow(TensorRTExportWorkflow):
         config: BaseDeploymentConfig,
         device: str,
         data_loader: BaseDataLoader,
-        **_: object,
+        context: Optional[ExportContext] = None,
     ) -> Artifact:
         """
         Export CenterPoint ONNX files to TensorRT engines.
@@ -64,10 +65,14 @@ class CenterPointTensorRTExportWorkflow(TensorRTExportWorkflow):
             config: Deployment configuration (not used, kept for interface)
             device: CUDA device string (e.g., "cuda:0")
             data_loader: Data loader (not used for TensorRT)
+            context: Export context with project-specific parameters (currently unused,
+                     but available for future extensions)
 
         Returns:
             Artifact pointing to output directory with multi_file=True
         """
+        # context available for future extensions
+        _ = context
         onnx_dir = onnx_path
 
         # Validate inputs

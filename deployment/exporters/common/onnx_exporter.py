@@ -35,7 +35,7 @@ class ONNXExporter(BaseExporter):
 
         Args:
             config: ONNX export configuration dataclass instance.
-            model_wrapper: Optional model wrapper class (e.g., YOLOXONNXWrapper)
+            model_wrapper: Optional model wrapper class (e.g., YOLOXOptElanONNXWrapper)
             logger: Optional logger instance
         """
         super().__init__(config, model_wrapper=model_wrapper, logger=logger)

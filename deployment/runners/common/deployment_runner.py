@@ -14,12 +14,15 @@ Architecture:
     maintaining flexibility for project-specific customization.
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Any, Dict, Optional, Type, TypedDict
 
 from mmengine.config import Config
 
 from deployment.core import BaseDataLoader, BaseDeploymentConfig, BaseEvaluator
+from deployment.core.contexts import ExportContext
 from deployment.exporters.common.model_wrappers import BaseModelWrapper
 from deployment.exporters.workflows.base import OnnxExportWorkflow, TensorRTExportWorkflow
 from deployment.runners.common.artifact_manager import ArtifactManager
@@ -126,25 +129,41 @@ class BaseDeploymentRunner:
             )
         return self._export_orchestrator
 
-    def load_pytorch_model(self, checkpoint_path: str, **kwargs) -> Any:
+    def load_pytorch_model(self, checkpoint_path: str, context: ExportContext) -> Any:
         """
         Load PyTorch model from checkpoint.
 
         Subclasses must implement this method to provide project-specific model loading logic.
+        Project-specific parameters should be accessed from the typed context object.
 
         Args:
             checkpoint_path: Path to checkpoint file
-            **kwargs: Additional project-specific arguments
+            context: Export context containing project-specific parameters.
+                     Use project-specific context subclasses (e.g., YOLOXExportContext,
+                     CenterPointExportContext) for type-safe access to parameters.
 
         Returns:
             Loaded PyTorch model
 
         Raises:
             NotImplementedError: If not implemented by subclass
+
+        Example:
+            # In YOLOXDeploymentRunner:
+            def load_pytorch_model(self, checkpoint_path: str, context: ExportContext) -> Any:
+                # Type narrow to access YOLOX-specific fields
+                if isinstance(context, YOLOXExportContext):
+                    model_cfg_path = context.model_cfg_path
+                else:
+                    model_cfg_path = context.get("model_cfg_path")
+                ...
         """
         raise NotImplementedError(f"{self.__class__.__name__}.load_pytorch_model() must be implemented by subclasses.")
 
-    def run(self, **kwargs) -> DeploymentResultDict:
+    def run(
+        self,
+        context: Optional[ExportContext] = None,
+    ) -> DeploymentResultDict:
         """
         Execute the complete deployment workflow.
 
@@ -154,11 +173,16 @@ class BaseDeploymentRunner:
         3. Evaluation: Evaluate models with metrics
 
         Args:
-            **kwargs: Additional project-specific arguments
+            context: Typed export context with parameters. If None, a default
+                     ExportContext is created.
 
         Returns:
             DeploymentResultDict: Structured summary of all deployment artifacts and reports.
         """
+        # Create default context if not provided
+        if context is None:
+            context = ExportContext()
+
         results: DeploymentResultDict = {
             "pytorch_model": None,
             "onnx_path": None,
@@ -168,7 +192,7 @@ class BaseDeploymentRunner:
         }
 
         # Phase 1: Export
-        export_result = self.export_orchestrator.run(**kwargs)
+        export_result = self.export_orchestrator.run(context)
         results["pytorch_model"] = export_result.pytorch_model
         results["onnx_path"] = export_result.onnx_path
         results["tensorrt_path"] = export_result.tensorrt_path
@@ -192,51 +216,3 @@ class BaseDeploymentRunner:
         self.logger.info("=" * 80)
 
         return results
-
-    # ================== Backward Compatibility Methods ==================
-    # These methods are kept for backward compatibility with existing code
-    # that may call them directly. They delegate to the export orchestrator.
-
-    def run_verification(
-        self,
-        pytorch_checkpoint: Optional[str],
-        onnx_path: Optional[str],
-        tensorrt_path: Optional[str],
-        **kwargs,
-    ) -> Dict[str, Any]:
-        """
-        Run verification on exported models.
-
-        This method is kept for backward compatibility.
-        Consider using verification_orchestrator.run() directly.
-
-        Args:
-            pytorch_checkpoint: Path to PyTorch checkpoint
-            onnx_path: Path to ONNX model
-            tensorrt_path: Path to TensorRT engine
-            **kwargs: Additional arguments (unused)
-
-        Returns:
-            Verification results dictionary
-        """
-        return self.verification_orchestrator.run(
-            artifact_manager=self.artifact_manager,
-            pytorch_checkpoint=pytorch_checkpoint,
-            onnx_path=onnx_path,
-            tensorrt_path=tensorrt_path,
-        )
-
-    def run_evaluation(self, **kwargs) -> Dict[str, Any]:
-        """
-        Run evaluation on specified models.
-
-        This method is kept for backward compatibility.
-        Consider using evaluation_orchestrator.run() directly.
-
-        Args:
-            **kwargs: Additional arguments (unused)
-
-        Returns:
-            Evaluation results dictionary
-        """
-        return self.evaluation_orchestrator.run(self.artifact_manager)

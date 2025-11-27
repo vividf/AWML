@@ -29,6 +29,15 @@ from deployment.core.config.runtime_config import (
     Detection3DRuntimeConfig,
 )
 from deployment.core.config.task_config import TaskConfig, TaskType
+from deployment.core.contexts import (
+    CalibrationExportContext,
+    CenterPointExportContext,
+    ExportContext,
+    ExportContextType,
+    PreprocessContext,
+    YOLOXExportContext,
+    create_export_context,
+)
 from deployment.core.evaluation.base_evaluator import (
     BaseEvaluator,
     EvalResultDict,
@@ -64,6 +73,14 @@ from deployment.core.metrics import (
 __all__ = [
     # Backend and configuration
     "Backend",
+    # Typed contexts
+    "ExportContext",
+    "ExportContextType",
+    "YOLOXExportContext",
+    "CenterPointExportContext",
+    "CalibrationExportContext",
+    "PreprocessContext",
+    "create_export_context",
     "BaseDeploymentConfig",
     "ExportConfig",
     "ExportMode",

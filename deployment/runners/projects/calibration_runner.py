@@ -4,11 +4,14 @@ CalibrationStatusClassification-specific deployment runner.
 This module provides a specialized runner for CalibrationStatusClassification models.
 """
 
-from typing import Any, Optional
+from __future__ import annotations
+
+from typing import Any
 
 import torch
 from mmpretrain.apis import get_model
 
+from deployment.core.contexts import ExportContext
 from deployment.runners.common.deployment_runner import BaseDeploymentRunner
 
 
@@ -22,19 +25,22 @@ class CalibrationDeploymentRunner(BaseDeploymentRunner):
     def load_pytorch_model(
         self,
         checkpoint_path: str,
-        **kwargs: Any,
+        context: ExportContext,
     ) -> Any:
         """
         Load CalibrationStatusClassification PyTorch model from checkpoint.
 
         Args:
             checkpoint_path: Path to checkpoint file
-            device: Device string (e.g., "cpu", "cuda:0"). Defaults to config device.
-            **kwargs: Additional arguments
+            context: Export context (currently unused for calibration models,
+                     but included for interface consistency)
 
         Returns:
             Loaded PyTorch model
         """
+        # context is available for future extensions
+        _ = context
+
         torch_device = torch.device("cpu")
         model = get_model(self.model_cfg, checkpoint_path, device=torch_device)
         model.eval()

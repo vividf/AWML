@@ -60,7 +60,7 @@ def main():
 
     # Validate checkpoint path for export
     if config.export_config.should_export_onnx():
-        checkpoint_path = config.export_config.checkpoint_path
+        checkpoint_path = config.checkpoint_path
         if not checkpoint_path:
             logger.error("Checkpoint path must be provided in export.checkpoint_path for ONNX/TensorRT export.")
             return

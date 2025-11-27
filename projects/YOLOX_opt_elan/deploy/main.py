@@ -18,8 +18,9 @@ sys.path.insert(0, str(project_root))
 
 from deployment.core import BaseDeploymentConfig, setup_logging
 from deployment.core.config.base_config import parse_base_args
-from deployment.exporters.yolox.model_wrappers import YOLOXONNXWrapper
-from deployment.runners import YOLOXDeploymentRunner
+from deployment.core.contexts import YOLOXExportContext
+from deployment.exporters.yolox.model_wrappers import YOLOXOptElanONNXWrapper
+from deployment.runners import YOLOXOptElanDeploymentRunner
 from projects.YOLOX_opt_elan.deploy.data_loader import YOLOXOptElanDataLoader
 from projects.YOLOX_opt_elan.deploy.evaluator import YOLOXOptElanEvaluator
 from projects.YOLOX_opt_elan.deploy.utils import extract_detection2d_metrics_config
@@ -90,19 +91,18 @@ def main():
             return
 
     # Create YOLOX-specific runner
-    runner = YOLOXDeploymentRunner(
+    runner = YOLOXOptElanDeploymentRunner(
         data_loader=data_loader,
         evaluator=evaluator,
         config=config,
         model_cfg=model_cfg,
         logger=logger,
-        onnx_wrapper_cls=YOLOXONNXWrapper,
+        onnx_wrapper_cls=YOLOXOptElanONNXWrapper,
     )
 
-    # Execute deployment workflow
-    runner.run(
-        model_cfg_path=model_cfg_path,
-    )
+    # Execute deployment workflow with typed context
+    context = YOLOXExportContext(model_cfg_path=model_cfg_path)
+    runner.run(context=context)
 
 
 if __name__ == "__main__":

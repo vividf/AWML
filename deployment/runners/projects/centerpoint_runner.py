@@ -5,8 +5,9 @@ CenterPoint-specific deployment runner.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
+from deployment.core.contexts import CenterPointExportContext, ExportContext
 from deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapper
 from deployment.exporters.centerpoint.onnx_workflow import CenterPointONNXExportWorkflow
 from deployment.exporters.centerpoint.tensorrt_workflow import CenterPointTensorRTExportWorkflow
@@ -90,8 +91,7 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
     def load_pytorch_model(
         self,
         checkpoint_path: str,
-        rot_y_axis_reference: bool = False,
-        **kwargs: Any,
+        context: ExportContext,
     ) -> Any:
         """
         Build ONNX-compatible CenterPoint model from checkpoint.
@@ -103,12 +103,18 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
 
         Args:
             checkpoint_path: Path to checkpoint file
-            rot_y_axis_reference: Whether to use y-axis rotation reference
-            **kwargs: Additional arguments
+            context: Export context. Use CenterPointExportContext for type-safe access
+                     to rot_y_axis_reference. Falls back to context.extra for compatibility.
 
         Returns:
             Loaded PyTorch model (ONNX-compatible)
         """
+        # Extract rot_y_axis_reference from typed context or extra dict
+        rot_y_axis_reference: bool = False
+        if isinstance(context, CenterPointExportContext):
+            rot_y_axis_reference = context.rot_y_axis_reference
+        else:
+            rot_y_axis_reference = context.get("rot_y_axis_reference", False)
 
         model, onnx_cfg = build_centerpoint_onnx_model(
             base_model_cfg=self.model_cfg,
