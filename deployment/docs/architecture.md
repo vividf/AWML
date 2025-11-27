@@ -72,7 +72,6 @@ deployment/
 ├── exporters/            # Base exporters + project wrappers/workflows
 ├── pipelines/            # Task-specific pipelines per backend
 ├── runners/              # Shared runner + project adapters
-└── CORE_CONTRACT.md      # Dependency contract between layers
 ```
 
 Project entry points follow the same pattern under `projects/*/deploy/` with `main.py`, `data_loader.py`, `evaluator.py`, and `configs/deploy_config.py`.

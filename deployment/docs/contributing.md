@@ -28,4 +28,4 @@
 
 ## Core Contract
 
-Before touching shared components, review `deployment/CORE_CONTRACT.md` to understand allowed dependencies between runners, evaluators, pipelines, and exporters. Adhering to the contract keeps refactors safe and ensures new logic lands in the correct layer.
+Before touching shared components, review `deployment/docs/core_contract.md` to understand allowed dependencies between runners, evaluators, pipelines, and exporters. Adhering to the contract keeps refactors safe and ensures new logic lands in the correct layer.

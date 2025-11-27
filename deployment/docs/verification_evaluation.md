@@ -62,4 +62,4 @@ evaluation = dict(
 
 ## Core Contract
 
-`deployment/CORE_CONTRACT.md` documents the responsibilities and allowed dependencies between runners, evaluators, pipelines, `PipelineFactory`, and metrics adapters. Following the contract keeps refactors safe and ensures new projects remain compatible with shared infrastructure.
+`deployment/docs/core_contract.md` documents the responsibilities and allowed dependencies between runners, evaluators, pipelines, `PipelineFactory`, and metrics adapters. Following the contract keeps refactors safe and ensures new projects remain compatible with shared infrastructure.
