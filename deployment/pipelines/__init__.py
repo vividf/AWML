@@ -5,44 +5,50 @@ This module provides pipeline abstractions for models that require
 multi-stage processing with mixed PyTorch and optimized backend inference.
 """
 
-# # Calibration pipelines (classification)
-# from deployment.pipelines.calibration import (
-#     CalibrationDeploymentPipeline,
-#     CalibrationONNXPipeline,
-#     CalibrationPyTorchPipeline,
-#     CalibrationTensorRTPipeline,
-# )
+# Calibration pipelines (classification)
+from deployment.pipelines.calibration import (
+    CalibrationDeploymentPipeline,
+    CalibrationONNXPipeline,
+    CalibrationPyTorchPipeline,
+    CalibrationTensorRTPipeline,
+)
 
-# # CenterPoint pipelines (3D detection)
-# from deployment.pipelines.centerpoint import (
-#     CenterPointDeploymentPipeline,
-#     CenterPointONNXPipeline,
-#     CenterPointPyTorchPipeline,
-#     CenterPointTensorRTPipeline,
-# )
+# CenterPoint pipelines (3D detection)
+from deployment.pipelines.centerpoint import (
+    CenterPointDeploymentPipeline,
+    CenterPointONNXPipeline,
+    CenterPointPyTorchPipeline,
+    CenterPointTensorRTPipeline,
+)
 
-# # YOLOX pipelines (2D detection)
-# from deployment.pipelines.yolox import (
-#     YOLOXDeploymentPipeline,
-#     YOLOXONNXPipeline,
-#     YOLOXPyTorchPipeline,
-#     YOLOXTensorRTPipeline,
-# )
+# Pipeline factory
+from deployment.pipelines.factory import PipelineFactory, PipelineRegistry
 
-# __all__ = [
-#     # CenterPoint
-#     "CenterPointDeploymentPipeline",
-#     "CenterPointPyTorchPipeline",
-#     "CenterPointONNXPipeline",
-#     "CenterPointTensorRTPipeline",
-#     # YOLOX
-#     "YOLOXDeploymentPipeline",
-#     "YOLOXPyTorchPipeline",
-#     "YOLOXONNXPipeline",
-#     "YOLOXTensorRTPipeline",
-#     # Calibration
-#     "CalibrationDeploymentPipeline",
-#     "CalibrationPyTorchPipeline",
-#     "CalibrationONNXPipeline",
-#     "CalibrationTensorRTPipeline",
-# ]
+# YOLOX pipelines (2D detection)
+from deployment.pipelines.yolox import (
+    YOLOXDeploymentPipeline,
+    YOLOXONNXPipeline,
+    YOLOXPyTorchPipeline,
+    YOLOXTensorRTPipeline,
+)
+
+__all__ = [
+    # Factory
+    "PipelineFactory",
+    "PipelineRegistry",
+    # CenterPoint
+    "CenterPointDeploymentPipeline",
+    "CenterPointPyTorchPipeline",
+    "CenterPointONNXPipeline",
+    "CenterPointTensorRTPipeline",
+    # YOLOX
+    "YOLOXDeploymentPipeline",
+    "YOLOXPyTorchPipeline",
+    "YOLOXONNXPipeline",
+    "YOLOXTensorRTPipeline",
+    # Calibration
+    "CalibrationDeploymentPipeline",
+    "CalibrationPyTorchPipeline",
+    "CalibrationONNXPipeline",
+    "CalibrationTensorRTPipeline",
+]

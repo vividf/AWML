@@ -91,3 +91,36 @@ class BaseDataLoader(ABC):
             Total number of samples available
         """
         raise NotImplementedError
+
+    def get_shape_sample(self, index: int = 0) -> Any:
+        """
+        Return a representative sample used for export shape configuration.
+
+        This method provides a consistent interface for exporters to obtain
+        shape information without needing to know the internal structure of
+        preprocessed inputs (e.g., whether it's a single tensor, tuple, or list).
+
+        The default implementation:
+        1. Loads a sample using load_sample()
+        2. Preprocesses it using preprocess()
+        3. If the result is a list/tuple, returns the first element
+        4. Otherwise returns the preprocessed result as-is
+
+        Subclasses can override this method to provide custom shape sample logic
+        if the default behavior is insufficient.
+
+        Args:
+            index: Sample index to use (default: 0)
+
+        Returns:
+            A representative sample for shape configuration. Typically a torch.Tensor,
+            but the exact type depends on the task-specific implementation.
+        """
+        sample = self.load_sample(index)
+        preprocessed = self.preprocess(sample)
+
+        # Handle nested structures: if it's a list/tuple, use first element for shape
+        if isinstance(preprocessed, (list, tuple)):
+            return preprocessed[0] if len(preprocessed) > 0 else preprocessed
+
+        return preprocessed
