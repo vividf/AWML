@@ -670,21 +670,6 @@ class BaseDeploymentPipeline(ABC):
 
 Located in `pipelines/common/`, these provide task-specific abstractions:
 
-#### Detection2DPipeline (`pipelines/common/detection_2d_pipeline.py`)
-- Shared preprocessing: image resize, normalization, padding
-- Shared postprocessing: bbox decoding, NMS, coordinate transform
-- Backend-specific: model inference
-
-#### Detection3DPipeline (`pipelines/common/detection_3d_pipeline.py`)
-- Shared preprocessing: voxelization, feature extraction
-- Shared postprocessing: 3D bbox decoding, NMS
-- Backend-specific: voxel encoder, backbone/head inference
-
-#### ClassificationPipeline (`pipelines/common/classification_pipeline.py`)
-- Shared preprocessing: image normalization
-- Shared postprocessing: softmax, top-k selection
-- Backend-specific: model inference
-
 ### Backend Implementations
 
 Each pipeline has three backend implementations:
@@ -846,9 +831,6 @@ deployment/
 ├── pipelines/                     # Task-specific pipelines
 │   ├── common/                    # Shared pipeline classes
 │   │   ├── base_pipeline.py       # Pipeline base class
-│   │   ├── detection_2d_pipeline.py   # 2D detection pipeline
-│   │   ├── detection_3d_pipeline.py   # 3D detection pipeline
-│   │   ├── classification_pipeline.py # Classification pipeline
 │   │   └── factory.py             # PipelineFactory (backend-agnostic construction)
 │   ├── centerpoint/               # CenterPoint pipelines
 │   │   ├── centerpoint_pipeline.py

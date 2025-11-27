@@ -16,12 +16,12 @@ from mmdet.models.dense_heads.yolox_head import YOLOXHead
 from mmengine.config import ConfigDict
 from mmengine.structures import InstanceData
 
-from deployment.pipelines.common.detection_2d_pipeline import Detection2DPipeline
+from deployment.pipelines.common.base_pipeline import BaseDeploymentPipeline
 
 logger = logging.getLogger(__name__)
 
 
-class YOLOXDeploymentPipeline(Detection2DPipeline):
+class YOLOXDeploymentPipeline(BaseDeploymentPipeline):
     """
     Abstract base class for YOLOX deployment pipeline.
 
@@ -68,12 +68,13 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
         super().__init__(
             model=model,
             device=device,
-            num_classes=num_classes,
-            class_names=class_names,
-            input_size=input_size,
+            task_type="detection_2d",
             backend_type=backend_type,
         )
 
+        self.num_classes = num_classes
+        self.class_names = class_names
+        self.input_size = input_size
         self.score_threshold = score_threshold
         self.nms_threshold = nms_threshold
         self.max_detections = max_detections
@@ -304,64 +305,6 @@ class YOLOXDeploymentPipeline(Detection2DPipeline):
             )
 
         return results
-
-    def _apply_nms(self, bboxes: np.ndarray, scores: np.ndarray, class_ids: np.ndarray) -> np.ndarray:
-        """
-        Apply batched NMS (per-class NMS).
-
-        Args:
-            bboxes: Bounding boxes [N, 4]
-            scores: Confidence scores [N]
-            class_ids: Class IDs [N]
-
-        Returns:
-            Indices of boxes to keep
-        """
-        try:
-            # Try to use MMDetection's batched NMS for consistency
-            from mmcv.ops import batched_nms
-
-            bboxes_tensor = torch.from_numpy(bboxes).float()
-            scores_tensor = torch.from_numpy(scores).float()
-            class_ids_tensor = torch.from_numpy(class_ids).long()
-
-            nms_cfg = dict(type="nms", iou_threshold=self.nms_threshold)
-
-            _, keep_indices = batched_nms(bboxes_tensor, scores_tensor, class_ids_tensor, nms_cfg)
-
-            return keep_indices.cpu().numpy()
-
-        except ImportError:
-            logger.warning("mmcv.ops.batched_nms not available, using per-class NMS")
-            # Fallback to per-class NMS
-            return self._per_class_nms(bboxes, scores, class_ids)
-
-    def _per_class_nms(self, bboxes: np.ndarray, scores: np.ndarray, class_ids: np.ndarray) -> np.ndarray:
-        """
-        Apply per-class NMS (fallback implementation).
-
-        Args:
-            bboxes: Bounding boxes [N, 4]
-            scores: Confidence scores [N]
-            class_ids: Class IDs [N]
-
-        Returns:
-            Indices of boxes to keep
-        """
-        keep_indices = []
-
-        # Apply NMS per class
-        for class_id in np.unique(class_ids):
-            class_mask = class_ids == class_id
-            class_bboxes = bboxes[class_mask]
-            class_scores = scores[class_mask]
-            class_indices = np.where(class_mask)[0]
-
-            # Apply NMS for this class
-            keep = self._nms(class_bboxes, class_scores, self.nms_threshold)
-            keep_indices.extend(class_indices[keep])
-
-        return np.array(keep_indices)
 
     def __repr__(self):
         return (

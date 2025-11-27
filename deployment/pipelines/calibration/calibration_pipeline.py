@@ -8,17 +8,17 @@ while allowing backend-specific optimizations for model inference.
 
 import logging
 from abc import abstractmethod
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import numpy as np
 import torch
 
-from deployment.pipelines.common.classification_pipeline import ClassificationPipeline
+from deployment.pipelines.common.base_pipeline import BaseDeploymentPipeline
 
 logger = logging.getLogger(__name__)
 
 
-class CalibrationDeploymentPipeline(ClassificationPipeline):
+class CalibrationDeploymentPipeline(BaseDeploymentPipeline):
     """
     Abstract base class for CalibrationStatusClassification deployment pipeline.
 
@@ -52,20 +52,19 @@ class CalibrationDeploymentPipeline(ClassificationPipeline):
             class_names: List of class names (default: ["miscalibrated", "calibrated"])
             backend_type: Backend type ('pytorch', 'onnx', 'tensorrt')
         """
+        super().__init__(
+            model=model,
+            device=device,
+            task_type="classification",
+            backend_type=backend_type,
+        )
+
         # Default class names for calibration status
         if class_names is None:
             class_names = ["miscalibrated", "calibrated"]
 
-        # Initialize parent class
-        # Note: input_size is not used for calibration as preprocessing is done via transform
-        super().__init__(
-            model=model,
-            device=device,
-            num_classes=num_classes,
-            class_names=class_names,
-            input_size=(1, 1),  # Not used for calibration preprocessing
-            backend_type=backend_type,
-        )
+        self.num_classes = num_classes
+        self.class_names = class_names
 
     def preprocess(self, input_data: Any, **kwargs) -> torch.Tensor:
         """
@@ -132,7 +131,46 @@ class CalibrationDeploymentPipeline(ClassificationPipeline):
         Returns:
             Dictionary with classification results
         """
-        return super().postprocess(model_output, metadata, top_k)
+        # Convert to numpy if needed
+        if isinstance(model_output, torch.Tensor):
+            logits = model_output.cpu().numpy()
+        else:
+            logits = model_output
+
+        # Remove batch dimension if present
+        if logits.ndim == 2:
+            logits = logits[0]
+
+        # Apply softmax
+        exp_logits = np.exp(logits - np.max(logits))  # Numerical stability
+        probabilities = exp_logits / np.sum(exp_logits)
+
+        # Get predicted class
+        class_id = int(np.argmax(probabilities))
+        confidence = float(probabilities[class_id])
+        class_name = self.class_names[class_id] if class_id < len(self.class_names) else f"class_{class_id}"
+
+        # Get top-K predictions
+        top_k_indices = np.argsort(probabilities)[::-1][:top_k]
+        top_k_predictions = []
+        for idx in top_k_indices:
+            top_k_predictions.append(
+                {
+                    "class_id": int(idx),
+                    "class_name": self.class_names[idx] if idx < len(self.class_names) else f"class_{idx}",
+                    "confidence": float(probabilities[idx]),
+                }
+            )
+
+        result = {
+            "class_id": class_id,
+            "class_name": class_name,
+            "confidence": confidence,
+            "probabilities": probabilities,
+            "top_k": top_k_predictions,
+        }
+
+        return result
 
     def __repr__(self):
         return (

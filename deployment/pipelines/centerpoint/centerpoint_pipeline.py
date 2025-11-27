@@ -14,12 +14,12 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import torch
 
-from deployment.pipelines.common.detection_3d_pipeline import Detection3DPipeline
+from deployment.pipelines.common.base_pipeline import BaseDeploymentPipeline
 
 logger = logging.getLogger(__name__)
 
 
-class CenterPointDeploymentPipeline(Detection3DPipeline):
+class CenterPointDeploymentPipeline(BaseDeploymentPipeline):
     """
     Abstract base class for CenterPoint deployment pipeline.
 
@@ -62,13 +62,14 @@ class CenterPointDeploymentPipeline(Detection3DPipeline):
         super().__init__(
             model=pytorch_model,
             device=device,
-            num_classes=len(class_names),
-            class_names=class_names,
-            point_cloud_range=point_cloud_range,
-            voxel_size=voxel_size,
+            task_type="detection3d",
             backend_type=backend_type,
         )
 
+        self.num_classes = len(class_names)
+        self.class_names = class_names
+        self.point_cloud_range = point_cloud_range
+        self.voxel_size = voxel_size
         self.pytorch_model = pytorch_model
         self._stage_latencies = {}  # Store stage-wise latencies for detailed breakdown
 
