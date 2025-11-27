@@ -13,8 +13,8 @@ __all__ = [
     "BaseDeploymentRunner",
     # Project-specific runners
     "CenterPointDeploymentRunner",
-    "YOLOXOptElanDeploymentRunner",
-    "CalibrationDeploymentRunner",
+    # "YOLOXOptElanDeploymentRunner",
+    # "CalibrationDeploymentRunner",
     # Helper components (orchestrators)
     "ArtifactManager",
     "VerificationOrchestrator",

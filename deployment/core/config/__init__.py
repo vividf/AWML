@@ -12,14 +12,6 @@ from deployment.core.config.base_config import (
     parse_base_args,
     setup_logging,
 )
-from deployment.core.config.constants import (
-    EVALUATION_DEFAULTS,
-    EXPORT_DEFAULTS,
-    TASK_DEFAULTS,
-    EvaluationDefaults,
-    ExportDefaults,
-    TaskDefaults,
-)
 from deployment.core.config.runtime_config import (
     BaseRuntimeConfig,
     ClassificationRuntimeConfig,
@@ -27,6 +19,7 @@ from deployment.core.config.runtime_config import (
     Detection3DRuntimeConfig,
 )
 from deployment.core.config.task_config import TaskConfig, TaskType
+from deployment.core.evaluation.base_evaluator import EVALUATION_DEFAULTS, EvaluationDefaults
 
 __all__ = [
     "BackendConfig",
@@ -40,11 +33,7 @@ __all__ = [
     "parse_base_args",
     "setup_logging",
     "EVALUATION_DEFAULTS",
-    "EXPORT_DEFAULTS",
-    "TASK_DEFAULTS",
     "EvaluationDefaults",
-    "ExportDefaults",
-    "TaskDefaults",
     "BaseRuntimeConfig",
     "ClassificationRuntimeConfig",
     "Detection2DRuntimeConfig",

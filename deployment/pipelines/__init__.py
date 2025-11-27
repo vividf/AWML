@@ -6,12 +6,12 @@ multi-stage processing with mixed PyTorch and optimized backend inference.
 """
 
 # Calibration pipelines (classification)
-from deployment.pipelines.calibration import (
-    CalibrationDeploymentPipeline,
-    CalibrationONNXPipeline,
-    CalibrationPyTorchPipeline,
-    CalibrationTensorRTPipeline,
-)
+# from deployment.pipelines.calibration import (
+#     CalibrationDeploymentPipeline,
+#     CalibrationONNXPipeline,
+#     CalibrationPyTorchPipeline,
+#     CalibrationTensorRTPipeline,
+# )
 
 # CenterPoint pipelines (3D detection)
 from deployment.pipelines.centerpoint import (
@@ -22,33 +22,32 @@ from deployment.pipelines.centerpoint import (
 )
 
 # Pipeline factory
-from deployment.pipelines.factory import PipelineFactory, PipelineRegistry
+from deployment.pipelines.factory import PipelineFactory
 
 # YOLOX pipelines (2D detection)
-from deployment.pipelines.yolox import (
-    YOLOXDeploymentPipeline,
-    YOLOXONNXPipeline,
-    YOLOXPyTorchPipeline,
-    YOLOXTensorRTPipeline,
-)
+# from deployment.pipelines.yolox import (
+#     YOLOXDeploymentPipeline,
+#     YOLOXONNXPipeline,
+#     YOLOXPyTorchPipeline,
+#     YOLOXTensorRTPipeline,
+# )
 
 __all__ = [
     # Factory
     "PipelineFactory",
-    "PipelineRegistry",
     # CenterPoint
     "CenterPointDeploymentPipeline",
     "CenterPointPyTorchPipeline",
     "CenterPointONNXPipeline",
     "CenterPointTensorRTPipeline",
     # YOLOX
-    "YOLOXDeploymentPipeline",
-    "YOLOXPyTorchPipeline",
-    "YOLOXONNXPipeline",
-    "YOLOXTensorRTPipeline",
+    # "YOLOXDeploymentPipeline",
+    # "YOLOXPyTorchPipeline",
+    # "YOLOXONNXPipeline",
+    # "YOLOXTensorRTPipeline",
     # Calibration
-    "CalibrationDeploymentPipeline",
-    "CalibrationPyTorchPipeline",
-    "CalibrationONNXPipeline",
-    "CalibrationTensorRTPipeline",
+    # "CalibrationDeploymentPipeline",
+    # "CalibrationPyTorchPipeline",
+    # "CalibrationONNXPipeline",
+    # "CalibrationTensorRTPipeline",
 ]
