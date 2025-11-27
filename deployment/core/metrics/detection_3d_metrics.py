@@ -48,7 +48,7 @@ from deployment.core.metrics.base_metrics_adapter import BaseMetricsAdapter, Bas
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Detection3DMetricsConfig(BaseMetricsConfig):
     """Configuration for 3D detection metrics.
 
@@ -93,7 +93,7 @@ class Detection3DMetricsConfig(BaseMetricsConfig):
     def __post_init__(self):
         # Set default evaluation config if not provided
         if self.evaluation_config_dict is None:
-            self.evaluation_config_dict = {
+            default_eval_config = {
                 "evaluation_task": "detection",
                 "target_labels": self.class_names,
                 "center_distance_bev_thresholds": [0.5, 1.0, 2.0, 4.0],
@@ -105,25 +105,28 @@ class Detection3DMetricsConfig(BaseMetricsConfig):
                 "min_distance": -121.0,
                 "min_point_numbers": 0,
             }
+            object.__setattr__(self, "evaluation_config_dict", default_eval_config)
 
         # Set default critical object filter config if not provided
         if self.critical_object_filter_config is None:
             num_classes = len(self.class_names)
-            self.critical_object_filter_config = {
+            default_filter_config = {
                 "target_labels": self.class_names,
                 "ignore_attributes": None,
                 "max_distance_list": [121.0] * num_classes,
                 "min_distance_list": [-121.0] * num_classes,
             }
+            object.__setattr__(self, "critical_object_filter_config", default_filter_config)
 
         # Set default frame pass fail config if not provided
         if self.frame_pass_fail_config is None:
             num_classes = len(self.class_names)
-            self.frame_pass_fail_config = {
+            default_pass_fail_config = {
                 "target_labels": self.class_names,
                 "matching_threshold_list": [2.0] * num_classes,
                 "confidence_threshold_list": None,
             }
+            object.__setattr__(self, "frame_pass_fail_config", default_pass_fail_config)
 
 
 class Detection3DMetricsAdapter(BaseMetricsAdapter):

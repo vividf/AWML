@@ -14,7 +14,7 @@ import torch
 from deployment.exporters.common.configs import ONNXExportConfig
 
 
-@dataclass
+@dataclass(frozen=True)
 class ExportableComponent:
     """
     A model component ready for ONNX export.

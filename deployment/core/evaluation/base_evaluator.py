@@ -49,7 +49,7 @@ class EvaluationDefaults:
 EVALUATION_DEFAULTS = EvaluationDefaults()
 
 
-@dataclass
+@dataclass(frozen=True)
 class TaskProfile:
     """
     Profile describing task-specific evaluation behavior.
@@ -68,7 +68,7 @@ class TaskProfile:
 
     def __post_init__(self):
         if not self.display_name:
-            self.display_name = self.task_name
+            object.__setattr__(self, "display_name", self.task_name)
 
 
 class BaseEvaluator(VerificationMixin, ABC):
