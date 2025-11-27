@@ -19,7 +19,6 @@ import numpy as np
 import torch
 
 from deployment.core.backend import Backend
-from deployment.core.config.constants import EVALUATION_DEFAULTS
 from deployment.core.evaluation.evaluator_types import EvalResultDict, ModelSpec, VerifyResultDict
 from deployment.core.evaluation.verification_mixin import VerificationMixin
 from deployment.core.io.base_data_loader import BaseDataLoader
@@ -32,9 +31,22 @@ __all__ = [
     "ModelSpec",
     "TaskProfile",
     "BaseEvaluator",
+    "EvaluationDefaults",
+    "EVALUATION_DEFAULTS",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class EvaluationDefaults:
+    """Default values for evaluation settings."""
+
+    LOG_INTERVAL: int = 50
+    GPU_CLEANUP_INTERVAL: int = 10
+
+
+EVALUATION_DEFAULTS = EvaluationDefaults()
 
 
 @dataclass

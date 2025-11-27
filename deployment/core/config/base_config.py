@@ -79,11 +79,6 @@ class ExportConfig:
     mode: ExportMode = ExportMode.BOTH
     work_dir: str = "work_dirs"
     onnx_path: Optional[str] = None
-    tensorrt_path: Optional[str] = None
-    cuda_device: str = "cuda:0"
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "cuda_device", self._parse_cuda_device(self.cuda_device))
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "ExportConfig":
@@ -92,8 +87,6 @@ class ExportConfig:
             mode=ExportMode.from_value(config_dict.get("mode", ExportMode.BOTH)),
             work_dir=config_dict.get("work_dir", cls.work_dir),
             onnx_path=config_dict.get("onnx_path"),
-            tensorrt_path=config_dict.get("tensorrt_path"),
-            cuda_device=config_dict.get("cuda_device", cls.cuda_device),
         )
 
     def should_export_onnx(self) -> bool:
@@ -104,44 +97,61 @@ class ExportConfig:
         """Check if TensorRT export is requested."""
         return self.mode in (ExportMode.TRT, ExportMode.BOTH)
 
+
+@dataclass(frozen=True)
+class DeviceConfig:
+    """Normalized device settings shared across deployment stages."""
+
+    cpu: str = "cpu"
+    cuda: Optional[str] = "cuda:0"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "cpu", self._normalize_cpu(self.cpu))
+        object.__setattr__(self, "cuda", self._normalize_cuda(self.cuda))
+
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> "DeviceConfig":
+        """Create DeviceConfig from dict."""
+        return cls(cpu=config_dict.get("cpu", cls.cpu), cuda=config_dict.get("cuda", cls.cuda))
+
     @staticmethod
-    def _parse_cuda_device(device: Optional[str]) -> str:
-        """Parse and normalize CUDA device string to 'cuda:N' format."""
+    def _normalize_cpu(device: Optional[str]) -> str:
+        """Normalize CPU device string."""
+        if not device:
+            return "cpu"
+        normalized = str(device).strip().lower()
+        if normalized.startswith("cuda"):
+            raise ValueError("CPU device cannot be a CUDA device")
+        return normalized
+
+    @staticmethod
+    def _normalize_cuda(device: Optional[str]) -> Optional[str]:
+        """Normalize CUDA device string to 'cuda:N' format."""
         if device is None:
-            return "cuda:0"
-
+            return None
         if not isinstance(device, str):
-            raise ValueError("cuda_device must be a string (e.g., 'cuda:0')")
-
+            raise ValueError("cuda device must be a string (e.g., 'cuda:0')")
         normalized = device.strip().lower()
         if normalized == "":
-            normalized = "cuda:0"
-
+            return None
         if normalized == "cuda":
             normalized = "cuda:0"
-
         if not normalized.startswith("cuda"):
-            raise ValueError(f"Invalid cuda_device '{device}'. Must start with 'cuda'")
-
-        if ":" in normalized:
-            suffix = normalized.split(":", 1)[1]
-            suffix = suffix.strip()
-            if suffix == "":
-                suffix = "0"
-            if not suffix.isdigit():
-                raise ValueError(f"Invalid CUDA device index in '{device}'")
-            device_id = int(suffix)
-        else:
-            device_id = 0
-
+            raise ValueError(f"Invalid CUDA device '{device}'. Must start with 'cuda'")
+        suffix = normalized.split(":", 1)[1] if ":" in normalized else "0"
+        suffix = suffix.strip() or "0"
+        if not suffix.isdigit():
+            raise ValueError(f"Invalid CUDA device index in '{device}'")
+        device_id = int(suffix)
         if device_id < 0:
             raise ValueError("CUDA device index must be non-negative")
-
         return f"cuda:{device_id}"
 
-    def get_cuda_device_index(self) -> int:
-        """Return CUDA device index as integer."""
-        return int(self.cuda_device.split(":", 1)[1])
+    def get_cuda_device_index(self) -> Optional[int]:
+        """Return CUDA device index as integer (if configured)."""
+        if self.cuda is None:
+            return None
+        return int(self.cuda.split(":", 1)[1])
 
 
 @dataclass(frozen=True)
@@ -301,6 +311,7 @@ class BaseDeploymentConfig:
         self._validate_config()
 
         self._checkpoint_path: Optional[str] = deploy_cfg.get("checkpoint_path")
+        self._device_config = DeviceConfig.from_dict(deploy_cfg.get("devices", {}) or {})
 
         # Initialize config sections
         self.export_config = ExportConfig.from_dict(deploy_cfg.get("export", {}))
@@ -339,8 +350,14 @@ class BaseDeploymentConfig:
         if not self._needs_cuda_device():
             return
 
-        cuda_device = self.export_config.cuda_device
-        device_idx = self.export_config.get_cuda_device_index()
+        cuda_device = self.devices.cuda
+        device_idx = self.devices.get_cuda_device_index()
+
+        if cuda_device is None or device_idx is None:
+            raise RuntimeError(
+                "CUDA device is required (TensorRT export/verification/evaluation enabled) but no CUDA device was"
+                " configured in deploy_cfg.devices."
+            )
 
         if not torch.cuda.is_available():
             raise RuntimeError(
@@ -403,6 +420,11 @@ class BaseDeploymentConfig:
     def verification_config(self) -> VerificationConfig:
         """Get verification configuration."""
         return self._verification_config
+
+    @property
+    def devices(self) -> DeviceConfig:
+        """Get normalized device settings."""
+        return self._device_config
 
     def get_evaluation_backends(self) -> Dict[str, Dict[str, Any]]:
         """

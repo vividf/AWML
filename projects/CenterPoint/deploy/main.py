@@ -59,12 +59,12 @@ def main():
     logger.info(f"  Export mode: {config.export_config.mode.value}")
     logger.info(f"  Work dir: {config.export_config.work_dir}")
     logger.info(f"  Verify: {config.verification_config.enabled}")
-    logger.info(f"  CUDA device (TensorRT): {config.export_config.cuda_device}")
+    logger.info(f"  CUDA device (TensorRT): {config.devices.cuda}")
     eval_devices_cfg = config.evaluation_config.devices
     logger.info("  Evaluation devices:")
     logger.info(f"    PyTorch: {eval_devices_cfg.get('pytorch', 'cpu')}")
     logger.info(f"    ONNX: {eval_devices_cfg.get('onnx', 'cpu')}")
-    logger.info(f"    TensorRT: {eval_devices_cfg.get('tensorrt', config.export_config.cuda_device)}")
+    logger.info(f"    TensorRT: {eval_devices_cfg.get('tensorrt', config.devices.cuda)}")
     logger.info(f"  Y-axis rotation: {args.rot_y_axis_reference}")
     logger.info(f"  Runner will build ONNX-compatible model internally")
 

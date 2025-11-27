@@ -1,8 +1,5 @@
 """
 Pipeline factory for centralized pipeline instantiation.
-
-This module provides a factory for creating task-specific pipelines,
-eliminating duplicated backend switching logic across evaluators.
 """
 
 import logging
@@ -15,52 +12,9 @@ from deployment.pipelines.common.base_pipeline import BaseDeploymentPipeline
 logger = logging.getLogger(__name__)
 
 
-class PipelineRegistry:
-    """
-    Registry for pipeline classes.
-
-    Each task type registers its pipeline classes for different backends.
-    """
-
-    _registry: Dict[str, Dict[Backend, Type[BaseDeploymentPipeline]]] = {}
-
-    @classmethod
-    def register(
-        cls,
-        task_type: str,
-        backend: Backend,
-        pipeline_cls: Type[BaseDeploymentPipeline],
-    ) -> None:
-        """Register a pipeline class for a task type and backend."""
-        if task_type not in cls._registry:
-            cls._registry[task_type] = {}
-        cls._registry[task_type][backend] = pipeline_cls
-
-    @classmethod
-    def get(cls, task_type: str, backend: Backend) -> Optional[Type[BaseDeploymentPipeline]]:
-        """Get a pipeline class for a task type and backend."""
-        return cls._registry.get(task_type, {}).get(backend)
-
-    @classmethod
-    def register_task(
-        cls,
-        task_type: str,
-        pytorch_cls: Type[BaseDeploymentPipeline],
-        onnx_cls: Type[BaseDeploymentPipeline],
-        tensorrt_cls: Type[BaseDeploymentPipeline],
-    ) -> None:
-        """Register all backend pipelines for a task type."""
-        cls.register(task_type, Backend.PYTORCH, pytorch_cls)
-        cls.register(task_type, Backend.ONNX, onnx_cls)
-        cls.register(task_type, Backend.TENSORRT, tensorrt_cls)
-
-
 class PipelineFactory:
     """
     Factory for creating deployment pipelines.
-
-    This factory centralizes pipeline creation logic, eliminating the
-    duplicated backend switching code in evaluators.
     """
 
     @staticmethod

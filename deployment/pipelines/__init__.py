@@ -22,7 +22,7 @@ from deployment.pipelines.centerpoint import (
 )
 
 # Pipeline factory
-from deployment.pipelines.factory import PipelineFactory, PipelineRegistry
+from deployment.pipelines.factory import PipelineFactory
 
 # YOLOX pipelines (2D detection)
 from deployment.pipelines.yolox import (
@@ -35,7 +35,6 @@ from deployment.pipelines.yolox import (
 __all__ = [
     # Factory
     "PipelineFactory",
-    "PipelineRegistry",
     # CenterPoint
     "CenterPointDeploymentPipeline",
     "CenterPointPyTorchPipeline",

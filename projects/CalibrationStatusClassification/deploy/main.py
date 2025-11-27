@@ -56,7 +56,7 @@ def main():
     logger.info(f"  Export mode: {config.export_config.mode.value}")
     logger.info(f"  Work dir: {config.export_config.work_dir}")
     logger.info(f"  Verify: {config.verification_config.enabled}")
-    logger.info(f"  CUDA device (TensorRT): {config.export_config.cuda_device}")
+    logger.info(f"  CUDA device (TensorRT): {config.devices.cuda}")
 
     # Validate checkpoint path for export
     if config.export_config.should_export_onnx():

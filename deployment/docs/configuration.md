@@ -11,6 +11,11 @@ task_type = "detection3d"  # or "detection2d", "classification"
 # Checkpoint (single source of truth)
 checkpoint_path = "model.pth"
 
+devices = dict(
+    cpu="cpu",
+    cuda="cuda:0",
+)
+
 export = dict(
     mode="both",          # "onnx", "trt", "both", "none"
     work_dir="work_dirs/deployment",
@@ -49,11 +54,11 @@ verification = dict(
     enabled=True,
     num_verify_samples=3,
     tolerance=0.1,
-    devices={"cpu": "cpu", "cuda": "cuda:0"},
+    devices=devices,
     scenarios={
         "both": [
             {"ref_backend": "pytorch", "ref_device": "cpu",
-             "test_backend": "onnx", "test_device": "cpu"},
+             "test_backend": "onnx", "test_device": "cuda"},
         ]
     }
 )
@@ -63,12 +68,16 @@ evaluation = dict(
     num_samples=100,
     verbose=False,
     backends={
-        "pytorch": {"enabled": True, "device": "cpu"},
-        "onnx": {"enabled": True, "device": "cpu"},
-        "tensorrt": {"enabled": True, "device": "cuda:0"},
+        "pytorch": {"enabled": True, "device": devices["cpu"]},
+        "onnx": {"enabled": True, "device": devices["cpu"]},
+        "tensorrt": {"enabled": True, "device": devices["cuda"]},
     }
 )
 ```
+
+### Device Aliases
+
+Keep device definitions centralized by declaring a top-level `devices` dictionary and referencing aliases (for example, `devices["cuda"]`). Updating the mapping once automatically propagates to export, evaluation, and verification blocks without digging into nested dictionaries.
 
 ## Backend Enum
 
@@ -79,9 +88,9 @@ from deployment.core import Backend
 
 evaluation = dict(
     backends={
-        Backend.PYTORCH: {"enabled": True, "device": "cpu"},
-        Backend.ONNX: {"enabled": True, "device": "cpu"},
-        Backend.TENSORRT: {"enabled": True, "device": "cuda:0"},
+        Backend.PYTORCH: {"enabled": True, "device": devices["cpu"]},
+        Backend.ONNX: {"enabled": True, "device": devices["cpu"]},
+        Backend.TENSORRT: {"enabled": True, "device": devices["cuda"]},
     }
 )
 ```

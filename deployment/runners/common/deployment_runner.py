@@ -198,12 +198,8 @@ class BaseDeploymentRunner:
         results["tensorrt_path"] = export_result.tensorrt_path
 
         # Phase 2: Verification
-        checkpoint_path = self.config.checkpoint_path
         verification_results = self.verification_orchestrator.run(
             artifact_manager=self.artifact_manager,
-            pytorch_checkpoint=checkpoint_path,
-            onnx_path=results["onnx_path"],
-            tensorrt_path=results["tensorrt_path"],
         )
         results["verification_results"] = verification_results
 

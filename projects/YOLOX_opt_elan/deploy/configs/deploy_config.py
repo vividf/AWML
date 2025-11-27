@@ -20,6 +20,14 @@ task_type = "detection2d"
 checkpoint_path = "work_dirs/old_yolox_elan/yolox_epoch24.pth"
 
 # ============================================================================
+# Device settings (shared by export, evaluation, verification)
+# ============================================================================
+devices = dict(
+    cpu="cpu",
+    cuda="cuda:0",
+)
+
+# ============================================================================
 # Export Configuration
 # ============================================================================
 export = dict(
@@ -122,19 +130,19 @@ evaluation = dict(
         # PyTorch evaluation (uses top-level checkpoint_path)
         pytorch=dict(
             enabled=True,
-            device="cuda:0",  # or 'cpu'
+            device=devices["cuda"],  # or 'cpu'
         ),
         # ONNX evaluation
         onnx=dict(
             enabled=True,
-            device="cuda:0",  # 'cpu' or 'cuda:0'
+            device=devices["cuda"],  # 'cpu' or 'cuda:0'
             # If None: pipeline will infer from export.work_dir / onnx_config.save_file
             model_dir="work_dirs/yolox_opt_elan_deployment/onnx/yolox_opt_elan.onnx",
         ),
         # TensorRT evaluation
         tensorrt=dict(
             enabled=True,
-            device="cuda:0",  # must be CUDA
+            device=devices["cuda"],  # must be CUDA
             # If None: pipeline will infer from export.work_dir + "/tensorrt"
             engine_dir="work_dirs/yolox_opt_elan_deployment/tensorrt/yolox_opt_elan.engine",
         ),
@@ -158,10 +166,7 @@ verification = dict(
     # - Change all CPU verifications to "cuda:1"? Just update devices["cpu"] = "cuda:1"
     # - Switch ONNX verification device? Just update devices["cuda"] = "cuda:1"
     # - Scenarios reference these aliases (e.g., ref_device="cpu", test_device="cuda")
-    devices=dict(
-        cpu="cpu",  # Alias for CPU device
-        cuda="cuda:0",  # Alias for CUDA device (can be changed to cuda:1, cuda:2, etc.)
-    ),
+    devices=devices,
     # Verification scenarios per export mode
     #
     # Each policy is a list of comparison pairs:
