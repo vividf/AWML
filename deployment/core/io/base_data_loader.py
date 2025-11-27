@@ -92,6 +92,20 @@ class BaseDataLoader(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def get_ground_truth(self, index: int) -> Dict[str, Any]:
+        """
+        Get ground truth annotations for a specific sample.
+
+        Args:
+            index: Sample index whose annotations should be returned
+
+        Returns:
+            Dictionary containing task-specific ground truth data.
+            Implementations should raise IndexError if the index is invalid.
+        """
+        raise NotImplementedError
+
     def get_shape_sample(self, index: int = 0) -> Any:
         """
         Return a representative sample used for export shape configuration.
