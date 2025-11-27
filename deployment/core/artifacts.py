@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class Artifact:
     """Represents a produced deployment artifact such as ONNX or TensorRT outputs."""
 

@@ -35,7 +35,7 @@ from deployment.core.metrics.base_metrics_adapter import BaseMetricsAdapter, Bas
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ClassificationMetricsConfig(BaseMetricsConfig):
     """Configuration for classification metrics.
 

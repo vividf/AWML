@@ -66,7 +66,7 @@ VALID_2D_FRAME_IDS = [
 ]
 
 
-@dataclass
+@dataclass(frozen=True)
 class Detection2DMetricsConfig(BaseMetricsConfig):
     """Configuration for 2D detection metrics.
 
@@ -93,12 +93,12 @@ class Detection2DMetricsConfig(BaseMetricsConfig):
         # Validate frame_id for 2D detection
         if self.frame_id not in VALID_2D_FRAME_IDS:
             raise ValueError(
-                f"Invalid frame_id '{self.frame_id}' for 2D detection. " f"Valid options: {VALID_2D_FRAME_IDS}"
+                f"Invalid frame_id '{self.frame_id}' for 2D detection. Valid options: {VALID_2D_FRAME_IDS}"
             )
 
         # Set default evaluation config if not provided
         if self.evaluation_config_dict is None:
-            self.evaluation_config_dict = {
+            default_eval_config = {
                 "evaluation_task": "detection2d",
                 "target_labels": self.class_names,
                 "iou_2d_thresholds": self.iou_thresholds,
@@ -107,22 +107,25 @@ class Detection2DMetricsConfig(BaseMetricsConfig):
                 "iou_3d_thresholds": None,
                 "label_prefix": "autoware",
             }
+            object.__setattr__(self, "evaluation_config_dict", default_eval_config)
 
         # Set default critical object filter config if not provided
         if self.critical_object_filter_config is None:
-            self.critical_object_filter_config = {
+            default_filter_config = {
                 "target_labels": self.class_names,
                 "ignore_attributes": None,
             }
+            object.__setattr__(self, "critical_object_filter_config", default_filter_config)
 
         # Set default frame pass fail config if not provided
         if self.frame_pass_fail_config is None:
             num_classes = len(self.class_names)
-            self.frame_pass_fail_config = {
+            default_pass_fail_config = {
                 "target_labels": self.class_names,
                 "matching_threshold_list": [0.5] * num_classes,
                 "confidence_threshold_list": None,
             }
+            object.__setattr__(self, "frame_pass_fail_config", default_pass_fail_config)
 
 
 class Detection2DMetricsAdapter(BaseMetricsAdapter):
