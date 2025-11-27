@@ -5,6 +5,7 @@ from deployment.core.backend import Backend
 from deployment.core.config.base_config import (
     BackendConfig,
     BaseDeploymentConfig,
+    DeviceConfig,
     EvaluationConfig,
     ExportConfig,
     ExportMode,
@@ -13,14 +14,6 @@ from deployment.core.config.base_config import (
     VerificationScenario,
     parse_base_args,
     setup_logging,
-)
-from deployment.core.config.constants import (
-    EVALUATION_DEFAULTS,
-    EXPORT_DEFAULTS,
-    TASK_DEFAULTS,
-    EvaluationDefaults,
-    ExportDefaults,
-    TaskDefaults,
 )
 from deployment.core.config.runtime_config import (
     BaseRuntimeConfig,
@@ -33,14 +26,13 @@ from deployment.core.contexts import (
     CalibrationExportContext,
     CenterPointExportContext,
     ExportContext,
-    ExportContextType,
-    PreprocessContext,
     YOLOXExportContext,
-    create_export_context,
 )
 from deployment.core.evaluation.base_evaluator import (
+    EVALUATION_DEFAULTS,
     BaseEvaluator,
     EvalResultDict,
+    EvaluationDefaults,
     ModelSpec,
     TaskProfile,
     VerifyResultDict,
@@ -75,17 +67,15 @@ __all__ = [
     "Backend",
     # Typed contexts
     "ExportContext",
-    "ExportContextType",
     "YOLOXExportContext",
     "CenterPointExportContext",
     "CalibrationExportContext",
-    "PreprocessContext",
-    "create_export_context",
     "BaseDeploymentConfig",
     "ExportConfig",
     "ExportMode",
     "RuntimeConfig",
     "BackendConfig",
+    "DeviceConfig",
     "EvaluationConfig",
     "VerificationConfig",
     "VerificationScenario",
@@ -101,11 +91,7 @@ __all__ = [
     "ClassificationRuntimeConfig",
     # Constants
     "EVALUATION_DEFAULTS",
-    "EXPORT_DEFAULTS",
-    "TASK_DEFAULTS",
     "EvaluationDefaults",
-    "ExportDefaults",
-    "TaskDefaults",
     # Data loading
     "BaseDataLoader",
     # Evaluation

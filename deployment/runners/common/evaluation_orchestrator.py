@@ -142,7 +142,7 @@ class EvaluationOrchestrator:
             device = str(backend_cfg.get("device", "cpu") or "cpu")
 
             # Use artifact_manager to resolve artifact
-            artifact, is_valid = artifact_manager.resolve_artifact(backend_enum, backend_cfg)
+            artifact, is_valid = artifact_manager.resolve_artifact(backend_enum)
 
             if is_valid and artifact:
                 spec = ModelSpec(backend=backend_enum, device=device, artifact=artifact)
@@ -164,7 +164,7 @@ class EvaluationOrchestrator:
         Returns:
             Normalized device string
         """
-        normalized_device = str(device or "cpu")
+        normalized_device = str(device or self._get_default_device(backend) or "cpu")
 
         if backend in (Backend.PYTORCH, Backend.ONNX):
             if normalized_device not in ("cpu",) and not normalized_device.startswith("cuda"):
@@ -174,7 +174,7 @@ class EvaluationOrchestrator:
                 normalized_device = "cpu"
         elif backend is Backend.TENSORRT:
             if not normalized_device or normalized_device == "cpu":
-                normalized_device = self.config.export_config.cuda_device or "cuda:0"
+                normalized_device = self.config.devices.cuda or "cuda:0"
             if not normalized_device.startswith("cuda"):
                 self.logger.warning(
                     "TensorRT evaluation requires CUDA device. "
@@ -183,6 +183,12 @@ class EvaluationOrchestrator:
                 normalized_device = "cuda:0"
 
         return normalized_device
+
+    def _get_default_device(self, backend: Backend) -> str:
+        """Return default device for a backend when config omits explicit value."""
+        if backend is Backend.TENSORRT:
+            return self.config.devices.cuda or "cuda:0"
+        return self.config.devices.cpu or "cpu"
 
     def _print_cross_backend_comparison(self, all_results: Dict[str, Any]) -> None:
         """

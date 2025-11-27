@@ -66,9 +66,9 @@ class TensorRTExporter(BaseExporter):
         self.logger.info(f"  ONNX source: {onnx_path}")
         self.logger.info(f"  Engine output: {output_path}")
 
-        return self._export_single_file(onnx_path, output_path, sample_input)
+        return self._do_tensorrt_export(onnx_path, output_path, sample_input)
 
-    def _export_single_file(
+    def _do_tensorrt_export(
         self,
         onnx_path: str,
         output_path: str,

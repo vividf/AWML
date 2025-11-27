@@ -7,9 +7,8 @@ This module handles scenario-based verification across different backends.
 import logging
 from typing import Any, Dict
 
-from deployment.core.artifacts import Artifact
 from deployment.core.backend import Backend
-from deployment.core.config.base_config import BaseDeploymentConfig, ExportMode
+from deployment.core.config.base_config import BaseDeploymentConfig
 from deployment.core.evaluation.base_evaluator import BaseEvaluator
 from deployment.core.evaluation.evaluator_types import ModelSpec
 from deployment.core.io.base_data_loader import BaseDataLoader
@@ -22,7 +21,7 @@ class VerificationOrchestrator:
 
     This class handles:
     - Running verification scenarios from config
-    - Resolving model paths for each scenario
+    - Resolving model paths via ArtifactManager
     - Collecting and aggregating verification results
     - Logging verification progress and results
     """
@@ -48,21 +47,12 @@ class VerificationOrchestrator:
         self.data_loader = data_loader
         self.logger = logger
 
-    def run(
-        self,
-        artifact_manager: ArtifactManager,
-        pytorch_checkpoint: str = None,
-        onnx_path: str = None,
-        tensorrt_path: str = None,
-    ) -> Dict[str, Any]:
+    def run(self, artifact_manager: ArtifactManager) -> Dict[str, Any]:
         """
         Run verification on exported models using policy-based verification.
 
         Args:
             artifact_manager: Artifact manager for resolving model paths
-            pytorch_checkpoint: Path to PyTorch checkpoint (optional)
-            onnx_path: Path to ONNX model file/directory (optional)
-            tensorrt_path: Path to TensorRT engine file/directory (optional)
 
         Returns:
             Verification results dictionary
@@ -81,21 +71,26 @@ class VerificationOrchestrator:
             self.logger.info(f"No verification scenarios for export mode '{export_mode.value}', skipping...")
             return {}
 
-        # Check if PyTorch checkpoint is needed
+        # Check if PyTorch checkpoint is needed and available
         needs_pytorch = any(
             policy.ref_backend is Backend.PYTORCH or policy.test_backend is Backend.PYTORCH for policy in scenarios
         )
 
-        if needs_pytorch and not pytorch_checkpoint:
-            self.logger.warning(
-                "PyTorch checkpoint path not available, but required by verification scenarios. "
-                "Skipping verification."
-            )
-            return {}
+        if needs_pytorch:
+            pytorch_artifact, pytorch_valid = artifact_manager.resolve_artifact(Backend.PYTORCH)
+            if not pytorch_valid:
+                self.logger.warning(
+                    "PyTorch checkpoint not available, but required by verification scenarios. "
+                    "Skipping verification."
+                )
+                return {}
 
         num_verify_samples = verification_cfg.num_verify_samples
         tolerance = verification_cfg.tolerance
-        devices_map = verification_cfg.devices or {}
+        devices_map = dict(verification_cfg.devices or {})
+        devices_map.setdefault("cpu", self.config.devices.cpu or "cpu")
+        if self.config.devices.cuda:
+            devices_map.setdefault("cuda", self.config.devices.cuda)
 
         self.logger.info("=" * 80)
         self.logger.info(f"Running Verification (mode: {export_mode.value})")
@@ -115,20 +110,21 @@ class VerificationOrchestrator:
                 f"{policy.ref_backend.value}({ref_device}) vs {policy.test_backend.value}({test_device})"
             )
 
-            # Resolve model paths based on backend
-            ref_path = self._resolve_backend_path(policy.ref_backend, pytorch_checkpoint, onnx_path, tensorrt_path)
-            test_path = self._resolve_backend_path(policy.test_backend, pytorch_checkpoint, onnx_path, tensorrt_path)
+            # Resolve artifacts via ArtifactManager
+            ref_artifact, ref_valid = artifact_manager.resolve_artifact(policy.ref_backend)
+            test_artifact, test_valid = artifact_manager.resolve_artifact(policy.test_backend)
 
-            if not ref_path or not test_path:
-                self.logger.warning(f"  Skipping: missing paths (ref={ref_path}, test={test_path})")
+            if not ref_valid or not test_valid:
+                ref_path = ref_artifact.path if ref_artifact else None
+                test_path = test_artifact.path if test_artifact else None
+                self.logger.warning(
+                    f"  Skipping: missing or invalid artifacts "
+                    f"(ref={ref_path}, valid={ref_valid}, test={test_path}, valid={test_valid})"
+                )
                 continue
 
-            # Create artifacts and model specs
-            ref_artifact = self._create_artifact(policy.ref_backend, ref_path)
-            test_artifact = self._create_artifact(policy.test_backend, test_path)
-
+            # Create model specs
             reference_spec = ModelSpec(backend=policy.ref_backend, device=ref_device, artifact=ref_artifact)
-
             test_spec = ModelSpec(backend=policy.test_backend, device=test_device, artifact=test_artifact)
 
             # Run verification
@@ -188,47 +184,5 @@ class VerificationOrchestrator:
         if device_key in devices_map:
             return devices_map[device_key]
         else:
-            # Fallback: use the key directly
             self.logger.warning(f"Device alias '{device_key}' not found in devices map, using as-is")
             return device_key
-
-    def _resolve_backend_path(
-        self, backend: Backend, pytorch_checkpoint: str, onnx_path: str, tensorrt_path: str
-    ) -> str:
-        """
-        Resolve model path for a backend.
-
-        Args:
-            backend: Backend identifier
-            pytorch_checkpoint: PyTorch checkpoint path
-            onnx_path: ONNX model path
-            tensorrt_path: TensorRT engine path
-
-        Returns:
-            Model path for the backend, or None if not available
-        """
-        if backend == Backend.PYTORCH:
-            return pytorch_checkpoint
-        elif backend == Backend.ONNX:
-            return onnx_path
-        elif backend == Backend.TENSORRT:
-            return tensorrt_path
-        else:
-            self.logger.warning(f"Unknown backend: {backend}")
-            return None
-
-    def _create_artifact(self, backend: Backend, path: str) -> Artifact:
-        """
-        Create artifact from path.
-
-        Args:
-            backend: Backend identifier
-            path: Model path
-
-        Returns:
-            Artifact instance
-        """
-        import os
-
-        multi_file = os.path.isdir(path) if path and os.path.exists(path) else False
-        return Artifact(path=path, multi_file=multi_file)
