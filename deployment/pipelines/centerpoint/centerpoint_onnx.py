@@ -6,7 +6,7 @@ optimizing voxel encoder and backbone/head while keeping middle encoder in PyTor
 """
 
 import logging
-import os
+import os.path as osp
 from typing import List
 
 import numpy as np
@@ -47,13 +47,13 @@ class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
     def _load_onnx_models(self, device: str):
         """Load ONNX models for voxel encoder and backbone/head."""
         # Define model paths
-        voxel_encoder_path = os.path.join(self.onnx_dir, "pts_voxel_encoder.onnx")
-        backbone_head_path = os.path.join(self.onnx_dir, "pts_backbone_neck_head.onnx")
+        voxel_encoder_path = osp.join(self.onnx_dir, "pts_voxel_encoder.onnx")
+        backbone_head_path = osp.join(self.onnx_dir, "pts_backbone_neck_head.onnx")
 
         # Verify files exist
-        if not os.path.exists(voxel_encoder_path):
+        if not osp.exists(voxel_encoder_path):
             raise FileNotFoundError(f"Voxel encoder ONNX not found: {voxel_encoder_path}")
-        if not os.path.exists(backbone_head_path):
+        if not osp.exists(backbone_head_path):
             raise FileNotFoundError(f"Backbone head ONNX not found: {backbone_head_path}")
 
         # Create session options

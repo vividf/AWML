@@ -6,7 +6,7 @@ providing maximum inference speed on NVIDIA GPUs.
 """
 
 import logging
-import os
+import os.path as osp
 from typing import List
 
 import numpy as np
@@ -80,9 +80,9 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
         }
 
         for component, engine_file in engine_files.items():
-            engine_path = os.path.join(self.tensorrt_dir, engine_file)
+            engine_path = osp.join(self.tensorrt_dir, engine_file)
 
-            if not os.path.exists(engine_path):
+            if not osp.exists(engine_path):
                 raise FileNotFoundError(f"TensorRT engine not found: {engine_path}")
 
             try:
