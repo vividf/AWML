@@ -66,7 +66,7 @@ class Detection2DResult:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class ClassificationResult:
     """Result for a classification prediction."""
 
@@ -163,7 +163,7 @@ class StageLatencyBreakdown:
         return result
 
 
-@dataclass
+@dataclass(frozen=True)
 class EvaluationMetrics:
     """Base class for evaluation metrics."""
 
@@ -182,7 +182,7 @@ class EvaluationMetrics:
         return result
 
 
-@dataclass
+@dataclass(frozen=True)
 class Detection3DEvaluationMetrics(EvaluationMetrics):
     """Evaluation metrics for 3D detection."""
 
@@ -213,7 +213,7 @@ class Detection3DEvaluationMetrics(EvaluationMetrics):
         return result
 
 
-@dataclass
+@dataclass(frozen=True)
 class Detection2DEvaluationMetrics(EvaluationMetrics):
     """Evaluation metrics for 2D detection."""
 
@@ -238,7 +238,7 @@ class Detection2DEvaluationMetrics(EvaluationMetrics):
         return result
 
 
-@dataclass
+@dataclass(frozen=True)
 class ClassificationEvaluationMetrics(EvaluationMetrics):
     """Evaluation metrics for classification."""
 

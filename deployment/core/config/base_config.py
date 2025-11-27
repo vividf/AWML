@@ -232,7 +232,7 @@ class EvaluationConfig:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class VerificationConfig:
     """Typed configuration for verification settings."""
 
