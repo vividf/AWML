@@ -8,9 +8,9 @@ import logging
 from typing import Type
 
 from deployment.core import BaseDeploymentConfig
-from deployment.exporters.base.model_wrappers import BaseModelWrapper
-from deployment.exporters.base.onnx_exporter import ONNXExporter
-from deployment.exporters.base.tensorrt_exporter import TensorRTExporter
+from deployment.exporters.common.model_wrappers import BaseModelWrapper
+from deployment.exporters.common.onnx_exporter import ONNXExporter
+from deployment.exporters.common.tensorrt_exporter import TensorRTExporter
 
 
 class ExporterFactory:

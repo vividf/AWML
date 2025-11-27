@@ -75,7 +75,7 @@ class BaseDeploymentPipeline(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def run_model(self, preprocessed_input: Any) -> Union[Any, Tuple]:
+    def run_model(self, preprocessed_input: Any) -> Union[Any, Tuple[Any, Dict[str, float]]]:
         """
         Run model inference (backend-specific).
 
@@ -86,7 +86,18 @@ class BaseDeploymentPipeline(ABC):
             preprocessed_input: Preprocessed input data
 
         Returns:
-            Model output (raw tensors or backend-specific format)
+            Model output, or Tuple of (model_output, stage_latencies)
+
+            If a tuple is returned:
+            - model_output: Raw tensors or backend-specific format
+            - stage_latencies: Dict mapping stage names to latency in ms
+
+            If single value is returned, it's treated as model_output with no stage latencies.
+
+        Note:
+            Returning stage latencies as a tuple is the recommended pattern to avoid
+            race conditions when pipelines are reused across multiple threads.
+            Use local variables instead of instance variables for per-request data.
         """
         raise NotImplementedError
 
@@ -163,11 +174,21 @@ class BaseDeploymentPipeline(ABC):
 
             # Run model (backend-specific)
             model_start = time.perf_counter()
-            model_output = self.run_model(model_input)
+            model_result = self.run_model(model_input)
             model_time = time.perf_counter()
             latency_breakdown["model_ms"] = (model_time - model_start) * 1000
 
-            # Merge stage-wise latencies if available
+            # Handle returned stage latencies (new pattern - thread-safe)
+            stage_latencies = {}
+            if isinstance(model_result, tuple) and len(model_result) == 2:
+                model_output, stage_latencies = model_result
+                if isinstance(stage_latencies, dict):
+                    latency_breakdown.update(stage_latencies)
+            else:
+                model_output = model_result
+
+            # Legacy: Merge stage-wise latencies from instance variable (deprecated)
+            # This is kept for backward compatibility but should be removed eventually
             if hasattr(self, "_stage_latencies") and isinstance(self._stage_latencies, dict):
                 latency_breakdown.update(self._stage_latencies)
                 # Clear for next inference
@@ -191,6 +212,18 @@ class BaseDeploymentPipeline(ABC):
             logger.exception("Inference failed.")
             raise
 
+    def cleanup(self) -> None:
+        """
+        Cleanup pipeline resources.
+
+        Subclasses should override this to release backend-specific resources
+        (e.g., TensorRT contexts, ONNX sessions, CUDA streams).
+
+        This method is called automatically when using the pipeline as a
+        context manager, or can be called explicitly when done with the pipeline.
+        """
+        pass
+
     def __repr__(self):
         return (
             f"{self.__class__.__name__}("
@@ -204,10 +237,6 @@ class BaseDeploymentPipeline(ABC):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit.
-
-        Subclasses can override this to release backend resources
-        (e.g., TensorRT contexts, ONNX sessions, CUDA streams).
-        """
-        # Cleanup resources if needed
-        pass
+        """Context manager exit - cleanup resources."""
+        self.cleanup()
+        return False
