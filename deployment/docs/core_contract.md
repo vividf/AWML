@@ -44,7 +44,7 @@ This document defines the responsibilities and boundaries between the primary de
 ### Metrics Adapters (Autoware-based adapters)
 - Provide a uniform interface for adding frames and computing summaries regardless of task.
 - Encapsulate conversion from model predictions/ground truth to Autoware perception evaluation inputs.
-- Output typed metric structures (`Detection3DEvaluationMetrics`, `Detection2DEvaluationMetrics`, `ClassificationEvaluationMetrics`).
+- Return metric dictionaries that evaluators incorporate into `EvalResultDict` results.
 - Should not access loaders, runners, or exporters directly; evaluators pass in the data they need.
 
 ### Summary of Allowed Dependencies

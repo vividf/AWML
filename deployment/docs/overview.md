@@ -41,7 +41,7 @@ verification = dict(
 
 ### Multi-Backend Evaluation
 
-Evaluators share typed metrics (`Detection3DEvaluationMetrics`, `Detection2DEvaluationMetrics`, `ClassificationEvaluationMetrics`) so reports remain consistent across backends.
+Evaluators return typed results via `EvalResultDict` (TypedDict) ensuring consistent structure across backends. Metrics adapters (`Detection3DMetricsAdapter`, `Detection2DMetricsAdapter`, `ClassificationMetricsAdapter`) compute task-specific metrics using `autoware_perception_evaluation`.
 
 ### Pipeline Architecture
 
