@@ -13,7 +13,6 @@ from deployment.core.config.base_config import (
     parse_base_args,
     setup_logging,
 )
-from deployment.core.config.task_config import TaskConfig, TaskType
 from deployment.core.evaluation.base_evaluator import EVALUATION_DEFAULTS, EvaluationDefaults
 
 __all__ = [
@@ -30,6 +29,4 @@ __all__ = [
     "EVALUATION_DEFAULTS",
     "EvaluationDefaults",
     "RuntimeConfig",
-    "TaskConfig",
-    "TaskType",
 ]
