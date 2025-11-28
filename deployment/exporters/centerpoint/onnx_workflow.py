@@ -128,14 +128,14 @@ class CenterPointONNXExportWorkflow(OnnxExportWorkflow):
                     config_override=component.config_override,
                 )
                 exported_paths.append(output_path)
-                self.logger.info(f"✓ Exported {component.name}: {output_path}")
+                self.logger.info(f"Exported {component.name}: {output_path}")
             except Exception as exc:
                 self.logger.error(f"Failed to export {component.name}")
                 raise RuntimeError(f"{component.name} export failed") from exc
 
         # Log summary
         self.logger.info("\n" + "=" * 80)
-        self.logger.info("✅ CenterPoint ONNX export successful")
+        self.logger.info("CenterPoint ONNX export successful")
         self.logger.info("=" * 80)
         for path in exported_paths:
             self.logger.info(f"  • {os.path.basename(path)}")
