@@ -15,12 +15,6 @@ from deployment.core.config.base_config import (
     parse_base_args,
     setup_logging,
 )
-from deployment.core.config.runtime_config import (
-    BaseRuntimeConfig,
-    ClassificationRuntimeConfig,
-    Detection2DRuntimeConfig,
-    Detection3DRuntimeConfig,
-)
 from deployment.core.config.task_config import TaskConfig, TaskType
 from deployment.core.contexts import (
     CalibrationExportContext,
@@ -84,11 +78,8 @@ __all__ = [
     # Task configuration
     "TaskConfig",
     "TaskType",
-    # Runtime configurations (typed)
-    "BaseRuntimeConfig",
-    "Detection3DRuntimeConfig",
-    "Detection2DRuntimeConfig",
-    "ClassificationRuntimeConfig",
+    # Runtime configuration
+    "RuntimeConfig",
     # Constants
     "EVALUATION_DEFAULTS",
     "EvaluationDefaults",

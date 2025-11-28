@@ -158,19 +158,16 @@ class DeviceConfig:
 class RuntimeConfig:
     """Configuration for runtime I/O settings."""
 
-    data: Mapping[str, Any]
+    info_file: str = ""
+    sample_idx: int = 0
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "RuntimeConfig":
-        return cls(MappingProxyType(dict(config_dict)))
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Get a runtime configuration value."""
-        return self.data.get(key, default)
-
-    def __getitem__(self, key: str) -> Any:
-        """Dictionary-style access to runtime config."""
-        return self.data[key]
+        """Create RuntimeConfig from dictionary."""
+        return cls(
+            info_file=config_dict.get("info_file", ""),
+            sample_idx=config_dict.get("sample_idx", 0),
+        )
 
 
 @dataclass(frozen=True)
