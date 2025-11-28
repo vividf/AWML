@@ -62,7 +62,7 @@ class YOLOXExportContext(ExportContext):
                         to extract from model_cfg.filename.
     """
 
-    model_cfg_path: Optional[str] = None
+    model_cfg: Optional[str] = None
 
 
 @dataclass(frozen=True)
