@@ -203,10 +203,16 @@ class CenterPointEvaluator(BaseEvaluator):
 
             if "latency_breakdown" in latency:
                 breakdown = latency["latency_breakdown"]
-                print(f"\n  Stage-wise Latency Breakdown:")
+                print(f"\nStage-wise Latency Breakdown:")
+                # Sub-stages that belong under "Model"
+                model_substages = {"voxel_encoder_ms", "middle_encoder_ms", "backbone_head_ms"}
                 for stage, stats in breakdown.items():
                     stage_name = stage.replace("_ms", "").replace("_", " ").title()
-                    print(f"    {stage_name:18s}: {stats['mean_ms']:.2f} ± {stats['std_ms']:.2f} ms")
+                    # Use extra indentation for model sub-stages
+                    if stage in model_substages:
+                        print(f"    {stage_name:16s}: {stats['mean_ms']:.2f} ± {stats['std_ms']:.2f} ms")
+                    else:
+                        print(f"  {stage_name:18s}: {stats['mean_ms']:.2f} ± {stats['std_ms']:.2f} ms")
 
         print(f"\nTotal Samples: {results.get('num_samples', 0)}")
         print("=" * 80)

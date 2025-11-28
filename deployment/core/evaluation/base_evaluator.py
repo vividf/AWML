@@ -293,13 +293,11 @@ class BaseEvaluator(VerificationMixin, ABC):
         if not latency_breakdowns:
             return {}
 
-        all_stages = set()
-        for breakdown in latency_breakdowns:
-            all_stages.update(breakdown.keys())
+        stage_order = list(dict.fromkeys(stage for breakdown in latency_breakdowns for stage in breakdown.keys()))
 
         return {
-            stage: self.compute_latency_stats([bd.get(stage, 0.0) for bd in latency_breakdowns if stage in bd])
-            for stage in sorted(all_stages)
+            stage: self.compute_latency_stats([bd[stage] for bd in latency_breakdowns if stage in bd])
+            for stage in stage_order
         }
 
     def format_latency_stats(self, stats: Mapping[str, float]) -> str:
