@@ -1,15 +1,14 @@
 # CenterPoint Deployment
 
-Complete deployment pipeline for CenterPoint 3D object detection.
+Complete deployment pipeline for CenterPoint 3D object detection using the unified deployment framework.
 
 ## Features
 
-- ✅ Export to ONNX and TensorRT
-- ✅ Full evaluation with 3D detection metrics
+- ✅ Export to ONNX and TensorRT (multi-file architecture)
+- ✅ Full evaluation with 3D detection metrics (autoware_perception_evaluation)
 - ✅ Latency benchmarking
-- ✅ Cross-backend verification
 - ✅ Uses MMDet3D pipeline for consistency with training
-- ✅ Modernized from legacy DeploymentRunner
+- ✅ Unified runner architecture with composition-based design
 
 ## Quick Start
 
@@ -24,49 +23,52 @@ data/t4dataset/
     └── *.bin
 ```
 
+
 ### 2. Export and Evaluate
 
 ```bash
 # Export to ONNX and TensorRT with evaluation
 python projects/CenterPoint/deploy/main.py \
-    projects/CenterPoint/deploy/deploy_config.py \
-    projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
-    path/to/checkpoint.pth \
-    --work-dir work_dirs/centerpoint_deployment \
-    --replace-onnx-models  # Important for ONNX export
+    projects/CenterPoint/deploy/configs/deploy_config.py \
+    projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py
 ```
 
-### 3. Evaluation Only
+### 3. Export Modes
+
+The pipeline supports different export modes configured in `deploy_config.py`:
 
 ```bash
-# Evaluate PyTorch model only
-python projects/CenterPoint/deploy/main.py \
-    projects/CenterPoint/deploy/deploy_config.py \
-    projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
-    path/to/checkpoint.pth
+# ONNX only
+# Set export.mode = "onnx" in deploy_config.py
+
+# TensorRT only (requires existing ONNX files)
+# Set export.mode = "trt" and export.onnx_path = "path/to/onnx/dir"
+
+# Both ONNX and TensorRT
+# Set export.mode = "both"
+
+# Evaluation only (no export)
+# Set export.mode = "none"
 ```
 
 ## Configuration
+
+All configuration is done through `deploy_config.py`. Key sections:
+
+### Checkpoint Path
+
+```python
+# Single source of truth for PyTorch model
+checkpoint_path = "work_dirs/centerpoint/best_checkpoint.pth"
+```
 
 ### Export Settings
 
 ```python
 export = dict(
-    mode='both',      # 'onnx', 'trt', 'both', 'none'
-    verify=True,      # Cross-backend verification
-    device='cuda:0',  # Device
-    work_dir='work_dirs/centerpoint_deployment'
-)
-```
-
-### Evaluation Settings
-
-```python
-evaluation = dict(
-    enabled=True,
-    num_samples=50,   # 3D is slower, use fewer samples
-    verbose=False,
-    models_to_evaluate=['pytorch']  # Add 'onnx' after export
+    mode="both",      # 'onnx', 'trt', 'both', 'none'
+    work_dir="work_dirs/centerpoint_deployment",
+    onnx_path=None,   # Required when mode='trt'
 )
 ```
 
@@ -79,7 +81,23 @@ onnx_config = dict(
     save_file="centerpoint.onnx",
     export_params=True,
     keep_initializers_as_inputs=False,
-    simplify=True,
+    simplify=False,   # Set to True to run onnx-simplifier
+    multi_file=True,  # CenterPoint uses multi-file ONNX
+)
+```
+
+### Evaluation Settings
+
+```python
+evaluation = dict(
+    enabled=True,
+    num_samples=1,    # Number of samples to evaluate
+    verbose=True,
+    backends=dict(
+        pytorch=dict(enabled=True, device="cuda:0"),
+        onnx=dict(enabled=True, device="cuda:0", model_dir="..."),
+        tensorrt=dict(enabled=True, device="cuda:0", engine_dir="..."),
+    ),
 )
 ```
 
@@ -88,237 +106,127 @@ onnx_config = dict(
 ```python
 backend_config = dict(
     common_config=dict(
-        # Precision policy for TensorRT
-        # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
-        precision_policy="auto",
-        # TensorRT workspace size (bytes)
-        max_workspace_size=2 << 30,  # 2 GB (3D models need more memory)
+        precision_policy="auto",  # 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
+        max_workspace_size=2 << 30,  # 2 GB
     ),
+    model_inputs=[
+        dict(
+            input_shapes=dict(
+                input_features=dict(
+                    min_shape=[1000, 32, 11],
+                    opt_shape=[20000, 32, 11],
+                    max_shape=[64000, 32, 11],
+                ),
+                spatial_features=dict(
+                    min_shape=[1, 32, 760, 760],
+                    opt_shape=[1, 32, 760, 760],
+                    max_shape=[1, 32, 760, 760],
+                ),
+            )
+        )
+    ],
 )
 ```
 
 ### Verification Settings
 
 ```python
-# Note: Verification is controlled by export.verify (see export section above)
-# This section only contains verification parameters (tolerance, devices, etc.)
 verification = dict(
-    tolerance=1e-1,  # Slightly higher tolerance for 3D detection
-    num_verify_samples=1,  # Fewer samples for 3D (slower)
-    devices=dict(
-        pytorch="cpu",  # PyTorch reference device (should be 'cpu')
-        onnx_cpu="cpu",  # ONNX verification device for PyTorch comparison
-        onnx_cuda="cuda:0",  # ONNX verification device for TensorRT comparison
-        tensorrt="cuda:0",  # TensorRT verification device (must be 'cuda:0')
+    enabled=True,
+    tolerance=1e-1,
+    num_verify_samples=1,
+    devices=devices,  # Reference to top-level devices dict
+    scenarios=dict(
+        both=[
+            dict(ref_backend="pytorch", ref_device="cpu",
+                 test_backend="onnx", test_device="cpu"),
+            dict(ref_backend="onnx", ref_device="cuda",
+                 test_backend="tensorrt", test_device="cuda"),
+        ],
+        onnx=[...],
+        trt=[...],
+        none=[],
     ),
 )
 ```
 
-## TensorRT Architecture
+## Architecture
 
-CenterPoint uses a multi-engine TensorRT setup:
+CenterPoint uses a multi-file ONNX/TensorRT architecture:
 
-1. **pts_voxel_encoder.engine** - Voxel feature extraction
-2. **pts_backbone_neck_head.engine** - Backbone, neck, and head processing
+```
+CenterPoint Model
+├── pts_voxel_encoder     → pts_voxel_encoder.onnx / .engine
+└── pts_backbone_neck_head → pts_backbone_neck_head.onnx / .engine
+```
 
-The TensorRT backend automatically handles the pipeline between these engines, including:
-- Voxel encoder inference
-- Middle encoder processing (PyTorch)
-- Backbone/neck/head inference
-- Output formatting
+### Component Extractor
+
+The `CenterPointComponentExtractor` handles model-specific logic:
+- Extracts voxel encoder and backbone+neck+head components
+- Prepares sample inputs for each component
+- Configures per-component ONNX export settings
+
+### Deployment Runner
+
+`CenterPointDeploymentRunner` orchestrates the workflow:
+- Loads ONNX-compatible CenterPoint model
+- Injects model and config to evaluator
+- Delegates export to `CenterPointONNXExportWorkflow` and `CenterPointTensorRTExportWorkflow`
 
 ## Output Structure
 
-After deployment, you'll find:
+After deployment:
 
 ```
 work_dirs/centerpoint_deployment/
-├── pts_voxel_encoder.onnx
-├── pts_backbone_neck_head.onnx
+├── onnx/
+│   ├── pts_voxel_encoder.onnx
+│   └── pts_backbone_neck_head.onnx
 └── tensorrt/
     ├── pts_voxel_encoder.engine
     └── pts_backbone_neck_head.engine
+```
+
+## Command Line Options
+
+```bash
+python projects/CenterPoint/deploy/main.py \
+    <deploy_config.py> \
+    <model_config.py> \
+    [--rot-y-axis-reference]  # Convert rotation to y-axis clockwise reference
+    [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
 ```
 
 ## Troubleshooting
 
 ### TensorRT Build Issues
 
-If TensorRT engine building fails:
-
-1. **Memory Issues**: Increase `max_workspace_size` in config
-2. **Shape Issues**: Check input shapes match your data
+1. **Memory Issues**: Increase `max_workspace_size` in `backend_config`
+2. **Shape Issues**: Verify `model_inputs` shapes match your data
 3. **Precision Issues**: Try different `precision_policy` settings
 
 ### Verification Failures
 
-If cross-backend verification fails:
-
 1. **Tolerance**: Increase `tolerance` in verification config
 2. **Samples**: Reduce `num_verify_samples` for faster testing
-3. **Device**: Ensure all backends use the same device
 
-### Performance Issues
 
-For better TensorRT performance:
-
-1. **Precision**: Use `fp16` for faster inference
-2. **Batch Size**: Optimize for your typical batch sizes
-3. **Profiling**: Use TensorRT profiling tools for optimization
-
-### Important Flags
-
-- `--replace-onnx-models`: Replace model components with ONNX-compatible versions
-  - Changes `CenterPoint` → `CenterPointONNX`
-  - Changes `PillarFeatureNet` → `PillarFeatureNetONNX`
-  - Changes `CenterHead` → `CenterHeadONNX`
-
-- `--rot-y-axis-reference`: Convert rotation to y-axis clockwise reference
-
-## Output
-
-The deployment pipeline will generate:
+## File Structure
 
 ```
-work_dirs/centerpoint_deployment/
-├── pillar_encoder.onnx
-├── backbone.onnx
-├── neck.onnx
-└── head.onnx
+projects/CenterPoint/deploy/
+├── main.py                 # Entry point
+├── configs/
+│   └── deploy_config.py    # Deployment configuration
+├── component_extractor.py  # Model-specific component extraction
+├── data_loader.py          # CenterPoint data loader
+├── evaluator.py            # CenterPoint evaluator
+├── utils.py                # Utility functions
+└── README.md               # This file
 ```
-
-And print evaluation results:
-```
-================================================================================
-CenterPoint Evaluation Results
-================================================================================
-
-Detection Statistics:
-  Total Predictions: 1234
-  Total Ground Truths: 1180
-
-Per-Class Statistics:
-  VEHICLE:
-    Predictions: 890
-    Ground Truths: 856
-  PEDESTRIAN:
-    Predictions: 234
-    Ground Truths: 218
-  CYCLIST:
-    Predictions: 110
-    Ground Truths: 106
-
-Latency Statistics:
-  Mean: 45.23 ms
-  Std:  3.45 ms
-  Min:  41.82 ms
-  Max:  58.31 ms
-  Median: 44.18 ms
-
-Total Samples: 50
-================================================================================
-```
-
-## Architecture
-
-```
-CenterPointDataLoader (from data_loader.py)
-    ├── Uses MMDet3D test pipeline
-    ├── Loads info.pkl
-    ├── Handles voxelization
-    └── Preprocesses point clouds
-
-CenterPointEvaluator (from evaluator.py)
-    ├── Supports PyTorch, ONNX (TensorRT coming)
-    ├── Computes detection statistics
-    └── Measures latency
-
-main.py
-    ├── Replaces legacy DeploymentRunner
-    ├── Exports to ONNX
-    ├── Verifies outputs (TODO)
-    └── Runs evaluation
-```
-
-## Migration from Legacy Code
-
-This new implementation replaces the old `DeploymentRunner`:
-
-### Old Way (scripts/deploy.py)
-```python
-from projects.CenterPoint.runners.deployment_runner import DeploymentRunner
-
-runner = DeploymentRunner(
-    experiment_name=experiment_name,
-    model_cfg_path=model_cfg_path,
-    checkpoint_path=checkpoint_path,
-    work_dir=work_dir,
-    replace_onnx_models=True,
-    device='gpu',
-    onnx_opset_version=13
-)
-runner.run()
-```
-
-### New Way (deploy/main.py)
-```bash
-python projects/CenterPoint/deploy/main.py \
-    deploy_config.py \
-    model_config.py \
-    checkpoint.pth \
-    --replace-onnx-models
-```
-
-**Benefits of New Approach**:
-- ✅ Integrated with unified deployment framework
-- ✅ Supports verification and evaluation
-- ✅ Consistent with other projects (YOLOX, etc.)
-- ✅ Better configuration management
-- ✅ More modular and maintainable
-
-## Troubleshooting
-
-### Issue: Dataset not found
-
-**Solution**: Update `runtime_io.info_file` in deploy_config.py
-
-### Issue: ONNX export fails without --replace-onnx-models
-
-**Solution**: Always use `--replace-onnx-models` flag for ONNX export
-
-### Issue: Out of memory
-
-**Solution**:
-1. Reduce `evaluation.num_samples`
-2. Reduce point cloud range
-3. Increase `backend_config.common_config.max_workspace_size`
-
-### Issue: Different results between training and deployment
-
-**Solution**:
-1. Make sure using same config file
-2. Verify pipeline is correctly built
-3. Check voxelization parameters
-
-## Known Limitations
-
-1. **3D mAP Metrics**: Current implementation uses simplified metrics. For production, integrate with `mmdet3d.core.evaluation` for proper 3D detection metrics (mAP, NDS, mATE, etc.)
-
-2. **TensorRT Support**: TensorRT export for multi-file ONNX models needs custom implementation
-
-3. **Batch Inference**: Currently supports single sample inference
-
-## TODO
-
-- [ ] Integrate with mmdet3d evaluation for proper mAP/NDS metrics
-- [ ] Implement TensorRT multi-file export
-- [ ] Add cross-backend verification
-- [ ] Support batch inference
-- [ ] Add visualization tools
 
 ## References
 
-- [Deployment Framework Design](../../../docs/design/deploy_pipeline_design.md)
-- [DataLoader Tutorial](../../../docs/tutorial/tutorial_deployment_dataloader.md)
+- [Deployment Framework Documentation](../../../deployment/README.md)
 - [CenterPoint Paper](https://arxiv.org/abs/2006.11275)
-- [Old DeploymentRunner](../runners/deployment_runner.py) (deprecated)

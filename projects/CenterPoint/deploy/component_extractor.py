@@ -32,14 +32,16 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
     - Configuring ONNX export settings
     """
 
-    def __init__(self, logger: logging.Logger = None):
+    def __init__(self, logger: logging.Logger = None, simplify: bool = True):
         """
         Initialize extractor.
 
         Args:
             logger: Optional logger instance
+            simplify: Whether to run onnx-simplifier for the exported parts
         """
         self.logger = logger or logging.getLogger(__name__)
+        self.simplify = simplify
 
     def extract_components(self, model: torch.nn.Module, sample_data: Any) -> List[ExportableComponent]:
         """
@@ -84,7 +86,7 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
                 },
                 opset_version=16,
                 do_constant_folding=True,
-                simplify=True,
+                simplify=self.simplify,
                 save_file="pts_voxel_encoder.onnx",
             ),
         )
@@ -102,6 +104,12 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
         # Get output names
         output_names = self._get_output_names(model)
 
+        dynamic_axes = {
+            "spatial_features": {0: "batch_size", 2: "height", 3: "width"},
+        }
+        for name in output_names:
+            dynamic_axes[name] = {0: "batch_size", 2: "height", 3: "width"}
+
         return ExportableComponent(
             name="pts_backbone_neck_head",
             module=backbone_module,
@@ -109,12 +117,10 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
             config_override=ONNXExportConfig(
                 input_names=("spatial_features",),
                 output_names=output_names,
-                dynamic_axes={
-                    "spatial_features": {0: "batch_size", 2: "height", 3: "width"},
-                },
+                dynamic_axes=dynamic_axes,
                 opset_version=16,
                 do_constant_folding=True,
-                simplify=True,
+                simplify=self.simplify,
                 save_file="pts_backbone_neck_head.onnx",
             ),
         )
