@@ -1,10 +1,11 @@
 import os
-from typing import Callable, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
+import numpy as np
 import torch
 from mmdet3d.models.detectors.centerpoint import CenterPoint
 from mmdet3d.registry import MODELS
-from mmengine.logging import MMLogger, print_log
+from mmengine.logging import MMLogger
 from torch import nn
 
 
@@ -46,131 +47,95 @@ class CenterPointONNX(CenterPoint):
         super().__init__(**kwargs)
         self._point_channels = point_channels
         self._device = device
-        self._torch_device = torch.device("cuda:0") if self._device == "gpu" else torch.device("cpu")
+        # Handle both "cuda:0" and "gpu" device strings
+        if self._device.startswith("cuda") or self._device == "gpu":
+            self._torch_device = torch.device(self._device if self._device.startswith("cuda") else "cuda:0")
+        else:
+            self._torch_device = torch.device("cpu")
         self._logger = MMLogger.get_current_instance()
         self._logger.info("Running CenterPointONNX!")
 
-    def _get_random_inputs(self):
+    def _get_inputs(self, data_loader, sample_idx=0):
         """
-        Generate random inputs and preprocess it to feed it to onnx.
+        Generate inputs from the provided data loader.
+
+        Args:
+            data_loader: Loader that implements ``load_sample``.
+            sample_idx: Index of the sample to fetch.
         """
-        # Input channels
-        points = [
-            torch.rand(1000, self._point_channels).to(self._torch_device),
-            # torch.rand(1000, self._point_channels).to(self._torch_device),
-        ]
-        # We only need lidar pointclouds for CenterPoint.
+        if data_loader is None:
+            raise ValueError("data_loader is required for CenterPoint ONNX export")
+
+        if not hasattr(data_loader, "load_sample"):
+            raise AttributeError("data_loader must implement 'load_sample(sample_idx)'")
+
+        sample = data_loader.load_sample(sample_idx)
+
+        if "lidar_points" not in sample:
+            raise KeyError("Sample does not contain 'lidar_points'")
+
+        lidar_path = sample["lidar_points"].get("lidar_path")
+        if not lidar_path:
+            raise ValueError("Sample must provide 'lidar_path' inside 'lidar_points'")
+
+        if not os.path.exists(lidar_path):
+            raise FileNotFoundError(f"Lidar path not found: {lidar_path}")
+
+        points = self._load_point_cloud(lidar_path)
+        points = torch.from_numpy(points).to(self._torch_device)
+        points = [points]
         return {"points": points, "data_samples": None}
 
-    def _extract_random_features(self):
+    def _load_point_cloud(self, lidar_path: str) -> np.ndarray:
+        """
+        Load point cloud from file.
+
+        Args:
+            lidar_path: Path to point cloud file (.bin or .pcd)
+
+        Returns:
+            Point cloud array (N, 5) where 5 = (x, y, z, intensity, ring_id)
+        """
+        if lidar_path.endswith(".bin"):
+            # Load binary point cloud (KITTI/nuScenes format)
+            # T4 dataset has 5 features: x, y, z, intensity, ring_id
+            points = np.fromfile(lidar_path, dtype=np.float32).reshape(-1, 5)
+
+            # Don't pad here - let the voxelization process handle feature expansion
+            # The voxelization process will add cluster_center (+3) and voxel_center (+3) features
+            # So 5 + 3 + 3 = 11 features total
+
+        elif lidar_path.endswith(".pcd"):
+            # Load PCD format (placeholder - would need pypcd or similar)
+            raise NotImplementedError("PCD format loading not implemented yet")
+        else:
+            raise ValueError(f"Unsupported point cloud format: {lidar_path}")
+
+        return points
+
+    def _extract_features(self, data_loader, sample_idx=0):
+        """
+        Extract features using samples from the provided data loader.
+        """
+        if data_loader is None:
+            raise ValueError("data_loader is required to extract features")
+
         assert self.data_preprocessor is not None and hasattr(self.data_preprocessor, "voxelize")
 
-        # Get inputs
-        inputs = self._get_random_inputs()
+        # Ensure data preprocessor is on the correct device
+        if hasattr(self.data_preprocessor, "to"):
+            self.data_preprocessor.to(self._torch_device)
+
+        inputs = self._get_inputs(data_loader, sample_idx)
         voxel_dict = self.data_preprocessor.voxelize(points=inputs["points"], data_samples=inputs["data_samples"])
+
+        # Ensure all voxel tensors are on the correct device
+        for key in ["voxels", "num_points", "coors"]:
+            if key in voxel_dict and isinstance(voxel_dict[key], torch.Tensor):
+                voxel_dict[key] = voxel_dict[key].to(self._torch_device)
+
         assert self.pts_voxel_encoder is not None and hasattr(self.pts_voxel_encoder, "get_input_features")
         input_features = self.pts_voxel_encoder.get_input_features(
             voxel_dict["voxels"], voxel_dict["num_points"], voxel_dict["coors"]
         )
         return input_features, voxel_dict
-
-    def save_onnx(
-        self,
-        save_dir: str,
-        verbose=False,
-        onnx_opset_version=13,
-    ):
-        """Save onnx model
-        Args:
-            batch_dict (dict[str, any])
-            save_dir (str): directory path to save onnx models
-            verbose (bool, optional)
-            onnx_opset_version (int, optional)
-        """
-        print_log(f"Running onnx_opset_version: {onnx_opset_version}")
-        # Get features
-        input_features, voxel_dict = self._extract_random_features()
-
-        # === pts_voxel_encoder ===
-        pth_onnx_pve = os.path.join(save_dir, "pts_voxel_encoder.onnx")
-        torch.onnx.export(
-            self.pts_voxel_encoder,
-            (input_features,),
-            f=pth_onnx_pve,
-            input_names=("input_features",),
-            output_names=("pillar_features",),
-            dynamic_axes={
-                "input_features": {0: "num_voxels", 1: "num_max_points"},
-                "pillar_features": {0: "num_voxels"},
-            },
-            verbose=verbose,
-            opset_version=onnx_opset_version,
-        )
-        print_log(f"Saved pts_voxel_encoder onnx model: {pth_onnx_pve}")
-        voxel_features = self.pts_voxel_encoder(input_features)
-        voxel_features = voxel_features.squeeze(1)
-
-        # Note: pts_middle_encoder isn't exported
-        coors = voxel_dict["coors"]
-        batch_size = coors[-1, 0] + 1
-        x = self.pts_middle_encoder(voxel_features, coors, batch_size)
-        # x (torch.tensor): (batch_size, num_pillar_features, W, H)
-
-        # === pts_backbone ===
-        assert self.pts_bbox_head is not None and hasattr(self.pts_bbox_head, "output_names")
-        pts_backbone_neck_head = CenterPointHeadONNX(
-            self.pts_backbone,
-            self.pts_neck,
-            self.pts_bbox_head,
-        )
-        # pts_backbone_neck_head = torch.jit.script(pts_backbone_neck_head)
-        pth_onnx_backbone_neck_head = os.path.join(save_dir, "pts_backbone_neck_head.onnx")
-        torch.onnx.export(
-            pts_backbone_neck_head,
-            (x,),
-            f=pth_onnx_backbone_neck_head,
-            input_names=("spatial_features",),
-            output_names=tuple(self.pts_bbox_head.output_names),
-            dynamic_axes={
-                name: {0: "batch_size", 2: "H", 3: "W"}
-                for name in ["spatial_features"] + self.pts_bbox_head.output_names
-            },
-            verbose=verbose,
-            opset_version=onnx_opset_version,
-        )
-        print_log(f"Saved pts_backbone_neck_head onnx model: {pth_onnx_backbone_neck_head}")
-
-    def save_torchscript(
-        self,
-        save_dir: str,
-        verbose: bool = False,
-    ):
-        """Save torchscript model
-        Args:
-            batch_dict (dict[str, any])
-            save_dir (str): directory path to save onnx models
-            verbose (bool, optional)
-        """
-        # Get features
-        input_features, voxel_dict = self._extract_random_features()
-
-        pth_pt_pve = os.path.join(save_dir, "pts_voxel_encoder.pt")
-        traced_pts_voxel_encoder = torch.jit.trace(self.pts_voxel_encoder, (input_features,))
-        traced_pts_voxel_encoder.save(pth_pt_pve)
-
-        voxel_features = traced_pts_voxel_encoder(input_features)
-        voxel_features = voxel_features.squeeze()
-
-        # Note: pts_middle_encoder isn't exported
-        coors = voxel_dict["coors"]
-        batch_size = coors[-1, 0] + 1
-        x = self.pts_middle_encoder(voxel_features, coors, batch_size)
-
-        pts_backbone_neck_head = CenterPointHeadONNX(
-            self.pts_backbone,
-            self.pts_neck,
-            self.pts_bbox_head,
-        )
-        pth_pt_head = os.path.join(save_dir, "pts_backbone_neck_head.pt")
-        traced_pts_backbone_neck_head = torch.jit.trace(pts_backbone_neck_head, (x))
-        traced_pts_backbone_neck_head.save(pth_pt_head)
