@@ -78,7 +78,7 @@ def main():
     # Create data loader
     logger.info("\nCreating data loader...")
     data_loader = CenterPointDataLoader(
-        info_file=config.runtime_config["info_file"],
+        info_file=config.runtime_config.info_file,
         model_cfg=model_cfg,
         device="cpu",
         task_type=config.task_type,

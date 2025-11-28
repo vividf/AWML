@@ -65,16 +65,16 @@ def main():
             logger.error("Checkpoint path must be provided in export.checkpoint_path for ONNX/TensorRT export.")
             return
 
-    # Get info_pkl path
-    info_pkl = config.runtime_config.get("info_pkl")
-    if not info_pkl:
-        logger.error("info_pkl path must be provided in config")
+    # Get info_file path
+    info_file = config.runtime_config.info_file
+    if not info_file:
+        logger.error("info_file path must be provided in config")
         return
 
     # Create data loader
     logger.info("\nCreating data loader...")
     data_loader = CalibrationDataLoader(
-        info_pkl_path=info_pkl,
+        info_pkl_path=info_file,
         model_cfg=model_cfg,
         miscalibration_probability=0.0,
         device="cpu",

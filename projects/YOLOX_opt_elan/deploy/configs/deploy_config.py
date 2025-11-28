@@ -50,10 +50,8 @@ export = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    # Path to T4Dataset annotation file
-    ann_file="data/t4dataset/2d_info/yolox_infos_val.json",
-    # Path to images directory (can be empty if full paths are in annotations)
-    img_prefix="",
+    # Path to T4Dataset info file (supports both .json and .pkl formats)
+    info_file="data/t4dataset/2d_info/yolox_infos_val.json",
     # Sample index for export (use first sample)
     sample_idx=0,
 )

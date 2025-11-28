@@ -21,11 +21,10 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
     DataLoader for YOLOX_opt_elan object detection.
 
     This loader uses MMDet's preprocessing pipeline to ensure consistency
-    between training and deployment. It handles T4Dataset format annotations.
+    between training and deployment. It handles T4Dataset format info files.
 
     Attributes:
-        ann_file: Path to T4Dataset format annotation file
-        img_prefix: Path prefix for images
+        info_file: Path to T4Dataset format info file
         pipeline: MMDet preprocessing pipeline
         data_list: List of data samples
         classes: List of class names
@@ -33,8 +32,7 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
 
     def __init__(
         self,
-        ann_file: str,
-        img_prefix: str,
+        info_file: str,
         model_cfg: Config,
         device: str = "cpu",
         task_type: Optional[str] = None,
@@ -43,39 +41,41 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
         Initialize YOLOX_opt_elan DataLoader.
 
         Args:
-            ann_file: Path to T4Dataset annotation file (e.g., 2d_info_infos_val.json)
-            img_prefix: Directory path containing images (can be empty if full paths in annotations)
+            info_file: Path to T4Dataset info file (e.g., yolox_infos_val.json or yolox_infos_val.pkl)
             model_cfg: Model configuration containing test pipeline
             device: Device to load tensors on ('cpu', 'cuda', etc.)
             task_type: Task type for pipeline building. If None, will try to get from
                       model_cfg.task_type or model_cfg.deploy.task_type.
 
         Raises:
-            FileNotFoundError: If ann_file doesn't exist
-            ValueError: If annotation file is invalid
+            FileNotFoundError: If info_file doesn't exist
+            ValueError: If info file format is invalid
         """
         super().__init__(
             config={
-                "ann_file": ann_file,
-                "img_prefix": img_prefix,
+                "info_file": info_file,
                 "device": device,
             }
         )
 
-        # Validate paths
-        if not os.path.exists(ann_file):
-            raise FileNotFoundError(f"Annotation file not found: {ann_file}")
-        # img_prefix can be empty for T4Dataset as full paths might be in annotations
-        if img_prefix and not os.path.exists(img_prefix):
-            raise FileNotFoundError(f"Image directory not found: {img_prefix}")
+        # Validate path
+        if not os.path.exists(info_file):
+            raise FileNotFoundError(f"Info file not found: {info_file}")
 
-        self.ann_file = ann_file
-        self.img_prefix = img_prefix
+        self.info_file = info_file
         self.model_cfg = model_cfg
         self.device = device
-        # Load T4Dataset format annotations
-        with open(ann_file, "r") as f:
-            ann_data = json.load(f)
+
+        # Load T4Dataset format info file (supports both JSON and PKL)
+        if info_file.endswith(".pkl"):
+            import pickle
+
+            with open(info_file, "rb") as f:
+                ann_data = pickle.load(f)
+        else:
+            # Assume JSON format
+            with open(info_file, "r") as f:
+                ann_data = json.load(f)
 
         self.metainfo = ann_data.get("metainfo", {})
         self.classes = self.metainfo.get("classes", [])
@@ -112,10 +112,6 @@ class YOLOXOptElanDataLoader(BaseDataLoader):
         # T4Dataset format already contains all needed info
         img_id = data_info.get("img_id", index)
         img_path = data_info["img_path"]
-
-        # Handle img_path - ensure it's absolute or relative to img_prefix
-        if not os.path.isabs(img_path) and self.img_prefix:
-            img_path = os.path.join(self.img_prefix, img_path)
 
         # Get instances - T4Dataset format already has bbox and bbox_label
         instances = []

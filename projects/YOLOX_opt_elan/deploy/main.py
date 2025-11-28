@@ -63,8 +63,7 @@ def main():
     # Create data loader
     logger.info("\nCreating data loader...")
     data_loader = YOLOXOptElanDataLoader(
-        ann_file=config.runtime_config["ann_file"],
-        img_prefix=config.runtime_config.get("img_prefix", ""),
+        info_file=config.runtime_config.info_file,
         model_cfg=model_cfg,
         device="cpu",
         task_type=config.task_type,
