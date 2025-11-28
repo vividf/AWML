@@ -15,7 +15,6 @@ from deployment.core.config.base_config import (
     parse_base_args,
     setup_logging,
 )
-from deployment.core.config.task_config import TaskConfig, TaskType
 from deployment.core.contexts import (
     CalibrationExportContext,
     CenterPointExportContext,
@@ -30,17 +29,6 @@ from deployment.core.evaluation.base_evaluator import (
     ModelSpec,
     TaskProfile,
     VerifyResultDict,
-)
-from deployment.core.evaluation.results import (
-    ClassificationEvaluationMetrics,
-    ClassificationResult,
-    Detection2DEvaluationMetrics,
-    Detection2DResult,
-    Detection3DEvaluationMetrics,
-    Detection3DResult,
-    EvaluationMetrics,
-    LatencyStats,
-    StageLatencyBreakdown,
 )
 from deployment.core.evaluation.verification_mixin import VerificationMixin
 from deployment.core.io.base_data_loader import BaseDataLoader
@@ -75,11 +63,6 @@ __all__ = [
     "VerificationScenario",
     "setup_logging",
     "parse_base_args",
-    # Task configuration
-    "TaskConfig",
-    "TaskType",
-    # Runtime configuration
-    "RuntimeConfig",
     # Constants
     "EVALUATION_DEFAULTS",
     "EvaluationDefaults",
@@ -94,16 +77,6 @@ __all__ = [
     # Artifacts
     "Artifact",
     "ModelSpec",
-    # Results (typed)
-    "Detection3DResult",
-    "Detection2DResult",
-    "ClassificationResult",
-    "LatencyStats",
-    "StageLatencyBreakdown",
-    "EvaluationMetrics",
-    "Detection3DEvaluationMetrics",
-    "Detection2DEvaluationMetrics",
-    "ClassificationEvaluationMetrics",
     # Preprocessing
     "build_preprocessing_pipeline",
     # Metrics adapters (using autoware_perception_evaluation)
