@@ -121,7 +121,7 @@ class CenterPointTensorRTExportWorkflow(TensorRTExportWorkflow):
                     output_path=trt_path,
                     onnx_path=onnx_file_path,
                 )
-                self.logger.info(f"✓ TensorRT engine saved: {artifact.path}")
+                self.logger.info(f"TensorRT engine saved: {artifact.path}")
             except Exception as exc:
                 self.logger.error(f"Failed to convert {onnx_file} to TensorRT")
                 raise RuntimeError(f"TensorRT export failed for {onnx_file}") from exc

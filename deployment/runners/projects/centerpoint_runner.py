@@ -58,7 +58,8 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             tensorrt_workflow: Optional custom TensorRT workflow
         """
         # Create component extractor for model-specific logic
-        component_extractor = CenterPointComponentExtractor(logger=logger)
+        simplify_onnx = config.get_onnx_settings().simplify
+        component_extractor = CenterPointComponentExtractor(logger=logger, simplify=simplify_onnx)
 
         # Initialize base runner
         super().__init__(
