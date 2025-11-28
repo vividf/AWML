@@ -96,7 +96,7 @@ onnx_config = dict(
     save_file="centerpoint.onnx",
     export_params=True,
     keep_initializers_as_inputs=False,
-    simplify=True,
+    simplify=False,
     # CenterPoint uses multi-file ONNX (voxel encoder + backbone/head)
     # When True, model_path should be a directory containing multiple .onnx files
     # When False (default), model_path should be a single .onnx file
