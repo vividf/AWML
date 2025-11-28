@@ -9,10 +9,10 @@ backend-specific optimizations for voxel encoder and backbone/head.
 import logging
 import time
 from abc import abstractmethod
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
-import numpy as np
 import torch
+from mmdet3d.structures import Det3DDataSample, LiDARInstance3DBoxes
 
 from deployment.pipelines.common.base_pipeline import BaseDeploymentPipeline
 
@@ -95,7 +95,6 @@ class CenterPointDeploymentPipeline(BaseDeploymentPipeline):
                 - 'coors': Voxel coordinates [N_voxels, 4] (batch_idx, z, y, x)
             - metadata: Empty dict (for compatibility with base class)
         """
-        from mmdet3d.structures import Det3DDataSample
 
         # Ensure points are on correct device
         points_tensor = points.to(self.device)
@@ -197,7 +196,6 @@ class CenterPointDeploymentPipeline(BaseDeploymentPipeline):
         preds_dicts = ([preds_dict],)  # Tuple[List[dict]] format
 
         # Prepare metadata
-        from mmdet3d.structures import LiDARInstance3DBoxes
 
         if "box_type_3d" not in sample_meta:
             sample_meta["box_type_3d"] = LiDARInstance3DBoxes
