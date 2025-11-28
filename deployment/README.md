@@ -24,7 +24,7 @@ python projects/YOLOX_opt_elan/deploy/main.py configs/deploy_config.py configs/m
 python projects/CalibrationStatusClassification/deploy/main.py configs/deploy_config.py configs/model_config.py
 ```
 
-Command-line flags (`--work-dir`, `--device`, `--log-level`, optional `checkpoint`) are consistent across projects. Inject wrapper classes and optional workflows when instantiating a runner; exporters are created lazily inside `BaseDeploymentRunner`.
+Only `--log-level` is available as a command-line flag. All other settings (`work_dir`, `device`, `checkpoint_path`) are configured in the deploy config file. Inject wrapper classes and optional workflows when instantiating a runner; exporters are created lazily inside `BaseDeploymentRunner`.
 
 ## Documentation Map
 
