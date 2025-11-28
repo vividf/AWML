@@ -48,7 +48,6 @@ def main():
     # Load configs
     deploy_cfg = Config.fromfile(args.deploy_cfg)
     model_cfg = Config.fromfile(args.model_cfg)
-    model_cfg_path = args.model_cfg
     config = BaseDeploymentConfig(deploy_cfg)
 
     logger.info("=" * 80)
@@ -78,7 +77,6 @@ def main():
     # Create evaluator with extracted metrics_config
     evaluator = YOLOXOptElanEvaluator(
         model_cfg,
-        model_cfg_path=model_cfg_path,
         metrics_config=metrics_config,
     )
 
@@ -100,7 +98,7 @@ def main():
     )
 
     # Execute deployment workflow with typed context
-    context = YOLOXExportContext(model_cfg_path=model_cfg_path)
+    context = YOLOXExportContext(model_cfg=args.model_cfg)
     runner.run(context=context)
 
 

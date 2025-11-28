@@ -40,7 +40,6 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
     def __init__(
         self,
         model_cfg: Config,
-        model_cfg_path: str,
         class_names: Optional[List[str]] = None,
         metrics_config: Optional[Detection2DMetricsConfig] = None,
     ):
@@ -49,11 +48,9 @@ class YOLOXOptElanEvaluator(BaseEvaluator):
 
         Args:
             model_cfg: Model configuration.
-            model_cfg_path: Path to model config file.
             class_names: List of class names (optional).
             metrics_config: Optional configuration for the 2D detection metrics adapter.
         """
-        self.model_cfg_path = model_cfg_path
 
         # Determine class names
         if class_names is not None:
