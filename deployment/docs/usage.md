@@ -71,10 +71,7 @@ Create custom contexts by subclassing `ExportContext` and adding dataclass field
 python deploy/main.py \
     <deploy_cfg> \          # Deployment configuration file
     <model_cfg> \           # Model configuration file
-    [checkpoint] \          # Optional checkpoint path
-    --work-dir <dir> \      # Override work directory
-    --device <device> \     # Override device
-    --log-level <level>     # DEBUG, INFO, WARNING, ERROR
+    --log-level <level>     # Optional: DEBUG, INFO, WARNING, ERROR (default: INFO)
 ```
 
 ## Export Modes
