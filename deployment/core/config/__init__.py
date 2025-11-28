@@ -7,16 +7,11 @@ from deployment.core.config.base_config import (
     ExportConfig,
     ExportMode,
     PrecisionPolicy,
+    RuntimeConfig,
     VerificationConfig,
     VerificationScenario,
     parse_base_args,
     setup_logging,
-)
-from deployment.core.config.runtime_config import (
-    BaseRuntimeConfig,
-    ClassificationRuntimeConfig,
-    Detection2DRuntimeConfig,
-    Detection3DRuntimeConfig,
 )
 from deployment.core.config.task_config import TaskConfig, TaskType
 from deployment.core.evaluation.base_evaluator import EVALUATION_DEFAULTS, EvaluationDefaults
@@ -34,10 +29,7 @@ __all__ = [
     "setup_logging",
     "EVALUATION_DEFAULTS",
     "EvaluationDefaults",
-    "BaseRuntimeConfig",
-    "ClassificationRuntimeConfig",
-    "Detection2DRuntimeConfig",
-    "Detection3DRuntimeConfig",
+    "RuntimeConfig",
     "TaskConfig",
     "TaskType",
 ]

@@ -275,8 +275,8 @@ class ExportOrchestrator:
             raise RuntimeError("ONNX export requested but no wrapper class or workflow provided.")
 
         onnx_settings = self.config.get_onnx_settings()
-        # Use context.sample_idx, fallback to runtime config for backward compatibility
-        sample_idx = context.sample_idx if context.sample_idx != 0 else self.config.runtime_config.get("sample_idx", 0)
+        # Use context.sample_idx, fallback to runtime config
+        sample_idx = context.sample_idx if context.sample_idx != 0 else self.config.runtime_config.sample_idx
 
         # Save to work_dir/onnx/ directory
         onnx_dir = os.path.join(self.config.export_config.work_dir, self.ONNX_DIR_NAME)
@@ -388,7 +388,7 @@ class ExportOrchestrator:
         self.logger.info(f"Using CUDA device for TensorRT export: {cuda_device}")
 
         # Get sample input for shape configuration
-        sample_idx = context.sample_idx if context.sample_idx != 0 else self.config.runtime_config.get("sample_idx", 0)
+        sample_idx = context.sample_idx if context.sample_idx != 0 else self.config.runtime_config.sample_idx
         sample_input = self.data_loader.get_shape_sample(sample_idx)
 
         # Use workflow if available
