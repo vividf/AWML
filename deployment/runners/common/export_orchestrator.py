@@ -295,7 +295,6 @@ class ExportOrchestrator:
                     output_dir=onnx_dir,
                     config=self.config,
                     sample_idx=sample_idx,
-                    context=context,
                 )
             except Exception:
                 self.logger.error("ONNX export workflow failed")
@@ -400,7 +399,6 @@ class ExportOrchestrator:
                     config=self.config,
                     device=cuda_device,
                     data_loader=self.data_loader,
-                    context=context,
                 )
             except Exception:
                 self.logger.error("TensorRT export workflow failed")
