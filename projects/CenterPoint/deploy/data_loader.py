@@ -257,27 +257,6 @@ class CenterPointDataLoader(BaseDataLoader):
 
         return {"points": points_tensor}
 
-    def _load_point_cloud(self, lidar_path: str) -> np.ndarray:
-        """
-        Load point cloud from file.
-
-        Args:
-            lidar_path: Path to point cloud file (.bin or .pcd)
-
-        Returns:
-            Point cloud array (N, 4) where 4 = (x, y, z, intensity)
-        """
-        if lidar_path.endswith(".bin"):
-            # Load binary point cloud (KITTI/nuScenes format)
-            points = np.fromfile(lidar_path, dtype=np.float32).reshape(-1, 4)
-        elif lidar_path.endswith(".pcd"):
-            # Load PCD format (placeholder - would need pypcd or similar)
-            raise NotImplementedError("PCD format loading not implemented yet")
-        else:
-            raise ValueError(f"Unsupported point cloud format: {lidar_path}")
-
-        return points
-
     def get_num_samples(self) -> int:
         """
         Get total number of samples.
@@ -329,4 +308,4 @@ class CenterPointDataLoader(BaseDataLoader):
             return self.model_cfg.class_names
 
         # Default for T4Dataset
-        return ["VEHICLE", "PEDESTRIAN", "CYCLIST"]
+        return ["car", "truck", "bus", "bicycle", "pedestrian"]
