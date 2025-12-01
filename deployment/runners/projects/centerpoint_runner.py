@@ -8,10 +8,10 @@ import logging
 from typing import Any
 
 from deployment.core.contexts import CenterPointExportContext, ExportContext
-from deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapper
 from deployment.exporters.centerpoint.onnx_workflow import CenterPointONNXExportWorkflow
 from deployment.exporters.centerpoint.tensorrt_workflow import CenterPointTensorRTExportWorkflow
 from deployment.exporters.common.factory import ExporterFactory
+from deployment.exporters.common.model_wrappers import IdentityWrapper
 from deployment.runners.common.deployment_runner import BaseDeploymentRunner
 from projects.CenterPoint.deploy.component_extractor import CenterPointComponentExtractor
 from projects.CenterPoint.deploy.utils import build_centerpoint_onnx_model
@@ -40,7 +40,6 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         config,
         model_cfg,
         logger: logging.Logger,
-        onnx_wrapper_cls=None,
         onnx_workflow=None,
         tensorrt_workflow=None,
     ):
@@ -53,22 +52,25 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             config: Deployment configuration
             model_cfg: Model configuration
             logger: Logger instance
-            onnx_wrapper_cls: Optional ONNX wrapper (defaults to CenterPointONNXWrapper)
             onnx_workflow: Optional custom ONNX workflow
             tensorrt_workflow: Optional custom TensorRT workflow
+
+        Note:
+            CenterPoint uses IdentityWrapper directly since no special
+            output format conversion is needed for ONNX export.
         """
         # Create component extractor for model-specific logic
         simplify_onnx = config.get_onnx_settings().simplify
         component_extractor = CenterPointComponentExtractor(logger=logger, simplify=simplify_onnx)
 
-        # Initialize base runner
+        # Initialize base runner with IdentityWrapper
         super().__init__(
             data_loader=data_loader,
             evaluator=evaluator,
             config=config,
             model_cfg=model_cfg,
             logger=logger,
-            onnx_wrapper_cls=onnx_wrapper_cls or CenterPointONNXWrapper,
+            onnx_wrapper_cls=IdentityWrapper,
             onnx_workflow=onnx_workflow,
             tensorrt_workflow=tensorrt_workflow,
         )

@@ -22,6 +22,7 @@ from deployment.core import (
 )
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.pipelines import PipelineFactory
+from projects.CenterPoint.deploy.constants import DEFAULT_FRAME_ID, OUTPUT_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +52,16 @@ class CenterPointEvaluator(BaseEvaluator):
             class_names: List of class names (optional).
             metrics_config: Optional configuration for the metrics adapter.
         """
-        # Determine class names
+        # Determine class names - must come from config or explicit parameter
         if class_names is not None:
             names = class_names
         elif hasattr(model_cfg, "class_names"):
             names = model_cfg.class_names
         else:
-            names = ["car", "truck", "bus", "bicycle", "pedestrian"]
+            raise ValueError(
+                "class_names must be provided either explicitly or via model_cfg.class_names. "
+                "Check your model config file includes class_names definition."
+            )
 
         # Create task profile
         task_profile = TaskProfile(
@@ -71,7 +75,7 @@ class CenterPointEvaluator(BaseEvaluator):
         if metrics_config is None:
             metrics_config = Detection3DMetricsConfig(
                 class_names=list(names),
-                frame_id="base_link",
+                frame_id=DEFAULT_FRAME_ID,
             )
         metrics_adapter = Detection3DMetricsAdapter(metrics_config)
 
@@ -89,7 +93,7 @@ class CenterPointEvaluator(BaseEvaluator):
 
     def _get_output_names(self) -> List[str]:
         """Provide meaningful names for CenterPoint head outputs."""
-        return ["heatmap", "reg", "height", "dim", "rot", "vel"]
+        return list(OUTPUT_NAMES)
 
     # ================== BaseEvaluator Implementation ==================
 

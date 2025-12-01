@@ -11,8 +11,16 @@ from typing import Any, List, Tuple
 
 import torch
 
+from deployment.exporters.centerpoint.constants import (
+    BACKBONE_HEAD_NAME,
+    BACKBONE_HEAD_ONNX,
+    VOXEL_ENCODER_NAME,
+    VOXEL_ENCODER_ONNX,
+)
 from deployment.exporters.common.configs import ONNXExportConfig
 from deployment.exporters.workflows.interfaces import ExportableComponent, ModelComponentExtractor
+from projects.CenterPoint.deploy.constants import OUTPUT_NAMES
+from projects.CenterPoint.models.detectors.centerpoint_onnx import CenterPointHeadONNX
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +82,7 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
     ) -> ExportableComponent:
         """Create exportable voxel encoder component."""
         return ExportableComponent(
-            name="pts_voxel_encoder",
+            name=VOXEL_ENCODER_NAME,
             module=model.pts_voxel_encoder,
             sample_input=input_features,
             config_override=ONNXExportConfig(
@@ -87,7 +95,7 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
                 opset_version=16,
                 do_constant_folding=True,
                 simplify=self.simplify,
-                save_file="pts_voxel_encoder.onnx",
+                save_file=VOXEL_ENCODER_ONNX,
             ),
         )
 
@@ -111,7 +119,7 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
             dynamic_axes[name] = {0: "batch_size", 2: "height", 3: "width"}
 
         return ExportableComponent(
-            name="pts_backbone_neck_head",
+            name=BACKBONE_HEAD_NAME,
             module=backbone_module,
             sample_input=backbone_input,
             config_override=ONNXExportConfig(
@@ -121,7 +129,7 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
                 opset_version=16,
                 do_constant_folding=True,
                 simplify=self.simplify,
-                save_file="pts_backbone_neck_head.onnx",
+                save_file=BACKBONE_HEAD_ONNX,
             ),
         )
 
@@ -151,21 +159,19 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
         """
         Create combined backbone+neck+head module for ONNX export.
 
-        This imports CenterPoint-specific model classes from projects/.
         """
-        from projects.CenterPoint.models.detectors.centerpoint_onnx import CenterPointHeadONNX
 
         return CenterPointHeadONNX(model.pts_backbone, model.pts_neck, model.pts_bbox_head)
 
     def _get_output_names(self, model: torch.nn.Module) -> Tuple[str, ...]:
-        """Get output names from model or use defaults."""
+        """Get output names from model or use defaults from constants."""
         if hasattr(model, "pts_bbox_head") and hasattr(model.pts_bbox_head, "output_names"):
             output_names = model.pts_bbox_head.output_names
             if isinstance(output_names, (list, tuple)):
                 return tuple(output_names)
             return (output_names,)
 
-        return ("heatmap", "reg", "height", "dim", "rot", "vel")
+        return OUTPUT_NAMES
 
     def extract_features(self, model: torch.nn.Module, data_loader: Any, sample_idx: int) -> Tuple[torch.Tensor, dict]:
         """
