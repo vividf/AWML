@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from pathlib import Path
+from typing import Iterable, Optional, Tuple
 
 import torch
 
@@ -18,7 +19,7 @@ from deployment.core import Artifact, BaseDataLoader, BaseDeploymentConfig
 from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import IdentityWrapper
 from deployment.exporters.workflows.base import OnnxExportWorkflow
-from deployment.exporters.workflows.interfaces import ModelComponentExtractor
+from deployment.exporters.workflows.interfaces import ExportableComponent, ModelComponentExtractor
 
 
 class CenterPointONNXExportWorkflow(OnnxExportWorkflow):
@@ -80,62 +81,85 @@ class CenterPointONNXExportWorkflow(OnnxExportWorkflow):
             AttributeError: If component extractor doesn't have extract_features method
             RuntimeError: If feature extraction or export fails
         """
-        # Ensure output directory exists
-        os.makedirs(output_dir, exist_ok=True)
+        output_dir_path = Path(output_dir)
+        output_dir_path.mkdir(parents=True, exist_ok=True)
 
+        self._log_header(output_dir_path, sample_idx)
+        sample_data = self._extract_sample_data(model, data_loader, sample_idx)
+        components = self.component_extractor.extract_components(model, sample_data)
+
+        exported_paths = self._export_components(components, output_dir_path)
+        self._log_summary(exported_paths)
+
+        return Artifact(path=str(output_dir_path), multi_file=True)
+
+    # --------------------------------------------------------------------- #
+    # Internal helpers
+    # --------------------------------------------------------------------- #
+    def _log_header(self, output_dir: Path, sample_idx: int) -> None:
         self.logger.info("=" * 80)
-        self.logger.info("Exporting CenterPoint to ONNX (Multi-file)")
+        self.logger.info("Exporting CenterPoint to ONNX (multi-file)")
         self.logger.info("=" * 80)
         self.logger.info(f"Output directory: {output_dir}")
         self.logger.info(f"Using sample index: {sample_idx}")
 
-        # Extract features using component extractor helper
-        # This delegates to model's _extract_features method
+    def _extract_sample_data(
+        self,
+        model: torch.nn.Module,
+        data_loader: BaseDataLoader,
+        sample_idx: int,
+    ) -> Tuple[torch.Tensor, dict]:
+        if not hasattr(self.component_extractor, "extract_features"):
+            raise AttributeError("Component extractor must provide extract_features method")
+
+        self.logger.info("Extracting features from sample data...")
         try:
-            self.logger.info("Extracting features from sample data...")
-            if hasattr(self.component_extractor, "extract_features"):
-                sample_data = self.component_extractor.extract_features(model, data_loader, sample_idx)
-            else:
-                raise AttributeError("Component extractor must provide extract_features method")
+            return self.component_extractor.extract_features(model, data_loader, sample_idx)
         except Exception as exc:
-            self.logger.error(f"Failed to extract features: {exc}")
+            self.logger.error("Failed to extract features", exc_info=exc)
             raise RuntimeError("Feature extraction failed") from exc
 
-        # Extract exportable components (delegates all model-specific logic)
-        components = self.component_extractor.extract_components(model, sample_data)
+    def _export_components(
+        self,
+        components: Iterable[ExportableComponent],
+        output_dir: Path,
+    ) -> Tuple[str, ...]:
+        exported_paths: list[str] = []
+        component_list = list(components)
+        total = len(component_list)
 
-        # Export each component using generic ONNX exporter
-        exported_paths = []
-        for i, component in enumerate(components, 1):
-            self.logger.info(f"\n[{i}/{len(components)}] Exporting {component.name}...")
+        for index, component in enumerate(component_list, start=1):
+            self.logger.info(f"\n[{index}/{total}] Exporting {component.name}...")
+            exporter = self._build_onnx_exporter()
+            output_path = output_dir / f"{component.name}.onnx"
 
-            # Create fresh exporter for each component (no caching)
-            exporter = self.exporter_factory.create_onnx_exporter(
-                config=self.config, wrapper_cls=IdentityWrapper, logger=self.logger  # CenterPoint doesn't need wrapper
-            )
-
-            # Determine output path
-            output_path = os.path.join(output_dir, f"{component.name}.onnx")
-
-            # Export component
             try:
                 exporter.export(
                     model=component.module,
                     sample_input=component.sample_input,
-                    output_path=output_path,
+                    output_path=str(output_path),
                     config_override=component.config_override,
                 )
-                exported_paths.append(output_path)
-                self.logger.info(f"Exported {component.name}: {output_path}")
             except Exception as exc:
-                self.logger.error(f"Failed to export {component.name}")
+                self.logger.error(f"Failed to export {component.name}", exc_info=exc)
                 raise RuntimeError(f"{component.name} export failed") from exc
 
-        # Log summary
+            exported_paths.append(str(output_path))
+            self.logger.info(f"Exported {component.name}: {output_path}")
+
+        return tuple(exported_paths)
+
+    def _build_onnx_exporter(self):
+        # CenterPoint does not require special wrapping, so IdentityWrapper suffices.
+        return self.exporter_factory.create_onnx_exporter(
+            config=self.config,
+            wrapper_cls=IdentityWrapper,
+            logger=self.logger,
+        )
+
+    def _log_summary(self, exported_paths: Tuple[str, ...]) -> None:
         self.logger.info("\n" + "=" * 80)
         self.logger.info("CenterPoint ONNX export successful")
         self.logger.info("=" * 80)
         for path in exported_paths:
             self.logger.info(f"  • {os.path.basename(path)}")
-
-        return Artifact(path=output_dir, multi_file=True)

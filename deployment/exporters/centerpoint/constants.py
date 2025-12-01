@@ -33,12 +33,6 @@ BACKBONE_HEAD_ONNX: str = f"{BACKBONE_HEAD_NAME}.onnx"
 VOXEL_ENCODER_ENGINE: str = f"{VOXEL_ENCODER_NAME}.engine"
 BACKBONE_HEAD_ENGINE: str = f"{BACKBONE_HEAD_NAME}.engine"
 
-# Ordered list of ONNX to TensorRT file mappings
-ONNX_TO_TRT_MAPPINGS: Tuple[Tuple[str, str], ...] = (
-    (VOXEL_ENCODER_ONNX, VOXEL_ENCODER_ENGINE),
-    (BACKBONE_HEAD_ONNX, BACKBONE_HEAD_ENGINE),
-)
-
 __all__ = [
     # Model architecture
     "OUTPUT_NAMES",
@@ -49,5 +43,4 @@ __all__ = [
     "BACKBONE_HEAD_ONNX",
     "VOXEL_ENCODER_ENGINE",
     "BACKBONE_HEAD_ENGINE",
-    "ONNX_TO_TRT_MAPPINGS",
 ]
