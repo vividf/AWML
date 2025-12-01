@@ -7,7 +7,7 @@ using MMDet3D's preprocessing pipeline.
 
 import os
 import pickle
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -71,6 +71,49 @@ class CenterPointDataLoader(BaseDataLoader):
         # Build preprocessing pipeline
         # task_type should be provided from deploy_config
         self.pipeline = build_preprocessing_pipeline(model_cfg, task_type=task_type)
+
+    def _to_tensor(
+        self,
+        data: Union[torch.Tensor, np.ndarray, List[Union[torch.Tensor, np.ndarray]]],
+        name: str = "data",
+    ) -> torch.Tensor:
+        """
+        Convert various data types to a torch.Tensor on the target device.
+
+        Args:
+            data: Input data (torch.Tensor, np.ndarray, or list of either)
+            name: Name of the data for error messages
+
+        Returns:
+            torch.Tensor on self.device
+
+        Raises:
+            ValueError: If data type is unsupported or list is empty
+        """
+        if isinstance(data, torch.Tensor):
+            return data.to(self.device)
+
+        if isinstance(data, np.ndarray):
+            return torch.from_numpy(data).to(self.device)
+
+        if isinstance(data, list):
+            if len(data) == 0:
+                raise ValueError(f"Empty list for '{name}' in pipeline output.")
+
+            first_item = data[0]
+            if isinstance(first_item, torch.Tensor):
+                return first_item.to(self.device)
+            if isinstance(first_item, np.ndarray):
+                return torch.from_numpy(first_item).to(self.device)
+
+            raise ValueError(
+                f"Unexpected type for {name}[0]: {type(first_item)}. " f"Expected torch.Tensor or np.ndarray."
+            )
+
+        raise ValueError(
+            f"Unexpected type for '{name}': {type(data)}. "
+            f"Expected torch.Tensor, np.ndarray, or list of tensors/arrays."
+        )
 
     def _load_info_file(self) -> list:
         """
@@ -224,36 +267,12 @@ class CenterPointDataLoader(BaseDataLoader):
                 f"not in the test pipeline. The pipeline should output raw points using Pack3DDetInputs."
             )
 
-        # Extract points
-        points = pipeline_inputs["points"]
-        if isinstance(points, torch.Tensor):
-            points_tensor = points.to(self.device)
-        elif isinstance(points, np.ndarray):
-            points_tensor = torch.from_numpy(points).to(self.device)
-        elif isinstance(points, list):
-            # Handle list of point clouds (batch format)
-            if len(points) > 0:
-                if isinstance(points[0], torch.Tensor):
-                    points_tensor = points[0].to(self.device)
-                elif isinstance(points[0], np.ndarray):
-                    points_tensor = torch.from_numpy(points[0]).to(self.device)
-                else:
-                    raise ValueError(
-                        f"Unexpected type for points[0]: {type(points[0])}. " f"Expected torch.Tensor or np.ndarray."
-                    )
-            else:
-                raise ValueError("Empty points list in pipeline output.")
-        else:
-            raise ValueError(
-                f"Unexpected type for 'points': {type(points)}. "
-                f"Expected torch.Tensor, np.ndarray, or list of tensors/arrays."
-            )
+        # Convert points to tensor using helper
+        points_tensor = self._to_tensor(pipeline_inputs["points"], name="points")
 
         # Validate points shape
         if points_tensor.ndim != 2:
-            raise ValueError(
-                f"Expected points tensor with shape [N, point_features], " f"got shape {points_tensor.shape}"
-            )
+            raise ValueError(f"Expected points tensor with shape [N, point_features], got shape {points_tensor.shape}")
 
         return {"points": points_tensor}
 
@@ -296,16 +315,20 @@ class CenterPointDataLoader(BaseDataLoader):
             "sample_idx": sample.get("sample_idx", index),
         }
 
-    def get_class_names(self) -> list:
+    def get_class_names(self) -> List[str]:
         """
         Get class names from config.
 
         Returns:
             List of class names
+
+        Raises:
+            ValueError: If class_names not found in model_cfg
         """
-        # Try to get from model config
         if hasattr(self.model_cfg, "class_names"):
             return self.model_cfg.class_names
 
-        # Default for T4Dataset
-        return ["car", "truck", "bus", "bicycle", "pedestrian"]
+        raise ValueError(
+            "class_names must be defined in model_cfg. "
+            "Check your model config file includes class_names definition."
+        )
