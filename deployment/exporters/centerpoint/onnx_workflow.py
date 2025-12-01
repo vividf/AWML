@@ -79,9 +79,14 @@ class CenterPointONNXExportWorkflow(OnnxExportWorkflow):
 
         Returns:
             Artifact pointing to output directory with multi_file=True
+
+        Raises:
+            AttributeError: If component extractor doesn't have extract_features method
+            RuntimeError: If feature extraction or export fails
         """
-        # context available for future extensions
-        _ = context
+        # Note: context available for future extensions (e.g., precision hints, debug flags)
+        del context  # Explicitly unused
+
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
 

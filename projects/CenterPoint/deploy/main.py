@@ -19,7 +19,6 @@ sys.path.insert(0, str(project_root))
 from deployment.core import BaseDeploymentConfig, setup_logging
 from deployment.core.config.base_config import parse_base_args
 from deployment.core.contexts import CenterPointExportContext
-from deployment.exporters.centerpoint.model_wrappers import CenterPointONNXWrapper
 from deployment.runners import CenterPointDeploymentRunner
 from projects.CenterPoint.deploy.data_loader import CenterPointDataLoader
 from projects.CenterPoint.deploy.evaluator import CenterPointEvaluator
@@ -112,7 +111,6 @@ def main():
         config=config,
         model_cfg=model_cfg,  # original cfg; runner will convert to ONNX cfg in load_pytorch_model()
         logger=logger,
-        onnx_wrapper_cls=CenterPointONNXWrapper,
     )
 
     # Execute deployment workflow with typed context
