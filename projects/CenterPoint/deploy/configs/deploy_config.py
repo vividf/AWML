@@ -1,10 +1,5 @@
 """
-CenterPoint Deployment Configuration (v2).
-
-This config is designed to:
-- Make export mode behavior explicit and easy to reason about.
-- Separate "what to do" (mode, which backends) from "how to do it" (paths, devices).
-- Make verification & evaluation rules depend on export.mode without hardcoding them in code.
+CenterPoint Deployment Configuration
 """
 
 # ============================================================================
@@ -39,7 +34,7 @@ export = dict(
     # - 'trt'  : build TensorRT engine from an existing ONNX
     # - 'both' : export PyTorch -> ONNX -> TensorRT
     # - 'none' : no export (only evaluation / verification on existing artifacts)
-    mode="none",
+    mode="both",
     # ---- Common options ----------------------------------------------------
     work_dir="work_dirs/centerpoint_deployment",
     # ---- ONNX source when building TensorRT only ---------------------------
@@ -90,16 +85,17 @@ model_io = dict(
 # ============================================================================
 # ONNX Export Configuration
 # ============================================================================
+# Note: CenterPoint uses multi-file ONNX export (voxel encoder + backbone/head).
+# File names are defined by the workflow, not by save_file.
+# See deployment/exporters/centerpoint/constants.py for file name definitions.
 onnx_config = dict(
     opset_version=16,
     do_constant_folding=True,
-    save_file="centerpoint.onnx",
     export_params=True,
     keep_initializers_as_inputs=False,
     simplify=False,
-    # CenterPoint uses multi-file ONNX (voxel encoder + backbone/head)
-    # When True, model_path should be a directory containing multiple .onnx files
-    # When False (default), model_path should be a single .onnx file
+    # multi_file=True means the export produces a directory with multiple .onnx files
+    # File names are controlled by CenterPointONNXExportWorkflow, not by save_file
     multi_file=True,
 )
 
