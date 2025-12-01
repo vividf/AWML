@@ -143,13 +143,15 @@ def extract_t4metric_v2_config(
     if logger is None:
         logger = logging.getLogger(__name__)
 
-    # Get class names
+    # Get class names - must come from config or explicit parameter
     if class_names is None:
         if hasattr(model_cfg, "class_names"):
             class_names = model_cfg.class_names
         else:
-            # Default for T4Dataset
-            class_names = ["car", "truck", "bus", "bicycle", "pedestrian"]
+            raise ValueError(
+                "class_names must be provided either explicitly or via model_cfg.class_names. "
+                "Check your model config file includes class_names definition."
+            )
 
     # Try to extract T4MetricV2 configs from val_evaluator or test_evaluator
     evaluator_cfg = None
