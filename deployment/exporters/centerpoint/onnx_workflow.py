@@ -15,7 +15,6 @@ from typing import Optional
 import torch
 
 from deployment.core import Artifact, BaseDataLoader, BaseDeploymentConfig
-from deployment.core.contexts import ExportContext
 from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import IdentityWrapper
 from deployment.exporters.workflows.base import OnnxExportWorkflow
@@ -63,7 +62,6 @@ class CenterPointONNXExportWorkflow(OnnxExportWorkflow):
         output_dir: str,
         config: BaseDeploymentConfig,
         sample_idx: int = 0,
-        context: Optional[ExportContext] = None,
     ) -> Artifact:
         """
         Export CenterPoint model to multi-file ONNX format.
@@ -74,8 +72,6 @@ class CenterPointONNXExportWorkflow(OnnxExportWorkflow):
             output_dir: Output directory for ONNX files
             config: Deployment configuration (not used, kept for interface)
             sample_idx: Sample index to use for feature extraction
-            context: Export context with project-specific parameters (currently unused,
-                     but available for future extensions)
 
         Returns:
             Artifact pointing to output directory with multi_file=True
@@ -84,9 +80,6 @@ class CenterPointONNXExportWorkflow(OnnxExportWorkflow):
             AttributeError: If component extractor doesn't have extract_features method
             RuntimeError: If feature extraction or export fails
         """
-        # Note: context available for future extensions (e.g., precision hints, debug flags)
-        del context  # Explicitly unused
-
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
 
