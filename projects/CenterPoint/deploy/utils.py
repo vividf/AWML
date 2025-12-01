@@ -180,7 +180,6 @@ def extract_t4metric_v2_config(
         return None
 
     logger.info("=" * 60)
-    logger.info("Detected T4MetricV2 config!")
     logger.info("Extracting evaluation settings for deployment...")
     logger.info("=" * 60)
 

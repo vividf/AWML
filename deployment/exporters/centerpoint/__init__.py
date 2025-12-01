@@ -4,7 +4,6 @@ from deployment.exporters.centerpoint.constants import (
     BACKBONE_HEAD_ENGINE,
     BACKBONE_HEAD_NAME,
     BACKBONE_HEAD_ONNX,
-    ONNX_TO_TRT_MAPPINGS,
     OUTPUT_NAMES,
     VOXEL_ENCODER_ENGINE,
     VOXEL_ENCODER_NAME,
@@ -26,5 +25,4 @@ __all__ = [
     "BACKBONE_HEAD_ONNX",
     "VOXEL_ENCODER_ENGINE",
     "BACKBONE_HEAD_ENGINE",
-    "ONNX_TO_TRT_MAPPINGS",
 ]
