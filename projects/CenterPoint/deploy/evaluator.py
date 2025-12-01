@@ -21,8 +21,8 @@ from deployment.core import (
     TaskProfile,
 )
 from deployment.core.io.base_data_loader import BaseDataLoader
+from deployment.exporters.centerpoint.constants import OUTPUT_NAMES
 from deployment.pipelines import PipelineFactory
-from projects.CenterPoint.deploy.constants import DEFAULT_FRAME_ID, OUTPUT_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +71,10 @@ class CenterPointEvaluator(BaseEvaluator):
             num_classes=len(names),
         )
 
-        # Create metrics adapter
+        # Create metrics adapter with default frame_id if not provided
+        # "base_link" is the standard base frame in robotics/ROS
         if metrics_config is None:
-            metrics_config = Detection3DMetricsConfig(
-                class_names=list(names),
-                frame_id=DEFAULT_FRAME_ID,
-            )
+            raise ValueError("metrics_config must be provided")
         metrics_adapter = Detection3DMetricsAdapter(metrics_config)
 
         super().__init__(

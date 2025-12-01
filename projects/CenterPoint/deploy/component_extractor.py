@@ -14,12 +14,12 @@ import torch
 from deployment.exporters.centerpoint.constants import (
     BACKBONE_HEAD_NAME,
     BACKBONE_HEAD_ONNX,
+    OUTPUT_NAMES,
     VOXEL_ENCODER_NAME,
     VOXEL_ENCODER_ONNX,
 )
 from deployment.exporters.common.configs import ONNXExportConfig
 from deployment.exporters.workflows.interfaces import ExportableComponent, ModelComponentExtractor
-from projects.CenterPoint.deploy.constants import OUTPUT_NAMES
 from projects.CenterPoint.models.detectors.centerpoint_onnx import CenterPointHeadONNX
 
 logger = logging.getLogger(__name__)
