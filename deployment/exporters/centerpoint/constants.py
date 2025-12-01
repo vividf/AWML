@@ -1,12 +1,24 @@
 """
 Constants for CenterPoint export workflows.
 
-These constants define the export file structure for CenterPoint models.
-They are kept in the deployment package since they are part of the
-export interface, not project-specific configuration.
+These constants define the export file structure and model architecture
+for CenterPoint models. They are kept in the deployment package since
+they are part of the export interface.
 """
 
 from typing import Tuple
+
+# =============================================================================
+# Model Architecture Constants
+# =============================================================================
+
+# CenterPoint head output names (tied to CenterHead architecture)
+# Order matters for ONNX export
+OUTPUT_NAMES: Tuple[str, ...] = ("heatmap", "reg", "height", "dim", "rot", "vel")
+
+# =============================================================================
+# Export File Structure Constants
+# =============================================================================
 
 # CenterPoint component names for multi-file ONNX export
 # These match the model architecture (voxel encoder + backbone/neck/head)
@@ -28,6 +40,9 @@ ONNX_TO_TRT_MAPPINGS: Tuple[Tuple[str, str], ...] = (
 )
 
 __all__ = [
+    # Model architecture
+    "OUTPUT_NAMES",
+    # Export file structure
     "VOXEL_ENCODER_NAME",
     "BACKBONE_HEAD_NAME",
     "VOXEL_ENCODER_ONNX",

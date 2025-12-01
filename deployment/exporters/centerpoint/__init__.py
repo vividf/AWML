@@ -5,6 +5,7 @@ from deployment.exporters.centerpoint.constants import (
     BACKBONE_HEAD_NAME,
     BACKBONE_HEAD_ONNX,
     ONNX_TO_TRT_MAPPINGS,
+    OUTPUT_NAMES,
     VOXEL_ENCODER_ENGINE,
     VOXEL_ENCODER_NAME,
     VOXEL_ENCODER_ONNX,
@@ -16,7 +17,9 @@ __all__ = [
     # Workflows
     "CenterPointONNXExportWorkflow",
     "CenterPointTensorRTExportWorkflow",
-    # Constants
+    # Model architecture constants
+    "OUTPUT_NAMES",
+    # Export file structure constants
     "VOXEL_ENCODER_NAME",
     "BACKBONE_HEAD_NAME",
     "VOXEL_ENCODER_ONNX",
