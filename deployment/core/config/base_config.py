@@ -41,7 +41,7 @@ class PrecisionPolicy(str, Enum):
 
 
 class ExportMode(str, Enum):
-    """Export workflow modes."""
+    """Export pipeline modes."""
 
     ONNX = "onnx"
     TRT = "trt"
@@ -394,7 +394,7 @@ class BaseDeploymentConfig:
         Get checkpoint path - single source of truth for PyTorch model.
 
         This path is used by:
-        - Export workflow: to load the PyTorch model for ONNX conversion
+        - Export pipeline: to load the PyTorch model for ONNX conversion
         - Evaluation: for PyTorch backend evaluation
         - Verification: when PyTorch is used as reference or test backend
 

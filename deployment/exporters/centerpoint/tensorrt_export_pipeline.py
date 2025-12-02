@@ -1,7 +1,7 @@
 """
-CenterPoint TensorRT export workflow using composition.
+CenterPoint TensorRT export pipeline using composition.
 
-This workflow orchestrates multi-file TensorRT export for CenterPoint models.
+This pipeline orchestrates multi-file TensorRT export for CenterPoint models.
 It converts multiple ONNX files to TensorRT engines.
 """
 
@@ -17,12 +17,12 @@ import torch
 
 from deployment.core import Artifact, BaseDataLoader, BaseDeploymentConfig
 from deployment.exporters.common.factory import ExporterFactory
-from deployment.exporters.workflows.base import TensorRTExportWorkflow
+from deployment.exporters.export_pipelines.base import TensorRTExportPipeline
 
 
-class CenterPointTensorRTExportWorkflow(TensorRTExportWorkflow):
+class CenterPointTensorRTExportPipeline(TensorRTExportPipeline):
     """
-    CenterPoint TensorRT export workflow.
+    CenterPoint TensorRT export pipeline.
 
     Converts every ONNX file in the export directory to a TensorRT engine by
     following a simple naming convention (``foo.onnx`` → ``foo.engine``).
@@ -38,7 +38,7 @@ class CenterPointTensorRTExportWorkflow(TensorRTExportWorkflow):
         logger: Optional[logging.Logger] = None,
     ):
         """
-        Initialize CenterPoint TensorRT export workflow.
+        Initialize CenterPoint TensorRT export pipeline.
 
         Args:
             exporter_factory: Factory class for creating exporters
