@@ -67,9 +67,9 @@ model_io = dict(
         dict(name="num_points", shape=(-1,), dtype="int32"),  # (num_voxels,)
         dict(name="coors", shape=(-1, 4), dtype="int32"),  # (num_voxels, 4) = (batch, z, y, x)
     ],
-    # Outputs (head tensors)
-    output_name="reg",  # Primary output name
-    additional_outputs=["height", "dim", "rot", "vel", "hm"],
+    # Head output names for ONNX export (order matters!)
+    # These are tied to CenterHead architecture
+    head_output_names=("heatmap", "reg", "height", "dim", "rot", "vel"),
     # Batch size configuration
     # - int  : fixed batch size
     # - None : dynamic batch size with dynamic_axes
@@ -85,18 +85,30 @@ model_io = dict(
 # ============================================================================
 # ONNX Export Configuration
 # ============================================================================
-# Note: CenterPoint uses multi-file ONNX export (voxel encoder + backbone/head).
-# File names are defined by the workflow, not by save_file.
-# See deployment/exporters/centerpoint/constants.py for file name definitions.
+# CenterPoint uses multi-file ONNX export (voxel encoder + backbone/head).
+# Component definitions below specify names and file outputs for each stage.
 onnx_config = dict(
     opset_version=16,
     do_constant_folding=True,
     export_params=True,
     keep_initializers_as_inputs=False,
     simplify=False,
-    # multi_file=True means the export produces a directory with multiple .onnx files
-    # File names are controlled by CenterPointONNXExportWorkflow, not by save_file
+    # Multi-file export: produces a directory with multiple .onnx/.engine files
     multi_file=True,
+    # Component definitions for multi-stage export
+    # Each component maps to a model sub-module that gets exported separately
+    components=dict(
+        voxel_encoder=dict(
+            name="pts_voxel_encoder",
+            onnx_file="pts_voxel_encoder.onnx",
+            engine_file="pts_voxel_encoder.engine",
+        ),
+        backbone_head=dict(
+            name="pts_backbone_neck_head",
+            onnx_file="pts_backbone_neck_head.onnx",
+            engine_file="pts_backbone_neck_head.engine",
+        ),
+    ),
 )
 
 # ============================================================================
@@ -173,7 +185,7 @@ evaluation = dict(
 # ----------------------------------------------------------------------------
 verification = dict(
     # Master switch to enable/disable verification
-    enabled=False,
+    enabled=True,
     tolerance=1e-1,
     num_verify_samples=1,
     # Device aliases for flexible device management
