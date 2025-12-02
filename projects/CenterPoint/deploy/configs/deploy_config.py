@@ -12,7 +12,7 @@ task_type = "detection3d"
 # Checkpoint Path - Single source of truth for PyTorch model
 # ============================================================================
 # This is the main checkpoint path used by:
-# - Export workflow: to load the PyTorch model for ONNX conversion
+# - Export pipeline: to load the PyTorch model for ONNX conversion
 # - Evaluation: for PyTorch backend evaluation
 # - Verification: when PyTorch is used as reference or test backend
 checkpoint_path = "work_dirs/centerpoint/best_checkpoint.pth"

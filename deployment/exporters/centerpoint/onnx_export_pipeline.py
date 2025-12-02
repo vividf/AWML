@@ -1,9 +1,9 @@
 """
-CenterPoint ONNX export workflow using composition.
+CenterPoint ONNX export pipeline using composition.
 
-This workflow orchestrates multi-file ONNX export for CenterPoint models.
+This pipeline orchestrates multi-file ONNX export for CenterPoint models.
 It uses the ModelComponentExtractor pattern to keep model-specific logic
-separate from the generic export workflow.
+separate from the generic export pipeline.
 """
 
 from __future__ import annotations
@@ -18,13 +18,13 @@ import torch
 from deployment.core import Artifact, BaseDataLoader, BaseDeploymentConfig
 from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import IdentityWrapper
-from deployment.exporters.workflows.base import OnnxExportWorkflow
-from deployment.exporters.workflows.interfaces import ExportableComponent, ModelComponentExtractor
+from deployment.exporters.export_pipelines.base import OnnxExportPipeline
+from deployment.exporters.export_pipelines.interfaces import ExportableComponent, ModelComponentExtractor
 
 
-class CenterPointONNXExportWorkflow(OnnxExportWorkflow):
+class CenterPointONNXExportPipeline(OnnxExportPipeline):
     """
-    CenterPoint ONNX export workflow.
+    CenterPoint ONNX export pipeline.
 
     Orchestrates multi-file ONNX export using a generic ONNXExporter and
     CenterPointComponentExtractor for model-specific logic.
@@ -42,7 +42,7 @@ class CenterPointONNXExportWorkflow(OnnxExportWorkflow):
         logger: Optional[logging.Logger] = None,
     ):
         """
-        Initialize CenterPoint ONNX export workflow.
+        Initialize CenterPoint ONNX export pipeline.
 
         Args:
             exporter_factory: Factory class for creating exporters

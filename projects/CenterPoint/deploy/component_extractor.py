@@ -12,7 +12,7 @@ from typing import Any, List, Tuple
 import torch
 
 from deployment.exporters.common.configs import ONNXExportConfig
-from deployment.exporters.workflows.interfaces import ExportableComponent, ModelComponentExtractor
+from deployment.exporters.export_pipelines.interfaces import ExportableComponent, ModelComponentExtractor
 from projects.CenterPoint.deploy.configs.deploy_config import model_io, onnx_config
 from projects.CenterPoint.models.detectors.centerpoint_onnx import CenterPointHeadONNX
 

@@ -24,7 +24,7 @@ from mmengine.config import Config
 from deployment.core import BaseDataLoader, BaseDeploymentConfig, BaseEvaluator
 from deployment.core.contexts import ExportContext
 from deployment.exporters.common.model_wrappers import BaseModelWrapper
-from deployment.exporters.workflows.base import OnnxExportWorkflow, TensorRTExportWorkflow
+from deployment.exporters.export_pipelines.base import OnnxExportPipeline, TensorRTExportPipeline
 from deployment.runners.common.artifact_manager import ArtifactManager
 from deployment.runners.common.evaluation_orchestrator import EvaluationOrchestrator
 from deployment.runners.common.export_orchestrator import ExportOrchestrator
@@ -52,7 +52,7 @@ class DeploymentResultDict(TypedDict, total=False):
 
 class BaseDeploymentRunner:
     """
-    Base deployment runner for common deployment workflows.
+    Base deployment runner for common deployment pipelines.
 
     This runner orchestrates three specialized components:
     1. ExportOrchestrator: Load PyTorch, export ONNX, export TensorRT
@@ -61,7 +61,7 @@ class BaseDeploymentRunner:
 
     Projects should extend this class and override methods as needed:
     - Override load_pytorch_model() for project-specific model loading
-    - Provide project-specific ONNX/TensorRT workflows via constructor
+    - Provide project-specific ONNX/TensorRT export pipelines via constructor
     """
 
     def __init__(
@@ -72,8 +72,8 @@ class BaseDeploymentRunner:
         model_cfg: Config,
         logger: logging.Logger,
         onnx_wrapper_cls: Optional[Type[BaseModelWrapper]] = None,
-        onnx_workflow: Optional[OnnxExportWorkflow] = None,
-        tensorrt_workflow: Optional[TensorRTExportWorkflow] = None,
+        onnx_pipeline: Optional[OnnxExportPipeline] = None,
+        tensorrt_pipeline: Optional[TensorRTExportPipeline] = None,
     ):
         """
         Initialize base deployment runner.
@@ -85,8 +85,8 @@ class BaseDeploymentRunner:
             model_cfg: Model configuration
             logger: Logger instance
             onnx_wrapper_cls: Optional ONNX model wrapper class for exporter creation
-            onnx_workflow: Optional specialized ONNX workflow
-            tensorrt_workflow: Optional specialized TensorRT workflow
+            onnx_pipeline: Optional specialized ONNX export pipeline
+            tensorrt_pipeline: Optional specialized TensorRT export pipeline
         """
         self.data_loader = data_loader
         self.evaluator = evaluator
@@ -94,10 +94,10 @@ class BaseDeploymentRunner:
         self.model_cfg = model_cfg
         self.logger = logger
 
-        # Store workflow references for subclasses to modify
+        # Store pipeline references for subclasses to modify
         self._onnx_wrapper_cls = onnx_wrapper_cls
-        self._onnx_workflow = onnx_workflow
-        self._tensorrt_workflow = tensorrt_workflow
+        self._onnx_pipeline = onnx_pipeline
+        self._tensorrt_pipeline = tensorrt_pipeline
 
         # Initialize artifact manager (shared across orchestrators)
         self.artifact_manager = ArtifactManager(config, logger)
@@ -110,9 +110,9 @@ class BaseDeploymentRunner:
     @property
     def export_orchestrator(self) -> ExportOrchestrator:
         """
-        Get export orchestrator (created lazily to allow subclass workflow setup).
+        Get export orchestrator (created lazily to allow subclass pipeline setup).
 
-        This allows subclasses to set _onnx_workflow and _tensorrt_workflow in __init__
+        This allows subclasses to set _onnx_pipeline and _tensorrt_pipeline in __init__
         before the export orchestrator is created.
         """
         if self._export_orchestrator is None:
@@ -124,8 +124,8 @@ class BaseDeploymentRunner:
                 model_loader=self.load_pytorch_model,
                 evaluator=self.evaluator,
                 onnx_wrapper_cls=self._onnx_wrapper_cls,
-                onnx_workflow=self._onnx_workflow,
-                tensorrt_workflow=self._tensorrt_workflow,
+                onnx_pipeline=self._onnx_pipeline,
+                tensorrt_pipeline=self._tensorrt_pipeline,
             )
         return self._export_orchestrator
 

@@ -1,5 +1,5 @@
 """
-Base workflow interfaces for specialized export flows.
+Base export pipeline interfaces for specialized export flows.
 """
 
 from __future__ import annotations
@@ -12,9 +12,9 @@ from deployment.core.config.base_config import BaseDeploymentConfig
 from deployment.core.io.base_data_loader import BaseDataLoader
 
 
-class OnnxExportWorkflow(ABC):
+class OnnxExportPipeline(ABC):
     """
-    Base interface for ONNX export workflows.
+    Base interface for ONNX export pipelines.
     """
 
     @abstractmethod
@@ -28,7 +28,7 @@ class OnnxExportWorkflow(ABC):
         sample_idx: int = 0,
     ) -> Artifact:
         """
-        Execute the ONNX export workflow and return the produced artifact.
+        Execute the ONNX export pipeline and return the produced artifact.
 
         Args:
             model: PyTorch model to export
@@ -42,9 +42,9 @@ class OnnxExportWorkflow(ABC):
         """
 
 
-class TensorRTExportWorkflow(ABC):
+class TensorRTExportPipeline(ABC):
     """
-    Base interface for TensorRT export workflows.
+    Base interface for TensorRT export pipelines.
     """
 
     @abstractmethod
@@ -58,7 +58,7 @@ class TensorRTExportWorkflow(ABC):
         data_loader: BaseDataLoader,
     ) -> Artifact:
         """
-        Execute the TensorRT export workflow and return the produced artifact.
+        Execute the TensorRT export pipeline and return the produced artifact.
 
         Args:
             onnx_path: Path to ONNX model file/directory

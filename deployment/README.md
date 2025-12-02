@@ -6,7 +6,7 @@ verification and evaluation toolchain runs across every backend so numerical
 parity and metrics stay consistent from project to project.
 
 At the center is a shared runner/pipeline/exporter architecture that teams can
-extend with lightweight wrappers or workflows. CenterPoint, YOLOX,
+extend with lightweight wrappers or export pipelines. CenterPoint, YOLOX,
 CalibrationStatusClassification, and future models plug into the same export and
 verification flow while still layering in task-specific logic where needed.
 
@@ -24,8 +24,6 @@ python projects/YOLOX_opt_elan/deploy/main.py configs/deploy_config.py configs/m
 python projects/CalibrationStatusClassification/deploy/main.py configs/deploy_config.py configs/model_config.py
 ```
 
-Only `--log-level` is available as a command-line flag. All other settings (`work_dir`, `device`, `checkpoint_path`) are configured in the deploy config file. Inject wrapper classes and optional workflows when instantiating a runner; exporters are created lazily inside `BaseDeploymentRunner`.
-
 ## Documentation Map
 
 | Topic | Description |
@@ -35,7 +33,7 @@ Only `--log-level` is available as a command-line flag. All other settings (`wor
 | [`docs/usage.md`](docs/usage.md) | CLI usage, runner patterns, typed contexts, export modes. |
 | [`docs/configuration.md`](docs/configuration.md) | Config structure, typed schemas, backend enums. |
 | [`docs/projects.md`](docs/projects.md) | CenterPoint, YOLOX, and Calibration deployment specifics. |
-| [`docs/export_workflow.md`](docs/export_workflow.md) | ONNX/TRT export steps and workflow patterns. |
+| [`docs/export_pipeline.md`](docs/export_pipeline.md) | ONNX/TRT export steps and pipeline patterns. |
 | [`docs/verification_evaluation.md`](docs/verification_evaluation.md) | Verification scenarios, evaluation metrics, core contract. |
 | [`docs/best_practices.md`](docs/best_practices.md) | Best practices, troubleshooting, roadmap. |
 | [`docs/contributing.md`](docs/contributing.md) | How to add new deployment projects end-to-end. |
@@ -44,9 +42,9 @@ Refer to `deployment/docs/README.md` for the same index.
 
 ## Architecture Snapshot
 
-- **Entry points** (`projects/*/deploy/main.py`) instantiate project runners with data loaders, evaluators, wrappers, and optional workflows.
+- **Entry points** (`projects/*/deploy/main.py`) instantiate project runners with data loaders, evaluators, wrappers, and optional export pipelines.
 - **Runners** coordinate load → export → verify → evaluate while delegating to shared Artifact/Verification/Evaluation orchestrators.
-- **Exporters** live under `exporters/common/` with typed config classes; project wrappers/workflows compose the base exporters as needed.
+- **Exporters** live under `exporters/common/` with typed config classes; project wrappers/pipelines compose the base exporters as needed.
 - **Pipelines** (`pipelines/common/*`, `pipelines/{task}/`) provide consistent preprocessing/postprocessing with backend-specific inference implementations resolved via `PipelineFactory`.
 - **Core package** (`core/`) supplies typed configs, runtime contexts, task definitions, and shared verification utilities.
 
@@ -54,17 +52,17 @@ See [`docs/architecture.md`](docs/architecture.md) for diagrams and component de
 
 ## Export & Verification Flow
 
-1. Load the PyTorch checkpoint and run ONNX export (single or multi-file) using the injected wrappers/workflows.
+1. Load the PyTorch checkpoint and run ONNX export (single or multi-file) using the injected wrappers/pipelines.
 2. Optionally build TensorRT engines with precision policies such as `auto`, `fp16`, `fp32_tf32`, or `strongly_typed`.
 3. Register artifacts via `ArtifactManager` for downstream verification and evaluation.
 4. Run verification scenarios defined in config—pipelines are resolved by backend and device, and outputs are recursively compared with typed tolerances.
 5. Execute evaluation across enabled backends and emit typed metrics.
 
-Implementation details live in [`docs/export_workflow.md`](docs/export_workflow.md) and [`docs/verification_evaluation.md`](docs/verification_evaluation.md).
+Implementation details live in [`docs/export_pipeline.md`](docs/export_pipeline.md) and [`docs/verification_evaluation.md`](docs/verification_evaluation.md).
 
 ## Project Coverage
 
-- **CenterPoint** – multi-file export orchestrated by dedicated ONNX/TRT workflows; see [`docs/projects.md`](docs/projects.md).
+- **CenterPoint** – multi-file export orchestrated by dedicated ONNX/TRT pipelines; see [`docs/projects.md`](docs/projects.md).
 - **YOLOX** – single-file export with output reshaping via `YOLOXOptElanONNXWrapper`.
 - **CalibrationStatusClassification** – binary classification deployment with identity wrappers and simplified pipelines.
 
