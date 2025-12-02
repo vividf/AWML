@@ -1,14 +1,14 @@
 # CenterPoint Deployment
 
-Complete deployment pipeline for CenterPoint 3D object detection using the unified deployment framework.
+Deployment pipeline for CenterPoint 3D object detection using the unified deployment framework.
 
 ## Features
 
-- ✅ Export to ONNX and TensorRT (multi-file architecture)
-- ✅ Full evaluation with 3D detection metrics (autoware_perception_evaluation)
-- ✅ Latency benchmarking
-- ✅ Uses MMDet3D pipeline for consistency with training
-- ✅ Unified runner architecture with composition-based design
+- Export to ONNX and TensorRT (multi-file architecture)
+- Full evaluation with 3D detection metrics (autoware_perception_evaluation)
+- Latency benchmarking
+- Uses MMDet3D pipeline for consistency with training
+- Unified runner architecture with composition-based design
 
 ## Quick Start
 
