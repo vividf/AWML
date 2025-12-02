@@ -21,7 +21,7 @@ python projects/CalibrationStatusClassification/deploy/main.py \
 
 ## Creating a Project Runner
 
-Projects pass lightweight configuration objects (wrapper classes and optional workflows) into the runner. Exporters are created lazily via `ExporterFactory`.
+Projects pass lightweight configuration objects (wrapper classes and optional export pipelines) into the runner. Exporters are created lazily via `ExporterFactory`.
 
 ```python
 from deployment.exporters.yolox.model_wrappers import YOLOXOptElanONNXWrapper
@@ -39,7 +39,7 @@ runner = YOLOXOptElanDeploymentRunner(
 
 Key points:
 
-- Pass wrapper classes (and optional workflows) instead of exporter instances.
+- Pass wrapper classes (and optional export pipelines) instead of exporter instances.
 - Exporters are constructed lazily inside `BaseDeploymentRunner`.
 - Entry points remain explicit and easily testable.
 

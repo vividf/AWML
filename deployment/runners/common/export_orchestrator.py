@@ -23,7 +23,7 @@ from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import BaseModelWrapper
 from deployment.exporters.common.onnx_exporter import ONNXExporter
 from deployment.exporters.common.tensorrt_exporter import TensorRTExporter
-from deployment.exporters.workflows.base import OnnxExportWorkflow, TensorRTExportWorkflow
+from deployment.exporters.export_pipelines.base import OnnxExportPipeline, TensorRTExportPipeline
 from deployment.runners.common.artifact_manager import ArtifactManager
 
 
@@ -72,8 +72,8 @@ class ExportOrchestrator:
         model_loader: Callable[..., Any],
         evaluator: Any,
         onnx_wrapper_cls: Optional[Type[BaseModelWrapper]] = None,
-        onnx_workflow: Optional[OnnxExportWorkflow] = None,
-        tensorrt_workflow: Optional[TensorRTExportWorkflow] = None,
+        onnx_pipeline: Optional[OnnxExportPipeline] = None,
+        tensorrt_pipeline: Optional[TensorRTExportPipeline] = None,
     ):
         """
         Initialize export orchestrator.
@@ -86,8 +86,8 @@ class ExportOrchestrator:
             model_loader: Callable to load PyTorch model (checkpoint_path, **kwargs) -> model
             evaluator: Evaluator instance (for model injection)
             onnx_wrapper_cls: Optional ONNX model wrapper class
-            onnx_workflow: Optional specialized ONNX workflow
-            tensorrt_workflow: Optional specialized TensorRT workflow
+            onnx_pipeline: Optional specialized ONNX export pipeline
+            tensorrt_pipeline: Optional specialized TensorRT export pipeline
         """
         self.config = config
         self.data_loader = data_loader
@@ -96,8 +96,8 @@ class ExportOrchestrator:
         self._model_loader = model_loader
         self._evaluator = evaluator
         self._onnx_wrapper_cls = onnx_wrapper_cls
-        self._onnx_workflow = onnx_workflow
-        self._tensorrt_workflow = tensorrt_workflow
+        self._onnx_pipeline = onnx_pipeline
+        self._tensorrt_pipeline = tensorrt_pipeline
 
         # Lazy-initialized exporters
         self._onnx_exporter: Optional[ONNXExporter] = None
@@ -352,8 +352,8 @@ class ExportOrchestrator:
         if not self.config.export_config.should_export_onnx():
             return None
 
-        if self._onnx_workflow is None and self._onnx_wrapper_cls is None:
-            raise RuntimeError("ONNX export requested but no wrapper class or workflow provided.")
+        if self._onnx_pipeline is None and self._onnx_wrapper_cls is None:
+            raise RuntimeError("ONNX export requested but no wrapper class or export pipeline provided.")
 
         onnx_settings = self.config.get_onnx_settings()
         # Use context.sample_idx, fallback to runtime config
@@ -364,13 +364,13 @@ class ExportOrchestrator:
         os.makedirs(onnx_dir, exist_ok=True)
         output_path = os.path.join(onnx_dir, onnx_settings.save_file)
 
-        # Use workflow if available
-        if self._onnx_workflow is not None:
+        # Use export pipeline if available
+        if self._onnx_pipeline is not None:
             self.logger.info("=" * 80)
-            self.logger.info(f"Exporting to ONNX via workflow ({type(self._onnx_workflow).__name__})")
+            self.logger.info(f"Exporting to ONNX via pipeline ({type(self._onnx_pipeline).__name__})")
             self.logger.info("=" * 80)
             try:
-                artifact = self._onnx_workflow.export(
+                artifact = self._onnx_pipeline.export(
                     model=pytorch_model,
                     data_loader=self.data_loader,
                     output_dir=onnx_dir,
@@ -444,10 +444,10 @@ class ExportOrchestrator:
             self.logger.warning("ONNX path not available, skipping TensorRT export")
             return None
 
-        exporter_label = None if self._tensorrt_workflow else type(self._get_tensorrt_exporter()).__name__
+        exporter_label = None if self._tensorrt_pipeline else type(self._get_tensorrt_exporter()).__name__
         self.logger.info("=" * 80)
-        if self._tensorrt_workflow:
-            self.logger.info(f"Exporting to TensorRT via workflow ({type(self._tensorrt_workflow).__name__})")
+        if self._tensorrt_pipeline:
+            self.logger.info(f"Exporting to TensorRT via pipeline ({type(self._tensorrt_pipeline).__name__})")
         else:
             self.logger.info(f"Exporting to TensorRT (Using {exporter_label})")
         self.logger.info("=" * 80)
@@ -471,10 +471,10 @@ class ExportOrchestrator:
         sample_idx = context.sample_idx if context.sample_idx != 0 else self.config.runtime_config.sample_idx
         sample_input = self.data_loader.get_shape_sample(sample_idx)
 
-        # Use workflow if available
-        if self._tensorrt_workflow is not None:
+        # Use export pipeline if available
+        if self._tensorrt_pipeline is not None:
             try:
-                artifact = self._tensorrt_workflow.export(
+                artifact = self._tensorrt_pipeline.export(
                     onnx_path=onnx_path,
                     output_dir=tensorrt_dir,
                     config=self.config,
