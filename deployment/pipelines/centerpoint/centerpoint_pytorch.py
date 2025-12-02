@@ -6,11 +6,9 @@ providing a baseline for comparison with optimized backends.
 """
 
 import logging
-import time
 from typing import Dict, List, Tuple
 
 import torch
-from mmdet3d.apis import inference_detector
 
 from deployment.pipelines.centerpoint.centerpoint_pipeline import CenterPointDeploymentPipeline
 
@@ -19,12 +17,10 @@ logger = logging.getLogger(__name__)
 
 class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
     """
-    PyTorch implementation of CenterPoint pipeline.
+    PyTorch implementation of the staged CenterPoint deployment pipeline.
 
-    Uses pure PyTorch for all components, providing maximum flexibility
-    and ease of debugging at the cost of inference speed.
-
-    For standard CenterPoint models (non-ONNX), uses end-to-end inference.
+    Uses PyTorch for preprocessing, middle encoder, backbone, and head while
+    sharing the same staged execution flow as ONNX/TensorRT backends.
     """
 
     def __init__(self, pytorch_model, device: str = "cuda"):
@@ -36,21 +32,13 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
             device: Device for inference
         """
         super().__init__(pytorch_model, device, backend_type="pytorch")
-
-        # Check if this is an ONNX-compatible model
-        self.is_onnx_model = hasattr(pytorch_model.pts_voxel_encoder, "get_input_features")
-
-        if self.is_onnx_model:
-            logger.info("PyTorch pipeline initialized (ONNX-compatible model)")
-        else:
-            logger.info("PyTorch pipeline initialized (standard model, using end-to-end inference)")
+        logger.info("PyTorch pipeline initialized (ONNX-compatible staged inference)")
 
     def infer(self, points: torch.Tensor, sample_meta: Dict = None, return_raw_outputs: bool = False) -> Tuple:
         """
         Complete inference pipeline.
 
-        For standard models, uses mmdet3d's inference_detector for end-to-end inference.
-        For ONNX-compatible models, uses the staged pipeline.
+        Uses the shared staged pipeline defined in CenterPointDeploymentPipeline.
 
         Args:
             points: Input point cloud
@@ -59,67 +47,7 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
         """
         if sample_meta is None:
             sample_meta = {}
-
-        # For standard models, use end-to-end inference
-        if not self.is_onnx_model:
-            if return_raw_outputs:
-                raise NotImplementedError(
-                    "return_raw_outputs=True is only supported for ONNX-compatible models. "
-                    "Standard models use end-to-end inference via inference_detector."
-                )
-            return self._infer_end_to_end(points, sample_meta)
-
-        # For ONNX models, use staged pipeline
         return super().infer(points, sample_meta, return_raw_outputs=return_raw_outputs)
-
-    def _infer_end_to_end(self, points: torch.Tensor, sample_meta: Dict) -> Tuple[List[Dict], float, Dict[str, float]]:
-        """End-to-end inference for standard PyTorch models."""
-
-        start_time = time.time()
-
-        try:
-            # Convert points to numpy for inference_detector
-            if isinstance(points, torch.Tensor):
-                points_np = points.cpu().numpy()
-            else:
-                points_np = points
-
-            # Use mmdet3d's inference API
-            with torch.no_grad():
-                results = inference_detector(self.pytorch_model, points_np)
-
-            # Parse results
-            predictions = []
-            if len(results) > 0 and hasattr(results[0], "pred_instances_3d"):
-                pred_instances = results[0].pred_instances_3d
-
-                if hasattr(pred_instances, "bboxes_3d"):
-                    bboxes_3d = pred_instances.bboxes_3d.tensor.cpu().numpy()
-                    scores_3d = pred_instances.scores_3d.cpu().numpy()
-                    labels_3d = pred_instances.labels_3d.cpu().numpy()
-
-                    for i in range(len(bboxes_3d)):
-                        predictions.append(
-                            {
-                                "bbox_3d": bboxes_3d[i][:7].tolist(),  # [x, y, z, w, l, h, yaw]
-                                "score": float(scores_3d[i]),
-                                "label": int(labels_3d[i]),
-                            }
-                        )
-
-            latency_ms = (time.time() - start_time) * 1000
-
-            # Empty latency breakdown for end-to-end models (not broken down into stages)
-            latency_breakdown = {}
-
-            return predictions, latency_ms, latency_breakdown
-
-        except Exception as e:
-            logger.error(f"End-to-end inference failed: {e}")
-            import traceback
-
-            traceback.print_exc()
-            raise
 
     def run_voxel_encoder(self, input_features: torch.Tensor) -> torch.Tensor:
         """

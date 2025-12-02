@@ -84,8 +84,7 @@ def main():
     )
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
-    # Extract T4MetricV2 config from model_cfg (if available)
-    # This ensures deployment evaluation uses the same settings as training evaluation
+    # Extract T4MetricV2 config from model_cfg
     logger.info("\nExtracting T4MetricV2 config from model config...")
     metrics_config = extract_t4metric_v2_config(model_cfg, logger=logger)
     if metrics_config is None:
