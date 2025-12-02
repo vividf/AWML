@@ -4,14 +4,14 @@
 
 **Highlights**
 
-- Multi-file ONNX export (voxel encoder + backbone/head) orchestrated via workflows.
+- Multi-file ONNX export (voxel encoder + backbone/head) orchestrated via export pipelines.
 - ONNX-compatible model configuration that mirrors training graph.
 - Composed exporters keep logic reusable.
 
-**Workflows & Wrappers**
+**Pipelines & Wrappers**
 
-- `CenterPointONNXExportWorkflow` – drives multiple ONNX exports using the generic `ONNXExporter`.
-- `CenterPointTensorRTExportWorkflow` – converts each ONNX file via the generic `TensorRTExporter`.
+- `CenterPointONNXExportPipeline` – drives multiple ONNX exports using the generic `ONNXExporter`.
+- `CenterPointTensorRTExportPipeline` – converts each ONNX file via the generic `TensorRTExporter`.
 - `CenterPointONNXWrapper` – identity wrapper.
 
 **Key Files**
@@ -19,8 +19,8 @@
 - `projects/CenterPoint/deploy/main.py`
 - `projects/CenterPoint/deploy/evaluator.py`
 - `deployment/pipelines/centerpoint/`
-- `deployment/exporters/centerpoint/onnx_workflow.py`
-- `deployment/exporters/centerpoint/tensorrt_workflow.py`
+- `deployment/exporters/centerpoint/onnx_export_pipeline.py`
+- `deployment/exporters/centerpoint/tensorrt_export_pipeline.py`
 
 **Pipeline Structure**
 
