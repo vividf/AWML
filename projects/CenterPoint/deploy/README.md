@@ -169,10 +169,10 @@ The `CenterPointComponentExtractor` handles model-specific logic:
 
 ### Deployment Runner
 
-`CenterPointDeploymentRunner` orchestrates the workflow:
+`CenterPointDeploymentRunner` orchestrates the export pipeline:
 - Loads ONNX-compatible CenterPoint model
 - Injects model and config to evaluator
-- Delegates export to `CenterPointONNXExportWorkflow` and `CenterPointTensorRTExportWorkflow`
+- Delegates export to `CenterPointONNXExportPipeline` and `CenterPointTensorRTExportPipeline`
 
 ## Output Structure
 

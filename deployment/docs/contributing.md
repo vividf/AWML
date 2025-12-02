@@ -8,7 +8,7 @@
 
 2. **Exporters**
    - Add `exporters/{project}/model_wrappers.py` (reuse `IdentityWrapper` or implement a custom wrapper).
-   - Introduce `onnx_workflow.py` / `tensorrt_workflow.py` only if multi-stage orchestration is required; prefer composing the base exporters instead of subclassing them.
+   - Introduce `onnx_export_pipeline.py` / `tensorrt_export_pipeline.py` only if multi-stage orchestration is required; prefer composing the base exporters instead of subclassing them.
 
 3. **Pipelines**
    - Inherit from the appropriate task base (`Detection2D`, `Detection3D`, `Classification`).
@@ -20,11 +20,11 @@
 
 5. **Entry Point**
    - Add `projects/{project}/deploy/main.py`.
-   - Follow the dependency injection pattern: explicitly pass wrapper classes and workflows to the runner.
+   - Follow the dependency injection pattern: explicitly pass wrapper classes and export pipelines to the runner.
 
 6. **Documentation**
    - Update `deployment/README.md` and the relevant docs in `deployment/docs/`.
-   - Document special requirements, configuration flags, or workflows.
+   - Document special requirements, configuration flags, or export pipelines.
 
 ## Core Contract
 

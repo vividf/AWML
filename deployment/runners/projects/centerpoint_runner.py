@@ -8,8 +8,8 @@ import logging
 from typing import Any
 
 from deployment.core.contexts import CenterPointExportContext, ExportContext
-from deployment.exporters.centerpoint.onnx_workflow import CenterPointONNXExportWorkflow
-from deployment.exporters.centerpoint.tensorrt_workflow import CenterPointTensorRTExportWorkflow
+from deployment.exporters.centerpoint.onnx_export_pipeline import CenterPointONNXExportPipeline
+from deployment.exporters.centerpoint.tensorrt_export_pipeline import CenterPointTensorRTExportPipeline
 from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import IdentityWrapper
 from deployment.runners.common.deployment_runner import BaseDeploymentRunner
@@ -40,8 +40,8 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         config,
         model_cfg,
         logger: logging.Logger,
-        onnx_workflow=None,
-        tensorrt_workflow=None,
+        onnx_pipeline=None,
+        tensorrt_pipeline=None,
     ):
         """
         Initialize CenterPoint deployment runner.
@@ -52,8 +52,8 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             config: Deployment configuration
             model_cfg: Model configuration
             logger: Logger instance
-            onnx_workflow: Optional custom ONNX workflow
-            tensorrt_workflow: Optional custom TensorRT workflow
+            onnx_pipeline: Optional custom ONNX export pipeline
+            tensorrt_pipeline: Optional custom TensorRT export pipeline
 
         Note:
             CenterPoint uses IdentityWrapper directly since no special
@@ -71,21 +71,21 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             model_cfg=model_cfg,
             logger=logger,
             onnx_wrapper_cls=IdentityWrapper,
-            onnx_workflow=onnx_workflow,
-            tensorrt_workflow=tensorrt_workflow,
+            onnx_pipeline=onnx_pipeline,
+            tensorrt_pipeline=tensorrt_pipeline,
         )
 
-        # Create workflows with ExporterFactory and component extractor
-        if self._onnx_workflow is None:
-            self._onnx_workflow = CenterPointONNXExportWorkflow(
+        # Create export pipelines with ExporterFactory and component extractor
+        if self._onnx_pipeline is None:
+            self._onnx_pipeline = CenterPointONNXExportPipeline(
                 exporter_factory=ExporterFactory,
                 component_extractor=component_extractor,
                 config=self.config,
                 logger=self.logger,
             )
 
-        if self._tensorrt_workflow is None:
-            self._tensorrt_workflow = CenterPointTensorRTExportWorkflow(
+        if self._tensorrt_pipeline is None:
+            self._tensorrt_pipeline = CenterPointTensorRTExportPipeline(
                 exporter_factory=ExporterFactory,
                 config=self.config,
                 logger=self.logger,
