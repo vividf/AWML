@@ -11,15 +11,9 @@ from typing import Any, List, Tuple
 
 import torch
 
-from deployment.exporters.centerpoint.constants import (
-    BACKBONE_HEAD_NAME,
-    BACKBONE_HEAD_ONNX,
-    OUTPUT_NAMES,
-    VOXEL_ENCODER_NAME,
-    VOXEL_ENCODER_ONNX,
-)
 from deployment.exporters.common.configs import ONNXExportConfig
 from deployment.exporters.workflows.interfaces import ExportableComponent, ModelComponentExtractor
+from projects.CenterPoint.deploy.configs.deploy_config import model_io, onnx_config
 from projects.CenterPoint.models.detectors.centerpoint_onnx import CenterPointHeadONNX
 
 logger = logging.getLogger(__name__)
@@ -81,8 +75,9 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
         self, model: torch.nn.Module, input_features: torch.Tensor
     ) -> ExportableComponent:
         """Create exportable voxel encoder component."""
+        voxel_cfg = onnx_config["components"]["voxel_encoder"]
         return ExportableComponent(
-            name=VOXEL_ENCODER_NAME,
+            name=voxel_cfg["name"],
             module=model.pts_voxel_encoder,
             sample_input=input_features,
             config_override=ONNXExportConfig(
@@ -95,7 +90,7 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
                 opset_version=16,
                 do_constant_folding=True,
                 simplify=self.simplify,
-                save_file=VOXEL_ENCODER_ONNX,
+                save_file=voxel_cfg["onnx_file"],
             ),
         )
 
@@ -118,8 +113,9 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
         for name in output_names:
             dynamic_axes[name] = {0: "batch_size", 2: "height", 3: "width"}
 
+        backbone_cfg = onnx_config["components"]["backbone_head"]
         return ExportableComponent(
-            name=BACKBONE_HEAD_NAME,
+            name=backbone_cfg["name"],
             module=backbone_module,
             sample_input=backbone_input,
             config_override=ONNXExportConfig(
@@ -129,7 +125,7 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
                 opset_version=16,
                 do_constant_folding=True,
                 simplify=self.simplify,
-                save_file=BACKBONE_HEAD_ONNX,
+                save_file=backbone_cfg["onnx_file"],
             ),
         )
 
@@ -171,7 +167,7 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
                 return tuple(output_names)
             return (output_names,)
 
-        return OUTPUT_NAMES
+        return model_io["head_output_names"]
 
     def extract_features(self, model: torch.nn.Module, data_loader: Any, sample_idx: int) -> Tuple[torch.Tensor, dict]:
         """
