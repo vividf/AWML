@@ -133,10 +133,8 @@ class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
         input_name = self.backbone_head_session.get_inputs()[0].name
         output_names = [output.name for output in self.backbone_head_session.get_outputs()]
 
-        # Run ONNX inference with explicit output names for consistency
-        outputs = self.backbone_head_session.run(
-            output_names, {input_name: input_array}  # Specify output names explicitly
-        )
+        # Run ONNX inference
+        outputs = self.backbone_head_session.run(output_names, {input_name: input_array})
 
         # Convert outputs to torch tensors
         # outputs should be: [heatmap, reg, height, dim, rot, vel]

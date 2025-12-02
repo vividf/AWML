@@ -42,21 +42,14 @@ class CenterPointDeploymentPipeline(BaseDeploymentPipeline):
             device: Device for inference ('cuda' or 'cpu')
             backend_type: Backend type ('pytorch', 'onnx', 'tensorrt')
         """
-        # Get class names from model config if available
-        class_names = ["VEHICLE", "PEDESTRIAN", "CYCLIST"]  # Default T4Dataset classes
-        if hasattr(pytorch_model, "CLASSES"):
-            class_names = pytorch_model.CLASSES
-        elif hasattr(pytorch_model, "cfg") and hasattr(pytorch_model.cfg, "class_names"):
-            class_names = pytorch_model.cfg.class_names
+        cfg = getattr(pytorch_model, "cfg", None)
 
-        # Get point cloud range and voxel size from model config
-        point_cloud_range = None
-        voxel_size = None
-        if hasattr(pytorch_model, "cfg"):
-            if hasattr(pytorch_model.cfg, "point_cloud_range"):
-                point_cloud_range = pytorch_model.cfg.point_cloud_range
-            if hasattr(pytorch_model.cfg, "voxel_size"):
-                voxel_size = pytorch_model.cfg.voxel_size
+        class_names = getattr(cfg, "class_names", None)
+        if class_names is None:
+            raise ValueError("class_names not found in pytorch_model.cfg")
+
+        point_cloud_range = getattr(cfg, "point_cloud_range", None)
+        voxel_size = getattr(cfg, "voxel_size", None)
 
         # Initialize parent class
         super().__init__(
@@ -73,7 +66,7 @@ class CenterPointDeploymentPipeline(BaseDeploymentPipeline):
         self.pytorch_model = pytorch_model
         self._stage_latencies = {}  # Store stage-wise latencies for detailed breakdown
 
-    # ========== Shared Methods (All backends use same logic) ==========
+    # ========== Override Methods ==========
 
     def preprocess(self, points: torch.Tensor, **kwargs) -> Tuple[Dict[str, torch.Tensor], Dict]:
         """
@@ -196,7 +189,6 @@ class CenterPointDeploymentPipeline(BaseDeploymentPipeline):
         preds_dicts = ([preds_dict],)  # Tuple[List[dict]] format
 
         # Prepare metadata
-
         if "box_type_3d" not in sample_meta:
             sample_meta["box_type_3d"] = LiDARInstance3DBoxes
         batch_input_metas = [sample_meta]
