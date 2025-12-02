@@ -21,8 +21,8 @@ from deployment.core import (
     TaskProfile,
 )
 from deployment.core.io.base_data_loader import BaseDataLoader
-from deployment.exporters.centerpoint.constants import OUTPUT_NAMES
 from deployment.pipelines import PipelineFactory
+from projects.CenterPoint.deploy.configs.deploy_config import model_io
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,7 @@ class CenterPointEvaluator(BaseEvaluator):
 
     def _get_output_names(self) -> List[str]:
         """Provide meaningful names for CenterPoint head outputs."""
-        return list(OUTPUT_NAMES)
+        return list(model_io["head_output_names"])
 
     # ================== BaseEvaluator Implementation ==================
 
