@@ -41,25 +41,21 @@ class CenterPointEvaluator(BaseEvaluator):
     def __init__(
         self,
         model_cfg: Config,
-        class_names: Optional[List[str]] = None,
-        metrics_config: Optional[Detection3DMetricsConfig] = None,
+        metrics_config: Detection3DMetricsConfig,
     ):
         """
         Initialize CenterPoint evaluator.
 
         Args:
             model_cfg: Model configuration.
-            class_names: List of class names (optional).
-            metrics_config: Optional configuration for the metrics adapter.
+            metrics_config: Configuration for the metrics adapter.
         """
-        # Determine class names - must come from config or explicit parameter
-        if class_names is not None:
-            names = class_names
-        elif hasattr(model_cfg, "class_names"):
-            names = model_cfg.class_names
+        # Determine class names - must come from config
+        if hasattr(model_cfg, "class_names"):
+            class_names = model_cfg.class_names
         else:
             raise ValueError(
-                "class_names must be provided either explicitly or via model_cfg.class_names. "
+                "class_names must be provided via model_cfg.class_names. "
                 "Check your model config file includes class_names definition."
             )
 
@@ -67,14 +63,10 @@ class CenterPointEvaluator(BaseEvaluator):
         task_profile = TaskProfile(
             task_name="centerpoint_3d_detection",
             display_name="CenterPoint 3D Object Detection",
-            class_names=tuple(names),
-            num_classes=len(names),
+            class_names=tuple(class_names),
+            num_classes=len(class_names),
         )
 
-        # Create metrics adapter with default frame_id if not provided
-        # "base_link" is the standard base frame in robotics/ROS
-        if metrics_config is None:
-            raise ValueError("metrics_config must be provided")
         metrics_adapter = Detection3DMetricsAdapter(metrics_config)
 
         super().__init__(
