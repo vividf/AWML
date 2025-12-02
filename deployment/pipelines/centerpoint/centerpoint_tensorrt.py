@@ -21,6 +21,7 @@ from deployment.pipelines.common.gpu_resource_mixin import (
     TensorRTResourceManager,
     release_tensorrt_resources,
 )
+from projects.CenterPoint.deploy.configs.deploy_config import onnx_config
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +74,13 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
         trt.init_libnvinfer_plugins(self._logger, "")
         runtime = trt.Runtime(self._logger)
 
-        # Define engine files
+        # Resolve engine filenames from deploy config with sane fallbacks
+        component_cfg = onnx_config.get("components", {})
+        voxel_cfg = component_cfg.get("voxel_encoder", {})
+        backbone_cfg = component_cfg.get("backbone_head", {})
         engine_files = {
-            "voxel_encoder": "pts_voxel_encoder.engine",
-            "backbone_neck_head": "pts_backbone_neck_head.engine",
+            "voxel_encoder": voxel_cfg.get("engine_file", "pts_voxel_encoder.engine"),
+            "backbone_neck_head": backbone_cfg.get("engine_file", "pts_backbone_neck_head.engine"),
         }
 
         for component, engine_file in engine_files.items():
@@ -157,13 +161,8 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
             cuda.memcpy_dtoh_async(output_array, d_output, stream)
             manager.synchronize()
 
-        # Convert to torch tensor
         voxel_features = torch.from_numpy(output_array).to(self.device)
-
-        # Squeeze middle dimension if present
-        if voxel_features.ndim == 3 and voxel_features.shape[1] == 1:
-            voxel_features = voxel_features.squeeze(1)
-
+        voxel_features = voxel_features.squeeze(1)
         return voxel_features
 
     def _get_io_names(self, engine, single_output: bool = False):
@@ -202,14 +201,6 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
 
         if context is None:
             raise RuntimeError("backbone_neck_head context is None - likely failed to initialize due to GPU OOM")
-
-        # DEBUG: Log input statistics for verification
-        if hasattr(self, "_debug_mode") and self._debug_mode:
-            logger.info(
-                f"TensorRT backbone input: shape={spatial_features.shape}, "
-                f"range=[{spatial_features.min():.3f}, {spatial_features.max():.3f}], "
-                f"mean={spatial_features.mean():.3f}, std={spatial_features.std():.3f}"
-            )
 
         # Convert to numpy
         input_array = spatial_features.cpu().numpy().astype(np.float32)
