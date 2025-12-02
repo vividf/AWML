@@ -112,7 +112,7 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         Returns:
             Loaded PyTorch model (ONNX-compatible)
         """
-        # Extract rot_y_axis_reference from typed context or extra dict
+        # Extract rot_y_axis_reference from context
         rot_y_axis_reference: bool = False
         if isinstance(context, CenterPointExportContext):
             rot_y_axis_reference = context.rot_y_axis_reference
@@ -126,10 +126,7 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             rot_y_axis_reference=rot_y_axis_reference,
         )
 
-        # Update runner's internal model_cfg to ONNX-friendly version
         self.model_cfg = onnx_cfg
-
-        # Explicitly inject model and config to evaluator
         self._inject_model_to_evaluator(model, onnx_cfg)
 
         return model
@@ -142,19 +139,6 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             model: PyTorch model to inject
             onnx_cfg: ONNX-compatible config to inject
         """
-        # Check if evaluator has the setter methods
-        has_set_onnx_config = hasattr(self.evaluator, "set_onnx_config")
-        has_set_pytorch_model = hasattr(self.evaluator, "set_pytorch_model")
-
-        if not (has_set_onnx_config and has_set_pytorch_model):
-            self.logger.warning(
-                "Evaluator does not have set_onnx_config() and/or set_pytorch_model() methods. "
-                "CenterPoint evaluator should implement these methods for proper model injection. "
-                f"Has set_onnx_config: {has_set_onnx_config}, "
-                f"Has set_pytorch_model: {has_set_pytorch_model}"
-            )
-            return
-
         # Inject ONNX-compatible config
         try:
             self.evaluator.set_onnx_config(onnx_cfg)
