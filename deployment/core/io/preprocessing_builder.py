@@ -10,14 +10,15 @@ This module is compatible with the BaseDeploymentPipeline.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, List, Mapping, Optional
+from typing import Any, List, Mapping, Optional
 
 from mmengine.config import Config
+from mmengine.dataset import Compose
+from mmengine.registry import init_default_scope
 
 logger = logging.getLogger(__name__)
 
 TransformConfig = Mapping[str, Any]
-PipelineBuilder = Callable[[List[TransformConfig]], Any]
 
 
 class ComposeBuilder:
@@ -57,16 +58,6 @@ class ComposeBuilder:
                     f"Please ensure the required package is installed. Error: {e}"
                 ) from e
 
-        # Import MMEngine components
-        try:
-            from mmengine.dataset import Compose
-            from mmengine.registry import init_default_scope
-        except ImportError as e:
-            raise ImportError(
-                f"Failed to import mmengine components for scope '{scope}'. "
-                f"Please ensure mmengine is installed. Error: {e}"
-            ) from e
-
         # Set default scope and build Compose
         try:
             init_default_scope(scope)
@@ -82,65 +73,36 @@ class ComposeBuilder:
             ) from e
 
 
-def _build_detection2d(pipeline_cfg: List[TransformConfig]) -> Any:
-    """Build 2D detection preprocessing pipeline."""
-    return ComposeBuilder.build(
-        pipeline_cfg=pipeline_cfg,
-        scope="mmdet",
-        import_modules=["mmdet.datasets.transforms"],
-    )
-
-
-def _build_detection3d(pipeline_cfg: List[TransformConfig]) -> Any:
-    """Build 3D detection preprocessing pipeline."""
-    return ComposeBuilder.build(
-        pipeline_cfg=pipeline_cfg,
-        scope="mmdet3d",
-        import_modules=["mmdet3d.datasets.transforms"],
-    )
-
-
-def _build_classification(pipeline_cfg: List[TransformConfig]) -> Any:
-    """
-    Build classification preprocessing pipeline using mmpretrain.
-
-    Raises:
-        ImportError: If mmpretrain is not installed
-    """
-    return ComposeBuilder.build(
-        pipeline_cfg=pipeline_cfg,
-        scope="mmpretrain",
-        import_modules=["mmpretrain.datasets.transforms"],
-    )
-
-
-def _build_segmentation(pipeline_cfg: List[TransformConfig]) -> Any:
-    """Build segmentation preprocessing pipeline."""
-    return ComposeBuilder.build(
-        pipeline_cfg=pipeline_cfg,
-        scope="mmseg",
-        import_modules=["mmseg.datasets.transforms"],
-    )
-
-
-_PIPELINE_BUILDERS: Mapping[str, PipelineBuilder] = {
-    "detection2d": _build_detection2d,
-    "detection3d": _build_detection3d,
-    "classification": _build_classification,
-    "segmentation": _build_segmentation,
+TASK_PIPELINE_CONFIGS: Mapping[str, Mapping[str, Any]] = {
+    "detection2d": {
+        "scope": "mmdet",
+        "import_modules": ["mmdet.datasets.transforms"],
+    },
+    "detection3d": {
+        "scope": "mmdet3d",
+        "import_modules": ["mmdet3d.datasets.transforms"],
+    },
+    "classification": {
+        "scope": "mmpretrain",
+        "import_modules": ["mmpretrain.datasets.transforms"],
+    },
+    "segmentation": {
+        "scope": "mmseg",
+        "import_modules": ["mmseg.datasets.transforms"],
+    },
 }
 
 # Valid task types
-VALID_TASK_TYPES = list(_PIPELINE_BUILDERS.keys())
+VALID_TASK_TYPES = list(TASK_PIPELINE_CONFIGS.keys())
 
 
 def _build_pipeline(task_type: str, pipeline_cfg: List[TransformConfig]) -> Any:
     """Build pipeline for a given task_type using registered builders."""
     try:
-        builder = _PIPELINE_BUILDERS[task_type]
+        task_cfg = TASK_PIPELINE_CONFIGS[task_type]
     except KeyError:
         raise ValueError(f"Unknown task_type '{task_type}'. " f"Must be one of {VALID_TASK_TYPES}")
-    return builder(pipeline_cfg)
+    return ComposeBuilder.build(pipeline_cfg=pipeline_cfg, **task_cfg)
 
 
 def build_preprocessing_pipeline(
