@@ -27,7 +27,8 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from types import MappingProxyType
+from typing import Any, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ class ExportContext:
     """
 
     sample_idx: int = 0
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a value from extra dict with a default."""
