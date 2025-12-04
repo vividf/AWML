@@ -11,28 +11,48 @@ Usage:
     )
     adapter = ClassificationMetricsAdapter(config)
 
-    # Add frames
-    for pred_label, gt_label, probs in zip(predictions, ground_truths, probabilities):
-        adapter.add_frame(
-            prediction=pred_label,  # int (class index)
-            ground_truth=gt_label,  # int (class index)
-            probabilities=probs,    # List[float] (optional)
-        )
+    for pred_label, gt_label in zip(predictions, ground_truths):
+        adapter.add_frame(prediction=pred_label, ground_truth=gt_label)
 
-    # Compute metrics
     metrics = adapter.compute_metrics()
     # Returns: {"accuracy": 0.95, "precision": 0.94, "recall": 0.96, "f1score": 0.95, ...}
 """
 
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 import numpy as np
+from perception_eval.common.dataset import FrameGroundTruth
+from perception_eval.common.label import AutowareLabel, Label
+from perception_eval.common.object2d import DynamicObject2D
+from perception_eval.common.schema import FrameID
+from perception_eval.config.perception_evaluation_config import PerceptionEvaluationConfig
+from perception_eval.evaluation.metrics import MetricsScore
+from perception_eval.evaluation.result.perception_frame_config import (
+    CriticalObjectFilterConfig,
+    PerceptionPassFailConfig,
+)
+from perception_eval.manager import PerceptionEvaluationManager
 
 from deployment.core.metrics.base_metrics_adapter import BaseMetricsAdapter, BaseMetricsConfig
 
 logger = logging.getLogger(__name__)
+
+# Valid 2D frame IDs for camera-based classification
+VALID_2D_FRAME_IDS = [
+    "cam_front",
+    "cam_front_right",
+    "cam_front_left",
+    "cam_front_lower",
+    "cam_back",
+    "cam_back_left",
+    "cam_back_right",
+    "cam_traffic_light_near",
+    "cam_traffic_light_far",
+    "cam_traffic_light",
+]
 
 
 @dataclass(frozen=True)
@@ -40,24 +60,64 @@ class ClassificationMetricsConfig(BaseMetricsConfig):
     """Configuration for classification metrics.
 
     Attributes:
-        class_names: List of class names for evaluation (e.g., ["miscalibrated", "calibrated"]).
-        frame_id: Frame ID for evaluation (not used for classification but kept for consistency).
+        class_names: List of class names for evaluation.
+        frame_id: Camera frame ID for evaluation (default: "cam_front").
+        evaluation_config_dict: Configuration dict for perception evaluation.
+        critical_object_filter_config: Config for filtering critical objects.
+        frame_pass_fail_config: Config for pass/fail criteria.
     """
 
-    # Override default frame_id for classification (not actually used but kept for interface consistency)
-    frame_id: str = "classification"
+    frame_id: str = "cam_front"
+    evaluation_config_dict: Optional[Dict[str, Any]] = None
+    critical_object_filter_config: Optional[Dict[str, Any]] = None
+    frame_pass_fail_config: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self):
+        if self.frame_id not in VALID_2D_FRAME_IDS:
+            raise ValueError(
+                f"Invalid frame_id '{self.frame_id}' for classification. " f"Valid options: {VALID_2D_FRAME_IDS}"
+            )
+
+        if self.evaluation_config_dict is None:
+            object.__setattr__(
+                self,
+                "evaluation_config_dict",
+                {
+                    "evaluation_task": "classification2d",
+                    "target_labels": self.class_names,
+                    "center_distance_thresholds": None,
+                    "center_distance_bev_thresholds": None,
+                    "plane_distance_thresholds": None,
+                    "iou_2d_thresholds": None,
+                    "iou_3d_thresholds": None,
+                    "label_prefix": "autoware",
+                },
+            )
+
+        if self.critical_object_filter_config is None:
+            object.__setattr__(
+                self,
+                "critical_object_filter_config",
+                {
+                    "target_labels": self.class_names,
+                    "ignore_attributes": None,
+                },
+            )
+
+        if self.frame_pass_fail_config is None:
+            object.__setattr__(
+                self,
+                "frame_pass_fail_config",
+                {
+                    "target_labels": self.class_names,
+                    "matching_threshold_list": [1.0] * len(self.class_names),
+                    "confidence_threshold_list": None,
+                },
+            )
 
 
 class ClassificationMetricsAdapter(BaseMetricsAdapter):
-    """
-    Adapter for computing classification metrics.
-
-    This adapter provides a simplified interface for the deployment framework to
-    compute accuracy, precision, recall, F1, and per-class metrics for classification
-    tasks (e.g., calibration status classification).
-
-    The adapter accumulates predictions and ground truths, then computes metrics
-    using formulas consistent with autoware_perception_evaluation's ClassificationMetricsScore.
+    """Adapter for computing classification metrics using autoware_perception_evaluation.
 
     Metrics computed:
     - Accuracy: TP / (num_predictions + num_gt - TP)
@@ -65,47 +125,79 @@ class ClassificationMetricsAdapter(BaseMetricsAdapter):
     - Recall: TP / num_gt
     - F1 Score: 2 * precision * recall / (precision + recall)
     - Per-class accuracy, precision, recall, F1
-
-    Example usage:
-        config = ClassificationMetricsConfig(
-            class_names=["miscalibrated", "calibrated"],
-        )
-        adapter = ClassificationMetricsAdapter(config)
-
-        # Add frames
-        for pred_label, gt_label, probs in zip(predictions, ground_truths, probabilities):
-            adapter.add_frame(
-                prediction=pred_label,
-                ground_truth=gt_label,
-                probabilities=probs,
-            )
-
-        # Compute metrics
-        metrics = adapter.compute_metrics()
     """
 
-    def __init__(self, config: ClassificationMetricsConfig):
-        """
-        Initialize the classification metrics adapter.
+    def __init__(
+        self,
+        config: ClassificationMetricsConfig,
+        data_root: str = "data/t4dataset/",
+        result_root_directory: str = "/tmp/perception_eval_classification/",
+    ):
+        """Initialize the classification metrics adapter.
 
         Args:
             config: Configuration for classification metrics.
+            data_root: Root directory of the dataset.
+            result_root_directory: Directory for saving evaluation results.
         """
         super().__init__(config)
         self.config: ClassificationMetricsConfig = config
-        self.num_classes = len(config.class_names)
 
-        # Storage for accumulated results
-        self._predictions: List[int] = []
-        self._ground_truths: List[int] = []
-        self._probabilities: List[List[float]] = []
+        self.perception_eval_config = PerceptionEvaluationConfig(
+            dataset_paths=data_root,
+            frame_id=config.frame_id,
+            result_root_directory=result_root_directory,
+            evaluation_config_dict=config.evaluation_config_dict,
+            load_raw_data=False,
+        )
+
+        self.critical_object_filter_config = CriticalObjectFilterConfig(
+            evaluator_config=self.perception_eval_config,
+            **config.critical_object_filter_config,
+        )
+
+        self.frame_pass_fail_config = PerceptionPassFailConfig(
+            evaluator_config=self.perception_eval_config,
+            **config.frame_pass_fail_config,
+        )
+
+        self.evaluator: Optional[PerceptionEvaluationManager] = None
 
     def reset(self) -> None:
         """Reset the adapter for a new evaluation session."""
-        self._predictions = []
-        self._ground_truths = []
-        self._probabilities = []
+        self.evaluator = PerceptionEvaluationManager(
+            evaluation_config=self.perception_eval_config,
+            load_ground_truth=False,
+            metric_output_dir=None,
+        )
         self._frame_count = 0
+
+    def _convert_index_to_label(self, label_index: int) -> Label:
+        """Convert a label index to a Label object."""
+        if 0 <= label_index < len(self.class_names):
+            class_name = self.class_names[label_index]
+        else:
+            class_name = "unknown"
+
+        autoware_label = AutowareLabel.__members__.get(class_name.upper(), AutowareLabel.UNKNOWN)
+        return Label(label=autoware_label, name=class_name)
+
+    def _create_dynamic_object_2d(
+        self,
+        label_index: int,
+        unix_time: int,
+        score: float = 1.0,
+        uuid: Optional[str] = None,
+    ) -> DynamicObject2D:
+        """Create a DynamicObject2D for classification (roi=None for image-level)."""
+        return DynamicObject2D(
+            unix_time=unix_time,
+            frame_id=FrameID.from_value(self.frame_id),
+            semantic_score=score,
+            semantic_label=self._convert_index_to_label(label_index),
+            roi=None,
+            uuid=uuid,
+        )
 
     def add_frame(
         self,
@@ -120,176 +212,139 @@ class ClassificationMetricsAdapter(BaseMetricsAdapter):
             prediction: Predicted class index.
             ground_truth: Ground truth class index.
             probabilities: Optional probability scores for each class.
-            frame_name: Optional name for the frame (not used but kept for consistency).
+            frame_name: Optional name for the frame.
         """
-        self._predictions.append(prediction)
-        self._ground_truths.append(ground_truth)
-        if probabilities is not None:
-            self._probabilities.append(probabilities)
-        self._frame_count += 1
+        if self.evaluator is None:
+            self.reset()
+
+        unix_time = int(time.time() * 1e6)
+        if frame_name is None:
+            frame_name = str(self._frame_count)
+
+        # Get confidence score from probabilities if available
+        score = 1.0
+        if probabilities is not None and len(probabilities) > prediction:
+            score = float(probabilities[prediction])
+
+        # Create prediction and ground truth objects
+        estimated_object = self._create_dynamic_object_2d(
+            label_index=prediction, unix_time=unix_time, score=score, uuid=frame_name
+        )
+        gt_object = self._create_dynamic_object_2d(
+            label_index=ground_truth, unix_time=unix_time, score=1.0, uuid=frame_name
+        )
+
+        frame_ground_truth = FrameGroundTruth(
+            unix_time=unix_time,
+            frame_name=frame_name,
+            objects=[gt_object],
+            transforms=None,
+            raw_data=None,
+        )
+
+        try:
+            self.evaluator.add_frame_result(
+                unix_time=unix_time,
+                ground_truth_now_frame=frame_ground_truth,
+                estimated_objects=[estimated_object],
+                critical_object_filter_config=self.critical_object_filter_config,
+                frame_pass_fail_config=self.frame_pass_fail_config,
+            )
+            self._frame_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to add frame {frame_name}: {e}")
 
     def compute_metrics(self) -> Dict[str, float]:
         """Compute metrics from all added predictions.
 
         Returns:
-            Dictionary of metrics including:
-                - accuracy: Overall accuracy
-                - precision: Overall precision
-                - recall: Overall recall
-                - f1score: Overall F1 score
-                - {class_name}_accuracy: Per-class accuracy
-                - {class_name}_precision: Per-class precision
-                - {class_name}_recall: Per-class recall
-                - {class_name}_f1score: Per-class F1 score
+            Dictionary of metrics including accuracy, precision, recall, f1score,
+            and per-class metrics.
         """
-        if self._frame_count == 0:
+        if self.evaluator is None or self._frame_count == 0:
             logger.warning("No samples to evaluate")
             return {}
 
-        predictions = np.array(self._predictions)
-        ground_truths = np.array(self._ground_truths)
+        try:
+            metrics_score: MetricsScore = self.evaluator.get_scene_result()
+            return self._process_metrics_score(metrics_score)
+        except Exception as e:
+            logger.error(f"Error computing metrics: {e}")
+            import traceback
 
-        metrics = {}
+            traceback.print_exc()
+            return {}
 
-        # Compute overall metrics
-        overall_accuracy, overall_precision, overall_recall, overall_f1 = self._compute_overall_metrics(
-            predictions, ground_truths
-        )
-        metrics["accuracy"] = overall_accuracy
-        metrics["precision"] = overall_precision
-        metrics["recall"] = overall_recall
-        metrics["f1score"] = overall_f1
+    def _process_metrics_score(self, metrics_score: MetricsScore) -> Dict[str, float]:
+        """Process MetricsScore into a flat dictionary."""
+        metric_dict = {}
 
-        # Compute per-class metrics
-        for class_idx, class_name in enumerate(self.class_names):
-            class_metrics = self._compute_class_metrics(predictions, ground_truths, class_idx)
-            metrics[f"{class_name}_accuracy"] = class_metrics["accuracy"]
-            metrics[f"{class_name}_precision"] = class_metrics["precision"]
-            metrics[f"{class_name}_recall"] = class_metrics["recall"]
-            metrics[f"{class_name}_f1score"] = class_metrics["f1score"]
-            metrics[f"{class_name}_tp"] = class_metrics["tp"]
-            metrics[f"{class_name}_fp"] = class_metrics["fp"]
-            metrics[f"{class_name}_fn"] = class_metrics["fn"]
-            metrics[f"{class_name}_num_gt"] = class_metrics["num_gt"]
+        for classification_score in metrics_score.classification_scores:
+            # Get overall metrics
+            accuracy, precision, recall, f1score = classification_score._summarize()
 
-        # Add total counts
-        metrics["total_samples"] = len(predictions)
-        metrics["correct_predictions"] = int((predictions == ground_truths).sum())
+            # Handle inf values (replace with 0.0)
+            metric_dict["accuracy"] = 0.0 if accuracy == float("inf") else accuracy
+            metric_dict["precision"] = 0.0 if precision == float("inf") else precision
+            metric_dict["recall"] = 0.0 if recall == float("inf") else recall
+            metric_dict["f1score"] = 0.0 if f1score == float("inf") else f1score
 
-        return metrics
+            # Process per-class metrics
+            for acc in classification_score.accuracies:
+                if not acc.target_labels:
+                    continue
 
-    def _compute_overall_metrics(
-        self,
-        predictions: np.ndarray,
-        ground_truths: np.ndarray,
-    ) -> Tuple[float, float, float, float]:
-        """Compute overall metrics following autoware_perception_evaluation formulas.
+                target_label = acc.target_labels[0]
+                class_name = getattr(target_label, "name", str(target_label))
 
-        The formulas follow ClassificationMetricsScore._summarize() from
-        autoware_perception_evaluation.
+                metric_dict[f"{class_name}_accuracy"] = 0.0 if acc.accuracy == float("inf") else acc.accuracy
+                metric_dict[f"{class_name}_precision"] = 0.0 if acc.precision == float("inf") else acc.precision
+                metric_dict[f"{class_name}_recall"] = 0.0 if acc.recall == float("inf") else acc.recall
+                metric_dict[f"{class_name}_f1score"] = 0.0 if acc.f1score == float("inf") else acc.f1score
+                metric_dict[f"{class_name}_tp"] = acc.num_tp
+                metric_dict[f"{class_name}_fp"] = acc.num_fp
+                metric_dict[f"{class_name}_num_gt"] = acc.num_ground_truth
+                metric_dict[f"{class_name}_num_pred"] = acc.objects_results_num
 
-        Args:
-            predictions: Array of predicted class indices.
-            ground_truths: Array of ground truth class indices.
+        metric_dict["total_samples"] = self._frame_count
+        return metric_dict
 
-        Returns:
-            Tuple of (accuracy, precision, recall, f1score).
-        """
-        num_est = len(predictions)
-        num_gt = len(ground_truths)
-
-        # Count TP (correct predictions) and FP (incorrect predictions)
-        num_tp = int((predictions == ground_truths).sum())
-        num_fp = num_est - num_tp
-
-        # Accuracy formula from autoware_perception_evaluation:
-        # accuracy = num_tp / (num_est + num_gt - num_tp)
-        # This is equivalent to Jaccard index / IoU
-        denominator = num_est + num_gt - num_tp
-        accuracy = num_tp / denominator if denominator != 0 else 0.0
-
-        # Precision = TP / (TP + FP)
-        precision = num_tp / (num_tp + num_fp) if (num_tp + num_fp) != 0 else 0.0
-
-        # Recall = TP / num_gt
-        recall = num_tp / num_gt if num_gt != 0 else 0.0
-
-        # F1 = 2 * precision * recall / (precision + recall)
-        f1score = 2 * precision * recall / (precision + recall) if (precision + recall) != 0 else 0.0
-
-        return accuracy, precision, recall, f1score
-
-    def _compute_class_metrics(
-        self,
-        predictions: np.ndarray,
-        ground_truths: np.ndarray,
-        class_idx: int,
-    ) -> Dict[str, float]:
-        """Compute metrics for a single class.
-
-        Args:
-            predictions: Array of predicted class indices.
-            ground_truths: Array of ground truth class indices.
-            class_idx: Class index to compute metrics for.
-
-        Returns:
-            Dictionary with accuracy, precision, recall, f1score, tp, fp, fn, num_gt.
-        """
-        # For binary per-class evaluation:
-        # - TP: predicted class_idx and ground truth is class_idx
-        # - FP: predicted class_idx but ground truth is not class_idx
-        # - FN: not predicted class_idx but ground truth is class_idx
-
-        pred_is_class = predictions == class_idx
-        gt_is_class = ground_truths == class_idx
-
-        tp = int((pred_is_class & gt_is_class).sum())
-        fp = int((pred_is_class & ~gt_is_class).sum())
-        fn = int((~pred_is_class & gt_is_class).sum())
-        num_gt = int(gt_is_class.sum())
-        num_pred = int(pred_is_class.sum())
-
-        # Precision for this class
-        precision = tp / (tp + fp) if (tp + fp) != 0 else 0.0
-
-        # Recall for this class
-        recall = tp / num_gt if num_gt != 0 else 0.0
-
-        # F1 for this class
-        f1score = 2 * precision * recall / (precision + recall) if (precision + recall) != 0 else 0.0
-
-        # Accuracy for this class (matching autoware_perception_evaluation formula)
-        denominator = num_pred + num_gt - tp
-        accuracy = tp / denominator if denominator != 0 else 0.0
-
-        return {
-            "accuracy": accuracy,
-            "precision": precision,
-            "recall": recall,
-            "f1score": f1score,
-            "tp": tp,
-            "fp": fp,
-            "fn": fn,
-            "num_gt": num_gt,
-        }
-
+    # TODO(vividf): Remove after autoware_perception_evaluation supports confusion matrix.
     def get_confusion_matrix(self) -> np.ndarray:
         """Get the confusion matrix.
 
         Returns:
-            2D numpy array where cm[i][j] = count of samples with ground truth i
-            predicted as class j.
+            2D numpy array where cm[i][j] = count of ground truth i predicted as j.
         """
-        if self._frame_count == 0:
-            return np.zeros((self.num_classes, self.num_classes), dtype=int)
+        num_classes = len(self.class_names)
+        if self.evaluator is None or self._frame_count == 0:
+            return np.zeros((num_classes, num_classes), dtype=int)
 
-        predictions = np.array(self._predictions)
-        ground_truths = np.array(self._ground_truths)
+        confusion_matrix = np.zeros((num_classes, num_classes), dtype=int)
 
-        confusion_matrix = np.zeros((self.num_classes, self.num_classes), dtype=int)
-        for gt, pred in zip(ground_truths, predictions):
-            if 0 <= gt < self.num_classes and 0 <= pred < self.num_classes:
-                confusion_matrix[int(gt), int(pred)] += 1
+        for frame_result in self.evaluator.frame_results:
+            if not frame_result.object_results:
+                continue
+
+            for obj_result in frame_result.object_results:
+                if obj_result.ground_truth_object is None:
+                    continue
+
+                pred_name = obj_result.estimated_object.semantic_label.name
+                gt_name = obj_result.ground_truth_object.semantic_label.name
+
+                # Find indices
+                pred_idx = next(
+                    (i for i, n in enumerate(self.class_names) if n.lower() == pred_name.lower()),
+                    -1,
+                )
+                gt_idx = next(
+                    (i for i, n in enumerate(self.class_names) if n.lower() == gt_name.lower()),
+                    -1,
+                )
+
+                if 0 <= pred_idx < num_classes and 0 <= gt_idx < num_classes:
+                    confusion_matrix[gt_idx, pred_idx] += 1
 
         return confusion_matrix
 
@@ -297,11 +352,8 @@ class ClassificationMetricsAdapter(BaseMetricsAdapter):
         """Get a summary of the evaluation.
 
         Returns:
-            Dictionary with summary metrics including:
-                - accuracy: Overall accuracy
-                - per_class_accuracy: Dict mapping class names to accuracies
-                - confusion_matrix: 2D list
-                - num_samples: Total number of samples
+            Dictionary with accuracy, precision, recall, f1score, per_class_accuracy,
+            confusion_matrix, num_samples, and detailed_metrics.
         """
         metrics = self.compute_metrics()
 
@@ -313,11 +365,9 @@ class ClassificationMetricsAdapter(BaseMetricsAdapter):
                 "num_samples": 0,
             }
 
-        per_class_accuracy = {}
-        for class_name in self.class_names:
-            key = f"{class_name}_accuracy"
-            if key in metrics:
-                per_class_accuracy[class_name] = metrics[key]
+        per_class_accuracy = {
+            name: metrics[f"{name}_accuracy"] for name in self.class_names if f"{name}_accuracy" in metrics
+        }
 
         return {
             "accuracy": metrics.get("accuracy", 0.0),
