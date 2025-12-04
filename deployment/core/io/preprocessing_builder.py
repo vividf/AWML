@@ -7,14 +7,16 @@ from MMDet/MMDet3D/MMPretrain configs for use in deployment data loaders.
 This module is compatible with the BaseDeploymentPipeline.
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, List, Mapping, Optional
 
 from mmengine.config import Config
 
 logger = logging.getLogger(__name__)
 
-TransformConfig = Dict[str, Any]
+TransformConfig = Mapping[str, Any]
 PipelineBuilder = Callable[[List[TransformConfig]], Any]
 
 
@@ -121,7 +123,7 @@ def _build_segmentation(pipeline_cfg: List[TransformConfig]) -> Any:
     )
 
 
-_PIPELINE_BUILDERS: Dict[str, PipelineBuilder] = {
+_PIPELINE_BUILDERS: Mapping[str, PipelineBuilder] = {
     "detection2d": _build_detection2d,
     "detection3d": _build_detection3d,
     "classification": _build_classification,

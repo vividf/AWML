@@ -5,8 +5,10 @@ Each task (classification, detection, segmentation, etc.) must implement
 a concrete DataLoader that extends this base class.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, Dict, TypedDict
+from typing import Any, Dict, Mapping, TypedDict
 
 import torch
 
@@ -35,7 +37,7 @@ class BaseDataLoader(ABC):
     it into a format suitable for model inference.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Mapping[str, Any]):
         """
         Initialize data loader.
 
@@ -93,7 +95,7 @@ class BaseDataLoader(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_ground_truth(self, index: int) -> Dict[str, Any]:
+    def get_ground_truth(self, index: int) -> Mapping[str, Any]:
         """
         Get ground truth annotations for a specific sample.
 

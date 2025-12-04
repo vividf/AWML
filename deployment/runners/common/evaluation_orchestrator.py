@@ -4,8 +4,10 @@ Evaluation orchestration for deployment workflows.
 This module handles cross-backend evaluation with consistent metrics.
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from deployment.core.backend import Backend
 from deployment.core.config.base_config import BaseDeploymentConfig
@@ -190,7 +192,7 @@ class EvaluationOrchestrator:
             return self.config.devices.cuda or "cuda:0"
         return self.config.devices.cpu or "cpu"
 
-    def _print_cross_backend_comparison(self, all_results: Dict[str, Any]) -> None:
+    def _print_cross_backend_comparison(self, all_results: Mapping[str, Any]) -> None:
         """
         Print cross-backend comparison of metrics.
 

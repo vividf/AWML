@@ -5,6 +5,8 @@ This module contains the shared type definitions used by evaluators,
 runners, and orchestrators.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, Dict, TypedDict
 

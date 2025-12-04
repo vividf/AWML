@@ -4,8 +4,10 @@ Verification orchestration for deployment workflows.
 This module handles scenario-based verification across different backends.
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 from deployment.core.backend import Backend
 from deployment.core.config.base_config import BaseDeploymentConfig
@@ -170,7 +172,7 @@ class VerificationOrchestrator:
 
         return all_results
 
-    def _resolve_device(self, device_key: str, devices_map: Dict[str, str]) -> str:
+    def _resolve_device(self, device_key: str, devices_map: Mapping[str, str]) -> str:
         """
         Resolve device using alias system.
 
