@@ -56,7 +56,7 @@ export = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    info_pkl="data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl",
+    info_file="data/t4dataset/calibration_info/t4dataset_gen2_base_infos_test.pkl",
     sample_idx=0,  # Sample index to use for export and verification
 )
 

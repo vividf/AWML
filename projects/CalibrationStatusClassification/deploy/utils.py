@@ -74,5 +74,5 @@ def extract_classification_metrics_config(
 
     return ClassificationMetricsConfig(
         class_names=class_names,
-        frame_id="classification",  # Default frame_id for classification
+        frame_id="cam_front",  # Use valid camera frame_id for 2D classification
     )
