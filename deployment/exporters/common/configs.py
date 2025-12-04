@@ -21,7 +21,7 @@ class TensorRTProfileConfig:
     max_shape: Tuple[int, ...] = field(default_factory=tuple)
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "TensorRTProfileConfig":
+    def from_dict(cls, data: Mapping[str, Any]) -> TensorRTProfileConfig:
         return cls(
             min_shape=cls._normalize_shape(data.get("min_shape")),
             opt_shape=cls._normalize_shape(data.get("opt_shape")),
@@ -45,7 +45,7 @@ class TensorRTModelInputConfig:
     input_shapes: Mapping[str, TensorRTProfileConfig] = field(default_factory=_empty_mapping)
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "TensorRTModelInputConfig":
+    def from_dict(cls, data: Mapping[str, Any]) -> TensorRTModelInputConfig:
         input_shapes_raw = data.get("input_shapes", {}) or {}
         profile_map = {
             name: TensorRTProfileConfig.from_dict(shape_dict or {}) for name, shape_dict in input_shapes_raw.items()
@@ -96,7 +96,7 @@ class ONNXExportConfig(BaseExporterConfig):
     batch_size: Optional[int] = None
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> "ONNXExportConfig":
+    def from_mapping(cls, data: Mapping[str, Any]) -> ONNXExportConfig:
         """Instantiate config from a plain mapping."""
         return cls(
             input_names=tuple(data.get("input_names", cls.input_names)),
@@ -131,7 +131,7 @@ class TensorRTExportConfig(BaseExporterConfig):
     model_inputs: Tuple[TensorRTModelInputConfig, ...] = field(default_factory=tuple)
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> "TensorRTExportConfig":
+    def from_mapping(cls, data: Mapping[str, Any]) -> TensorRTExportConfig:
         """Instantiate config from a plain mapping."""
         inputs_raw = data.get("model_inputs") or ()
         parsed_inputs = tuple(

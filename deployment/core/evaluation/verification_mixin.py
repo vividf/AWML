@@ -5,10 +5,12 @@ This mixin extracts the common verification workflow that was duplicated
 across CenterPointEvaluator, YOLOXOptElanEvaluator, and ClassificationEvaluator.
 """
 
+from __future__ import annotations
+
 import logging
 from abc import abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -26,7 +28,7 @@ class ComparisonResult:
     max_diff: float
     mean_diff: float
     num_elements: int = 0
-    details: Tuple[Tuple[str, "ComparisonResult"], ...] = ()
+    details: Tuple[Tuple[str, ComparisonResult], ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -144,8 +146,8 @@ class VerificationMixin:
 
     def _compare_dicts(
         self,
-        reference: Dict[str, Any],
-        test: Dict[str, Any],
+        reference: Mapping[str, Any],
+        test: Mapping[str, Any],
         tolerance: float,
         logger: logging.Logger,
         path: str,

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Type
+from typing import Any, Callable, Mapping, Optional, Type
 
 import torch
 
@@ -507,7 +507,7 @@ class ExportOrchestrator:
             self.logger.warning(f"{backend.value} file from config does not exist: {artifact_path}")
 
     @staticmethod
-    def _get_backend_entry(mapping: Optional[Dict[Any, Any]], backend: Backend) -> Any:
+    def _get_backend_entry(mapping: Optional[Mapping[Any, Any]], backend: Backend) -> Any:
         """
         Fetch a config value that may be keyed by either string literals or Backend enums.
         """

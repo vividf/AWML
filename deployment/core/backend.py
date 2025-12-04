@@ -14,7 +14,7 @@ class Backend(str, Enum):
     TENSORRT = "tensorrt"
 
     @classmethod
-    def from_value(cls, value: Union[str, "Backend"]) -> "Backend":
+    def from_value(cls, value: Union[str, Backend]) -> Backend:
         """
         Normalize backend identifiers coming from configs or enums.
 

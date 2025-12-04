@@ -10,10 +10,12 @@ All project evaluators should extend BaseEvaluator and implement
 the required hooks for their specific task.
 """
 
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 import torch
@@ -145,7 +147,7 @@ class BaseEvaluator(VerificationMixin, ABC):
     @abstractmethod
     def _prepare_input(
         self,
-        sample: Dict[str, Any],
+        sample: Mapping[str, Any],
         data_loader: BaseDataLoader,
         device: str,
     ) -> Tuple[Any, Dict[str, Any]]:
@@ -158,7 +160,7 @@ class BaseEvaluator(VerificationMixin, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _parse_ground_truths(self, gt_data: Dict[str, Any]) -> Any:
+    def _parse_ground_truths(self, gt_data: Mapping[str, Any]) -> Any:
         """Extract ground truth from sample data."""
         raise NotImplementedError
 
@@ -300,7 +302,7 @@ class BaseEvaluator(VerificationMixin, ABC):
             for stage in sorted(all_stages)
         }
 
-    def format_latency_stats(self, stats: Dict[str, float]) -> str:
+    def format_latency_stats(self, stats: Mapping[str, float]) -> str:
         """Format latency statistics as a readable string."""
         return (
             f"Latency: {stats['mean_ms']:.2f} ± {stats['std_ms']:.2f} ms "

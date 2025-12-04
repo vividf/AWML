@@ -83,7 +83,7 @@ class ExportConfig:
     onnx_path: Optional[str] = None
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> ExportConfig:
+    def from_dict(cls, config_dict: Mapping[str, Any]) -> ExportConfig:
         """Create ExportConfig from dict."""
         return cls(
             mode=ExportMode.from_value(config_dict.get("mode", ExportMode.BOTH)),
@@ -112,7 +112,7 @@ class DeviceConfig:
         object.__setattr__(self, "cuda", self._normalize_cuda(self.cuda))
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> "DeviceConfig":
+    def from_dict(cls, config_dict: Mapping[str, Any]) -> DeviceConfig:
         """Create DeviceConfig from dict."""
         return cls(cpu=config_dict.get("cpu", cls.cpu), cuda=config_dict.get("cuda", cls.cuda))
 
@@ -164,7 +164,7 @@ class RuntimeConfig:
     sample_idx: int = 0
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> "RuntimeConfig":
+    def from_dict(cls, config_dict: Mapping[str, Any]) -> RuntimeConfig:
         """Create RuntimeConfig from dictionary."""
         return cls(
             info_file=config_dict.get("info_file", ""),
@@ -180,9 +180,9 @@ class BackendConfig:
     model_inputs: Tuple[TensorRTModelInputConfig, ...] = field(default_factory=tuple)
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> "BackendConfig":
+    def from_dict(cls, config_dict: Mapping[str, Any]) -> BackendConfig:
         common_config = dict(config_dict.get("common_config", {}))
-        model_inputs_raw: Iterable[Dict[str, Any]] = config_dict.get("model_inputs", []) or []
+        model_inputs_raw: Iterable[Mapping[str, Any]] = config_dict.get("model_inputs", []) or []
         model_inputs: Tuple[TensorRTModelInputConfig, ...] = tuple(
             TensorRTModelInputConfig.from_dict(item) for item in model_inputs_raw
         )
@@ -195,7 +195,7 @@ class BackendConfig:
         """Get precision policy name."""
         return self.common_config.get("precision_policy", PrecisionPolicy.AUTO.value)
 
-    def get_precision_flags(self) -> Dict[str, bool]:
+    def get_precision_flags(self) -> Mapping[str, bool]:
         """Get TensorRT precision flags for the configured policy."""
         policy = self.get_precision_policy()
         return PRECISION_POLICIES.get(policy, {})
@@ -217,7 +217,7 @@ class EvaluationConfig:
     devices: Mapping[str, str] = field(default_factory=_empty_mapping)
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> "EvaluationConfig":
+    def from_dict(cls, config_dict: Mapping[str, Any]) -> EvaluationConfig:
         backends_raw = config_dict.get("backends", {}) or {}
         backends_frozen = {key: MappingProxyType(dict(value)) for key, value in backends_raw.items()}
 
@@ -242,7 +242,7 @@ class VerificationConfig:
     scenarios: Mapping[ExportMode, Tuple[VerificationScenario, ...]] = field(default_factory=_empty_mapping)
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> "VerificationConfig":
+    def from_dict(cls, config_dict: Mapping[str, Any]) -> VerificationConfig:
         scenarios_raw = config_dict.get("scenarios", {}) or {}
         scenario_map: Dict[ExportMode, Tuple[VerificationScenario, ...]] = {}
         for mode_key, scenario_list in scenarios_raw.items():
@@ -273,7 +273,7 @@ class VerificationScenario:
     test_device: str
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> VerificationScenario:
+    def from_dict(cls, data: Mapping[str, Any]) -> VerificationScenario:
         missing_keys = {"ref_backend", "ref_device", "test_backend", "test_device"} - data.keys()
         if missing_keys:
             raise ValueError(f"Verification scenario missing keys: {missing_keys}")
@@ -411,7 +411,7 @@ class BaseDeploymentConfig:
         return self._evaluation_config
 
     @property
-    def onnx_config(self) -> Dict:
+    def onnx_config(self) -> Mapping[str, Any]:
         """Get ONNX configuration."""
         return self.deploy_cfg.get("onnx_config", {})
 
@@ -425,7 +425,7 @@ class BaseDeploymentConfig:
         """Get normalized device settings."""
         return self._device_config
 
-    def get_evaluation_backends(self) -> Dict[str, Dict[str, Any]]:
+    def get_evaluation_backends(self) -> Mapping[Any, Mapping[str, Any]]:
         """
         Get evaluation backends configuration.
 
