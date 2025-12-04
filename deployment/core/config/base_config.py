@@ -5,6 +5,8 @@ This module provides the foundation for task-agnostic deployment configuration.
 Task-specific deployment configs should extend BaseDeploymentConfig.
 """
 
+from __future__ import annotations
+
 import argparse
 import logging
 from dataclasses import dataclass, field
@@ -49,7 +51,7 @@ class ExportMode(str, Enum):
     NONE = "none"
 
     @classmethod
-    def from_value(cls, value: Optional[Union[str, "ExportMode"]]) -> "ExportMode":
+    def from_value(cls, value: Optional[Union[str, ExportMode]]) -> ExportMode:
         """Parse strings or enum members into ExportMode (defaults to BOTH)."""
         if value is None:
             return cls.BOTH
@@ -81,7 +83,7 @@ class ExportConfig:
     onnx_path: Optional[str] = None
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> "ExportConfig":
+    def from_dict(cls, config_dict: Dict[str, Any]) -> ExportConfig:
         """Create ExportConfig from dict."""
         return cls(
             mode=ExportMode.from_value(config_dict.get("mode", ExportMode.BOTH)),
@@ -237,12 +239,12 @@ class VerificationConfig:
     num_verify_samples: int = 3
     tolerance: float = 0.1
     devices: Mapping[str, str] = field(default_factory=_empty_mapping)
-    scenarios: Mapping[ExportMode, Tuple["VerificationScenario", ...]] = field(default_factory=_empty_mapping)
+    scenarios: Mapping[ExportMode, Tuple[VerificationScenario, ...]] = field(default_factory=_empty_mapping)
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "VerificationConfig":
         scenarios_raw = config_dict.get("scenarios", {}) or {}
-        scenario_map: Dict[ExportMode, Tuple["VerificationScenario", ...]] = {}
+        scenario_map: Dict[ExportMode, Tuple[VerificationScenario, ...]] = {}
         for mode_key, scenario_list in scenarios_raw.items():
             mode = ExportMode.from_value(mode_key)
             scenario_entries = tuple(VerificationScenario.from_dict(entry) for entry in (scenario_list or []))
@@ -256,7 +258,7 @@ class VerificationConfig:
             scenarios=MappingProxyType(scenario_map),
         )
 
-    def get_scenarios(self, mode: ExportMode) -> Tuple["VerificationScenario", ...]:
+    def get_scenarios(self, mode: ExportMode) -> Tuple[VerificationScenario, ...]:
         """Return scenarios for a specific export mode."""
         return self.scenarios.get(mode, ())
 
@@ -271,7 +273,7 @@ class VerificationScenario:
     test_device: str
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "VerificationScenario":
+    def from_dict(cls, data: Dict[str, Any]) -> VerificationScenario:
         missing_keys = {"ref_backend", "ref_device", "test_backend", "test_device"} - data.keys()
         if missing_keys:
             raise ValueError(f"Verification scenario missing keys: {missing_keys}")
