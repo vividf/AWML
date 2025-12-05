@@ -9,6 +9,7 @@ Deployment pipeline for CenterPoint 3D object detection using the unified deploy
 - Latency benchmarking
 - Uses MMDet3D pipeline for consistency with training
 - Unified runner architecture with composition-based design
+- **INT8 Quantization Support**: PTQ (Post-Training Quantization) and QAT (Quantization-Aware Training) for improved inference speed
 
 ## Quick Start
 
@@ -226,7 +227,287 @@ projects/CenterPoint/deploy/
 └── README.md               # This file
 ```
 
-## References
+## Quantization Support
 
+CenterPoint deployment supports INT8 quantization through PTQ (Post-Training Quantization) and QAT (Quantization-Aware Training) to improve inference speed by 1.5x-2x with minimal accuracy loss (<1% mAP drop).
+
+### Installation
+
+Install the quantization dependencies:
+
+```bash
+pip install pytorch-quantization --extra-index-url https://pypi.ngc.nvidia.com
+```
+
+### Quick Start: PTQ (Post-Training Quantization)
+
+PTQ is the fastest way to quantize a pre-trained model without retraining.
+
+#### Method 1: Using CLI Tool
+
+```bash
+# Quantize a pre-trained model
+python tools/detection3d/centerpoint_quantization.py ptq \
+    --config projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
+    --checkpoint work_dirs/centerpoint/best.pth \
+    --calibrate-batches 100 \
+    --output work_dirs/centerpoint_ptq.pth
+```
+
+#### Method 2: Using Python API
+
+```python
+from mmdet3d.apis import init_model
+from mmengine.config import Config
+from mmengine.runner import Runner
+from projects.CenterPoint.quantization import quantize_ptq
+import torch
+
+# Load model
+cfg = Config.fromfile("projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py")
+model = init_model(cfg, "work_dirs/centerpoint/best.pth", device="cuda:0")
+model.eval()
+
+# Build calibration dataloader
+dataloader = Runner.build_dataloader(cfg.val_dataloader)
+
+# Apply PTQ
+quantized_model = quantize_ptq(
+    model,
+    dataloader,
+    num_calibration_batches=100,
+    amax_method="mse",
+    fuse_bn=True,
+)
+
+# Save quantized model
+torch.save({'state_dict': quantized_model.state_dict()}, 'work_dirs/centerpoint_ptq.pth')
+```
+
+### Sensitivity Analysis
+
+Before quantizing, you can identify which layers are sensitive to quantization:
+
+```bash
+python tools/detection3d/centerpoint_quantization.py sensitivity \
+    --config projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
+    --checkpoint work_dirs/centerpoint/best.pth \
+    --calibrate-batches 100 \
+    --output sensitivity_report.csv
+```
+
+This generates a CSV report showing which layers cause the most accuracy drop when quantized. You can then skip these layers:
+
+```bash
+python tools/detection3d/centerpoint_quantization.py ptq \
+    --config ... \
+    --checkpoint ... \
+    --skip-layers pts_backbone.blocks.0.0 pts_voxel_encoder.pfn_layers.0 \
+    --output ...
+```
+
+### QAT (Quantization-Aware Training)
+
+For better accuracy, use QAT to fine-tune the model with quantization:
+
+#### Step 1: Add QAT Hook to Config
+
+Modify your training config to include the QAT hook:
+
+```python
+# In your config file (e.g., second_secfpn_4xb16_121m_base_amp.py)
+custom_hooks = [
+    dict(
+        type='QATHook',
+        calibration_batches=100,      # Number of batches for initial calibration
+        calibration_epoch=0,           # Epoch to run calibration
+        freeze_bn=True,                # Fuse BatchNorm layers
+        sensitive_layers=[],           # Layers to skip quantization
+        amax_method='mse',             # Method for computing amax
+    ),
+]
+
+# Reduce learning rate for fine-tuning
+optim_wrapper = dict(
+    optimizer=dict(lr=0.0001),  # 10x smaller than original
+)
+
+# Shorter training for fine-tuning
+train_cfg = dict(max_epochs=10)
+```
+
+#### Step 2: Run Training
+
+```bash
+python tools/train.py \
+    projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
+    --work-dir work_dirs/centerpoint_qat
+```
+
+Or use the CLI tool:
+
+```bash
+python tools/detection3d/centerpoint_quantization.py qat \
+    --config projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
+    --checkpoint work_dirs/centerpoint/best.pth \
+    --calibrate-batches 100 \
+    --epochs 10 \
+    --lr 0.0001 \
+    --output work_dirs/centerpoint_qat.pth
+```
+
+### Deployment with Quantized Model
+
+To deploy a quantized model, use the INT8 deployment config:
+
+```bash
+python projects/CenterPoint/deploy/main.py \
+    projects/CenterPoint/deploy/configs/deploy_config_int8.py \
+    projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py
+```
+
+The `deploy_config_int8.py` config includes quantization settings:
+
+```python
+quantization = dict(
+    enabled=True,
+    mode="ptq",  # or "qat"
+    calibration=dict(
+        num_batches=100,
+        method="histogram",
+        amax_method="mse",
+    ),
+    fusion=dict(
+        fuse_bn=True,
+    ),
+    sensitive_layers=[],  # Add layers from sensitivity analysis
+)
+
+backend_config = dict(
+    common_config=dict(
+        precision_policy="int8",  # Use INT8 for TensorRT
+        max_workspace_size=4 << 30,
+    ),
+)
+```
+
+### Quantization Module Structure
+
+The quantization implementation is organized as follows:
+
+```
+projects/CenterPoint/quantization/
+├── modules/
+│   ├── quant_conv.py          # QuantConv2d, QuantConvTranspose2d
+│   ├── quant_linear.py        # QuantLinear for PillarFeatureNet
+│   └── quant_add.py          # QuantAdd for skip connections
+├── calibration/
+│   └── calibrator.py         # CalibrationManager for PTQ
+├── fusion/
+│   └── bn_fusion.py         # BatchNorm fusion utilities
+├── hooks/
+│   └── qat_hook.py          # QATHook for MMEngine training
+├── ptq.py                   # PTQ pipeline functions
+├── replace.py               # Module replacement functions
+├── sensitivity.py           # Layer sensitivity analysis
+└── utils.py                 # Utility functions
+```
+
+### API Reference
+
+#### Core Functions
+
+```python
+from projects.CenterPoint.quantization import (
+    # PTQ pipeline
+    quantize_ptq,
+    save_ptq_model,
+    load_ptq_model,
+
+    # Module replacement
+    quant_model,
+    quant_conv_module,
+    quant_linear_module,
+
+    # Calibration
+    CalibrationManager,
+
+    # Layer fusion
+    fuse_model_bn,
+
+    # Sensitivity analysis
+    build_sensitivity_profile,
+    get_sensitive_layers,
+
+    # Utilities
+    disable_quantization,
+    enable_quantization,
+    print_quantizer_status,
+)
+```
+
+#### Example: Custom PTQ Pipeline
+
+```python
+from projects.CenterPoint.quantization import (
+    quant_model,
+    fuse_model_bn,
+    CalibrationManager,
+    disable_quantization,
+)
+
+# 1. Fuse BatchNorm
+model.eval()
+fuse_model_bn(model)
+
+# 2. Insert Q/DQ nodes
+quant_model(model, skip_names={'pts_backbone.blocks.0.0'})
+
+# 3. Calibrate
+calibrator = CalibrationManager(model)
+calibrator.calibrate(dataloader, num_batches=100, method='mse')
+
+# 4. Disable sensitive layers
+disable_quantization(model.pts_backbone.blocks[0][0]).apply()
+```
+
+### Performance Expectations
+
+Based on CUDA-CenterPoint results:
+
+| Model | Validation mAP | Validation NDS | Speedup |
+|-------|----------------|----------------|---------|
+| FP16 Baseline | ~59.55% | ~66.75% | 1x |
+| PTQ INT8 | ~59.08% | ~66.45% | 1.5x-2x |
+| QAT INT8 | ~59.20% | ~66.53% | 1.5x-2x |
+
+### Troubleshooting
+
+#### Calibration Issues
+
+1. **Out of Memory**: Reduce `calibrate_batches` or use smaller batch size
+2. **Poor Accuracy**: Run sensitivity analysis and skip sensitive layers
+3. **Calibration Cache**: Save/load calibration cache to avoid re-calibration:
+   ```python
+   calibrator.save_calib_cache('calib_cache.pth')
+   calibrator.load_calib_cache('calib_cache.pth')
+   ```
+
+#### QAT Training Issues
+
+1. **NaN Loss**: Reduce learning rate or disable quantization for more layers
+2. **Slow Training**: Enable fast histogram mode (done automatically)
+3. **No Improvement**: Increase training epochs or adjust calibration
+
+#### TensorRT INT8 Build Issues
+
+1. **Engine Build Fails**: Ensure ONNX has Q/DQ nodes (check with Netron)
+2. **Accuracy Mismatch**: Verify calibration cache was loaded correctly
+3. **Performance Not Improved**: Check that `precision_policy="int8"` is set
+
+### References
+
+- [Quantization Integration Plan](../docs/AWML_integrate_plan.md) - Detailed implementation plan
 - [Deployment Framework Documentation](../../../deployment/README.md)
 - [CenterPoint Paper](https://arxiv.org/abs/2006.11275)
+- [NVIDIA TensorRT Quantization Guide](https://docs.nvidia.com/deeplearning/tensorrt/developer-guide/index.html#working-with-int8)
