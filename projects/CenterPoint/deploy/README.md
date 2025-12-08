@@ -248,8 +248,8 @@ PTQ is the fastest way to quantize a pre-trained model without retraining.
 ```bash
 # Quantize a pre-trained model
 python tools/detection3d/centerpoint_quantization.py ptq \
-    --config projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
-    --checkpoint work_dirs/centerpoint/best.pth \
+    --config projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_j6gen2_base_t4metric_v2.py \
+    --checkpoint work_dirs/centerpoint/best_checkpoint.pth \
     --calibrate-batches 100 \
     --output work_dirs/centerpoint_ptq.pth
 ```
@@ -264,8 +264,8 @@ from projects.CenterPoint.quantization import quantize_ptq
 import torch
 
 # Load model
-cfg = Config.fromfile("projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py")
-model = init_model(cfg, "work_dirs/centerpoint/best.pth", device="cuda:0")
+cfg = Config.fromfile("projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_j6gen2_base_t4metric_v2.py")
+model = init_model(cfg, "work_dirs/centerpoint/best_checkpoint.pth", device="cuda:0")
 model.eval()
 
 # Build calibration dataloader

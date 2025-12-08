@@ -141,7 +141,15 @@ def print_quantizer_status(model: nn.Module):
             status = "DISABLED" if module._disabled else "ENABLED"
             print(f"  {name}: {status}")
             if hasattr(module, "_amax") and module._amax is not None:
-                print(f"    amax: {module._amax.item():.6f}")
+                amax = module._amax
+                if amax.numel() == 1:
+                    # Scalar amax (per-tensor quantization)
+                    print(f"    amax: {amax.item():.6f}")
+                else:
+                    # Multi-element amax (per-channel quantization)
+                    print(
+                        f"    amax: [{amax.numel()} elements] min={amax.min().item():.6f}, max={amax.max().item():.6f}"
+                    )
 
     print("=" * 80)
 

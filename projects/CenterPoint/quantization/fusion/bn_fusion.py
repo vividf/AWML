@@ -21,6 +21,7 @@ def fuse_bn_weights(
     bn_eps: float,
     bn_weight: Union[torch.Tensor, None],
     bn_bias: Union[torch.Tensor, None],
+    is_transposed: bool = False,
 ) -> Tuple[nn.Parameter, nn.Parameter]:
     """
     Fuse BatchNorm parameters into convolution weights.
@@ -36,13 +37,17 @@ def fuse_bn_weights(
         b_fused = (b - mean) * gamma / sqrt(var + eps) + beta
 
     Args:
-        conv_weight: Convolution weight tensor [out_channels, in_channels, ...]
+        conv_weight: Convolution weight tensor
+            - For Conv2d: [out_channels, in_channels, H, W]
+            - For ConvTranspose2d: [in_channels, out_channels, H, W]
         conv_bias: Convolution bias tensor [out_channels] or None
         bn_mean: BatchNorm running mean [out_channels]
         bn_var: BatchNorm running variance [out_channels]
         bn_eps: BatchNorm epsilon
         bn_weight: BatchNorm weight (gamma) [out_channels] or None
         bn_bias: BatchNorm bias (beta) [out_channels] or None
+        is_transposed: If True, conv_weight is from ConvTranspose2d with shape
+            [in_channels, out_channels, H, W] where scale applies to dim 1
 
     Returns:
         Tuple of (fused_weight, fused_bias) as nn.Parameters
@@ -62,9 +67,14 @@ def fuse_bn_weights(
     scale = bn_weight * bn_var_rsqrt
 
     # Reshape for broadcasting with conv weights
-    # conv_weight shape: [out_channels, in_channels, ...] for Conv2d
-    # or [out_channels, kernel_size, kernel_size, kernel_size, in_channels] for spconv
-    shape = [-1] + [1] * (conv_weight.ndim - 1)
+    # Conv2d weight shape: [out_channels, in_channels, H, W] -> scale on dim 0
+    # ConvTranspose2d weight shape: [in_channels, out_channels, H, W] -> scale on dim 1
+    if is_transposed:
+        # For ConvTranspose2d: scale applies to dimension 1 (out_channels)
+        shape = [1, -1] + [1] * (conv_weight.ndim - 2)
+    else:
+        # For Conv2d/Linear: scale applies to dimension 0 (out_channels)
+        shape = [-1] + [1] * (conv_weight.ndim - 1)
 
     # Fuse weights: W_fused = W * scale
     fused_weight = conv_weight * scale.reshape(shape)
@@ -91,6 +101,9 @@ def fuse_conv_bn(conv: nn.Module, bn: nn.Module):
     """
     assert not conv.training and not bn.training, "Fusion only works in eval mode"
 
+    # Check if this is a transposed convolution
+    is_transposed = isinstance(conv, (nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d))
+
     conv.weight, conv.bias = fuse_bn_weights(
         conv.weight,
         conv.bias,
@@ -99,7 +112,25 @@ def fuse_conv_bn(conv: nn.Module, bn: nn.Module):
         bn.eps,
         bn.weight,
         bn.bias,
+        is_transposed=is_transposed,
     )
+
+
+def _get_conv_out_channels(conv: nn.Module) -> int:
+    """Get output channels from a Conv or Linear module."""
+    if isinstance(conv, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+        return conv.out_channels
+    elif isinstance(conv, (nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d)):
+        return conv.out_channels
+    elif isinstance(conv, nn.Linear):
+        return conv.out_features
+    else:
+        raise ValueError(f"Unsupported module type: {type(conv)}")
+
+
+def _get_bn_num_features(bn: nn.Module) -> int:
+    """Get num_features from a BatchNorm module."""
+    return bn.num_features
 
 
 def find_conv_bn_pairs(model: nn.Module) -> List[Tuple[str, str]]:
@@ -112,6 +143,9 @@ def find_conv_bn_pairs(model: nn.Module) -> List[Tuple[str, str]]:
     - Conv2d + BatchNorm2d
     - ConvTranspose2d + BatchNorm2d
     - Linear + BatchNorm1d
+
+    The function also validates that the Conv output channels match the
+    BatchNorm num_features to ensure correct pairing.
 
     Args:
         model: PyTorch model
@@ -136,7 +170,11 @@ def find_conv_bn_pairs(model: nn.Module) -> List[Tuple[str, str]]:
         if prev_module is not None:
             for conv_type, bn_type in conv_to_bn.items():
                 if isinstance(prev_module, conv_type) and isinstance(module, bn_type):
-                    pairs.append((prev_name, name))
+                    # Validate that channel dimensions match
+                    conv_out_channels = _get_conv_out_channels(prev_module)
+                    bn_num_features = _get_bn_num_features(module)
+                    if conv_out_channels == bn_num_features:
+                        pairs.append((prev_name, name))
                     break
 
         prev_name = name

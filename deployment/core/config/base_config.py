@@ -39,6 +39,7 @@ class PrecisionPolicy(str, Enum):
     AUTO = "auto"
     FP16 = "fp16"
     FP32_TF32 = "fp32_tf32"
+    INT8 = "int8"
     STRONGLY_TYPED = "strongly_typed"
 
 
@@ -70,6 +71,11 @@ PRECISION_POLICIES = {
     PrecisionPolicy.AUTO.value: {},  # No special flags, TensorRT decides
     PrecisionPolicy.FP16.value: {"FP16": True},
     PrecisionPolicy.FP32_TF32.value: {"TF32": True},  # TF32 for FP32 operations
+    # INT8 explicit quantization: Use FP16 as fallback, don't set INT8 builder flag.
+    # INT8 builder flag is for implicit quantization with calibrator.
+    # For explicit quantization (Q/DQ nodes from PTQ/QAT), TensorRT reads precision
+    # from QuantizeLinear/DequantizeLinear ops in ONNX automatically.
+    PrecisionPolicy.INT8.value: {"FP16": True},
     PrecisionPolicy.STRONGLY_TYPED.value: {"STRONGLY_TYPED": True},  # Network creation flag
 }
 
@@ -530,8 +536,18 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
     Returns:
         Configured logger instance
     """
-    logging.basicConfig(level=getattr(logging, level), format="%(levelname)s:%(name)s:%(message)s")
-    return logging.getLogger("deployment")
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(level=log_level, format="%(levelname)s:%(name)s:%(message)s")
+
+    # Explicitly set the "deployment" logger's level.
+    # This is necessary because other libraries (e.g., pytorch-quantization)
+    # may change the root logger level during import, and a logger with
+    # level=NOTSET (default) inherits from its parent (root logger).
+    # By explicitly setting the level, we ensure our logger is not affected.
+    logger = logging.getLogger("deployment")
+    logger.setLevel(log_level)
+
+    return logger
 
 
 def parse_base_args(parser: Optional[argparse.ArgumentParser] = None) -> argparse.ArgumentParser:
