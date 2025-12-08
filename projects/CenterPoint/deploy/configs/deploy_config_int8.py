@@ -52,7 +52,7 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="none",  # Export ONNX -> TensorRT
+    mode="both",  # Export ONNX -> TensorRT
     work_dir="work_dirs/centerpoint_int8_deployment",
     onnx_path=None,
 )
@@ -142,7 +142,7 @@ backend_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=1,
+    num_samples=100,
     verbose=True,
     backends=dict(
         pytorch=dict(

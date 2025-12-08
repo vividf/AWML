@@ -145,7 +145,7 @@ backend_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=1,  # Number of samples to evaluate
+    num_samples=100,  # Number of samples to evaluate
     verbose=True,
     # Decide which backends to evaluate and on which devices.
     # Note:
