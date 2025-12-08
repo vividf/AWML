@@ -119,11 +119,19 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         else:
             rot_y_axis_reference = context.get("rot_y_axis_reference", False)
 
+        # Get quantization config from deployment config if present
+        quantization = None
+        if hasattr(self.config, "deploy_cfg"):
+            quantization = self.config.deploy_cfg.get("quantization", None)
+            if quantization and quantization.get("enabled", False):
+                self.logger.info("Quantization enabled - loading quantized model")
+
         model, onnx_cfg = build_centerpoint_onnx_model(
             base_model_cfg=self.model_cfg,
             checkpoint_path=checkpoint_path,
             device="cpu",
             rot_y_axis_reference=rot_y_axis_reference,
+            quantization=quantization,
         )
 
         self.model_cfg = onnx_cfg

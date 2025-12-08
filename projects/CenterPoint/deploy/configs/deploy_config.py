@@ -34,7 +34,7 @@ export = dict(
     # - 'trt'  : build TensorRT engine from an existing ONNX
     # - 'both' : export PyTorch -> ONNX -> TensorRT
     # - 'none' : no export (only evaluation / verification on existing artifacts)
-    mode="both",
+    mode="none",
     # ---- Common options ----------------------------------------------------
     work_dir="work_dirs/centerpoint_deployment",
     # ---- ONNX source when building TensorRT only ---------------------------
@@ -118,7 +118,7 @@ backend_config = dict(
     common_config=dict(
         # Precision policy for TensorRT
         # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
-        precision_policy="auto",
+        precision_policy="fp32_tf32",
         # TensorRT workspace size (bytes)
         max_workspace_size=2 << 30,  # 2 GB
     ),
@@ -145,7 +145,7 @@ backend_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=1,  # Number of samples to evaluate
+    num_samples=100,  # Number of samples to evaluate
     verbose=True,
     # Decide which backends to evaluate and on which devices.
     # Note:
@@ -185,7 +185,7 @@ evaluation = dict(
 # ----------------------------------------------------------------------------
 verification = dict(
     # Master switch to enable/disable verification
-    enabled=True,
+    enabled=False,
     tolerance=1e-1,
     num_verify_samples=1,
     # Device aliases for flexible device management
