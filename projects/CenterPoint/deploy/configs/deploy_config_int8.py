@@ -1,70 +1,123 @@
 """
-CenterPoint INT8 Deployment Configuration
+CenterPoint INT8 Quantization Deployment Configuration
 
-This configuration extends the base deploy_config.py with INT8 quantization settings.
-Use this config when deploying with PTQ/QAT quantized models.
+This configuration extends the base deploy_config.py with quantization settings
+for deploying PTQ (Post-Training Quantization) or QAT (Quantization-Aware Training)
+models to TensorRT INT8.
+
+Usage:
+    python projects/CenterPoint/deploy/main.py \
+        projects/CenterPoint/deploy/configs/deploy_config_int8.py \
+        projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_j6gen2_base_t4metric_v2.py
 """
 
-# Inherit from base config
-_base_ = ["./deploy_config.py"]
+# ============================================================================
+# Task type for pipeline building
+# ============================================================================
+task_type = "detection3d"
+
+# ============================================================================
+# Checkpoint Path - Use PTQ or QAT quantized checkpoint
+# ============================================================================
+checkpoint_path = "work_dirs/centerpoint_ptq.pth"
 
 # ============================================================================
 # Quantization Configuration
 # ============================================================================
+# This tells the deployment pipeline to apply quantization transformations
+# (BN fusion, Q/DQ node insertion) before loading the checkpoint.
 quantization = dict(
-    # Master switch to enable/disable quantization
     enabled=True,
-    # Quantization mode:
-    # - 'ptq' : Post-Training Quantization (calibrate pre-trained model)
-    # - 'qat' : Quantization-Aware Training (fine-tune with fake quantization)
-    mode="ptq",
-    # Calibration settings (used for both PTQ and initial QAT calibration)
-    calibration=dict(
-        # Number of batches to use for calibration
-        num_batches=100,
-        # Calibration method for collecting statistics
-        # Options: 'histogram', 'max', 'entropy'
-        method="histogram",
-        # Method for computing amax from statistics
-        # Options: 'mse', 'entropy', 'percentile', 'max'
-        amax_method="mse",
-        # Path to save/load calibration cache (amax values)
-        # Set to None to skip caching
-        cache_path=None,
-    ),
-    # Layer fusion settings
-    fusion=dict(
-        # Fuse BatchNorm into Conv before quantization
-        fuse_bn=True,
-    ),
-    # Sensitive layers to skip quantization
-    # These are typically early layers that cause significant accuracy drop
-    # Run sensitivity analysis to identify these layers
+    mode="ptq",  # 'ptq' or 'qat'
+    fuse_bn=True,  # BatchNorm was fused during PTQ
+    # Layers that were skipped during quantization
+    # Note: ConvTranspose2d (deblocks) are excluded because TensorRT has
+    # limited INT8 support for transposed convolutions
     sensitive_layers=[
-        # Example: first layer of backbone
-        # "pts_backbone.blocks.0.0",
+        "pts_neck.deblocks.0.0",  # ConvTranspose2d - no TRT INT8 support
+        "pts_neck.deblocks.1.0",  # ConvTranspose2d - no TRT INT8 support
+        "pts_neck.deblocks.2.0",  # ConvTranspose2d - no TRT INT8 support
     ],
-    # Precision settings per layer type
-    precision=dict(
-        # Default precision for most layers
-        default_input="int8",
-        default_weight="int8",
-        # First layer: keep input in FP16 to preserve input dynamic range
-        first_layer_input="fp16",
-        # Last layer: keep output in FP16 for postprocessing
-        last_layer_output="fp16",
+)
+
+# ============================================================================
+# Device settings
+# ============================================================================
+devices = dict(
+    cpu="cpu",
+    cuda="cuda:0",
+)
+
+# ============================================================================
+# Export Configuration
+# ============================================================================
+export = dict(
+    mode="none",  # Export ONNX -> TensorRT
+    work_dir="work_dirs/centerpoint_int8_deployment",
+    onnx_path=None,
+)
+
+# ============================================================================
+# Runtime I/O settings
+# ============================================================================
+runtime_io = dict(
+    info_file="data/t4dataset/info/t4dataset_j6gen2_infos_val.pkl",
+    sample_idx=1,
+)
+
+# ============================================================================
+# Model Input/Output Configuration
+# ============================================================================
+model_io = dict(
+    input_name="voxels",
+    input_shape=(32, 4),
+    input_dtype="float32",
+    additional_inputs=[
+        dict(name="num_points", shape=(-1,), dtype="int32"),
+        dict(name="coors", shape=(-1, 4), dtype="int32"),
+    ],
+    head_output_names=("heatmap", "reg", "height", "dim", "rot", "vel"),
+    batch_size=None,
+    dynamic_axes={
+        "voxels": {0: "num_voxels"},
+        "num_points": {0: "num_voxels"},
+        "coors": {0: "num_voxels"},
+    },
+)
+
+# ============================================================================
+# ONNX Export Configuration
+# ============================================================================
+onnx_config = dict(
+    opset_version=16,
+    do_constant_folding=True,
+    export_params=True,
+    keep_initializers_as_inputs=False,
+    simplify=False,
+    multi_file=True,
+    components=dict(
+        voxel_encoder=dict(
+            name="pts_voxel_encoder",
+            onnx_file="pts_voxel_encoder.onnx",
+            engine_file="pts_voxel_encoder.engine",
+        ),
+        backbone_head=dict(
+            name="pts_backbone_neck_head",
+            onnx_file="pts_backbone_neck_head.onnx",
+            engine_file="pts_backbone_neck_head.engine",
+        ),
     ),
 )
 
 # ============================================================================
-# Override Backend Configuration for INT8
+# Backend Configuration - INT8 TensorRT
 # ============================================================================
 backend_config = dict(
     common_config=dict(
-        # Use INT8 precision policy for TensorRT
+        # Use INT8 precision for quantized model
+        # TensorRT will use Q/DQ nodes in ONNX to determine INT8 layers
         precision_policy="int8",
-        # Larger workspace for INT8 optimization
-        max_workspace_size=4 << 30,  # 4 GB
+        max_workspace_size=4 << 30,  # 4 GB for INT8 calibration
     ),
     model_inputs=[
         dict(
@@ -82,4 +135,72 @@ backend_config = dict(
             )
         )
     ],
+)
+
+# ============================================================================
+# Evaluation Configuration
+# ============================================================================
+evaluation = dict(
+    enabled=True,
+    num_samples=1,
+    verbose=True,
+    backends=dict(
+        pytorch=dict(
+            enabled=True,
+            device=devices["cuda"],
+        ),
+        onnx=dict(
+            enabled=True,
+            device=devices["cuda"],
+            model_dir="work_dirs/centerpoint_int8_deployment/onnx/",
+        ),
+        tensorrt=dict(
+            enabled=True,
+            device=devices["cuda"],
+            engine_dir="work_dirs/centerpoint_int8_deployment/tensorrt/",
+        ),
+    ),
+)
+
+# ============================================================================
+# Verification Configuration
+# ============================================================================
+verification = dict(
+    enabled=False,
+    tolerance=1e-1,  # INT8 may have larger tolerance than FP16
+    num_verify_samples=1,
+    devices=devices,
+    scenarios=dict(
+        both=[
+            dict(
+                ref_backend="pytorch",
+                ref_device="cpu",
+                test_backend="onnx",
+                test_device="cpu",
+            ),
+            dict(
+                ref_backend="onnx",
+                ref_device="cuda",
+                test_backend="tensorrt",
+                test_device="cuda",
+            ),
+        ],
+        onnx=[
+            dict(
+                ref_backend="pytorch",
+                ref_device="cpu",
+                test_backend="onnx",
+                test_device="cpu",
+            ),
+        ],
+        trt=[
+            dict(
+                ref_backend="onnx",
+                ref_device="cuda",
+                test_backend="tensorrt",
+                test_device="cuda",
+            ),
+        ],
+        none=[],
+    ),
 )

@@ -59,7 +59,12 @@ def create_onnx_model_cfg(
     return onnx_cfg
 
 
-def build_model_from_cfg(model_cfg: Config, checkpoint_path: str, device: str) -> torch.nn.Module:
+def build_model_from_cfg(
+    model_cfg: Config,
+    checkpoint_path: str,
+    device: str,
+    quantization: Optional[dict] = None,
+) -> torch.nn.Module:
     """
     Build and load a model from config + checkpoint on the given device.
 
@@ -67,6 +72,10 @@ def build_model_from_cfg(model_cfg: Config, checkpoint_path: str, device: str) -
         model_cfg: Model configuration
         checkpoint_path: Path to checkpoint file
         device: Device string (e.g., "cpu", "cuda:0")
+        quantization: Optional quantization config dict with keys:
+            - enabled: bool, whether to enable quantization
+            - mode: str, 'ptq' or 'qat'
+            - fuse_bn: bool, whether to fuse BatchNorm (default: True)
 
     Returns:
         Loaded PyTorch model
@@ -75,10 +84,195 @@ def build_model_from_cfg(model_cfg: Config, checkpoint_path: str, device: str) -
     model_config = copy.deepcopy(model_cfg.model)
     model = MODELS.build(model_config)
     model.to(device)
-    load_checkpoint(model, checkpoint_path, map_location=device)
+
+    # Handle quantized checkpoint loading
+    if quantization and quantization.get("enabled", False):
+        model = _load_quantized_checkpoint(model, checkpoint_path, device, quantization)
+    else:
+        load_checkpoint(model, checkpoint_path, map_location=device)
+
     model.eval()
     model.cfg = model_cfg
     return model
+
+
+def _load_quantized_checkpoint(
+    model: torch.nn.Module,
+    checkpoint_path: str,
+    device: str,
+    quantization: dict,
+) -> torch.nn.Module:
+    """
+    Load a quantized (PTQ/QAT) checkpoint into a model.
+
+    This function applies the same transformations that were applied during
+    quantization (BN fusion, Q/DQ node insertion) before loading the checkpoint.
+
+    Args:
+        model: Model to load checkpoint into
+        checkpoint_path: Path to quantized checkpoint
+        device: Device string
+        quantization: Quantization config dict
+
+    Returns:
+        Model with quantized checkpoint loaded
+    """
+    try:
+        from projects.CenterPoint.quantization import fuse_model_bn, quant_model
+    except ImportError as e:
+        raise ImportError(
+            "Quantization modules not found. Make sure projects/CenterPoint/quantization "
+            f"is properly installed. Error: {e}"
+        )
+
+    logger = logging.getLogger(__name__)
+    logger.info("Loading quantized checkpoint with transformations...")
+
+    # 1. Fuse BatchNorm if enabled (must be done before quantization)
+    fuse_bn = quantization.get("fuse_bn", True)
+    if fuse_bn:
+        logger.info("Fusing BatchNorm layers...")
+        model.eval()
+        fuse_model_bn(model)
+
+    # 2. Insert Q/DQ nodes
+    logger.info("Inserting Q/DQ nodes...")
+    skip_layers = set(quantization.get("sensitive_layers", []))
+    quant_model(model, skip_names=skip_layers)
+
+    # 3. Load the quantized checkpoint
+    logger.info(f"Loading quantized checkpoint from {checkpoint_path}...")
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    # Handle different checkpoint formats
+    if "state_dict" in checkpoint:
+        state_dict = checkpoint["state_dict"]
+    else:
+        state_dict = checkpoint
+
+    # Load with strict=False to handle any minor mismatches
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+
+    if missing:
+        logger.warning(f"Missing keys in checkpoint: {len(missing)} keys")
+        logger.debug(f"Missing keys: {missing[:10]}...")  # Show first 10
+    if unexpected:
+        logger.warning(f"Unexpected keys in checkpoint: {len(unexpected)} keys")
+        logger.debug(f"Unexpected keys: {unexpected[:10]}...")  # Show first 10
+
+    # 4. Move all quantizer amax values to the target device
+    # This is necessary because TensorQuantizer stores _amax as a buffer
+    # and we need to ensure it's on the same device as the inputs
+    _move_quantizer_amax_to_device(model, device, logger)
+
+    # 5. Disable quantization for sensitive layers (e.g., ConvTranspose2d)
+    # These layers may not have TensorRT INT8 support
+    _disable_quantization_for_sensitive_layers(model, skip_layers, logger)
+
+    # 6. Configure pytorch-quantization for proper ONNX export
+    # This enables Q/DQ nodes to be exported as QuantizeLinear/DequantizeLinear
+    setup_quantization_for_onnx_export()
+
+    logger.info("Quantized checkpoint loaded successfully")
+    return model
+
+
+def _move_quantizer_amax_to_device(
+    model: torch.nn.Module,
+    device: str,
+    logger: logging.Logger,
+) -> None:
+    """
+    Move all TensorQuantizer amax values to the specified device.
+
+    This is necessary because TensorQuantizer stores _amax as a buffer,
+    and when loading a checkpoint calibrated on GPU to CPU (or vice versa),
+    the _amax tensors may be on the wrong device.
+
+    Args:
+        model: Model containing TensorQuantizers
+        device: Target device
+        logger: Logger instance
+    """
+    try:
+        from pytorch_quantization.nn import TensorQuantizer
+    except ImportError:
+        return
+
+    moved_count = 0
+    for name, module in model.named_modules():
+        if isinstance(module, TensorQuantizer):
+            if hasattr(module, "_amax") and module._amax is not None:
+                if module._amax.device != torch.device(device):
+                    module._amax = module._amax.to(device)
+                    moved_count += 1
+
+    if moved_count > 0:
+        logger.info(f"Moved {moved_count} quantizer amax tensors to {device}")
+
+
+def _disable_quantization_for_sensitive_layers(
+    model: torch.nn.Module,
+    sensitive_layers: set,
+    logger: logging.Logger,
+) -> None:
+    """
+    Disable quantization for sensitive layers.
+
+    Some layers (e.g., ConvTranspose2d) don't have good TensorRT INT8 support.
+    This function disables the quantizers for these layers so they won't have
+    Q/DQ nodes in the exported ONNX.
+
+    Args:
+        model: Model containing quantized layers
+        sensitive_layers: Set of layer names to disable quantization for
+        logger: Logger instance
+    """
+    if not sensitive_layers:
+        return
+
+    try:
+        from pytorch_quantization.nn import TensorQuantizer
+    except ImportError:
+        return
+
+    disabled_count = 0
+    for name, module in model.named_modules():
+        # Check if this module or its parent is in the sensitive layers list
+        should_disable = False
+        for sensitive_name in sensitive_layers:
+            if name.startswith(sensitive_name) and isinstance(module, TensorQuantizer):
+                should_disable = True
+                break
+
+        if should_disable:
+            module.disable()
+            disabled_count += 1
+            logger.debug(f"Disabled quantizer: {name}")
+
+    if disabled_count > 0:
+        logger.info(f"Disabled {disabled_count} quantizers for sensitive layers: {sensitive_layers}")
+
+
+def setup_quantization_for_onnx_export() -> None:
+    """
+    Configure pytorch-quantization for proper ONNX export.
+
+    This function enables 'use_fb_fake_quant' mode which makes TensorQuantizer
+    export as proper ONNX QuantizeLinear/DequantizeLinear nodes instead of
+    custom ops that TensorRT can't recognize.
+
+    Must be called before ONNX export when using quantized models.
+    """
+    try:
+        from pytorch_quantization.nn import TensorQuantizer
+
+        # Enable FakeQuantize export mode for proper ONNX Q/DQ nodes
+        # This makes TensorQuantizer export as QuantizeLinear/DequantizeLinear
+        TensorQuantizer.use_fb_fake_quant = True
+        logging.getLogger(__name__).info("Enabled use_fb_fake_quant for ONNX export of quantized model")
+    except ImportError:
+        pass
 
 
 def build_centerpoint_onnx_model(
@@ -86,6 +280,7 @@ def build_centerpoint_onnx_model(
     checkpoint_path: str,
     device: str,
     rot_y_axis_reference: bool = False,
+    quantization: Optional[dict] = None,
 ) -> Tuple[torch.nn.Module, Config]:
     """
     Build an ONNX-friendly CenterPoint model from the *original* model_cfg.
@@ -98,6 +293,11 @@ def build_centerpoint_onnx_model(
         checkpoint_path: Path to checkpoint file
         device: Device string (e.g., "cpu", "cuda:0")
         rot_y_axis_reference: Whether to use y-axis rotation reference
+        quantization: Optional quantization config dict with keys:
+            - enabled: bool, whether to enable quantization
+            - mode: str, 'ptq' or 'qat'
+            - fuse_bn: bool, whether to fuse BatchNorm (default: True)
+            - sensitive_layers: list of layer names to skip quantization
 
     Returns:
         Tuple of:
@@ -112,7 +312,12 @@ def build_centerpoint_onnx_model(
     )
 
     # 2) Use shared build_model_from_cfg to load checkpoint
-    model = build_model_from_cfg(onnx_cfg, checkpoint_path, device=device)
+    model = build_model_from_cfg(
+        onnx_cfg,
+        checkpoint_path,
+        device=device,
+        quantization=quantization,
+    )
 
     return model, onnx_cfg
 

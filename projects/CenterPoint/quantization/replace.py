@@ -7,6 +7,52 @@ import torch.nn as nn
 
 from .modules import QuantConv2d, QuantConvTranspose2d, QuantLinear
 
+# Flag to track if quantization descriptors have been initialized
+_quant_descriptors_initialized = False
+
+
+def _ensure_quant_descriptors_initialized():
+    """
+    Ensure that default quantization descriptors are initialized.
+
+    This must be called before using transfer_to_quantization since the
+    default_quant_desc_* class attributes are only set in __init__.
+    """
+    global _quant_descriptors_initialized
+    if _quant_descriptors_initialized:
+        return
+
+    try:
+        from pytorch_quantization import tensor_quant
+    except ImportError:
+        raise ImportError(
+            "pytorch-quantization is required for quantization support. "
+            "Install it with: pip install pytorch-quantization --extra-index-url https://pypi.ngc.nvidia.com"
+        )
+
+    # Initialize QuantConv2d descriptors
+    if QuantConv2d.default_quant_desc_input is None:
+        QuantConv2d.default_quant_desc_input = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+    if QuantConv2d.default_quant_desc_weight is None:
+        QuantConv2d.default_quant_desc_weight = tensor_quant.QUANT_DESC_8BIT_CONV2D_WEIGHT_PER_CHANNEL
+
+    # Initialize QuantConvTranspose2d descriptors
+    if QuantConvTranspose2d.default_quant_desc_input is None:
+        QuantConvTranspose2d.default_quant_desc_input = tensor_quant.QuantDescriptor(
+            num_bits=8, calib_method="histogram"
+        )
+    if QuantConvTranspose2d.default_quant_desc_weight is None:
+        QuantConvTranspose2d.default_quant_desc_weight = tensor_quant.QUANT_DESC_8BIT_CONV2D_WEIGHT_PER_CHANNEL
+
+    # Initialize QuantLinear descriptors
+    if QuantLinear.default_quant_desc_input is None:
+        QuantLinear.default_quant_desc_input = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+    if QuantLinear.default_quant_desc_weight is None:
+        # Per-row quantization for Linear layers (per output channel)
+        QuantLinear.default_quant_desc_weight = tensor_quant.QuantDescriptor(num_bits=8, axis=(0,))
+
+    _quant_descriptors_initialized = True
+
 
 def transfer_to_quantization(nn_instance: nn.Module, quant_module: Type) -> nn.Module:
     """
@@ -22,6 +68,9 @@ def transfer_to_quantization(nn_instance: nn.Module, quant_module: Type) -> nn.M
     Returns:
         Quantized module with copied weights and initialized quantizers
     """
+    # Ensure quantization descriptors are initialized
+    _ensure_quant_descriptors_initialized()
+
     # Create new instance without calling __init__
     quant_instance = quant_module.__new__(quant_module)
 
