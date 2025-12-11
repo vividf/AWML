@@ -1,14 +1,8 @@
 # AWML Deployment Framework
 
-AWML ships a unified, task-agnostic deployment stack that turns trained PyTorch
-checkpoints into production-ready ONNX and TensorRT artifacts. The same typed
-verification and evaluation toolchain runs across every backend so numerical
-parity and metrics stay consistent from project to project.
+AWML ships a unified, task-agnostic deployment stack that turns trained PyTorch checkpoints into production-ready ONNX and TensorRT artifacts. The verification and evaluation toolchain runs across every backend, ensuring numerical parity and consistent metrics across different projects.
 
-At the center is a shared runner/pipeline/exporter architecture that teams can
-extend with lightweight wrappers or workflows. CenterPoint, YOLOX,
-CalibrationStatusClassification, and future models plug into the same export and
-verification flow while still layering in task-specific logic where needed.
+At the center is a shared runner/pipeline/exporter architecture that teams can extend with lightweight wrappers or workflows. CenterPoint, YOLOX, CalibrationStatusClassification, and future models plug into the same export and verification flow while still layering in task-specific logic where needed.
 
 
 ## Quick Start
