@@ -17,7 +17,8 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Type, TypedDict
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, Optional, Type
 
 from mmengine.config import Config
 
@@ -31,11 +32,12 @@ from deployment.runners.common.export_orchestrator import ExportOrchestrator
 from deployment.runners.common.verification_orchestrator import VerificationOrchestrator
 
 
-class DeploymentResultDict(TypedDict, total=False):
+@dataclass
+class DeploymentResult:
     """
     Standardized structure returned by `BaseDeploymentRunner.run()`.
 
-    Keys:
+    Fields:
         pytorch_model: In-memory model instance loaded from the checkpoint (if requested).
         onnx_path: Filesystem path to the exported ONNX artifact (single file or directory).
         tensorrt_path: Filesystem path to the exported TensorRT engine.
@@ -43,11 +45,15 @@ class DeploymentResultDict(TypedDict, total=False):
         evaluation_results: Arbitrary dictionary produced by `BaseEvaluator.evaluate()`.
     """
 
-    pytorch_model: Optional[Any]
-    onnx_path: Optional[str]
-    tensorrt_path: Optional[str]
-    verification_results: Dict[str, Any]
-    evaluation_results: Dict[str, Any]
+    pytorch_model: Optional[Any] = None
+    onnx_path: Optional[str] = None
+    tensorrt_path: Optional[str] = None
+    verification_results: Dict[str, Any] = field(default_factory=dict)
+    evaluation_results: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a dict view for compatibility/serialization."""
+        return asdict(self)
 
 
 class BaseDeploymentRunner:
@@ -163,7 +169,7 @@ class BaseDeploymentRunner:
     def run(
         self,
         context: Optional[ExportContext] = None,
-    ) -> DeploymentResultDict:
+    ) -> DeploymentResult:
         """
         Execute the complete deployment workflow.
 
@@ -177,35 +183,29 @@ class BaseDeploymentRunner:
                      ExportContext is created.
 
         Returns:
-            DeploymentResultDict: Structured summary of all deployment artifacts and reports.
+            DeploymentResult: Structured summary of all deployment artifacts and reports.
         """
         # Create default context if not provided
         if context is None:
             context = ExportContext()
 
-        results: DeploymentResultDict = {
-            "pytorch_model": None,
-            "onnx_path": None,
-            "tensorrt_path": None,
-            "verification_results": {},
-            "evaluation_results": {},
-        }
+        results = DeploymentResult()
 
         # Phase 1: Export
         export_result = self.export_orchestrator.run(context)
-        results["pytorch_model"] = export_result.pytorch_model
-        results["onnx_path"] = export_result.onnx_path
-        results["tensorrt_path"] = export_result.tensorrt_path
+        results.pytorch_model = export_result.pytorch_model
+        results.onnx_path = export_result.onnx_path
+        results.tensorrt_path = export_result.tensorrt_path
 
         # Phase 2: Verification
         verification_results = self.verification_orchestrator.run(
             artifact_manager=self.artifact_manager,
         )
-        results["verification_results"] = verification_results
+        results.verification_results = verification_results
 
         # Phase 3: Evaluation
         evaluation_results = self.evaluation_orchestrator.run(self.artifact_manager)
-        results["evaluation_results"] = evaluation_results
+        results.evaluation_results = evaluation_results
 
         self.logger.info("\n" + "=" * 80)
         self.logger.info("Deployment Complete!")
