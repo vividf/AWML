@@ -9,17 +9,20 @@ Example usage:
 PyTorch:
     >>> from deployment.pipelines.centerpoint import CenterPointPyTorchPipeline
     >>> pipeline = CenterPointPyTorchPipeline(model, device='cuda')
-    >>> predictions, latency, breakdown = pipeline.infer(points)
+    >>> result = pipeline.infer(points)
+    >>> predictions, latency, breakdown = result.output, result.latency_ms, result.breakdown
 
 ONNX:
     >>> from deployment.pipelines.centerpoint import CenterPointONNXPipeline
     >>> pipeline = CenterPointONNXPipeline(pytorch_model, onnx_dir='models', device='cuda')
-    >>> predictions, latency, breakdown = pipeline.infer(points)
+    >>> result = pipeline.infer(points)
+    >>> predictions, latency, breakdown = result.output, result.latency_ms, result.breakdown
 
 TensorRT:
     >>> from deployment.pipelines.centerpoint import CenterPointTensorRTPipeline
     >>> pipeline = CenterPointTensorRTPipeline(pytorch_model, tensorrt_dir='engines', device='cuda')
-    >>> predictions, latency, breakdown = pipeline.infer(points)
+    >>> result = pipeline.infer(points)
+    >>> predictions, latency, breakdown = result.output, result.latency_ms, result.breakdown
 
 Note:
     All pipelines now use the unified `infer()` interface from the base class.
