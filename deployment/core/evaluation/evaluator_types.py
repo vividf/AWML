@@ -7,8 +7,8 @@ runners, and orchestrators.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, TypedDict
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, Optional, TypedDict
 
 from deployment.core.artifacts import Artifact
 from deployment.core.backend import Backend
@@ -45,6 +45,74 @@ class VerifyResultDict(TypedDict, total=False):
     summary: Dict[str, int]
     samples: Dict[str, bool]
     error: str
+
+
+@dataclass(frozen=True)
+class LatencyStats:
+    """
+    Immutable latency statistics for a batch of inferences.
+
+    Provides a typed alternative to loose dictionaries and a convenient
+    ``to_dict`` helper for interoperability with existing call sites.
+    """
+
+    mean_ms: float
+    std_ms: float
+    min_ms: float
+    max_ms: float
+    median_ms: float
+
+    @classmethod
+    def empty(cls) -> "LatencyStats":
+        """Return a zero-initialized stats object."""
+        return cls(0.0, 0.0, 0.0, 0.0, 0.0)
+
+    def to_dict(self) -> Dict[str, float]:
+        """Convert to a plain dictionary for serialization."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class LatencyBreakdown:
+    """
+    Stage-wise latency statistics keyed by stage name.
+
+    Stored as a mapping of stage -> LatencyStats, with a ``to_dict`` helper
+    to preserve backward compatibility with existing dictionary consumers.
+    """
+
+    stages: Dict[str, LatencyStats]
+
+    @classmethod
+    def empty(cls) -> "LatencyBreakdown":
+        """Return an empty breakdown."""
+        return cls(stages={})
+
+    def to_dict(self) -> Dict[str, Dict[str, float]]:
+        """Convert to ``Dict[str, Dict[str, float]]`` for downstream use."""
+        return {stage: stats.to_dict() for stage, stats in self.stages.items()}
+
+
+@dataclass(frozen=True)
+class InferenceResult:
+    """Standard inference return payload."""
+
+    output: Any
+    latency_ms: float
+    breakdown: Optional[Dict[str, float]] = None
+
+    @classmethod
+    def empty(cls) -> "InferenceResult":
+        """Return an empty inference result."""
+        return cls(output=None, latency_ms=0.0, breakdown={})
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to a plain dictionary for logging/serialization."""
+        return {
+            "output": self.output,
+            "latency_ms": self.latency_ms,
+            "breakdown": dict(self.breakdown or {}),
+        }
 
 
 @dataclass(frozen=True)

@@ -17,25 +17,27 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Type, TypedDict
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, Optional, Type
 
 from mmengine.config import Config
 
 from deployment.core import BaseDataLoader, BaseDeploymentConfig, BaseEvaluator
 from deployment.core.contexts import ExportContext
 from deployment.exporters.common.model_wrappers import BaseModelWrapper
-from deployment.exporters.workflows.base import OnnxExportWorkflow, TensorRTExportWorkflow
+from deployment.exporters.export_pipelines.base import OnnxExportPipeline, TensorRTExportPipeline
 from deployment.runners.common.artifact_manager import ArtifactManager
 from deployment.runners.common.evaluation_orchestrator import EvaluationOrchestrator
 from deployment.runners.common.export_orchestrator import ExportOrchestrator
 from deployment.runners.common.verification_orchestrator import VerificationOrchestrator
 
 
-class DeploymentResultDict(TypedDict, total=False):
+@dataclass
+class DeploymentResult:
     """
     Standardized structure returned by `BaseDeploymentRunner.run()`.
 
-    Keys:
+    Fields:
         pytorch_model: In-memory model instance loaded from the checkpoint (if requested).
         onnx_path: Filesystem path to the exported ONNX artifact (single file or directory).
         tensorrt_path: Filesystem path to the exported TensorRT engine.
@@ -43,16 +45,20 @@ class DeploymentResultDict(TypedDict, total=False):
         evaluation_results: Arbitrary dictionary produced by `BaseEvaluator.evaluate()`.
     """
 
-    pytorch_model: Optional[Any]
-    onnx_path: Optional[str]
-    tensorrt_path: Optional[str]
-    verification_results: Dict[str, Any]
-    evaluation_results: Dict[str, Any]
+    pytorch_model: Optional[Any] = None
+    onnx_path: Optional[str] = None
+    tensorrt_path: Optional[str] = None
+    verification_results: Dict[str, Any] = field(default_factory=dict)
+    evaluation_results: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a dict view for compatibility/serialization."""
+        return asdict(self)
 
 
 class BaseDeploymentRunner:
     """
-    Base deployment runner for common deployment workflows.
+    Base deployment runner for common deployment pipelines.
 
     This runner orchestrates three specialized components:
     1. ExportOrchestrator: Load PyTorch, export ONNX, export TensorRT
@@ -61,7 +67,7 @@ class BaseDeploymentRunner:
 
     Projects should extend this class and override methods as needed:
     - Override load_pytorch_model() for project-specific model loading
-    - Provide project-specific ONNX/TensorRT workflows via constructor
+    - Provide project-specific ONNX/TensorRT export pipelines via constructor
     """
 
     def __init__(
@@ -72,8 +78,8 @@ class BaseDeploymentRunner:
         model_cfg: Config,
         logger: logging.Logger,
         onnx_wrapper_cls: Optional[Type[BaseModelWrapper]] = None,
-        onnx_workflow: Optional[OnnxExportWorkflow] = None,
-        tensorrt_workflow: Optional[TensorRTExportWorkflow] = None,
+        onnx_pipeline: Optional[OnnxExportPipeline] = None,
+        tensorrt_pipeline: Optional[TensorRTExportPipeline] = None,
     ):
         """
         Initialize base deployment runner.
@@ -85,8 +91,8 @@ class BaseDeploymentRunner:
             model_cfg: Model configuration
             logger: Logger instance
             onnx_wrapper_cls: Optional ONNX model wrapper class for exporter creation
-            onnx_workflow: Optional specialized ONNX workflow
-            tensorrt_workflow: Optional specialized TensorRT workflow
+            onnx_pipeline: Optional specialized ONNX export pipeline
+            tensorrt_pipeline: Optional specialized TensorRT export pipeline
         """
         self.data_loader = data_loader
         self.evaluator = evaluator
@@ -94,10 +100,10 @@ class BaseDeploymentRunner:
         self.model_cfg = model_cfg
         self.logger = logger
 
-        # Store workflow references for subclasses to modify
+        # Store pipeline references for subclasses to modify
         self._onnx_wrapper_cls = onnx_wrapper_cls
-        self._onnx_workflow = onnx_workflow
-        self._tensorrt_workflow = tensorrt_workflow
+        self._onnx_pipeline = onnx_pipeline
+        self._tensorrt_pipeline = tensorrt_pipeline
 
         # Initialize artifact manager (shared across orchestrators)
         self.artifact_manager = ArtifactManager(config, logger)
@@ -110,9 +116,9 @@ class BaseDeploymentRunner:
     @property
     def export_orchestrator(self) -> ExportOrchestrator:
         """
-        Get export orchestrator (created lazily to allow subclass workflow setup).
+        Get export orchestrator (created lazily to allow subclass pipeline setup).
 
-        This allows subclasses to set _onnx_workflow and _tensorrt_workflow in __init__
+        This allows subclasses to set _onnx_pipeline and _tensorrt_pipeline in __init__
         before the export orchestrator is created.
         """
         if self._export_orchestrator is None:
@@ -124,8 +130,8 @@ class BaseDeploymentRunner:
                 model_loader=self.load_pytorch_model,
                 evaluator=self.evaluator,
                 onnx_wrapper_cls=self._onnx_wrapper_cls,
-                onnx_workflow=self._onnx_workflow,
-                tensorrt_workflow=self._tensorrt_workflow,
+                onnx_pipeline=self._onnx_pipeline,
+                tensorrt_pipeline=self._tensorrt_pipeline,
             )
         return self._export_orchestrator
 
@@ -163,7 +169,7 @@ class BaseDeploymentRunner:
     def run(
         self,
         context: Optional[ExportContext] = None,
-    ) -> DeploymentResultDict:
+    ) -> DeploymentResult:
         """
         Execute the complete deployment workflow.
 
@@ -177,35 +183,29 @@ class BaseDeploymentRunner:
                      ExportContext is created.
 
         Returns:
-            DeploymentResultDict: Structured summary of all deployment artifacts and reports.
+            DeploymentResult: Structured summary of all deployment artifacts and reports.
         """
         # Create default context if not provided
         if context is None:
             context = ExportContext()
 
-        results: DeploymentResultDict = {
-            "pytorch_model": None,
-            "onnx_path": None,
-            "tensorrt_path": None,
-            "verification_results": {},
-            "evaluation_results": {},
-        }
+        results = DeploymentResult()
 
         # Phase 1: Export
         export_result = self.export_orchestrator.run(context)
-        results["pytorch_model"] = export_result.pytorch_model
-        results["onnx_path"] = export_result.onnx_path
-        results["tensorrt_path"] = export_result.tensorrt_path
+        results.pytorch_model = export_result.pytorch_model
+        results.onnx_path = export_result.onnx_path
+        results.tensorrt_path = export_result.tensorrt_path
 
         # Phase 2: Verification
         verification_results = self.verification_orchestrator.run(
             artifact_manager=self.artifact_manager,
         )
-        results["verification_results"] = verification_results
+        results.verification_results = verification_results
 
         # Phase 3: Evaluation
         evaluation_results = self.evaluation_orchestrator.run(self.artifact_manager)
-        results["evaluation_results"] = evaluation_results
+        results.evaluation_results = evaluation_results
 
         self.logger.info("\n" + "=" * 80)
         self.logger.info("Deployment Complete!")

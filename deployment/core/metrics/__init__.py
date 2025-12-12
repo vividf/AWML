@@ -45,6 +45,8 @@ Usage:
 from deployment.core.metrics.base_metrics_adapter import (
     BaseMetricsAdapter,
     BaseMetricsConfig,
+    ClassificationSummary,
+    DetectionSummary,
 )
 from deployment.core.metrics.classification_metrics import (
     ClassificationMetricsAdapter,
@@ -63,6 +65,8 @@ __all__ = [
     # Base classes
     "BaseMetricsAdapter",
     "BaseMetricsConfig",
+    "ClassificationSummary",
+    "DetectionSummary",
     # 3D Detection
     "Detection3DMetricsAdapter",
     "Detection3DMetricsConfig",

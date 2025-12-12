@@ -36,7 +36,7 @@ from perception_eval.evaluation.result.perception_frame_config import (
 )
 from perception_eval.manager import PerceptionEvaluationManager
 
-from deployment.core.metrics.base_metrics_adapter import BaseMetricsAdapter, BaseMetricsConfig
+from deployment.core.metrics.base_metrics_adapter import BaseMetricsAdapter, BaseMetricsConfig, ClassificationSummary
 
 logger = logging.getLogger(__name__)
 
@@ -348,34 +348,28 @@ class ClassificationMetricsAdapter(BaseMetricsAdapter):
 
         return confusion_matrix
 
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> ClassificationSummary:
         """Get a summary of the evaluation.
 
         Returns:
-            Dictionary with accuracy, precision, recall, f1score, per_class_accuracy,
-            confusion_matrix, num_samples, and detailed_metrics.
+            ClassificationSummary with aggregate metrics.
         """
         metrics = self.compute_metrics()
 
         if not metrics:
-            return {
-                "accuracy": 0.0,
-                "per_class_accuracy": {},
-                "confusion_matrix": [],
-                "num_samples": 0,
-            }
+            return ClassificationSummary()
 
         per_class_accuracy = {
             name: metrics[f"{name}_accuracy"] for name in self.class_names if f"{name}_accuracy" in metrics
         }
 
-        return {
-            "accuracy": metrics.get("accuracy", 0.0),
-            "precision": metrics.get("precision", 0.0),
-            "recall": metrics.get("recall", 0.0),
-            "f1score": metrics.get("f1score", 0.0),
-            "per_class_accuracy": per_class_accuracy,
-            "confusion_matrix": self.get_confusion_matrix().tolist(),
-            "num_samples": self._frame_count,
-            "detailed_metrics": metrics,
-        }
+        return ClassificationSummary(
+            accuracy=metrics.get("accuracy", 0.0),
+            precision=metrics.get("precision", 0.0),
+            recall=metrics.get("recall", 0.0),
+            f1score=metrics.get("f1score", 0.0),
+            per_class_accuracy=per_class_accuracy,
+            confusion_matrix=self.get_confusion_matrix().tolist(),
+            num_samples=self._frame_count,
+            detailed_metrics=metrics,
+        )

@@ -46,7 +46,7 @@ from perception_eval.evaluation.result.perception_frame_config import (
 )
 from perception_eval.manager import PerceptionEvaluationManager
 
-from deployment.core.metrics.base_metrics_adapter import BaseMetricsAdapter, BaseMetricsConfig
+from deployment.core.metrics.base_metrics_adapter import BaseMetricsAdapter, BaseMetricsConfig, DetectionSummary
 
 logger = logging.getLogger(__name__)
 
@@ -451,12 +451,8 @@ class Detection2DMetricsAdapter(BaseMetricsAdapter):
 
         return metric_dict
 
-    def get_summary(self) -> Dict[str, Any]:
-        """Get a summary of the evaluation including mAP and per-class metrics.
-
-        Returns:
-            Dictionary with summary metrics.
-        """
+    def get_summary(self) -> DetectionSummary:
+        """Get a summary of the evaluation including mAP and per-class metrics."""
         metrics = self.compute_metrics()
 
         # Extract primary metrics (first mAP value found)
@@ -474,9 +470,9 @@ class Detection2DMetricsAdapter(BaseMetricsAdapter):
                     if class_name not in per_class_ap:
                         per_class_ap[class_name] = value
 
-        return {
-            "mAP": primary_map or 0.0,
-            "per_class_ap": per_class_ap,
-            "num_frames": self._frame_count,
-            "detailed_metrics": metrics,
-        }
+        return DetectionSummary(
+            mAP=primary_map or 0.0,
+            per_class_ap=per_class_ap,
+            num_frames=self._frame_count,
+            detailed_metrics=metrics,
+        )
