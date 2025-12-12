@@ -421,16 +421,16 @@ class VerificationMixin:
 
         ref_name = f"{ref_backend.value} ({ref_device})"
         logger.info(f"\nRunning {ref_name} reference...")
-        ref_output, ref_latency, _ = ref_pipeline.infer(input_data, metadata, return_raw_outputs=True)
-        logger.info(f"  {ref_name} latency: {ref_latency:.2f} ms")
+        ref_result = ref_pipeline.infer(input_data, metadata, return_raw_outputs=True)
+        logger.info(f"  {ref_name} latency: {ref_result.latency_ms:.2f} ms")
 
         test_input = self._move_input_to_device(input_data, test_device)
         test_name = f"{test_backend.value} ({test_device})"
         logger.info(f"\nRunning {test_name} test...")
-        test_output, test_latency, _ = test_pipeline.infer(test_input, metadata, return_raw_outputs=True)
-        logger.info(f"  {test_name} latency: {test_latency:.2f} ms")
+        test_result = test_pipeline.infer(test_input, metadata, return_raw_outputs=True)
+        logger.info(f"  {test_name} latency: {test_result.latency_ms:.2f} ms")
 
-        passed, _ = self._compare_backend_outputs(ref_output, test_output, tolerance, test_name, logger)
+        passed, _ = self._compare_backend_outputs(ref_result.output, test_result.output, tolerance, test_name, logger)
         return passed
 
     def _move_input_to_device(self, input_data: Any, device: str) -> Any:

@@ -15,13 +15,20 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import numpy as np
 import torch
 
 from deployment.core.backend import Backend
-from deployment.core.evaluation.evaluator_types import EvalResultDict, ModelSpec, VerifyResultDict
+from deployment.core.evaluation.evaluator_types import (
+    EvalResultDict,
+    InferenceResult,
+    LatencyBreakdown,
+    LatencyStats,
+    ModelSpec,
+    VerifyResultDict,
+)
 from deployment.core.evaluation.verification_mixin import VerificationMixin
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.core.metrics import BaseMetricsAdapter
@@ -31,6 +38,9 @@ __all__ = [
     "EvalResultDict",
     "VerifyResultDict",
     "ModelSpec",
+    "InferenceResult",
+    "LatencyStats",
+    "LatencyBreakdown",
     "TaskProfile",
     "BaseEvaluator",
     "EvaluationDefaults",
@@ -249,12 +259,12 @@ class BaseEvaluator(VerificationMixin, ABC):
             gt_data = data_loader.get_ground_truth(idx)
             ground_truths = self._parse_ground_truths(gt_data)
 
-            raw_output, latency, breakdown = pipeline.infer(input_data, **infer_kwargs)
-            latencies.append(latency)
-            if breakdown:
-                latency_breakdowns.append(breakdown)
+            infer_result = pipeline.infer(input_data, **infer_kwargs)
+            latencies.append(infer_result.latency_ms)
+            if infer_result.breakdown:
+                latency_breakdowns.append(infer_result.breakdown)
 
-            predictions = self._parse_predictions(raw_output)
+            predictions = self._parse_predictions(infer_result.output)
             self._add_to_adapter(predictions, ground_truths)
 
             if model.backend is Backend.TENSORRT and idx % EVALUATION_DEFAULTS.GPU_CLEANUP_INTERVAL == 0:
@@ -271,41 +281,44 @@ class BaseEvaluator(VerificationMixin, ABC):
 
     # ================== Utilities ==================
 
-    def compute_latency_stats(self, latencies: List[float]) -> Dict[str, float]:
+    def compute_latency_stats(self, latencies: List[float]) -> LatencyStats:
         """Compute latency statistics from a list of measurements."""
         if not latencies:
-            return {"mean_ms": 0.0, "std_ms": 0.0, "min_ms": 0.0, "max_ms": 0.0, "median_ms": 0.0}
+            return LatencyStats.empty()
 
         arr = np.array(latencies)
-        return {
-            "mean_ms": float(np.mean(arr)),
-            "std_ms": float(np.std(arr)),
-            "min_ms": float(np.min(arr)),
-            "max_ms": float(np.max(arr)),
-            "median_ms": float(np.median(arr)),
-        }
+        return LatencyStats(
+            mean_ms=float(np.mean(arr)),
+            std_ms=float(np.std(arr)),
+            min_ms=float(np.min(arr)),
+            max_ms=float(np.max(arr)),
+            median_ms=float(np.median(arr)),
+        )
 
     def _compute_latency_breakdown(
         self,
         latency_breakdowns: List[Dict[str, float]],
-    ) -> Dict[str, Dict[str, float]]:
+    ) -> LatencyBreakdown:
         """Compute statistics for each latency stage."""
         if not latency_breakdowns:
-            return {}
+            return LatencyBreakdown.empty()
 
         all_stages = set()
         for breakdown in latency_breakdowns:
             all_stages.update(breakdown.keys())
 
-        return {
-            stage: self.compute_latency_stats([bd.get(stage, 0.0) for bd in latency_breakdowns if stage in bd])
-            for stage in sorted(all_stages)
-        }
+        return LatencyBreakdown(
+            stages={
+                stage: self.compute_latency_stats([bd[stage] for bd in latency_breakdowns if stage in bd])
+                for stage in stage_order
+            }
+        )
 
-    def format_latency_stats(self, stats: Mapping[str, float]) -> str:
+    def format_latency_stats(self, stats: Union[Mapping[str, float], LatencyStats]) -> str:
         """Format latency statistics as a readable string."""
+        stats_dict = stats.to_dict() if isinstance(stats, LatencyStats) else stats
         return (
-            f"Latency: {stats['mean_ms']:.2f} ± {stats['std_ms']:.2f} ms "
-            f"(min: {stats['min_ms']:.2f}, max: {stats['max_ms']:.2f}, "
-            f"median: {stats['median_ms']:.2f})"
+            f"Latency: {stats_dict['mean_ms']:.2f} ± {stats_dict['std_ms']:.2f} ms "
+            f"(min: {stats_dict['min_ms']:.2f}, max: {stats_dict['max_ms']:.2f}, "
+            f"median: {stats_dict['median_ms']:.2f})"
         )

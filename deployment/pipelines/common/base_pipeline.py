@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
+from deployment.core.evaluation.evaluator_types import InferenceResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -120,7 +122,7 @@ class BaseDeploymentPipeline(ABC):
 
     def infer(
         self, input_data: Any, metadata: Optional[Dict] = None, return_raw_outputs: bool = False, **kwargs
-    ) -> Tuple[Any, float, Dict[str, float]]:
+    ) -> InferenceResult:
         """
         Complete inference pipeline.
 
@@ -140,12 +142,11 @@ class BaseDeploymentPipeline(ABC):
             **kwargs: Additional arguments passed to preprocess()
 
         Returns:
-            Tuple of (outputs, latency_ms, latency_breakdown)
-            - outputs: If return_raw_outputs=True: raw_model_output
-                      If return_raw_outputs=False: final_predictions
-            - latency_ms: Total inference latency in milliseconds
-            - latency_breakdown: Dictionary with stage-wise latencies (may be empty)
-                                Keys: 'preprocessing_ms', 'model_ms', 'postprocessing_ms'
+            InferenceResult containing:
+            - output: raw model output (return_raw_outputs=True) or final predictions
+            - latency_ms: total inference latency in milliseconds
+            - breakdown: stage-wise latencies (may be empty) with keys such as
+              preprocessing_ms, model_ms, postprocessing_ms
         """
         if metadata is None:
             metadata = {}
@@ -198,7 +199,7 @@ class BaseDeploymentPipeline(ABC):
 
             # Postprocess (optional)
             if return_raw_outputs:
-                return model_output, total_latency, latency_breakdown
+                return InferenceResult(output=model_output, latency_ms=total_latency, breakdown=latency_breakdown)
             else:
                 postprocess_start = time.perf_counter()
                 predictions = self.postprocess(model_output, merged_metadata)
@@ -206,7 +207,7 @@ class BaseDeploymentPipeline(ABC):
                 latency_breakdown["postprocessing_ms"] = (postprocess_time - postprocess_start) * 1000
 
                 total_latency = (time.perf_counter() - start_time) * 1000
-                return predictions, total_latency, latency_breakdown
+                return InferenceResult(output=predictions, latency_ms=total_latency, breakdown=latency_breakdown)
 
         except Exception:
             logger.exception("Inference failed.")

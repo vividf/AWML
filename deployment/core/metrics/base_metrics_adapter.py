@@ -30,6 +30,55 @@ class BaseMetricsConfig:
     frame_id: str = "base_link"
 
 
+@dataclass(frozen=True)
+class ClassificationSummary:
+    """Structured summary for classification metrics."""
+
+    accuracy: float = 0.0
+    precision: float = 0.0
+    recall: float = 0.0
+    f1score: float = 0.0
+    per_class_accuracy: Dict[str, float] = field(default_factory=dict)
+    confusion_matrix: List[List[int]] = field(default_factory=list)
+    num_samples: int = 0
+    detailed_metrics: Dict[str, float] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to a serializable dictionary."""
+        return {
+            "accuracy": self.accuracy,
+            "precision": self.precision,
+            "recall": self.recall,
+            "f1score": self.f1score,
+            "per_class_accuracy": dict(self.per_class_accuracy),
+            "confusion_matrix": [list(row) for row in self.confusion_matrix],
+            "num_samples": self.num_samples,
+            "detailed_metrics": dict(self.detailed_metrics),
+        }
+
+
+@dataclass(frozen=True)
+class DetectionSummary:
+    """Structured summary for detection metrics (2D/3D)."""
+
+    mAP: float = 0.0
+    per_class_ap: Dict[str, float] = field(default_factory=dict)
+    num_frames: int = 0
+    detailed_metrics: Dict[str, float] = field(default_factory=dict)
+    mAPH: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            "mAP": self.mAP,
+            "per_class_ap": dict(self.per_class_ap),
+            "num_frames": self.num_frames,
+            "detailed_metrics": dict(self.detailed_metrics),
+        }
+        if self.mAPH is not None:
+            data["mAPH"] = self.mAPH
+        return data
+
+
 class BaseMetricsAdapter(ABC):
     """
     Abstract base class for all task-specific metrics adapters.
@@ -98,7 +147,7 @@ class BaseMetricsAdapter(ABC):
         pass
 
     @abstractmethod
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> Any:
         """
         Get a summary of the evaluation including primary metrics.
 
