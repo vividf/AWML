@@ -147,21 +147,23 @@ class CenterPointEvaluator(BaseEvaluator):
         """Build CenterPoint evaluation results."""
         # Compute latency statistics
         latency_stats = self.compute_latency_stats(latencies)
+        latency_payload = latency_stats.to_dict()
 
         # Add stage-wise breakdown if available
         if latency_breakdowns:
-            latency_stats["latency_breakdown"] = self._compute_latency_breakdown(latency_breakdowns)
+            latency_payload["latency_breakdown"] = self._compute_latency_breakdown(latency_breakdowns).to_dict()
 
         # Get metrics from adapter
         map_results = self.metrics_adapter.compute_metrics()
         summary = self.metrics_adapter.get_summary()
+        summary_dict = summary.to_dict() if hasattr(summary, "to_dict") else summary
 
         return {
-            "mAP": summary.get("mAP", 0.0),
-            "mAPH": summary.get("mAPH", 0.0),
-            "per_class_ap": summary.get("per_class_ap", {}),
+            "mAP": summary_dict.get("mAP", 0.0),
+            "mAPH": summary_dict.get("mAPH", 0.0),
+            "per_class_ap": summary_dict.get("per_class_ap", {}),
             "detailed_metrics": map_results,
-            "latency": latency_stats,
+            "latency": latency_payload,
             "num_samples": num_samples,
         }
 

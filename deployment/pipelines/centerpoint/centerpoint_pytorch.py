@@ -6,7 +6,7 @@ providing a baseline for comparison with optimized backends.
 """
 
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import torch
 
@@ -34,7 +34,7 @@ class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
         super().__init__(pytorch_model, device, backend_type="pytorch")
         logger.info("PyTorch pipeline initialized (ONNX-compatible staged inference)")
 
-    def infer(self, points: torch.Tensor, sample_meta: Dict = None, return_raw_outputs: bool = False) -> Tuple:
+    def infer(self, points: torch.Tensor, sample_meta: Dict = None, return_raw_outputs: bool = False):
         """
         Complete inference pipeline.
 
