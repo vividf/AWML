@@ -1,11 +1,10 @@
-# Copyright (c) OpenMMLab. All rights reserved.
 """Module replacement functions for quantization."""
 
 from typing import Optional, Set, Type
 
 import torch.nn as nn
 
-from .modules import QuantConv2d, QuantConvTranspose2d, QuantLinear
+from .modules import QuantAdd, QuantConv2d, QuantConvTranspose2d, QuantLinear
 
 # Flag to track if quantization descriptors have been initialized
 _quant_descriptors_initialized = False
@@ -168,6 +167,7 @@ def quant_model(
     quant_neck: bool = True,
     quant_head: bool = True,
     quant_voxel_encoder: bool = True,
+    quant_add: bool = False,
     skip_names: Optional[Set[str]] = None,
 ):
     """
@@ -187,6 +187,8 @@ def quant_model(
     Example:
         >>> model = CenterPoint(...)
         >>> quant_model(model, skip_names={'pts_backbone.blocks.0'})
+        >>> # If you also want to attach QuantAdd to residual blocks:
+        >>> quant_model(model, quant_add=True)
     """
     skip_names = skip_names or set()
 
@@ -201,3 +203,30 @@ def quant_model(
 
     if quant_voxel_encoder and hasattr(model, "pts_voxel_encoder"):
         quant_linear_module(model.pts_voxel_encoder, skip_names, "pts_voxel_encoder")
+
+    if quant_add:
+        attach_quant_add(model)
+
+
+def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = None):
+    """
+    Attach QuantAdd to modules that perform residual add.
+
+    This mirrors CUDA-CenterPoint behavior: it injects a shared-input quantizer
+    before elementwise add to align scales. Because many upstream blocks
+    implement add inside `forward`, we attach a `quant_add` attribute to the
+    target modules; custom blocks can call `self.quant_add(x, y)` in forward.
+
+    Args:
+        model: CenterPoint model
+        target_class_names: Optional set of class name strings to match
+                            (e.g., {"SparseBasicBlock", "BasicBlock"}). If None,
+                            will match class names containing "BasicBlock".
+    """
+    target_class_names = target_class_names or {"BasicBlock", "SparseBasicBlock"}
+
+    for module in model.modules():
+        cls_name = module.__class__.__name__
+        if cls_name in target_class_names or any(name in cls_name for name in target_class_names):
+            if not hasattr(module, "quant_add"):
+                module.quant_add = QuantAdd()

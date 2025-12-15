@@ -67,12 +67,6 @@ def parse_args():
         help="Number of batches for calibration (default: 100)",
     )
     ptq_parser.add_argument(
-        "--amax-method",
-        default="mse",
-        choices=["mse", "entropy", "percentile", "max"],
-        help="Method for computing amax (default: mse)",
-    )
-    ptq_parser.add_argument(
         "--no-fuse-bn",
         action="store_true",
         help="Skip BatchNorm fusion (default: fuse BN)",
@@ -190,7 +184,7 @@ def run_ptq(args):
     print(f"Config: {args.config}")
     print(f"Checkpoint: {args.checkpoint}")
     print(f"Calibration batches: {args.calibrate_batches}")
-    print(f"Amax method: {args.amax_method}")
+    print("Amax method: mse")
     print(f"Fuse BN: {not args.no_fuse_bn}")
     print(f"Output: {args.output}")
     print("=" * 80)
@@ -215,6 +209,7 @@ def run_ptq(args):
 
     # Build dataloader
     print("\n[4/5] Building calibration dataloader...")
+    # dataloader = Runner.build_dataloader(cfg.val_dataloader)
     dataloader = Runner.build_dataloader(cfg.val_dataloader)
 
     # Calibrate
@@ -223,7 +218,7 @@ def run_ptq(args):
     calibrator.calibrate(
         dataloader,
         num_batches=args.calibrate_batches,
-        method=args.amax_method,
+        method="mse",  # fixed to mse to match CUDA-CenterPoint behavior
     )
 
     # Disable skipped layers

@@ -23,6 +23,11 @@ def _check_pytorch_quantization():
         )
 
 
+# Backward-compatible alias expected by some modules (e.g., deploy/export paths)
+def check_pytorch_quantization():
+    return _check_pytorch_quantization()
+
+
 class disable_quantization:
     """
     Context manager / callable to disable quantization for specific modules.
