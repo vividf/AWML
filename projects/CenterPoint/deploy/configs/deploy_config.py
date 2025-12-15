@@ -49,7 +49,7 @@ export = dict(
 # ============================================================================
 runtime_io = dict(
     # Path to info.pkl file
-    info_file="data/t4dataset/info/t4dataset_j6gen2_infos_val.pkl",
+    info_file="data/t4dataset/info/t4dataset_j6gen2_base_infos_test.pkl",
     # Sample index for export (use first sample)
     sample_idx=1,
 )
@@ -118,7 +118,7 @@ backend_config = dict(
     common_config=dict(
         # Precision policy for TensorRT
         # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
-        precision_policy="fp32_tf32",
+        precision_policy="fp16",
         # TensorRT workspace size (bytes)
         max_workspace_size=2 << 30,  # 2 GB
     ),

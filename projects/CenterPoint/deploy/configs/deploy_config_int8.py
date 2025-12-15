@@ -52,7 +52,7 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="both",  # Export ONNX -> TensorRT
+    mode="none",  # Export ONNX -> TensorRT
     work_dir="work_dirs/centerpoint_int8_deployment",
     onnx_path=None,
 )
@@ -61,7 +61,7 @@ export = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    info_file="data/t4dataset/info/t4dataset_j6gen2_infos_val.pkl",
+    info_file="data/t4dataset/info/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=1,
 )
 
@@ -116,7 +116,7 @@ backend_config = dict(
     common_config=dict(
         # Use INT8 precision for quantized model
         # TensorRT will use Q/DQ nodes in ONNX to determine INT8 layers
-        precision_policy="int8",
+        precision_policy="strongly_typed",
         max_workspace_size=4 << 30,  # 4 GB for INT8 calibration
     ),
     model_inputs=[
