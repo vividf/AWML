@@ -42,11 +42,11 @@ eval_class_range = {
 # user setting
 data_root = "data/t4dataset/"
 info_directory_path = "info/"
-train_gpu_size = 4
+train_gpu_size = 1
 train_batch_size = 16
 test_batch_size = 2
 num_workers = 32
-val_interval = 1
+val_interval = 5
 max_epochs = 30
 work_dir = "work_dirs/centerpoint/" + _base_.dataset_type + "/second_secfpn_4xb16_121m_j6gen2_base_t4metricv2/"
 
@@ -263,136 +263,207 @@ test_evaluator = dict(
     write_metric_summary=True,
 )
 
+# model = dict(
+#     data_preprocessor=dict(
+#         type="Det3DDataPreprocessor",
+#         voxel=True,
+#         voxel_layer=dict(
+#             max_num_points=32,
+#             voxel_size=voxel_size,
+#             point_cloud_range=point_cloud_range,
+#             max_voxels=(64000, 64000),
+#             deterministic=True,
+#         ),
+#     ),
+#     pts_voxel_encoder=dict(
+#         type="PillarFeatureNet",
+#         in_channels=5,
+#         feat_channels=[32, 32],
+#         with_distance=False,
+#         with_cluster_center=True,
+#         with_voxel_center=True,
+#         point_cloud_range=point_cloud_range,
+#         voxel_size=voxel_size,
+#         norm_cfg=dict(type="BN1d", eps=1e-3, momentum=0.01),
+#         legacy=False,
+#     ),
+#     pts_middle_encoder=dict(type="PointPillarsScatter", in_channels=32, output_shape=(grid_size[0], grid_size[1])),
+#     pts_backbone=dict(
+#         type="SECOND",
+#         in_channels=32,
+#         out_channels=[64, 128, 256],
+#         layer_nums=[3, 5, 5],
+#         layer_strides=[1, 2, 2],
+#         norm_cfg=dict(type="BN", eps=1e-3, momentum=0.01),
+#         conv_cfg=dict(type="Conv2d", bias=False),
+#     ),
+#     pts_neck=dict(
+#         type="SECONDFPN",
+#         in_channels=[64, 128, 256],
+#         out_channels=[128, 128, 128],
+#         upsample_strides=[1, 2, 4],
+#         norm_cfg=dict(type="BN", eps=0.001, momentum=0.01),
+#         upsample_cfg=dict(type="deconv", bias=False),
+#         use_conv_for_no_stride=True,
+#     ),
+#     pts_bbox_head=dict(
+#         type="CenterHead",
+#         in_channels=sum([128, 128, 128]),
+#         tasks=[
+#             dict(num_class=5, class_names=["car", "truck", "bus", "bicycle", "pedestrian"]),
+#         ],
+#         bbox_coder=dict(
+#             voxel_size=voxel_size,
+#             pc_range=point_cloud_range,
+#             # No filter by range
+#             post_center_range=[-200.0, -200.0, -10.0, 200.0, 200.0, 10.0],
+#             out_size_factor=out_size_factor,
+#         ),
+#         # sigmoid(-9.2103) = 0.0001 for initial small values
+#         # separate_head=dict(type="CustomSeparateHead", init_bias=-9.2103, final_kernel=1),
+#         separate_head=dict(type="CustomSeparateHead", init_bias=-4.595, final_kernel=1),
+#         # loss_cls=dict(type="mmdet.GaussianFocalLoss", reduction="none", loss_weight=1.0),
+#         loss_cls=dict(type="mmdet.AmpGaussianFocalLoss", reduction="none", loss_weight=1.0),
+#         loss_bbox=dict(type="mmdet.L1Loss", reduction="mean", loss_weight=0.25),
+#         norm_bbox=True,
+#     ),
+#     train_cfg=dict(
+#         pts=dict(
+#             grid_size=grid_size,
+#             voxel_size=voxel_size,
+#             point_cloud_range=point_cloud_range,
+#             out_size_factor=out_size_factor,
+#         ),
+#     ),
+#     test_cfg=dict(
+#         pts=dict(
+#             grid_size=grid_size,
+#             out_size_factor=out_size_factor,
+#             pc_range=point_cloud_range,
+#             voxel_size=voxel_size,
+#             # No filter by range
+#             post_center_limit_range=[-200.0, -200.0, -10.0, 200.0, 200.0, 10.0],
+#         ),
+#     ),
+# )
+
+# Align voxel size with grid_size/sparse_shape (≈1024 in XY)
+voxel_size = [0.24, 0.24, 0.2]
 model = dict(
+    type="CenterPoint",
     data_preprocessor=dict(
         type="Det3DDataPreprocessor",
         voxel=True,
         voxel_layer=dict(
-            max_num_points=32,
+            max_num_points=10,
             voxel_size=voxel_size,
             point_cloud_range=point_cloud_range,
-            max_voxels=(64000, 64000),
+            max_voxels=(90000, 120000),
             deterministic=True,
         ),
     ),
-    pts_voxel_encoder=dict(
-        type="PillarFeatureNet",
+    pts_voxel_encoder=dict(_delete_=True, type="HardSimpleVFE", num_features=5),
+    pts_middle_encoder=dict(
+        _delete_=True,
+        type="SparseEncoder",
         in_channels=5,
-        feat_channels=[32, 32],
-        with_distance=False,
-        with_cluster_center=True,
-        with_voxel_center=True,
-        point_cloud_range=point_cloud_range,
-        voxel_size=voxel_size,
-        norm_cfg=dict(type="BN1d", eps=1e-3, momentum=0.01),
-        legacy=False,
+        sparse_shape=[41, 1024, 1024],
+        output_channels=128,
+        order=("conv", "norm", "act"),
+        encoder_channels=((16, 16, 32), (32, 32, 64), (64, 64, 128), (128, 128)),
+        encoder_paddings=((0, 0, 1), (0, 0, 1), (0, 0, [0, 1, 1]), (0, 0)),
+        block_type="basicblock",
     ),
-    pts_middle_encoder=dict(type="PointPillarsScatter", in_channels=32, output_shape=(grid_size[0], grid_size[1])),
     pts_backbone=dict(
         type="SECOND",
-        in_channels=32,
-        out_channels=[64, 128, 256],
-        layer_nums=[3, 5, 5],
-        layer_strides=[1, 2, 2],
+        in_channels=256,
+        out_channels=[128, 256],
+        layer_nums=[5, 5],
+        layer_strides=[1, 2],
         norm_cfg=dict(type="BN", eps=1e-3, momentum=0.01),
         conv_cfg=dict(type="Conv2d", bias=False),
     ),
     pts_neck=dict(
         type="SECONDFPN",
-        in_channels=[64, 128, 256],
-        out_channels=[128, 128, 128],
-        upsample_strides=[1, 2, 4],
-        norm_cfg=dict(type="BN", eps=0.001, momentum=0.01),
+        in_channels=[128, 256],
+        out_channels=[256, 256],
+        upsample_strides=[1, 2],
+        norm_cfg=dict(type="BN", eps=1e-3, momentum=0.01),
         upsample_cfg=dict(type="deconv", bias=False),
         use_conv_for_no_stride=True,
     ),
     pts_bbox_head=dict(
         type="CenterHead",
-        in_channels=sum([128, 128, 128]),
+        in_channels=sum([256, 256]),
         tasks=[
-            dict(num_class=5, class_names=["car", "truck", "bus", "bicycle", "pedestrian"]),
+            dict(num_class=1, class_names=["car"]),
+            dict(num_class=2, class_names=["truck", "construction_vehicle"]),
+            dict(num_class=2, class_names=["bus", "trailer"]),
+            dict(num_class=1, class_names=["barrier"]),
+            dict(num_class=2, class_names=["motorcycle", "bicycle"]),
+            dict(num_class=2, class_names=["pedestrian", "traffic_cone"]),
         ],
+        common_heads=dict(reg=(2, 2), height=(1, 2), dim=(3, 2), rot=(2, 2), vel=(2, 2)),
+        share_conv_channel=64,
         bbox_coder=dict(
-            voxel_size=voxel_size,
+            type="CenterPointBBoxCoder",
             pc_range=point_cloud_range,
-            # No filter by range
-            post_center_range=[-200.0, -200.0, -10.0, 200.0, 200.0, 10.0],
-            out_size_factor=out_size_factor,
+            post_center_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
+            max_num=500,
+            score_threshold=0.1,
+            out_size_factor=8,
+            voxel_size=voxel_size[:2],
+            code_size=9,
         ),
-        # sigmoid(-9.2103) = 0.0001 for initial small values
-        # separate_head=dict(type="CustomSeparateHead", init_bias=-9.2103, final_kernel=1),
-        separate_head=dict(type="CustomSeparateHead", init_bias=-4.595, final_kernel=1),
-        # loss_cls=dict(type="mmdet.GaussianFocalLoss", reduction="none", loss_weight=1.0),
-        loss_cls=dict(type="mmdet.AmpGaussianFocalLoss", reduction="none", loss_weight=1.0),
+        separate_head=dict(type="SeparateHead", init_bias=-2.19, final_kernel=3),
+        loss_cls=dict(type="mmdet.GaussianFocalLoss", reduction="mean"),
         loss_bbox=dict(type="mmdet.L1Loss", reduction="mean", loss_weight=0.25),
         norm_bbox=True,
     ),
+    # model training and testing settings
     train_cfg=dict(
         pts=dict(
-            grid_size=grid_size,
+            grid_size=[1024, 1024, 40],
             voxel_size=voxel_size,
             point_cloud_range=point_cloud_range,
-            out_size_factor=out_size_factor,
-        ),
+            out_size_factor=8,
+            dense_reg=1,
+            gaussian_overlap=0.1,
+            max_objs=500,
+            min_radius=2,
+            code_weights=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2],
+        )
     ),
     test_cfg=dict(
         pts=dict(
-            grid_size=grid_size,
-            out_size_factor=out_size_factor,
-            pc_range=point_cloud_range,
-            voxel_size=voxel_size,
-            # No filter by range
-            post_center_limit_range=[-200.0, -200.0, -10.0, 200.0, 200.0, 10.0],
-        ),
+            post_center_limit_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
+            max_per_img=500,
+            max_pool_nms=False,
+            min_radius=[4, 12, 10, 1, 0.85, 0.175],
+            score_threshold=0.1,
+            out_size_factor=8,
+            voxel_size=voxel_size[:2],
+            nms_type="rotate",
+            pre_max_size=1000,
+            post_max_size=83,
+            nms_thr=0.2,
+        )
     ),
 )
 
 randomness = dict(seed=0, diff_rank_seed=False, deterministic=True)
 
 lr = 3e-4
+# 簡化參數 scheduler，避免 max_epochs 太小時 begin/end 反轉
 param_scheduler = [
-    # learning rate scheduler
-    # During the first (max_epochs * 0.3) epochs, learning rate increases from 0 to lr * 10
-    # during the next epochs, learning rate decreases from lr * 10 to
-    # lr * 1e-4
     dict(
         type="CosineAnnealingLR",
-        T_max=8,
-        eta_min=lr * 10,
-        begin=0,
-        end=8,
-        by_epoch=True,
-        convert_to_iter_based=True,
-    ),
-    dict(
-        type="CosineAnnealingLR",
-        T_max=22,
+        T_max=max_epochs,
         eta_min=lr * 1e-4,
-        begin=8,
-        end=max_epochs,
-        by_epoch=True,
-        convert_to_iter_based=True,
-    ),
-    # momentum scheduler
-    # During the first (0.3 * max_epochs) epochs, momentum increases from 0 to 0.85 / 0.95
-    # during the next epochs, momentum increases from 0.85 / 0.95 to 1
-    dict(
-        type="CosineAnnealingMomentum",
-        T_max=8,
-        eta_min=0.85 / 0.95,
         begin=0,
-        end=8,
-        by_epoch=True,
-        convert_to_iter_based=True,
-    ),
-    dict(
-        type="CosineAnnealingMomentum",
-        T_max=22,
-        eta_min=1,
-        begin=8,
         end=max_epochs,
         by_epoch=True,
-        convert_to_iter_based=True,
+        convert_to_iter_based=False,
     ),
 ]
 
@@ -442,7 +513,7 @@ if train_gpu_size > 1:
 #         artifact_suffix=(),
 #     ),
 # ]
-visualizer = dict(type="Det3DLocalVisualizer", vis_backends=vis_backends, name="visualizer")
+# visualizer = dict(type="Det3DLocalVisualizer", vis_backends=vis_backends, name="visualizer")
 
 logger_interval = 50
 default_hooks = dict(
@@ -457,5 +528,5 @@ custom_hooks = [
     dict(type="LossScaleInfoHook"),
 ]
 
-# Update the load_from path accordingly
-load_from = "<best_checkpoint>"
+# Update the load_from path accordingly; set None to disable pretrained loading
+load_from = None
