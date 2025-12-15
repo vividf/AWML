@@ -96,18 +96,9 @@ TASK_PIPELINE_CONFIGS: Mapping[str, Mapping[str, Any]] = {
 VALID_TASK_TYPES = list(TASK_PIPELINE_CONFIGS.keys())
 
 
-def _build_pipeline(task_type: str, pipeline_cfg: List[TransformConfig]) -> Any:
-    """Build pipeline for a given task_type using registered builders."""
-    try:
-        task_cfg = TASK_PIPELINE_CONFIGS[task_type]
-    except KeyError:
-        raise ValueError(f"Unknown task_type '{task_type}'. " f"Must be one of {VALID_TASK_TYPES}")
-    return ComposeBuilder.build(pipeline_cfg=pipeline_cfg, **task_cfg)
-
-
 def build_preprocessing_pipeline(
     model_cfg: Config,
-    task_type: Optional[str] = None,
+    task_type: str = "detection3d",
 ) -> Any:
     """
     Build preprocessing pipeline from model config.
@@ -137,65 +128,18 @@ def build_preprocessing_pipeline(
         >>> results = pipeline({'img_path': 'image.jpg'})
     """
     pipeline_cfg = _extract_pipeline_config(model_cfg)
-    task_type = _resolve_task_type(model_cfg, task_type)
-
-    logger.info("Building preprocessing pipeline with task_type: %s", task_type)
-    return _build_pipeline(task_type, pipeline_cfg)
-
-
-def _resolve_task_type(model_cfg: Config, task_type: Optional[str] = None) -> str:
-    """
-    Resolve task type from various sources.
-
-    Args:
-        model_cfg: Model configuration
-        task_type: Explicit task type (highest priority)
-
-    Returns:
-        Resolved task type string
-
-    Raises:
-        ValueError: If task_type cannot be resolved
-    """
-    if task_type is not None:
-        _validate_task_type(task_type)
-        return task_type
-
-    if "task_type" in model_cfg:
-        task_type = model_cfg.task_type
-        _validate_task_type(task_type)
-        return task_type
-
-    deploy_section = model_cfg.get("deploy", {})
-    if isinstance(deploy_section, dict) and "task_type" in deploy_section:
-        task_type = deploy_section["task_type"]
-        _validate_task_type(task_type)
-        return task_type
-
-    raise ValueError(
-        "task_type must be specified either via the build_preprocessing_pipeline argument "
-        "or by setting 'task_type' in the deploy config (deploy_config.py) or "
-        "model config (model_cfg.task_type or model_cfg.deploy.task_type). "
-        "Recommended: add 'task_type = \"detection3d\"' (or appropriate type) to deploy_config.py. "
-        "Automatic inference has been removed."
-    )
-
-
-def _validate_task_type(task_type: str) -> None:
-    """
-    Validate task type.
-
-    Args:
-        task_type: Task type to validate
-
-    Raises:
-        ValueError: If task_type is invalid
-    """
     if task_type not in VALID_TASK_TYPES:
         raise ValueError(
             f"Invalid task_type '{task_type}'. Must be one of {VALID_TASK_TYPES}. "
             f"Please specify a supported task type in the deploy config or function argument."
         )
+
+    logger.info("Building preprocessing pipeline with task_type: %s", task_type)
+    try:
+        task_cfg = TASK_PIPELINE_CONFIGS[task_type]
+    except KeyError:
+        raise ValueError(f"Unknown task_type '{task_type}'. " f"Must be one of {VALID_TASK_TYPES}")
+    return ComposeBuilder.build(pipeline_cfg=pipeline_cfg, **task_cfg)
 
 
 def _extract_pipeline_config(model_cfg: Config) -> List[TransformConfig]:
