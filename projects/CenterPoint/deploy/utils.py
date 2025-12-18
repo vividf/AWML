@@ -138,7 +138,24 @@ def _load_quantized_checkpoint(
     # 2. Insert Q/DQ nodes
     logger.info("Inserting Q/DQ nodes...")
     skip_layers = set(quantization.get("sensitive_layers", []))
-    quant_model(model, skip_names=skip_layers)
+
+    # Optional helpers to skip quantizing early backbone stages.
+    # These expand to module prefixes like 'pts_backbone.blocks.<idx>'.
+    skip_first = int(quantization.get("skip_backbone_first_stages", 0) or 0)
+    if skip_first > 0:
+        for i in range(skip_first):
+            skip_layers.add(f"pts_backbone.blocks.{i}")
+    for i in quantization.get("skip_backbone_stages", []) or []:
+        skip_layers.add(f"pts_backbone.blocks.{int(i)}")
+
+    quant_model(
+        model,
+        quant_backbone=bool(quantization.get("quant_backbone", True)),
+        quant_neck=bool(quantization.get("quant_neck", True)),
+        quant_head=bool(quantization.get("quant_head", True)),
+        quant_voxel_encoder=bool(quantization.get("quant_voxel_encoder", True)),
+        skip_names=skip_layers,
+    )
 
     # 3. Load the quantized checkpoint
     logger.info(f"Loading quantized checkpoint from {checkpoint_path}...")

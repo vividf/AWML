@@ -442,7 +442,7 @@ if train_gpu_size > 1:
 #         artifact_suffix=(),
 #     ),
 # ]
-visualizer = dict(type="Det3DLocalVisualizer", vis_backends=vis_backends, name="visualizer")
+# visualizer = dict(type="Det3DLocalVisualizer", vis_backends=vis_backends, name="visualizer")
 
 logger_interval = 50
 default_hooks = dict(
