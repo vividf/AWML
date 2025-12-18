@@ -111,12 +111,13 @@ def quant_conv_module(model: nn.Module, skip_names: Optional[Set[str]] = None, p
         submodule = model._modules[name]
         full_name = f"{prefix}.{name}" if prefix else name
 
-        # Recursively process submodules
-        quant_conv_module(submodule, skip_names, full_name)
-
-        # Skip if in skip list
+        # Skip entire subtree if this module name is in skip list
+        # (This enables skipping containers like 'pts_backbone.blocks.0')
         if full_name in skip_names:
             continue
+
+        # Recursively process submodules
+        quant_conv_module(submodule, skip_names, full_name)
 
         # Replace Conv2d with QuantConv2d
         if isinstance(submodule, nn.Conv2d) and not isinstance(submodule, QuantConv2d):
@@ -149,12 +150,12 @@ def quant_linear_module(model: nn.Module, skip_names: Optional[Set[str]] = None,
         submodule = model._modules[name]
         full_name = f"{prefix}.{name}" if prefix else name
 
-        # Recursively process submodules
-        quant_linear_module(submodule, skip_names, full_name)
-
-        # Skip if in skip list
+        # Skip entire subtree if this module name is in skip list
         if full_name in skip_names:
             continue
+
+        # Recursively process submodules
+        quant_linear_module(submodule, skip_names, full_name)
 
         # Replace Linear with QuantLinear
         if isinstance(submodule, nn.Linear) and not isinstance(submodule, QuantLinear):

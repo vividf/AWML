@@ -30,6 +30,15 @@ quantization = dict(
     enabled=True,
     mode="ptq",  # 'ptq' or 'qat'
     fuse_bn=True,  # BatchNorm was fused during PTQ
+    # Match the PTQ graph you exported. If these don't match, checkpoint keys
+    # may not align with the model structure built during deployment.
+    quant_voxel_encoder=False,
+    quant_backbone=True,
+    quant_neck=True,
+    quant_head=True,
+    # Optional: skip quantizing early backbone stages (maps to pts_backbone.blocks.<idx>)
+    skip_backbone_first_stages=0,
+    skip_backbone_stages=[],
     # Layers that were skipped during quantization
     # Note: ConvTranspose2d (deblocks) are excluded because TensorRT has
     # limited INT8 support for transposed convolutions
@@ -52,7 +61,7 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="none",  # Export ONNX -> TensorRT
+    mode="both",  # Export ONNX -> TensorRT
     work_dir="work_dirs/centerpoint_int8_deployment",
     onnx_path=None,
 )
@@ -116,6 +125,8 @@ backend_config = dict(
     common_config=dict(
         # Use INT8 precision for quantized model
         # TensorRT will use Q/DQ nodes in ONNX to determine INT8 layers
+        # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
+        # For Q/DQ INT8 export/build, prefer 'STRONGLY_TYPED'
         precision_policy="strongly_typed",
         max_workspace_size=4 << 30,  # 4 GB for INT8 calibration
     ),
@@ -150,7 +161,7 @@ evaluation = dict(
             device=devices["cuda"],
         ),
         onnx=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
             model_dir="work_dirs/centerpoint_int8_deployment/onnx/",
         ),

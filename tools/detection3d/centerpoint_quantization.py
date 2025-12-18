@@ -35,6 +35,7 @@ import argparse
 import csv
 import sys
 from pathlib import Path
+from typing import Any, Dict, Optional, Set, Tuple
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -61,21 +62,19 @@ def parse_args():
     ptq_parser.add_argument("--config", required=True, help="Model config file path")
     ptq_parser.add_argument("--checkpoint", required=True, help="Model checkpoint file path")
     ptq_parser.add_argument(
+        "--deploy-cfg",
+        default=None,
+        help=(
+            "Optional deployment config path (e.g. projects/CenterPoint/deploy/configs/deploy_config_int8.py). "
+            "If provided, PTQ will use its `quantization` settings as the single source of truth "
+            "(sensitive_layers, quant_* flags, skip_backbone_* and fuse_bn)."
+        ),
+    )
+    ptq_parser.add_argument(
         "--calibrate-batches",
         type=int,
         default=100,
         help="Number of batches for calibration (default: 100)",
-    )
-    ptq_parser.add_argument(
-        "--no-fuse-bn",
-        action="store_true",
-        help="Skip BatchNorm fusion (default: fuse BN)",
-    )
-    ptq_parser.add_argument(
-        "--skip-layers",
-        nargs="*",
-        default=[],
-        help="Layer names to skip quantization",
     )
     ptq_parser.add_argument("--output", required=True, help="Output checkpoint path")
     ptq_parser.add_argument(
@@ -124,6 +123,15 @@ def parse_args():
     qat_parser.add_argument("--config", required=True, help="Model config file path")
     qat_parser.add_argument("--checkpoint", required=True, help="Initial checkpoint file path")
     qat_parser.add_argument(
+        "--deploy-cfg",
+        default=None,
+        help=(
+            "Optional deployment config path (e.g. projects/CenterPoint/deploy/configs/deploy_config_int8.py). "
+            "If provided, QAT will use its `quantization` settings as the single source of truth "
+            "for sensitive layers and component quantization toggles."
+        ),
+    )
+    qat_parser.add_argument(
         "--calibrate-batches",
         type=int,
         default=100,
@@ -141,12 +149,6 @@ def parse_args():
         default=0.0001,
         help="Learning rate for fine-tuning (default: 0.0001)",
     )
-    qat_parser.add_argument(
-        "--skip-layers",
-        nargs="*",
-        default=[],
-        help="Layer names to skip quantization",
-    )
     qat_parser.add_argument("--output", required=True, help="Output checkpoint path")
     qat_parser.add_argument("--work-dir", default=None, help="Working directory for training")
 
@@ -161,6 +163,70 @@ def initialize_quantization():
         quant_logging.set_verbosity(quant_logging.ERROR)
     except ImportError:
         pass
+
+
+def _load_deploy_quantization_cfg(
+    deploy_cfg_path: str,
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """
+    Load `quantization` dict and (optional) `checkpoint_path` from a deploy config file.
+    """
+    from mmengine.config import Config
+
+    deploy_cfg = Config.fromfile(deploy_cfg_path)
+    quant = dict(getattr(deploy_cfg, "quantization", {}) or {})
+    ckpt = getattr(deploy_cfg, "checkpoint_path", None)
+    return quant, ckpt
+
+
+def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
+    """
+    Build PTQ quantization settings from (optional) deploy config.
+
+    Returns:
+        fuse_bn: bool
+        skip_layers: Set[str]
+        quant_flags: Dict[str, bool] with keys:
+            - quant_voxel_encoder
+            - quant_backbone
+            - quant_neck
+            - quant_head
+    """
+    # Baseline: from deploy config if provided, otherwise defaults.
+    fuse_bn = True
+    skip_layers: Set[str] = set()
+    quant_flags: Dict[str, bool] = {
+        "quant_voxel_encoder": True,
+        "quant_backbone": True,
+        "quant_neck": True,
+        "quant_head": True,
+    }
+
+    # Deploy config baseline
+    if args.deploy_cfg:
+        quant_cfg, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
+
+        # BN fusion baseline
+        if "fuse_bn" in quant_cfg:
+            fuse_bn = bool(quant_cfg.get("fuse_bn", True))
+
+        # Quant flags baseline
+        for k in list(quant_flags.keys()):
+            if k in quant_cfg:
+                quant_flags[k] = bool(quant_cfg[k])
+
+        # Sensitive layers baseline (deployment terminology)
+        skip_layers |= set(quant_cfg.get("sensitive_layers", []) or [])
+
+        # Optional backbone stage skips baseline (deployment terminology)
+        skip_first = int(quant_cfg.get("skip_backbone_first_stages", 0) or 0)
+        if skip_first > 0:
+            for i in range(skip_first):
+                skip_layers.add(f"pts_backbone.blocks.{i}")
+        for i in quant_cfg.get("skip_backbone_stages", []) or []:
+            skip_layers.add(f"pts_backbone.blocks.{int(i)}")
+
+    return fuse_bn, skip_layers, quant_flags
 
 
 def run_ptq(args):
@@ -185,7 +251,8 @@ def run_ptq(args):
     print(f"Checkpoint: {args.checkpoint}")
     print(f"Calibration batches: {args.calibrate_batches}")
     print("Amax method: mse")
-    print(f"Fuse BN: {not args.no_fuse_bn}")
+    if args.deploy_cfg:
+        print(f"Deploy cfg: {args.deploy_cfg}")
     print(f"Output: {args.output}")
     print("=" * 80)
 
@@ -196,7 +263,9 @@ def run_ptq(args):
     model.eval()
 
     # Fuse BatchNorm
-    if not args.no_fuse_bn:
+    fuse_bn, skip_layers, quant_flags = _build_ptq_quant_settings(args)
+
+    if fuse_bn:
         print("\n[2/5] Fusing BatchNorm layers...")
         fuse_model_bn(model)
     else:
@@ -204,8 +273,14 @@ def run_ptq(args):
 
     # Insert Q/DQ nodes
     print("\n[3/5] Inserting Q/DQ nodes...")
-    skip_layers = set(args.skip_layers) if args.skip_layers else set()
-    quant_model(model, skip_names=skip_layers)
+    quant_model(
+        model,
+        quant_backbone=quant_flags["quant_backbone"],
+        quant_neck=quant_flags["quant_neck"],
+        quant_head=quant_flags["quant_head"],
+        quant_voxel_encoder=quant_flags["quant_voxel_encoder"],
+        skip_names=skip_layers,
+    )
 
     # Build dataloader
     print("\n[4/5] Building calibration dataloader...")
@@ -416,13 +491,45 @@ def run_qat(args):
     if not hasattr(cfg, "custom_hooks"):
         cfg.custom_hooks = []
 
+    # Sensitive layers: use deploy config as the single source of truth (if provided).
+    sensitive_layers = []
+    if args.deploy_cfg:
+        quant_cfg, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
+        sensitive_layers = list(quant_cfg.get("sensitive_layers", []) or [])
+
+        # Expand backbone stage skips to match PTQ behavior
+        skip_first = int(quant_cfg.get("skip_backbone_first_stages", 0) or 0)
+        if skip_first > 0:
+            for i in range(skip_first):
+                sensitive_layers.append(f"pts_backbone.blocks.{i}")
+        for i in quant_cfg.get("skip_backbone_stages", []) or []:
+            sensitive_layers.append(f"pts_backbone.blocks.{int(i)}")
+
+        # If deploy config disables whole components, treat as sensitive roots
+        if not bool(quant_cfg.get("quant_voxel_encoder", True)):
+            sensitive_layers.append("pts_voxel_encoder")
+        if not bool(quant_cfg.get("quant_backbone", True)):
+            sensitive_layers.append("pts_backbone")
+        if not bool(quant_cfg.get("quant_neck", True)):
+            sensitive_layers.append("pts_neck")
+        if not bool(quant_cfg.get("quant_head", True)):
+            sensitive_layers.append("pts_bbox_head")
+
+    # De-duplicate while preserving order
+    deduped = []
+    seen = set()
+    for x in sensitive_layers:
+        if x not in seen:
+            deduped.append(x)
+            seen.add(x)
+
     cfg.custom_hooks.append(
         dict(
             type="QATHook",
             calibration_batches=args.calibrate_batches,
             calibration_epoch=0,
             freeze_bn=True,
-            sensitive_layers=args.skip_layers or [],
+            sensitive_layers=deduped,
         )
     )
 
