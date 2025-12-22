@@ -2,7 +2,7 @@
 CenterPoint Evaluator for deployment.
 
 This module implements evaluation for CenterPoint 3D object detection models.
-Uses autoware_perception_evaluation via Detection3DMetricsAdapter for consistent
+Uses autoware_perception_evaluation via Detection3DMetricsInterface for consistent
 metric computation between training (T4MetricV2) and deployment.
 """
 
@@ -14,8 +14,8 @@ from mmengine.config import Config
 
 from deployment.core import (
     BaseEvaluator,
-    Detection3DMetricsAdapter,
     Detection3DMetricsConfig,
+    Detection3DMetricsInterface,
     EvalResultDict,
     ModelSpec,
     TaskProfile,
@@ -35,7 +35,7 @@ class CenterPointEvaluator(BaseEvaluator):
     - Pipeline creation (multi-stage 3D detection)
     - Point cloud input preparation
     - 3D bounding box ground truth parsing
-    - Detection3DMetricsAdapter integration
+    - Detection3DMetricsInterface integration
     """
 
     def __init__(
@@ -48,7 +48,7 @@ class CenterPointEvaluator(BaseEvaluator):
 
         Args:
             model_cfg: Model configuration.
-            metrics_config: Configuration for the metrics adapter.
+            metrics_config: Configuration for the metrics interface.
         """
         # Determine class names - must come from config
         if hasattr(model_cfg, "class_names"):
@@ -67,10 +67,10 @@ class CenterPointEvaluator(BaseEvaluator):
             num_classes=len(class_names),
         )
 
-        metrics_adapter = Detection3DMetricsAdapter(metrics_config)
+        metrics_interface = Detection3DMetricsInterface(metrics_config)
 
         super().__init__(
-            metrics_adapter=metrics_adapter,
+            metrics_interface=metrics_interface,
             task_profile=task_profile,
             model_cfg=model_cfg,
         )
@@ -134,9 +134,9 @@ class CenterPointEvaluator(BaseEvaluator):
 
         return ground_truths
 
-    def _add_to_adapter(self, predictions: List[Dict], ground_truths: List[Dict]) -> None:
-        """Add frame to Detection3DMetricsAdapter."""
-        self.metrics_adapter.add_frame(predictions, ground_truths)
+    def _add_to_interface(self, predictions: List[Dict], ground_truths: List[Dict]) -> None:
+        """Add frame to Detection3DMetricsInterface."""
+        self.metrics_interface.add_frame(predictions, ground_truths)
 
     def _build_results(
         self,
@@ -153,9 +153,9 @@ class CenterPointEvaluator(BaseEvaluator):
         if latency_breakdowns:
             latency_payload["latency_breakdown"] = self._compute_latency_breakdown(latency_breakdowns).to_dict()
 
-        # Get metrics from adapter
-        map_results = self.metrics_adapter.compute_metrics()
-        summary = self.metrics_adapter.get_summary()
+        # Get metrics from interface
+        map_results = self.metrics_interface.compute_metrics()
+        summary = self.metrics_interface.get_summary()
         summary_dict = summary.to_dict() if hasattr(summary, "to_dict") else summary
 
         return {

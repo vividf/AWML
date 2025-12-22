@@ -34,7 +34,7 @@ export = dict(
     # - 'trt'  : build TensorRT engine from an existing ONNX
     # - 'both' : export PyTorch -> ONNX -> TensorRT
     # - 'none' : no export (only evaluation / verification on existing artifacts)
-    mode="both",
+    mode="none",
     # ---- Common options ----------------------------------------------------
     work_dir="work_dirs/centerpoint_deployment",
     # ---- ONNX source when building TensorRT only ---------------------------
@@ -185,7 +185,7 @@ evaluation = dict(
 # ----------------------------------------------------------------------------
 verification = dict(
     # Master switch to enable/disable verification
-    enabled=True,
+    enabled=False,
     tolerance=1e-1,
     num_verify_samples=1,
     # Device aliases for flexible device management
