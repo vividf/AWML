@@ -143,6 +143,7 @@ class ExportOrchestrator:
         if requires_pytorch:
             pytorch_model = self._load_and_register_pytorch_model(checkpoint_path, context)
             if pytorch_model is None:
+                self.logger.error("Export aborted: failed to load PyTorch model; skipping remaining export steps.")
                 return result  # Loading failed
             result.pytorch_model = pytorch_model
 
@@ -155,12 +156,17 @@ class ExportOrchestrator:
                     return result
                 pytorch_model = self._load_and_register_pytorch_model(checkpoint_path, context)
                 if pytorch_model is None:
+                    self.logger.error(
+                        "ONNX export aborted: failed to load PyTorch model; skipping ONNX/TensorRT export."
+                    )
                     return result
                 result.pytorch_model = pytorch_model
 
             onnx_artifact = self._export_onnx(pytorch_model, context)
             if onnx_artifact:
                 result.onnx_path = onnx_artifact.path
+            else:
+                self.logger.error("ONNX export requested but no artifact was produced.")
 
         # Step 4: Export TensorRT if requested
         if should_export_trt:
@@ -181,6 +187,8 @@ class ExportOrchestrator:
             trt_artifact = self._export_tensorrt(onnx_path, context)
             if trt_artifact:
                 result.tensorrt_path = trt_artifact.path
+            else:
+                self.logger.error("TensorRT export requested but no artifact was produced.")
 
         # Step 5: Resolve external paths from evaluation config
         self._resolve_external_artifacts(result)
@@ -298,7 +306,7 @@ class ExportOrchestrator:
                     context=context,
                 )
             except Exception:
-                self.logger.error("ONNX export workflow failed")
+                self.logger.exception("ONNX export workflow failed")
                 raise
 
             self.artifact_manager.register_artifact(Backend.ONNX, artifact)
@@ -334,7 +342,7 @@ class ExportOrchestrator:
         try:
             exporter.export(pytorch_model, input_tensor, output_path)
         except Exception:
-            self.logger.error("ONNX export failed")
+            self.logger.exception("ONNX export failed")
             raise
 
         multi_file = bool(self.config.onnx_config.get("multi_file", False))
@@ -403,7 +411,7 @@ class ExportOrchestrator:
                     context=context,
                 )
             except Exception:
-                self.logger.error("TensorRT export workflow failed")
+                self.logger.exception("TensorRT export workflow failed")
                 raise
 
             self.artifact_manager.register_artifact(Backend.TENSORRT, artifact)
@@ -421,7 +429,7 @@ class ExportOrchestrator:
                 onnx_path=onnx_path,
             )
         except Exception:
-            self.logger.error("TensorRT export failed")
+            self.logger.exception("TensorRT export failed")
             raise
 
         self.artifact_manager.register_artifact(Backend.TENSORRT, artifact)
