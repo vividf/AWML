@@ -141,54 +141,22 @@ class ExportOrchestrator:
         # Step 2: Load PyTorch model if needed
         pytorch_model = None
         if requires_pytorch:
-            pytorch_model = self._load_and_register_pytorch_model(checkpoint_path, context)
-            if pytorch_model is None:
-                self.logger.error("Export aborted: failed to load PyTorch model; skipping remaining export steps.")
-                return result  # Loading failed
-            result.pytorch_model = pytorch_model
+            pytorch_model, success = self._ensure_pytorch_model_loaded(pytorch_model, checkpoint_path, context, result)
+            if not success:
+                return result
 
         # Step 3: Export ONNX if requested
         if should_export_onnx:
-            # Load model if not already loaded
-            if pytorch_model is None:
-                if not checkpoint_path:
-                    self.logger.error("ONNX export requires checkpoint_path but none was provided.")
-                    return result
-                pytorch_model = self._load_and_register_pytorch_model(checkpoint_path, context)
-                if pytorch_model is None:
-                    self.logger.error(
-                        "ONNX export aborted: failed to load PyTorch model; skipping ONNX/TensorRT export."
-                    )
-                    return result
-                result.pytorch_model = pytorch_model
-
-            onnx_artifact = self._export_onnx(pytorch_model, context)
-            if onnx_artifact:
-                result.onnx_path = onnx_artifact.path
-            else:
-                self.logger.error("ONNX export requested but no artifact was produced.")
+            result.onnx_path = self._run_onnx_export(pytorch_model, context)
 
         # Step 4: Export TensorRT if requested
         if should_export_trt:
-            onnx_path = result.onnx_path or external_onnx_path
+            onnx_path = self._resolve_onnx_path_for_trt(result.onnx_path, external_onnx_path)
             if not onnx_path:
-                self.logger.error(
-                    "TensorRT export requires an ONNX path. "
-                    "Please set export.onnx_path in config or enable ONNX export."
-                )
                 return result
-
-            # Ensure ONNX artifact is registered
             result.onnx_path = onnx_path
-            if onnx_path and os.path.exists(onnx_path):
-                multi_file = os.path.isdir(onnx_path)
-                self.artifact_manager.register_artifact(Backend.ONNX, Artifact(path=onnx_path, multi_file=multi_file))
-
-            trt_artifact = self._export_tensorrt(onnx_path, context)
-            if trt_artifact:
-                result.tensorrt_path = trt_artifact.path
-            else:
-                self.logger.error("TensorRT export requested but no artifact was produced.")
+            self._register_external_onnx_artifact(onnx_path)
+            result.tensorrt_path = self._run_tensorrt_export(onnx_path, context)
 
         # Step 5: Resolve external paths from evaluation config
         self._resolve_external_artifacts(result)
@@ -262,6 +230,110 @@ class ExportOrchestrator:
         except Exception as e:
             self.logger.error(f"Failed to load PyTorch model: {e}")
             return None
+
+    def _ensure_pytorch_model_loaded(
+        self,
+        pytorch_model: Optional[Any],
+        checkpoint_path: str,
+        context: ExportContext,
+        result: ExportResult,
+    ) -> tuple[Optional[Any], bool]:
+        """
+        Ensure PyTorch model is loaded, loading it if necessary.
+
+        Args:
+            pytorch_model: Existing model or None
+            checkpoint_path: Path to checkpoint file
+            context: Export context
+            result: Export result to update
+
+        Returns:
+            Tuple of (model, success). If success is False, export should abort.
+        """
+        if pytorch_model is not None:
+            return pytorch_model, True
+
+        if not checkpoint_path:
+            self.logger.error("PyTorch model required but checkpoint_path not provided.")
+            return None, False
+
+        pytorch_model = self._load_and_register_pytorch_model(checkpoint_path, context)
+        if pytorch_model is None:
+            self.logger.error("Failed to load PyTorch model; aborting export.")
+            return None, False
+
+        result.pytorch_model = pytorch_model
+        return pytorch_model, True
+
+    def _run_onnx_export(self, pytorch_model: Any, context: ExportContext) -> Optional[str]:
+        """
+        Execute ONNX export and return the artifact path.
+
+        Args:
+            pytorch_model: PyTorch model to export
+            context: Export context
+
+        Returns:
+            Path to exported ONNX artifact, or None if export failed
+        """
+        onnx_artifact = self._export_onnx(pytorch_model, context)
+        if onnx_artifact:
+            return onnx_artifact.path
+
+        self.logger.error("ONNX export requested but no artifact was produced.")
+        return None
+
+    def _resolve_onnx_path_for_trt(
+        self, exported_onnx_path: Optional[str], external_onnx_path: Optional[str]
+    ) -> Optional[str]:
+        """
+        Resolve ONNX path for TensorRT export.
+
+        Args:
+            exported_onnx_path: Path from ONNX export step
+            external_onnx_path: External path from config
+
+        Returns:
+            Resolved ONNX path, or None with error logged if unavailable
+        """
+        onnx_path = exported_onnx_path or external_onnx_path
+        if not onnx_path:
+            self.logger.error(
+                "TensorRT export requires an ONNX path. "
+                "Please set export.onnx_path in config or enable ONNX export."
+            )
+            return None
+        return onnx_path
+
+    def _register_external_onnx_artifact(self, onnx_path: str) -> None:
+        """
+        Register an external ONNX artifact if it exists.
+
+        Args:
+            onnx_path: Path to ONNX file or directory
+        """
+        if not os.path.exists(onnx_path):
+            return
+        multi_file = os.path.isdir(onnx_path)
+        self.artifact_manager.register_artifact(Backend.ONNX, Artifact(path=onnx_path, multi_file=multi_file))
+
+    def _run_tensorrt_export(self, onnx_path: str, context: ExportContext) -> Optional[str]:
+        """
+        Execute TensorRT export and return the artifact path.
+
+        Args:
+            onnx_path: Path to ONNX model
+            context: Export context
+
+        Returns:
+            Path to exported TensorRT engine, or None if export failed
+        """
+        trt_artifact = self._export_tensorrt(onnx_path, context)
+        if trt_artifact:
+            return trt_artifact.path
+
+        self.logger.error("TensorRT export requested but no artifact was produced.")
+        return None
 
     def _export_onnx(self, pytorch_model: Any, context: ExportContext) -> Optional[Artifact]:
         """
