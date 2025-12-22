@@ -1,13 +1,30 @@
 """
-Pipeline factory for centralized pipeline instantiation.
+Pipeline Factory for Centralized Pipeline Instantiation.
+
+This module provides a unified interface for creating deployment pipelines
+using the registry pattern. Each project registers its own factory, and
+this module provides convenience methods for pipeline creation.
+
+Architecture:
+    - Each project implements `BasePipelineFactory` in its own directory
+    - Factories are registered with `pipeline_registry` using decorators
+    - This factory provides a unified interface for pipeline creation
+
+Usage:
+    from deployment.pipelines.factory import PipelineFactory
+    pipeline = PipelineFactory.create("centerpoint", model_spec, pytorch_model)
+
+    # Or use registry directly:
+    from deployment.pipelines.common import pipeline_registry
+    pipeline = pipeline_registry.create_pipeline("centerpoint", model_spec, pytorch_model)
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, List, Optional
 
-from deployment.core.backend import Backend
 from deployment.core.evaluation.evaluator_types import ModelSpec
 from deployment.pipelines.common.base_pipeline import BaseDeploymentPipeline
+from deployment.pipelines.common.registry import pipeline_registry
 
 logger = logging.getLogger(__name__)
 
@@ -15,148 +32,78 @@ logger = logging.getLogger(__name__)
 class PipelineFactory:
     """
     Factory for creating deployment pipelines.
+
+    This class provides a unified interface for creating pipelines across
+    different projects and backends. It delegates to project-specific
+    factories through the pipeline registry.
+
+    Example:
+        # Create a pipeline using the generic method
+        pipeline = PipelineFactory.create("centerpoint", model_spec, pytorch_model)
+
+        # List available projects
+        projects = PipelineFactory.list_projects()
     """
 
     @staticmethod
-    def create_centerpoint_pipeline(
+    def create(
+        project_name: str,
         model_spec: ModelSpec,
         pytorch_model: Any,
         device: Optional[str] = None,
+        **kwargs,
     ) -> BaseDeploymentPipeline:
         """
-        Create a CenterPoint pipeline.
+        Create a pipeline for the specified project.
 
         Args:
+            project_name: Name of the project (e.g., "centerpoint", "yolox")
             model_spec: Model specification (backend/device/path)
             pytorch_model: PyTorch model instance
             device: Override device (uses model_spec.device if None)
+            **kwargs: Project-specific arguments
 
         Returns:
-            CenterPoint pipeline instance
+            Pipeline instance
+
+        Raises:
+            KeyError: If project is not registered
+            ValueError: If backend is not supported
+
+        Example:
+            >>> pipeline = PipelineFactory.create(
+            ...     "centerpoint",
+            ...     model_spec,
+            ...     pytorch_model,
+            ... )
         """
-        from deployment.pipelines.centerpoint import (
-            CenterPointONNXPipeline,
-            CenterPointPyTorchPipeline,
-            CenterPointTensorRTPipeline,
+        return pipeline_registry.create_pipeline(
+            project_name=project_name,
+            model_spec=model_spec,
+            pytorch_model=pytorch_model,
+            device=device,
+            **kwargs,
         )
-
-        device = device or model_spec.device
-        backend = model_spec.backend
-
-        if backend is Backend.PYTORCH:
-            return CenterPointPyTorchPipeline(pytorch_model, device=device)
-        elif backend is Backend.ONNX:
-            return CenterPointONNXPipeline(pytorch_model, onnx_dir=model_spec.path, device=device)
-        elif backend is Backend.TENSORRT:
-            return CenterPointTensorRTPipeline(pytorch_model, tensorrt_dir=model_spec.path, device=device)
-        else:
-            raise ValueError(f"Unsupported backend: {backend.value}")
 
     @staticmethod
-    def create_yolox_pipeline(
-        model_spec: ModelSpec,
-        pytorch_model: Any,
-        num_classes: int,
-        class_names: List[str],
-        device: Optional[str] = None,
-    ) -> BaseDeploymentPipeline:
+    def list_projects() -> List[str]:
         """
-        Create a YOLOX pipeline.
-
-        Args:
-            model_spec: Model specification (backend/device/path)
-            pytorch_model: PyTorch model instance
-            num_classes: Number of classes
-            class_names: List of class names
-            device: Override device (uses model_spec.device if None)
+        List all registered projects.
 
         Returns:
-            YOLOX pipeline instance
+            List of registered project names
         """
-        from deployment.pipelines.yolox import (
-            YOLOXONNXPipeline,
-            YOLOXPyTorchPipeline,
-            YOLOXTensorRTPipeline,
-        )
-
-        device = device or model_spec.device
-        backend = model_spec.backend
-
-        if backend is Backend.PYTORCH:
-            return YOLOXPyTorchPipeline(
-                pytorch_model=pytorch_model,
-                device=device,
-                num_classes=num_classes,
-                class_names=class_names,
-            )
-        elif backend is Backend.ONNX:
-            return YOLOXONNXPipeline(
-                onnx_path=model_spec.path,
-                device=device,
-                num_classes=num_classes,
-                class_names=class_names,
-            )
-        elif backend is Backend.TENSORRT:
-            return YOLOXTensorRTPipeline(
-                engine_path=model_spec.path,
-                device=device,
-                num_classes=num_classes,
-                class_names=class_names,
-            )
-        else:
-            raise ValueError(f"Unsupported backend: {backend.value}")
+        return pipeline_registry.list_projects()
 
     @staticmethod
-    def create_calibration_pipeline(
-        model_spec: ModelSpec,
-        pytorch_model: Any,
-        num_classes: int = 2,
-        class_names: Optional[List[str]] = None,
-        device: Optional[str] = None,
-    ) -> BaseDeploymentPipeline:
+    def is_project_registered(project_name: str) -> bool:
         """
-        Create a CalibrationStatusClassification pipeline.
+        Check if a project is registered.
 
         Args:
-            model_spec: Model specification (backend/device/path)
-            pytorch_model: PyTorch model instance
-            num_classes: Number of classes (default: 2)
-            class_names: List of class names (default: ["miscalibrated", "calibrated"])
-            device: Override device (uses model_spec.device if None)
+            project_name: Name of the project
 
         Returns:
-            Calibration pipeline instance
+            True if project is registered
         """
-        from deployment.pipelines.calibration import (
-            CalibrationONNXPipeline,
-            CalibrationPyTorchPipeline,
-            CalibrationTensorRTPipeline,
-        )
-
-        device = device or model_spec.device
-        backend = model_spec.backend
-        class_names = class_names or ["miscalibrated", "calibrated"]
-
-        if backend is Backend.PYTORCH:
-            return CalibrationPyTorchPipeline(
-                pytorch_model=pytorch_model,
-                device=device,
-                num_classes=num_classes,
-                class_names=class_names,
-            )
-        elif backend is Backend.ONNX:
-            return CalibrationONNXPipeline(
-                onnx_path=model_spec.path,
-                device=device,
-                num_classes=num_classes,
-                class_names=class_names,
-            )
-        elif backend is Backend.TENSORRT:
-            return CalibrationTensorRTPipeline(
-                engine_path=model_spec.path,
-                device=device,
-                num_classes=num_classes,
-                class_names=class_names,
-            )
-        else:
-            raise ValueError(f"Unsupported backend: {backend.value}")
+        return pipeline_registry.is_registered(project_name)
