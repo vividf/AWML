@@ -21,7 +21,7 @@ from deployment.core import (
     TaskProfile,
 )
 from deployment.core.io.base_data_loader import BaseDataLoader
-from deployment.pipelines import PipelineFactory
+from deployment.pipelines import PipelineFactory, ProjectNames
 from projects.CenterPoint.deploy.configs.deploy_config import model_io
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,8 @@ class CenterPointEvaluator(BaseEvaluator):
 
     def _create_pipeline(self, model_spec: ModelSpec, device: str) -> Any:
         """Create CenterPoint pipeline."""
-        return PipelineFactory.create_centerpoint_pipeline(
+        return PipelineFactory.create(
+            project_name=ProjectNames.CENTERPOINT,
             model_spec=model_spec,
             pytorch_model=self.pytorch_model,
             device=device,
