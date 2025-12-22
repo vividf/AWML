@@ -170,30 +170,31 @@ class ExportOrchestrator:
         Returns:
             True if PyTorch model is needed, False otherwise
         """
-        should_export_onnx = self.config.export_config.should_export_onnx()
-        eval_config = self.config.evaluation_config
-        verification_cfg = self.config.verification_config
+        # Check if ONNX export is needed (requires PyTorch model)
+        if self.config.export_config.should_export_onnx():
+            return True
 
         # Check if PyTorch evaluation is needed
-        needs_pytorch_eval = False
+        eval_config = self.config.evaluation_config
         if eval_config.enabled:
             backends_cfg = eval_config.backends
             pytorch_cfg = backends_cfg.get(Backend.PYTORCH.value) or backends_cfg.get(Backend.PYTORCH, {})
             if pytorch_cfg and pytorch_cfg.get("enabled", False):
-                needs_pytorch_eval = True
+                return True
 
         # Check if PyTorch is needed for verification
-        needs_pytorch_for_verification = False
+        verification_cfg = self.config.verification_config
         if verification_cfg.enabled:
             export_mode = self.config.export_config.mode
             scenarios = self.config.get_verification_scenarios(export_mode)
             if scenarios:
-                needs_pytorch_for_verification = any(
+                if any(
                     policy.ref_backend is Backend.PYTORCH or policy.test_backend is Backend.PYTORCH
                     for policy in scenarios
-                )
+                ):
+                    return True
 
-        return should_export_onnx or needs_pytorch_eval or needs_pytorch_for_verification
+        return False
 
     def _load_and_register_pytorch_model(
         self,
