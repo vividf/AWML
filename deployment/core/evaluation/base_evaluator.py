@@ -31,7 +31,7 @@ from deployment.core.evaluation.evaluator_types import (
 )
 from deployment.core.evaluation.verification_mixin import VerificationMixin
 from deployment.core.io.base_data_loader import BaseDataLoader
-from deployment.core.metrics import BaseMetricsAdapter
+from deployment.core.metrics import BaseMetricsInterface
 
 # Re-export types
 __all__ = [
@@ -97,14 +97,14 @@ class BaseEvaluator(VerificationMixin, ABC):
     - _prepare_input(): Prepare model input from sample
     - _parse_predictions(): Normalize pipeline output
     - _parse_ground_truths(): Extract ground truth from sample
-    - _add_to_adapter(): Feed a single frame to the metrics adapter
-    - _build_results(): Construct final results dict from adapter metrics
+    - _add_to_interface(): Feed a single frame to the metrics interface
+    - _build_results(): Construct final results dict from interface metrics
     - print_results(): Format and display results
     """
 
     def __init__(
         self,
-        metrics_adapter: BaseMetricsAdapter,
+        metrics_interface: BaseMetricsInterface,
         task_profile: TaskProfile,
         model_cfg: Any,
     ):
@@ -112,11 +112,11 @@ class BaseEvaluator(VerificationMixin, ABC):
         Initialize evaluator.
 
         Args:
-            metrics_adapter: Metrics adapter for computing task-specific metrics
+            metrics_interface: Metrics interface for computing task-specific metrics
             task_profile: Profile describing the task
             model_cfg: Model configuration (MMEngine Config or similar)
         """
-        self.metrics_adapter = metrics_adapter
+        self.metrics_interface = metrics_interface
         self.task_profile = task_profile
         self.model_cfg = model_cfg
         self.pytorch_model: Any = None
@@ -175,8 +175,8 @@ class BaseEvaluator(VerificationMixin, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _add_to_adapter(self, predictions: Any, ground_truths: Any) -> None:
-        """Add a single frame to the metrics adapter."""
+    def _add_to_interface(self, predictions: Any, ground_truths: Any) -> None:
+        """Add a single frame to the metrics interface."""
         raise NotImplementedError
 
     @abstractmethod
@@ -186,7 +186,7 @@ class BaseEvaluator(VerificationMixin, ABC):
         latency_breakdowns: List[Dict[str, float]],
         num_samples: int,
     ) -> EvalResultDict:
-        """Build final results dict from adapter metrics."""
+        """Build final results dict from interface metrics."""
         raise NotImplementedError
 
     @abstractmethod
@@ -242,7 +242,7 @@ class BaseEvaluator(VerificationMixin, ABC):
 
         self._ensure_model_on_device(model.device)
         pipeline = self._create_pipeline(model, model.device)
-        self.metrics_adapter.reset()
+        self.metrics_interface.reset()
 
         latencies = []
         latency_breakdowns = []
@@ -265,7 +265,7 @@ class BaseEvaluator(VerificationMixin, ABC):
                 latency_breakdowns.append(infer_result.breakdown)
 
             predictions = self._parse_predictions(infer_result.output)
-            self._add_to_adapter(predictions, ground_truths)
+            self._add_to_interface(predictions, ground_truths)
 
             if model.backend is Backend.TENSORRT and idx % EVALUATION_DEFAULTS.GPU_CLEANUP_INTERVAL == 0:
                 if torch.cuda.is_available():

@@ -1,7 +1,7 @@
 """
-Classification Metrics Adapter using autoware_perception_evaluation.
+Classification Metrics Interface using autoware_perception_evaluation.
 
-This module provides an adapter to compute classification metrics (accuracy, precision,
+This module provides an interface to compute classification metrics (accuracy, precision,
 recall, F1) using autoware_perception_evaluation, ensuring consistent metrics between
 training evaluation and deployment evaluation.
 
@@ -9,12 +9,12 @@ Usage:
     config = ClassificationMetricsConfig(
         class_names=["miscalibrated", "calibrated"],
     )
-    adapter = ClassificationMetricsAdapter(config)
+    interface = ClassificationMetricsInterface(config)
 
     for pred_label, gt_label in zip(predictions, ground_truths):
-        adapter.add_frame(prediction=pred_label, ground_truth=gt_label)
+        interface.add_frame(prediction=pred_label, ground_truth=gt_label)
 
-    metrics = adapter.compute_metrics()
+    metrics = interface.compute_metrics()
     # Returns: {"accuracy": 0.95, "precision": 0.94, "recall": 0.96, "f1score": 0.95, ...}
 """
 
@@ -36,7 +36,11 @@ from perception_eval.evaluation.result.perception_frame_config import (
 )
 from perception_eval.manager import PerceptionEvaluationManager
 
-from deployment.core.metrics.base_metrics_adapter import BaseMetricsAdapter, BaseMetricsConfig, ClassificationSummary
+from deployment.core.metrics.base_metrics_interface import (
+    BaseMetricsConfig,
+    BaseMetricsInterface,
+    ClassificationSummary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +120,8 @@ class ClassificationMetricsConfig(BaseMetricsConfig):
             )
 
 
-class ClassificationMetricsAdapter(BaseMetricsAdapter):
-    """Adapter for computing classification metrics using autoware_perception_evaluation.
+class ClassificationMetricsInterface(BaseMetricsInterface):
+    """Interface for computing classification metrics using autoware_perception_evaluation.
 
     Metrics computed:
     - Accuracy: TP / (num_predictions + num_gt - TP)
@@ -133,7 +137,7 @@ class ClassificationMetricsAdapter(BaseMetricsAdapter):
         data_root: str = "data/t4dataset/",
         result_root_directory: str = "/tmp/perception_eval_classification/",
     ):
-        """Initialize the classification metrics adapter.
+        """Initialize the classification metrics interface.
 
         Args:
             config: Configuration for classification metrics.
@@ -164,7 +168,7 @@ class ClassificationMetricsAdapter(BaseMetricsAdapter):
         self.evaluator: Optional[PerceptionEvaluationManager] = None
 
     def reset(self) -> None:
-        """Reset the adapter for a new evaluation session."""
+        """Reset the interface for a new evaluation session."""
         self.evaluator = PerceptionEvaluationManager(
             evaluation_config=self.perception_eval_config,
             load_ground_truth=False,

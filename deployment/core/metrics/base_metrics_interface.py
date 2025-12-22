@@ -1,11 +1,11 @@
 """
-Base Metrics Adapter for unified metric computation.
+Base Metrics Interface for unified metric computation.
 
-This module provides the abstract base class that all task-specific metrics adapters
-must implement. It ensures a consistent interface across 3D detection, 2D detection,
+This module provides the abstract base class that all task-specific metrics interfaces
+must implement. It ensures a consistent contract across 3D detection, 2D detection,
 and classification tasks.
 
-All metric adapters use autoware_perception_evaluation as the underlying computation
+All metric interfaces use autoware_perception_evaluation as the underlying computation
 engine to ensure consistency between training (T4MetricV2) and deployment evaluation.
 """
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class BaseMetricsConfig:
-    """Base configuration for all metrics adapters.
+    """Base configuration for all metrics interfaces.
 
     Attributes:
         class_names: List of class names for evaluation.
@@ -79,35 +79,35 @@ class DetectionSummary:
         return data
 
 
-class BaseMetricsAdapter(ABC):
+class BaseMetricsInterface(ABC):
     """
-    Abstract base class for all task-specific metrics adapters.
+    Abstract base class for all task-specific metrics interfaces.
 
-    This class defines the common interface that all metric adapters must implement.
-    Each adapter wraps autoware_perception_evaluation to compute metrics consistent
+    This class defines the common interface that all metric interfaces must implement.
+    Each interface wraps autoware_perception_evaluation to compute metrics consistent
     with training evaluation (T4MetricV2).
 
     The workflow is:
-        1. Create adapter with task-specific config
+        1. Create interface with task-specific config
         2. Call reset() to start a new evaluation session
         3. Call add_frame() for each sample
         4. Call compute_metrics() to get final metrics
         5. Optionally call get_summary() for a human-readable summary
 
     Example:
-        adapter = SomeMetricsAdapter(config)
-        adapter.reset()
+        interface = SomeMetricsInterface(config)
+        interface.reset()
         for pred, gt in data:
-            adapter.add_frame(pred, gt)
-        metrics = adapter.compute_metrics()
+            interface.add_frame(pred, gt)
+        metrics = interface.compute_metrics()
     """
 
     def __init__(self, config: BaseMetricsConfig):
         """
-        Initialize the metrics adapter.
+        Initialize the metrics interface.
 
         Args:
-            config: Configuration for the metrics adapter.
+            config: Configuration for the metrics interface.
         """
         self.config = config
         self.class_names = config.class_names
@@ -117,7 +117,7 @@ class BaseMetricsAdapter(ABC):
     @abstractmethod
     def reset(self) -> None:
         """
-        Reset the adapter for a new evaluation session.
+        Reset the interface for a new evaluation session.
 
         This method should clear all accumulated frame data and reinitialize
         the underlying evaluator.

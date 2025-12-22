@@ -34,14 +34,14 @@ from deployment.core.evaluation.verification_mixin import VerificationMixin
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.core.io.preprocessing_builder import build_preprocessing_pipeline
 from deployment.core.metrics import (
-    BaseMetricsAdapter,
     BaseMetricsConfig,
-    ClassificationMetricsAdapter,
+    BaseMetricsInterface,
     ClassificationMetricsConfig,
-    Detection2DMetricsAdapter,
+    ClassificationMetricsInterface,
     Detection2DMetricsConfig,
-    Detection3DMetricsAdapter,
+    Detection2DMetricsInterface,
     Detection3DMetricsConfig,
+    Detection3DMetricsInterface,
 )
 
 __all__ = [
@@ -79,13 +79,13 @@ __all__ = [
     "ModelSpec",
     # Preprocessing
     "build_preprocessing_pipeline",
-    # Metrics adapters (using autoware_perception_evaluation)
-    "BaseMetricsAdapter",
+    # Metrics interfaces (using autoware_perception_evaluation)
+    "BaseMetricsInterface",
     "BaseMetricsConfig",
-    "Detection3DMetricsAdapter",
+    "Detection3DMetricsInterface",
     "Detection3DMetricsConfig",
-    "Detection2DMetricsAdapter",
+    "Detection2DMetricsInterface",
     "Detection2DMetricsConfig",
-    "ClassificationMetricsAdapter",
+    "ClassificationMetricsInterface",
     "ClassificationMetricsConfig",
 ]

@@ -1,11 +1,11 @@
 """
-2D Detection Metrics Adapter using autoware_perception_evaluation.
+2D Detection Metrics Interface using autoware_perception_evaluation.
 
-This module provides an adapter to compute 2D detection metrics (mAP)
+This module provides an interface to compute 2D detection metrics (mAP)
 using autoware_perception_evaluation in 2D mode, ensuring consistent metrics
 between training evaluation and deployment evaluation.
 
-For 2D detection, the adapter uses:
+For 2D detection, the interface uses:
 - IoU 2D thresholds for matching (e.g., 0.5, 0.75)
 - Only AP is computed (no APH since there's no heading in 2D)
 
@@ -14,17 +14,17 @@ Usage:
         class_names=["car", "truck", "bus", "bicycle", "pedestrian", "motorcycle", "trailer", "unknown"],
         frame_id="camera",
     )
-    adapter = Detection2DMetricsAdapter(config)
+    interface = Detection2DMetricsInterface(config)
 
     # Add frames
     for pred, gt in zip(predictions_list, ground_truths_list):
-        adapter.add_frame(
+        interface.add_frame(
             predictions=pred,  # List[Dict] with bbox (x1,y1,x2,y2), label, score
             ground_truths=gt,  # List[Dict] with bbox (x1,y1,x2,y2), label
         )
 
     # Compute metrics
-    metrics = adapter.compute_metrics()
+    metrics = interface.compute_metrics()
     # Returns: {"mAP_iou_2d_0.5": 0.7, "mAP_iou_2d_0.75": 0.65, ...}
 """
 
@@ -46,7 +46,7 @@ from perception_eval.evaluation.result.perception_frame_config import (
 )
 from perception_eval.manager import PerceptionEvaluationManager
 
-from deployment.core.metrics.base_metrics_adapter import BaseMetricsAdapter, BaseMetricsConfig, DetectionSummary
+from deployment.core.metrics.base_metrics_interface import BaseMetricsConfig, BaseMetricsInterface, DetectionSummary
 
 logger = logging.getLogger(__name__)
 
@@ -128,11 +128,11 @@ class Detection2DMetricsConfig(BaseMetricsConfig):
             object.__setattr__(self, "frame_pass_fail_config", default_pass_fail_config)
 
 
-class Detection2DMetricsAdapter(BaseMetricsAdapter):
+class Detection2DMetricsInterface(BaseMetricsInterface):
     """
-    Adapter for computing 2D detection metrics using autoware_perception_evaluation.
+    Interface for computing 2D detection metrics using autoware_perception_evaluation.
 
-    This adapter provides a simplified interface for the deployment framework to
+    This interface provides a simplified interface for the deployment framework to
     compute mAP for 2D object detection tasks (YOLOX, etc.).
 
     Unlike 3D detection, 2D detection:
@@ -145,17 +145,17 @@ class Detection2DMetricsAdapter(BaseMetricsAdapter):
             class_names=["car", "truck", "bus", "bicycle", "pedestrian"],
             iou_thresholds=[0.5, 0.75],
         )
-        adapter = Detection2DMetricsAdapter(config)
+        interface = Detection2DMetricsInterface(config)
 
         # Add frames
         for pred, gt in zip(predictions_list, ground_truths_list):
-            adapter.add_frame(
+            interface.add_frame(
                 predictions=pred,  # List[Dict] with bbox, label, score
                 ground_truths=gt,  # List[Dict] with bbox, label
             )
 
         # Compute metrics
-        metrics = adapter.compute_metrics()
+        metrics = interface.compute_metrics()
     """
 
     _UNKNOWN = "unknown"
@@ -167,7 +167,7 @@ class Detection2DMetricsAdapter(BaseMetricsAdapter):
         result_root_directory: str = "/tmp/perception_eval_2d/",
     ):
         """
-        Initialize the 2D detection metrics adapter.
+        Initialize the 2D detection metrics interface.
 
         Args:
             config: Configuration for 2D detection metrics.
@@ -204,7 +204,7 @@ class Detection2DMetricsAdapter(BaseMetricsAdapter):
         self.evaluator: Optional[PerceptionEvaluationManager] = None
 
     def reset(self) -> None:
-        """Reset the adapter for a new evaluation session."""
+        """Reset the interface for a new evaluation session."""
         self.evaluator = PerceptionEvaluationManager(
             evaluation_config=self.perception_eval_config,
             load_ground_truth=False,

@@ -66,7 +66,7 @@ Each project ships its own `deploy_config.py`, evaluator, and data loader under 
 
 ## Core Contract
 
-[`core_contract.md`](docs/core_contract.md) defines the boundaries between runners, orchestrators, evaluators, pipelines, and metrics adapters. Follow the contract when introducing new logic to keep refactors safe and dependencies explicit.
+[`core_contract.md`](docs/core_contract.md) defines the boundaries between runners, orchestrators, evaluators, pipelines, and metrics interfaces. Follow the contract when introducing new logic to keep refactors safe and dependencies explicit.
 
 ## Contributing & Best Practices
 

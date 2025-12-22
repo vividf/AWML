@@ -15,18 +15,18 @@ This document defines the responsibilities and boundaries between the primary de
 ### BaseEvaluator (and task evaluators)
 - The single base class for all task evaluators, integrating `VerificationMixin`.
 - Provides the unified evaluation loop: iterate samples → infer → accumulate → compute metrics.
-- Requires a `TaskProfile` (task name, class names) and a `BaseMetricsAdapter` at construction.
+- Requires a `TaskProfile` (task name, class names) and a `BaseMetricsInterface` at construction.
 - Responsible for:
   - Creating backend pipelines through `PipelineFactory`
   - Preparing verification inputs from the data loader
-  - Computing task metrics using metrics adapters
+  - Computing task metrics using metrics interfaces
   - Printing/reporting evaluation summaries
 - Subclasses implement task-specific hooks:
   - `_create_pipeline(model_spec, device)` → create backend pipeline
   - `_prepare_input(sample, data_loader, device)` → extract model input + inference kwargs
   - `_parse_predictions(pipeline_output)` → normalize raw output
   - `_parse_ground_truths(gt_data)` → extract ground truth
-  - `_add_to_adapter(predictions, ground_truths)` → feed metrics adapter
+  - `_add_to_interface(predictions, ground_truths)` → feed metrics interface
   - `_build_results(latencies, breakdowns, num_samples)` → construct final results dict
   - `print_results(results)` → format and display results
 - Inherits `VerificationMixin` automatically; subclasses only need `_get_output_names()` if custom names are desired.
@@ -41,7 +41,7 @@ This document defines the responsibilities and boundaries between the primary de
   - Central location for future pipeline wiring (new tasks/backends).
 - Pipelines must avoid loading artifacts or computing metrics; they only execute inference.
 
-### Metrics Adapters (Autoware-based adapters)
+### Metrics Interfaces (Autoware-based interfaces)
 - Provide a uniform interface for adding frames and computing summaries regardless of task.
 - Encapsulate conversion from model predictions/ground truth to Autoware perception evaluation inputs.
 - Return metric dictionaries that evaluators incorporate into `EvalResultDict` results.
@@ -49,9 +49,9 @@ This document defines the responsibilities and boundaries between the primary de
 
 ### Summary of Allowed Dependencies
 - **Runner → Evaluator** (injection) ✓
-- **Evaluator → PipelineFactory / Pipelines / Metrics Adapters** ✓
+- **Evaluator → PipelineFactory / Pipelines / Metrics Interfaces** ✓
 - **PipelineFactory → Pipelines** ✓
-- **Pipelines ↔ Metrics Adapters** ✗ (evaluators mediate)
-- **Metrics Adapters → Runner/PipelineFactory** ✗
+- **Pipelines ↔ Metrics Interfaces** ✗ (evaluators mediate)
+- **Metrics Interfaces → Runner/PipelineFactory** ✗
 
 Adhering to this contract keeps responsibilities isolated, simplifies testing, and allows independent refactors of runners, evaluators, pipelines, and metrics logic.

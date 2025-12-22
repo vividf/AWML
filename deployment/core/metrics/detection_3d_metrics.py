@@ -1,7 +1,7 @@
 """
-3D Detection Metrics Adapter using autoware_perception_evaluation.
+3D Detection Metrics Interface using autoware_perception_evaluation.
 
-This module provides an adapter to compute 3D detection metrics (mAP, mAPH)
+This module provides an interface to compute 3D detection metrics (mAP, mAPH)
 using autoware_perception_evaluation, ensuring consistent metrics between
 training evaluation (T4MetricV2) and deployment evaluation.
 
@@ -10,17 +10,17 @@ Usage:
         class_names=["car", "truck", "bus", "bicycle", "pedestrian"],
         frame_id="base_link",
     )
-    adapter = Detection3DMetricsAdapter(config)
+    interface = Detection3DMetricsInterface(config)
 
     # Add frames
     for pred, gt in zip(predictions_list, ground_truths_list):
-        adapter.add_frame(
+        interface.add_frame(
             predictions=pred,  # List[Dict] with bbox_3d, label, score
             ground_truths=gt,  # List[Dict] with bbox_3d, label
         )
 
     # Compute metrics
-    metrics = adapter.compute_metrics()
+    metrics = interface.compute_metrics()
     # Returns: {"mAP_center_distance_bev_0.5": 0.7, ...}
 """
 
@@ -43,7 +43,7 @@ from perception_eval.evaluation.result.perception_frame_config import (
 from perception_eval.manager import PerceptionEvaluationManager
 from pyquaternion import Quaternion
 
-from deployment.core.metrics.base_metrics_adapter import BaseMetricsAdapter, BaseMetricsConfig, DetectionSummary
+from deployment.core.metrics.base_metrics_interface import BaseMetricsConfig, BaseMetricsInterface, DetectionSummary
 
 logger = logging.getLogger(__name__)
 
@@ -129,11 +129,11 @@ class Detection3DMetricsConfig(BaseMetricsConfig):
             object.__setattr__(self, "frame_pass_fail_config", default_pass_fail_config)
 
 
-class Detection3DMetricsAdapter(BaseMetricsAdapter):
+class Detection3DMetricsInterface(BaseMetricsInterface):
     """
-    Adapter for computing 3D detection metrics using autoware_perception_evaluation.
+    Interface for computing 3D detection metrics using autoware_perception_evaluation.
 
-    This adapter provides a simplified interface for the deployment framework to
+    This interface provides a simplified interface for the deployment framework to
     compute mAP, mAPH, and other detection metrics that are consistent with
     the T4MetricV2 used during training.
 
@@ -142,17 +142,17 @@ class Detection3DMetricsAdapter(BaseMetricsAdapter):
             class_names=["car", "truck", "bus", "bicycle", "pedestrian"],
             frame_id="base_link",
         )
-        adapter = Detection3DMetricsAdapter(config)
+        interface = Detection3DMetricsInterface(config)
 
         # Add frames
         for pred, gt in zip(predictions_list, ground_truths_list):
-            adapter.add_frame(
+            interface.add_frame(
                 predictions=pred,  # List[Dict] with bbox_3d, label, score
                 ground_truths=gt,  # List[Dict] with bbox_3d, label
             )
 
         # Compute metrics
-        metrics = adapter.compute_metrics()
+        metrics = interface.compute_metrics()
         # Returns: {"mAP_center_distance_bev_0.5": 0.7, ...}
     """
 
@@ -165,7 +165,7 @@ class Detection3DMetricsAdapter(BaseMetricsAdapter):
         result_root_directory: str = "/tmp/perception_eval/",
     ):
         """
-        Initialize the 3D detection metrics adapter.
+        Initialize the 3D detection metrics interface.
 
         Args:
             config: Configuration for 3D detection metrics.
@@ -201,7 +201,7 @@ class Detection3DMetricsAdapter(BaseMetricsAdapter):
         self.evaluator: Optional[PerceptionEvaluationManager] = None
 
     def reset(self) -> None:
-        """Reset the adapter for a new evaluation session."""
+        """Reset the interface for a new evaluation session."""
         self.evaluator = PerceptionEvaluationManager(
             evaluation_config=self.perception_eval_config,
             load_ground_truth=False,
