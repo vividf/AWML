@@ -6,21 +6,14 @@ across different backends (PyTorch, ONNX, TensorRT).
 
 Example usage:
 
-PyTorch:
+
+Using Registry:
+    >>> from deployment.pipelines.common import pipeline_registry
+    >>> pipeline = pipeline_registry.create_pipeline("centerpoint", model_spec, model)
+
+Direct Instantiation:
     >>> from deployment.pipelines.centerpoint import CenterPointPyTorchPipeline
     >>> pipeline = CenterPointPyTorchPipeline(model, device='cuda')
-    >>> result = pipeline.infer(points)
-    >>> predictions, latency, breakdown = result.output, result.latency_ms, result.breakdown
-
-ONNX:
-    >>> from deployment.pipelines.centerpoint import CenterPointONNXPipeline
-    >>> pipeline = CenterPointONNXPipeline(pytorch_model, onnx_dir='models', device='cuda')
-    >>> result = pipeline.infer(points)
-    >>> predictions, latency, breakdown = result.output, result.latency_ms, result.breakdown
-
-TensorRT:
-    >>> from deployment.pipelines.centerpoint import CenterPointTensorRTPipeline
-    >>> pipeline = CenterPointTensorRTPipeline(pytorch_model, tensorrt_dir='engines', device='cuda')
     >>> result = pipeline.infer(points)
     >>> predictions, latency, breakdown = result.output, result.latency_ms, result.breakdown
 
@@ -38,10 +31,12 @@ from deployment.pipelines.centerpoint.centerpoint_onnx import CenterPointONNXPip
 from deployment.pipelines.centerpoint.centerpoint_pipeline import CenterPointDeploymentPipeline
 from deployment.pipelines.centerpoint.centerpoint_pytorch import CenterPointPyTorchPipeline
 from deployment.pipelines.centerpoint.centerpoint_tensorrt import CenterPointTensorRTPipeline
+from deployment.pipelines.centerpoint.factory import CenterPointPipelineFactory
 
 __all__ = [
     "CenterPointDeploymentPipeline",
     "CenterPointPyTorchPipeline",
     "CenterPointONNXPipeline",
     "CenterPointTensorRTPipeline",
+    "CenterPointPipelineFactory",
 ]
