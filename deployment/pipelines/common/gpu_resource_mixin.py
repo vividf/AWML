@@ -15,6 +15,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
+import pycuda.driver as cuda
 import torch
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,6 @@ class TensorRTResourceManager:
         Returns:
             pycuda.driver.DeviceAllocation object
         """
-        import pycuda.driver as cuda
 
         allocation = cuda.mem_alloc(nbytes)
         self._allocations.append(allocation)
@@ -162,8 +162,6 @@ class TensorRTResourceManager:
             pycuda.driver.Stream object
         """
         if self._stream is None:
-            import pycuda.driver as cuda
-
             self._stream = cuda.Stream()
         return self._stream
 
