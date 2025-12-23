@@ -15,7 +15,7 @@ Usage:
     pipeline = PipelineFactory.create("centerpoint", model_spec, pytorch_model)
 
     # Or use registry directly:
-    from deployment.pipelines.common import pipeline_registry
+    from deployment.pipelines.registry import pipeline_registry
     pipeline = pipeline_registry.create_pipeline("centerpoint", model_spec, pytorch_model)
 """
 
@@ -23,8 +23,8 @@ import logging
 from typing import Any, List, Optional
 
 from deployment.core.evaluation.evaluator_types import ModelSpec
-from deployment.pipelines.common.base_pipeline import BaseDeploymentPipeline
-from deployment.pipelines.common.registry import pipeline_registry
+from deployment.pipelines.base_pipeline import BaseDeploymentPipeline
+from deployment.pipelines.registry import pipeline_registry
 
 logger = logging.getLogger(__name__)
 

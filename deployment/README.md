@@ -8,14 +8,11 @@ At the center is a shared runner/pipeline/exporter architecture that teams can e
 ## Quick Start
 
 ```bash
-# CenterPoint deployment
-python projects/CenterPoint/deploy/main.py configs/deploy_config.py configs/model_config.py
+# Deployment entrypoint
+python -m deployment.cli.main <project> <deploy_cfg.py> <model_cfg.py> [project-specific args]
 
-# YOLOX deployment
-python projects/YOLOX_opt_elan/deploy/main.py configs/deploy_config.py configs/model_config.py
-
-# Calibration deployment
-python projects/CalibrationStatusClassification/deploy/main.py configs/deploy_config.py configs/model_config.py
+# Example: CenterPoint deployment
+python -m deployment.cli.main centerpoint <deploy_cfg.py> <model_cfg.py> --rot-y-axis-reference
 ```
 
 ## Documentation Map
@@ -36,10 +33,10 @@ Refer to `deployment/docs/README.md` for the same index.
 
 ## Architecture Snapshot
 
-- **Entry points** (`projects/*/deploy/main.py`) instantiate project runners with data loaders, evaluators, wrappers, and optional export pipelines.
-- **Runners** coordinate load → export → verify → evaluate while delegating to shared Artifact/Verification/Evaluation orchestrators.
+- **Entry point** (`deployment/cli/main.py`) loads a project bundle from `deployment/projects/<project>/`.
+- **Runtime** (`deployment/runtime/*`) coordinates load → export → verify → evaluate via shared orchestrators.
 - **Exporters** live under `exporters/common/` with typed config classes; project wrappers/pipelines compose the base exporters as needed.
-- **Pipelines** (`pipelines/common/*`, `pipelines/{task}/`) provide consistent preprocessing/postprocessing with backend-specific inference implementations resolved via `PipelineFactory`.
+- **Pipelines** are registered by each project bundle and resolved via `PipelineFactory`.
 - **Core package** (`core/`) supplies typed configs, runtime contexts, task definitions, and shared verification utilities.
 
 See [`docs/architecture.md`](docs/architecture.md) for diagrams and component details.
@@ -60,7 +57,7 @@ Implementation details live in [`docs/export_pipeline.md`](docs/export_pipeline.
 - **YOLOX** – single-file export with output reshaping via `YOLOXOptElanONNXWrapper`.
 - **CalibrationStatusClassification** – binary classification deployment with identity wrappers and simplified pipelines.
 
-Each project ships its own `deploy_config.py`, evaluator, and data loader under `projects/{Project}/deploy/`.
+Each project ships its own deployment bundle under `deployment/projects/<project>/`.
 
 ## Core Contract
 
