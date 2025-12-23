@@ -12,7 +12,7 @@ import torch
 from deployment.exporters.common.configs import ONNXExportConfig
 from deployment.exporters.export_pipelines.interfaces import ExportableComponent, ModelComponentExtractor
 from deployment.projects.centerpoint.config.deploy_config import model_io, onnx_config
-from projects.CenterPoint.models.detectors.centerpoint_onnx import CenterPointHeadONNX
+from deployment.projects.centerpoint.onnx_models.centerpoint_onnx import CenterPointHeadONNX
 
 logger = logging.getLogger(__name__)
 

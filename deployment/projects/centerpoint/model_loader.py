@@ -14,6 +14,7 @@ from mmengine.registry import MODELS, init_default_scope
 from mmengine.runner import load_checkpoint
 
 from deployment.core.metrics.detection_3d_metrics import Detection3DMetricsConfig
+from deployment.projects.centerpoint.onnx_models import register_models
 
 
 def create_onnx_model_cfg(
@@ -48,6 +49,9 @@ def create_onnx_model_cfg(
 
 
 def build_model_from_cfg(model_cfg: Config, checkpoint_path: str, device: str) -> torch.nn.Module:
+    # Ensure CenterPoint ONNX variants are registered into MODELS before building.
+    # This is required because the config uses string types like "CenterPointONNX", "CenterHeadONNX", etc.
+    register_models()
     init_default_scope("mmdet3d")
     model_config = copy.deepcopy(model_cfg.model)
     model = MODELS.build(model_config)
@@ -77,7 +81,7 @@ def extract_t4metric_v2_config(
     model_cfg: Config,
     class_names: Optional[List[str]] = None,
     logger: Optional[logging.Logger] = None,
-) -> Optional[Detection3DMetricsConfig]:
+) -> Detection3DMetricsConfig:
     if logger is None:
         logger = logging.getLogger(__name__)
 
@@ -93,8 +97,7 @@ def extract_t4metric_v2_config(
     elif hasattr(model_cfg, "test_evaluator"):
         evaluator_cfg = model_cfg.test_evaluator
     else:
-        logger.warning("No val_evaluator or test_evaluator found in model_cfg")
-        return None
+        raise ValueError("No val_evaluator or test_evaluator found in model_cfg")
 
     def get_cfg_value(cfg, key, default=None):
         if cfg is None:
@@ -105,8 +108,7 @@ def extract_t4metric_v2_config(
 
     evaluator_type = get_cfg_value(evaluator_cfg, "type")
     if evaluator_type != "T4MetricV2":
-        logger.warning(f"Evaluator type is '{evaluator_type}', not 'T4MetricV2'. Returning None.")
-        return None
+        raise ValueError(f"Evaluator type is '{evaluator_type}', not 'T4MetricV2'")
 
     perception_configs = get_cfg_value(evaluator_cfg, "perception_evaluator_configs", {})
     evaluation_config_dict = get_cfg_value(perception_configs, "evaluation_config_dict")

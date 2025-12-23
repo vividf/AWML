@@ -35,13 +35,6 @@ def run(args) -> int:
     logger.info(f"Loaded {data_loader.get_num_samples()} samples")
 
     metrics_config = extract_t4metric_v2_config(model_cfg, logger=logger)
-    if metrics_config is None:
-        # Fall back to sane defaults (Detection3DMetricsConfig will populate defaults in __post_init__)
-        class_names = getattr(model_cfg, "class_names", None)
-        if not class_names:
-            raise ValueError("model_cfg.class_names is required for CenterPoint evaluation")
-        metrics_config = Detection3DMetricsConfig(class_names=list(class_names), frame_id="base_link")
-        logger.warning("T4MetricV2 config not found in model_cfg; using default deployment metrics config.")
 
     evaluator = CenterPointEvaluator(
         model_cfg=model_cfg,
