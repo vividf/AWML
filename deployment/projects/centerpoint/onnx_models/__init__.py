@@ -14,6 +14,11 @@ from __future__ import annotations
 
 
 def register_models() -> None:
+    """Register CenterPoint ONNX model variants into MMEngine's `MODELS` registry.
+
+    The underlying modules use `@MODELS.register_module()`; importing them is enough
+    to register the types referenced by config strings (e.g., `CenterPointONNX`).
+    """
     # Importing modules triggers `@MODELS.register_module()` registrations.
     from deployment.projects.centerpoint.onnx_models import centerpoint_head_onnx as _  # noqa: F401
     from deployment.projects.centerpoint.onnx_models import centerpoint_onnx as _  # noqa: F401

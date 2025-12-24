@@ -6,6 +6,7 @@ import argparse
 
 
 def add_args(parser: argparse.ArgumentParser) -> None:
+    """Register CenterPoint-specific CLI flags onto a project subparser."""
     parser.add_argument(
         "--rot-y-axis-reference",
         action="store_true",

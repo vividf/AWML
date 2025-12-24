@@ -17,6 +17,15 @@ logger = logging.getLogger(__name__)
 
 
 class BaseDeploymentPipeline(ABC):
+    """Base contract for a deployment inference pipeline.
+
+    A pipeline is responsible for the classic 3-stage inference flow:
+    `preprocess -> run_model -> postprocess`.
+
+    The default `infer()` implementation measures per-stage latency and returns an
+    `InferenceResult` with optional breakdown information.
+    """
+
     def __init__(self, model: Any, device: str = "cpu", task_type: str = "unknown", backend_type: str = "unknown"):
         self.model = model
         self.device = torch.device(device) if isinstance(device, str) else device

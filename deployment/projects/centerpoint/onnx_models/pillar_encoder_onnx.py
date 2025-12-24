@@ -1,3 +1,9 @@
+"""CenterPoint deploy-only ONNX voxel encoder variants.
+
+These variants expose helper APIs and forward shapes that are friendlier for ONNX export
+and componentized inference pipelines.
+"""
+
 from typing import Optional
 
 import torch

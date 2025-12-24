@@ -16,6 +16,11 @@ from deployment.projects.centerpoint.runner import CenterPointDeploymentRunner
 
 
 def run(args) -> int:
+    """Run the CenterPoint deployment workflow for the unified CLI.
+
+    This wires together the CenterPoint bundle components (data loader, evaluator,
+    runner) and executes export/verification/evaluation according to `deploy_cfg`.
+    """
     logger = setup_logging(args.log_level)
 
     deploy_cfg = Config.fromfile(args.deploy_cfg)

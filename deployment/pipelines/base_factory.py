@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 
 
 class BasePipelineFactory(ABC):
+    """Project-specific factory interface for building deployment pipelines.
+
+    A project registers a subclass into `deployment.pipelines.registry.pipeline_registry`.
+    Evaluators then call into the registry/factory to instantiate the correct pipeline
+    for a given (project, backend) pair.
+    """
+
     @classmethod
     @abstractmethod
     def get_project_name(cls) -> str:

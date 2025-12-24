@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 class CenterPointPyTorchPipeline(CenterPointDeploymentPipeline):
+    """PyTorch-based CenterPoint pipeline (staged to match ONNX/TensorRT outputs)."""
+
     def __init__(self, pytorch_model, device: str = "cuda"):
         super().__init__(pytorch_model, device, backend_type="pytorch")
         logger.info("PyTorch pipeline initialized (ONNX-compatible staged inference)")

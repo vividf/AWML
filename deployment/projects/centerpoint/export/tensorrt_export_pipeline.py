@@ -19,6 +19,12 @@ from deployment.exporters.export_pipelines.base import TensorRTExportPipeline
 
 
 class CenterPointTensorRTExportPipeline(TensorRTExportPipeline):
+    """TensorRT export pipeline for CenterPoint.
+
+    Consumes a directory of ONNX files (multi-file export) and builds a TensorRT
+    engine per component into `output_dir`.
+    """
+
     _CUDA_DEVICE_PATTERN = re.compile(r"^cuda:\d+$")
 
     def __init__(

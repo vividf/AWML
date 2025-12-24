@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 
 class CenterPointDeploymentPipeline(BaseDeploymentPipeline):
+    """Base pipeline for CenterPoint staged inference.
+
+    This normalizes preprocessing/postprocessing for CenterPoint and provides
+    common helpers (e.g., middle encoder processing) used by PyTorch/ONNX/TensorRT
+    backend-specific pipelines.
+    """
+
     def __init__(self, pytorch_model, device: str = "cuda", backend_type: str = "unknown"):
         cfg = getattr(pytorch_model, "cfg", None)
 

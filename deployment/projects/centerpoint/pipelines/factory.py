@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 @pipeline_registry.register
 class CenterPointPipelineFactory(BasePipelineFactory):
+    """Pipeline factory for CenterPoint across supported backends."""
+
     @classmethod
     def get_project_name(cls) -> str:
         return "centerpoint"

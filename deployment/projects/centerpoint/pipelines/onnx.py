@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 class CenterPointONNXPipeline(CenterPointDeploymentPipeline):
+    """ONNXRuntime-based CenterPoint pipeline (componentized inference)."""
+
     def __init__(self, pytorch_model, onnx_dir: str, device: str = "cpu"):
         super().__init__(pytorch_model, device, backend_type="onnx")
 

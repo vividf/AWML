@@ -15,12 +15,19 @@ logger = logging.getLogger(__name__)
 
 
 def clear_cuda_memory() -> None:
+    """Best-effort CUDA memory cleanup for long-running deployment workflows."""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
 
 class GPUResourceMixin(ABC):
+    """Mixin that provides idempotent GPU resource cleanup.
+
+    Subclasses implement `_release_gpu_resources()` and this mixin ensures cleanup
+    is called exactly once (including via context-manager or destructor paths).
+    """
+
     _cleanup_called: bool = False
 
     @abstractmethod
@@ -54,6 +61,12 @@ class GPUResourceMixin(ABC):
 
 
 class TensorRTResourceManager:
+    """Helper that tracks CUDA allocations/stream for TensorRT inference.
+
+    This is intentionally minimal: allocate device buffers, provide a stream,
+    and free everything on context exit.
+    """
+
     def __init__(self):
         self._allocations: List[Any] = []
         self._stream: Optional[Any] = None
@@ -95,6 +108,11 @@ def release_tensorrt_resources(
     contexts: Optional[Dict[str, Any]] = None,
     cuda_buffers: Optional[List[Any]] = None,
 ) -> None:
+    """Best-effort release of TensorRT engines/contexts and CUDA buffers.
+
+    This is defensive cleanup for cases where objects need explicit deletion and
+    CUDA buffers need manual `free()`.
+    """
     if contexts:
         for _, context in list(contexts.items()):
             if context is not None:

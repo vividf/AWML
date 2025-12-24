@@ -1,3 +1,9 @@
+"""CenterPoint deploy-only ONNX model variants.
+
+These modules provide ONNX-friendly model wrappers and detector variants used by
+the deployment/export pipeline (not training).
+"""
+
 import os
 from typing import Dict, List, Tuple
 

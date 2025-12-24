@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 
 class CenterPointEvaluator(BaseEvaluator):
+    """Evaluator implementation for CenterPoint 3D detection.
+
+    This builds a task profile (class names, display name) and uses the configured
+    `Detection3DMetricsInterface` to compute metrics from pipeline outputs.
+    """
+
     def __init__(
         self,
         model_cfg: Config,

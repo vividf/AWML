@@ -1,3 +1,9 @@
+"""CenterPoint deploy-only ONNX head variants.
+
+These heads adjust output ordering and forward behavior to improve ONNX export
+and downstream inference compatibility.
+"""
+
 from typing import Dict, List, Tuple
 
 import torch

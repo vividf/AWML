@@ -22,6 +22,11 @@ def create_onnx_model_cfg(
     device: str,
     rot_y_axis_reference: bool = False,
 ) -> Config:
+    """Create a model config that swaps modules to ONNX-friendly variants.
+
+    This mutates the `model_cfg.model` subtree to reference classes registered by
+    `deployment.projects.centerpoint.onnx_models` (e.g., `CenterPointONNX`).
+    """
     onnx_cfg = model_cfg.copy()
     model_config = copy.deepcopy(onnx_cfg.model)
 
@@ -49,6 +54,7 @@ def create_onnx_model_cfg(
 
 
 def build_model_from_cfg(model_cfg: Config, checkpoint_path: str, device: str) -> torch.nn.Module:
+    """Build a model from MMEngine config and load checkpoint weights."""
     # Ensure CenterPoint ONNX variants are registered into MODELS before building.
     # This is required because the config uses string types like "CenterPointONNX", "CenterHeadONNX", etc.
     register_models()
@@ -68,6 +74,7 @@ def build_centerpoint_onnx_model(
     device: str,
     rot_y_axis_reference: bool = False,
 ) -> Tuple[torch.nn.Module, Config]:
+    """Convenience wrapper to build an ONNX-compatible CenterPoint model + cfg."""
     onnx_cfg = create_onnx_model_cfg(
         base_model_cfg,
         device=device,
@@ -82,6 +89,10 @@ def extract_t4metric_v2_config(
     class_names: Optional[List[str]] = None,
     logger: Optional[logging.Logger] = None,
 ) -> Detection3DMetricsConfig:
+    """Extract `Detection3DMetricsConfig` from an MMEngine model config.
+
+    Expects the config to contain a `T4MetricV2` evaluator (val or test).
+    """
     if logger is None:
         logger = logging.getLogger(__name__)
 

@@ -37,6 +37,12 @@ def _import_and_register_project(project_name: str) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the unified deployment CLI parser.
+
+    This discovers `deployment.projects.<name>` bundles, imports them to trigger
+    registration into `deployment.projects.project_registry`, then creates a
+    subcommand per registered project.
+    """
     parser = argparse.ArgumentParser(
         description="AWML Deployment CLI",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -66,6 +72,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: List[str] | None = None) -> int:
+    """CLI entrypoint.
+
+    Args:
+        argv: Optional argv list (without program name). If None, uses `sys.argv[1:]`.
+
+    Returns:
+        Process exit code (0 for success).
+    """
     argv = sys.argv[1:] if argv is None else argv
     parser = build_parser()
     args = parser.parse_args(argv)

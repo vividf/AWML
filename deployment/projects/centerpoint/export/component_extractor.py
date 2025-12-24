@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 
 class CenterPointComponentExtractor(ModelComponentExtractor):
+    """Extract exportable CenterPoint submodules for multi-file ONNX export.
+
+    For CenterPoint we export two components:
+    - `voxel_encoder` (pts_voxel_encoder)
+    - `backbone_neck_head` (pts_backbone + pts_neck + pts_bbox_head)
+    """
+
     def __init__(self, logger: logging.Logger = None, simplify: bool = True):
         self.logger = logger or logging.getLogger(__name__)
         self.simplify = simplify

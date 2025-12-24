@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 class PipelineRegistry:
+    """Registry for mapping project names to pipeline factories.
+
+    Factories are responsible for creating a `BaseDeploymentPipeline` instance
+    given a `ModelSpec` and (optionally) a loaded PyTorch model.
+    """
+
     def __init__(self):
         self._factories: Dict[str, Type[BasePipelineFactory]] = {}
 

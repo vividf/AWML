@@ -16,6 +16,14 @@ from deployment.core import BaseDataLoader, build_preprocessing_pipeline
 
 
 class CenterPointDataLoader(BaseDataLoader):
+    """Deployment dataloader for CenterPoint.
+
+    Responsibilities:
+    - Load `info_file` (pickle) entries describing samples.
+    - Build and run the MMEngine preprocessing pipeline for each sample.
+    - Provide `load_sample()` for export helpers that need raw sample metadata.
+    """
+
     def __init__(
         self,
         info_file: str,

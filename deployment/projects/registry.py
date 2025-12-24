@@ -25,6 +25,13 @@ class ProjectAdapter:
 
 
 class ProjectRegistry:
+    """In-memory registry of deployment project adapters.
+
+    The unified CLI discovers and imports `deployment.projects.<name>` packages;
+    each package registers a `ProjectAdapter` here. This keeps core/cli code
+    project-agnostic while enabling project-specific argument wiring and run logic.
+    """
+
     def __init__(self) -> None:
         self._adapters: Dict[str, ProjectAdapter] = {}
 

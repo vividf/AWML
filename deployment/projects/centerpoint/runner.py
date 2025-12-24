@@ -20,6 +20,12 @@ from deployment.runtime.runner import BaseDeploymentRunner
 
 
 class CenterPointDeploymentRunner(BaseDeploymentRunner):
+    """CenterPoint deployment runner.
+
+    Implements project-specific model loading and wiring to export pipelines,
+    while reusing the project-agnostic orchestration in `BaseDeploymentRunner`.
+    """
+
     def __init__(
         self,
         data_loader,

@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 
 class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipeline):
+    """TensorRT-based CenterPoint pipeline (engine-per-component inference)."""
+
     def __init__(self, pytorch_model, tensorrt_dir: str, device: str = "cuda"):
         if not device.startswith("cuda"):
             raise ValueError("TensorRT requires CUDA device")

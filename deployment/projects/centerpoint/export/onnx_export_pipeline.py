@@ -21,6 +21,12 @@ from deployment.exporters.export_pipelines.interfaces import ExportableComponent
 
 
 class CenterPointONNXExportPipeline(OnnxExportPipeline):
+    """ONNX export pipeline for CenterPoint (multi-file export).
+
+    Uses a `ModelComponentExtractor` to split the model into exportable components
+    and exports each with the configured ONNX exporter.
+    """
+
     def __init__(
         self,
         exporter_factory: type[ExporterFactory],
