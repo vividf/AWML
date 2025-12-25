@@ -120,7 +120,7 @@ backend_config = dict(
         # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
         precision_policy="fp16",
         # TensorRT workspace size (bytes)
-        max_workspace_size=2 << 30,  # 2 GB
+        max_workspace_size=4 << 30,  # 4 GB
     ),
     model_inputs=[
         dict(
@@ -160,7 +160,7 @@ evaluation = dict(
         ),
         # ONNX evaluation
         onnx=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],  # 'cpu' or 'cuda:0'
             # If None: pipeline will infer from export.work_dir / onnx_config.save_file
             # model_dir=None,
