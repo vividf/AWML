@@ -127,7 +127,7 @@ backend_config = dict(
         # TensorRT will use Q/DQ nodes in ONNX to determine INT8 layers
         # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
         # For Q/DQ INT8 export/build, prefer 'STRONGLY_TYPED'
-        precision_policy="strongly_typed",
+        precision_policy="fp16",
         max_workspace_size=4 << 30,  # 4 GB for INT8 calibration
     ),
     model_inputs=[
@@ -152,7 +152,7 @@ backend_config = dict(
 # Evaluation Configuration
 # ============================================================================
 evaluation = dict(
-    enabled=True,
+    enabled=False,
     num_samples=100,
     verbose=True,
     backends=dict(

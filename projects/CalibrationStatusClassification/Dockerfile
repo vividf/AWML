@@ -1,6 +1,6 @@
 ARG AWML_BASE_IMAGE="autoware-ml:latest"
 FROM ${AWML_BASE_IMAGE}
-ARG TRT_VERSION=10.8.0.43
+ARG TRT_VERSION=10.13.3.9
 
 # Install pip dependencies
 RUN python3 -m pip --no-cache-dir install \
