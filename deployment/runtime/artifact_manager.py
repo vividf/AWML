@@ -30,18 +30,48 @@ class ArtifactManager:
     """
 
     def __init__(self, config: BaseDeploymentConfig, logger: logging.Logger):
+        """
+        Initialize artifact manager.
+
+        Args:
+            config: Deployment configuration
+            logger: Logger instance
+        """
         self.config = config
         self.logger = logger
         self.artifacts: Dict[str, Artifact] = {}
 
     def register_artifact(self, backend: Backend, artifact: Artifact) -> None:
+        """
+        Register an artifact for a given backend.
+
+        Args:
+            backend: Backend to register the artifact for
+            artifact: Artifact to register
+        """
         self.artifacts[backend.value] = artifact
         self.logger.debug(f"Registered {backend.value} artifact: {artifact.path}")
 
     def get_artifact(self, backend: Backend) -> Optional[Artifact]:
+        """
+        Get an artifact for a given backend.
+
+        Args:
+            backend: Backend to get the artifact for
+        Returns:
+            Artifact for the given backend
+        """
         return self.artifacts.get(backend.value)
 
     def resolve_artifact(self, backend: Backend) -> Tuple[Optional[Artifact], bool]:
+        """
+        Resolve an artifact for a given backend.
+
+        Args:
+            backend: Backend to resolve the artifact for
+        Returns:
+            Tuple containing the artifact and a boolean indicating if the artifact exists
+        """
         artifact = self.artifacts.get(backend.value)
         if artifact:
             return artifact, artifact.exists()
@@ -55,6 +85,14 @@ class ArtifactManager:
         return None, False
 
     def _get_config_path(self, backend: Backend) -> Optional[str]:
+        """
+        Get the configuration path for a given backend.
+
+        Args:
+            backend: Backend to get the configuration path for
+        Returns:
+            Configuration path for the given backend
+        """
         eval_backends = self.config.evaluation_config.backends
         backend_cfg = self._get_backend_entry(eval_backends, backend)
         if backend_cfg and isinstance(backend_cfg, Mapping):
@@ -76,6 +114,15 @@ class ArtifactManager:
 
     @staticmethod
     def _get_backend_entry(mapping: Optional[Mapping], backend: Backend) -> Any:
+        """
+        Get a backend entry from a mapping.
+
+        Args:
+            mapping: Mapping to get the backend entry from
+            backend: Backend to get the entry for
+        Returns:
+            Backend entry from the mapping
+        """
         if not mapping:
             return None
 
