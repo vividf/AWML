@@ -83,10 +83,10 @@ class QuantConv2d(nn.Conv2d):
 
 class QuantConvTranspose2d(nn.ConvTranspose2d):
     """
-    Quantized ConvTranspose2d with per-channel weight quantization.
+    Quantized ConvTranspose2d with per-tensor weight quantization.
 
     This module extends nn.ConvTranspose2d for FPN upsample layers with
-    input and weight quantizers.
+    input and weight quantizers..
 
     Args:
         Same as nn.ConvTranspose2d
@@ -110,7 +110,8 @@ class QuantConvTranspose2d(nn.ConvTranspose2d):
                 num_bits=8, calib_method="histogram"
             )
         if QuantConvTranspose2d.default_quant_desc_weight is None:
-            QuantConvTranspose2d.default_quant_desc_weight = tensor_quant.QUANT_DESC_8BIT_CONV2D_WEIGHT_PER_CHANNEL
+            # Use per-tensor weight quantization for TensorRT compatibility.
+            QuantConvTranspose2d.default_quant_desc_weight = tensor_quant.QUANT_DESC_8BIT_PER_TENSOR
 
         self._input_quantizer = None
         self._weight_quantizer = None

@@ -41,7 +41,21 @@ def _ensure_quant_descriptors_initialized():
             num_bits=8, calib_method="histogram"
         )
     if QuantConvTranspose2d.default_quant_desc_weight is None:
-        QuantConvTranspose2d.default_quant_desc_weight = tensor_quant.QUANT_DESC_8BIT_CONV2D_WEIGHT_PER_CHANNEL
+        # Use per-tensor weight quantization for TensorRT compatibility.
+        QuantConvTranspose2d.default_quant_desc_weight = tensor_quant.QUANT_DESC_8BIT_PER_TENSOR
+
+    # Guard rail: ConvTranspose2d INT8 in TensorRT is often fragile with per-channel
+    # weight quantization. If someone sets it back to a per-channel descriptor, it can
+    # break TRT build with "vol == 1 failed" or "Could not find any implementation".
+    # We force per-tensor weights unless users explicitly opt out by passing a custom
+    # descriptor into `init_quantizer` after replacement.
+    try:
+        qdw = QuantConvTranspose2d.default_quant_desc_weight
+        if getattr(qdw, "axis", None) not in (None, (), []):
+            QuantConvTranspose2d.default_quant_desc_weight = tensor_quant.QUANT_DESC_8BIT_PER_TENSOR
+    except Exception:
+        # Be conservative: never fail descriptor initialization due to this guard.
+        pass
 
     # Initialize QuantLinear descriptors
     if QuantLinear.default_quant_desc_input is None:

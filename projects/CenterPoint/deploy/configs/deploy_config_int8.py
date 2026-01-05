@@ -43,9 +43,9 @@ quantization = dict(
     # Note: ConvTranspose2d (deblocks) are excluded because TensorRT has
     # limited INT8 support for transposed convolutions
     sensitive_layers=[
-        "pts_neck.deblocks.0.0",  # ConvTranspose2d - no TRT INT8 support
-        "pts_neck.deblocks.1.0",  # ConvTranspose2d - no TRT INT8 support
-        "pts_neck.deblocks.2.0",  # ConvTranspose2d - no TRT INT8 support
+        # "pts_neck.deblocks.0.0",  # ConvTranspose2d - no TRT INT8 support
+        # "pts_neck.deblocks.1.0",  # ConvTranspose2d - no TRT INT8 support
+        # "pts_neck.deblocks.2.0",  # ConvTranspose2d - no TRT INT8 support
     ],
 )
 
