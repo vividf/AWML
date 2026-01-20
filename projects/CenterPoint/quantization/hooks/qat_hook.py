@@ -1,7 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 """QAT training hook for CenterPoint with MMEngine."""
 
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Union
 
 from mmengine.hooks import Hook
 from mmengine.registry import HOOKS
@@ -33,7 +33,8 @@ class QATHook(Hook):
     ```
 
     Args:
-        calibration_batches: Number of batches for initial calibration
+        calibration_batches: Number of batches for initial calibration.
+                            If None or -1, use all training batches (recommended for QAT).
         calibration_epoch: Epoch at which to run calibration (default: 0)
         freeze_bn: Whether to fuse and freeze BatchNorm layers
         sensitive_layers: List of layer names to skip quantization
@@ -42,6 +43,8 @@ class QATHook(Hook):
         quant_neck: Whether to quantize pts_neck
         quant_head: Whether to quantize pts_bbox_head
         quant_voxel_encoder: Whether to quantize pts_voxel_encoder
+        calib_cache_path: Optional path to PTQ calibration cache (.calib file).
+                         If provided, skip calibration and load amax values directly.
 
     Example:
         >>> # In config file
@@ -59,7 +62,7 @@ class QATHook(Hook):
 
     def __init__(
         self,
-        calibration_batches: int = 100,
+        calibration_batches: Optional[int] = None,  # None means use all batches
         calibration_epoch: int = 0,
         freeze_bn: bool = True,
         sensitive_layers: Optional[List[str]] = None,
@@ -68,6 +71,7 @@ class QATHook(Hook):
         quant_neck: bool = True,
         quant_head: bool = True,
         quant_voxel_encoder: bool = True,
+        calib_cache_path: Optional[str] = None,  # Path to load PTQ calibration cache
     ):
         self.calibration_batches = calibration_batches
         self.calibration_epoch = calibration_epoch
@@ -78,6 +82,7 @@ class QATHook(Hook):
         self.quant_neck = quant_neck
         self.quant_head = quant_head
         self.quant_voxel_encoder = quant_voxel_encoder
+        self.calib_cache_path = calib_cache_path
 
         # State flags
         self._quantized = False
@@ -139,7 +144,7 @@ class QATHook(Hook):
 
     def before_train_epoch(self, runner) -> None:
         """
-        Calibrate quantizers at the specified epoch.
+        Calibrate quantizers at the specified epoch, or load from PTQ cache.
 
         Args:
             runner: MMEngine runner instance
@@ -156,17 +161,19 @@ class QATHook(Hook):
             if hasattr(model, "module"):
                 model = model.module
 
-            dataloader = runner.train_dataloader
-
-            runner.logger.info(f"QATHook: Starting calibration with {self.calibration_batches} batches...")
-
-            # Run calibration
-            calibrator = CalibrationManager(model)
-            calibrator.calibrate(
-                dataloader,
-                num_batches=self.calibration_batches,
-                method=self.amax_method,
-            )
+            # Check if we should load from PTQ calibration cache
+            if self.calib_cache_path is not None:
+                runner.logger.info(f"QATHook: Loading PTQ calibration cache from {self.calib_cache_path}...")
+                try:
+                    calibrator = CalibrationManager(model)
+                    calibrator.load_calib_cache(self.calib_cache_path)
+                    runner.logger.info("QATHook: PTQ calibration cache loaded successfully")
+                except Exception as e:
+                    runner.logger.error(f"QATHook: Failed to load PTQ calibration cache: {e}")
+                    runner.logger.info("QATHook: Falling back to new calibration...")
+                    self._load_or_run_calibration(runner, model)
+            else:
+                self._load_or_run_calibration(runner, model)
 
             # Disable sensitive layers
             if self.sensitive_layers:
@@ -180,7 +187,26 @@ class QATHook(Hook):
                         runner.logger.warning(f"  - Layer not found: {layer_name}")
 
             self._calibrated = True
-            runner.logger.info("QATHook: Calibration complete")
+            runner.logger.info("QATHook: Calibration setup complete")
+
+    def _load_or_run_calibration(self, runner, model):
+        """Run new calibration or load from existing cache."""
+        from projects.CenterPoint.quantization.calibration import CalibrationManager
+
+        dataloader = runner.train_dataloader
+
+        if self.calibration_batches is None or self.calibration_batches == -1:
+            runner.logger.info("QATHook: Starting calibration with all training batches...")
+        else:
+            runner.logger.info(f"QATHook: Starting calibration with {self.calibration_batches} batches...")
+
+        # Run calibration
+        calibrator = CalibrationManager(model)
+        calibrator.calibrate(
+            dataloader,
+            num_batches=self.calibration_batches,
+            method=self.amax_method,
+        )
 
     def after_train(self, runner) -> None:
         """

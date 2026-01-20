@@ -95,7 +95,7 @@ class CalibrationManager:
     def collect_stats(
         self,
         dataloader: Any,
-        num_batches: int = 100,
+        num_batches: Optional[int] = 100,
         forward_fn: Optional[Callable] = None,
     ):
         """
@@ -106,7 +106,8 @@ class CalibrationManager:
 
         Args:
             dataloader: DataLoader providing calibration samples
-            num_batches: Number of batches to use for calibration
+            num_batches: Number of batches to use for calibration.
+                        If None or -1, use all batches in the dataloader.
             forward_fn: Optional custom forward function. If provided,
                         called as forward_fn(model, batch). Otherwise,
                         uses model.test_step(batch) for MMDet3D models.
@@ -114,10 +115,13 @@ class CalibrationManager:
         self.model.eval()
         self._enable_calibration_mode()
 
+        # Use all batches if num_batches is None or -1
+        use_all_batches = num_batches is None or num_batches == -1
+
         with torch.no_grad():
-            pbar = tqdm(enumerate(dataloader), total=num_batches, desc="Calibrating")
+            pbar = tqdm(enumerate(dataloader), total=num_batches if not use_all_batches else None, desc="Calibrating")
             for i, batch in pbar:
-                if i >= num_batches:
+                if not use_all_batches and i >= num_batches:
                     break
 
                 try:
@@ -172,7 +176,7 @@ class CalibrationManager:
     def calibrate(
         self,
         dataloader: Any,
-        num_batches: int = 100,
+        num_batches: Optional[int] = 100,
         method: str = "mse",
         forward_fn: Optional[Callable] = None,
     ):
@@ -186,19 +190,38 @@ class CalibrationManager:
 
         Args:
             dataloader: DataLoader providing calibration samples
-            num_batches: Number of batches to use for calibration
+            num_batches: Number of batches to use for calibration.
+                        If None or -1, use all batches in the dataloader.
             method: Method for computing amax ("max", "mse", "entropy", "percentile")
             forward_fn: Optional custom forward function
 
         Example:
             >>> calibrator = CalibrationManager(model)
             >>> calibrator.calibrate(val_dataloader, num_batches=100, method="mse")
+            >>> # Use all batches for QAT:
+            >>> calibrator.calibrate(train_dataloader, num_batches=None, method="mse")
         """
-        print(f"Starting calibration with {num_batches} batches, method={method}")
+        if num_batches is None or num_batches == -1:
+            print(f"Starting calibration with all batches, method={method}")
+        else:
+            print(f"Starting calibration with {num_batches} batches, method={method}")
 
-        self.set_quantizer_fast()
-        self.collect_stats(dataloader, num_batches, forward_fn)
-        self.compute_amax(method)
+        # Temporarily disable deterministic algorithms during calibration
+        # as PyTorch quantization's _histc_cuda doesn't support deterministic mode
+        original_deterministic = torch.are_deterministic_algorithms_enabled()
+        if original_deterministic:
+            print("Warning: Temporarily disabling deterministic algorithms for quantization calibration")
+            torch.use_deterministic_algorithms(False)
+
+        try:
+            self.set_quantizer_fast()
+            self.collect_stats(dataloader, num_batches, forward_fn)
+            self.compute_amax(method)
+        finally:
+            # Restore original deterministic setting
+            if original_deterministic:
+                torch.use_deterministic_algorithms(True)
+                print("Restored deterministic algorithms")
 
         # Print summary
         num_quantizers = sum(1 for _, m in self.model.named_modules() if isinstance(m, TensorQuantizer))

@@ -34,7 +34,7 @@ export = dict(
     # - 'trt'  : build TensorRT engine from an existing ONNX
     # - 'both' : export PyTorch -> ONNX -> TensorRT
     # - 'none' : no export (only evaluation / verification on existing artifacts)
-    mode="none",
+    mode="both",
     # ---- Common options ----------------------------------------------------
     work_dir="work_dirs/centerpoint_deployment",
     # ---- ONNX source when building TensorRT only ---------------------------
@@ -49,7 +49,8 @@ export = dict(
 # ============================================================================
 runtime_io = dict(
     # Path to info.pkl file
-    info_file="data/t4dataset/info/t4dataset_j6gen2_base_infos_test.pkl",
+    # info_file="data/t4dataset/info/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="data/info/vivid/t4dataset_j6gen2_base_infos_test.pkl",
     # Sample index for export (use first sample)
     sample_idx=1,
 )
@@ -144,8 +145,8 @@ backend_config = dict(
 # Evaluation Configuration
 # ============================================================================
 evaluation = dict(
-    enabled=True,
-    num_samples=100,  # Number of samples to evaluate
+    enabled=False,
+    num_samples=-1,  # Number of samples to evaluate
     verbose=True,
     # Decide which backends to evaluate and on which devices.
     # Note:
@@ -155,7 +156,7 @@ evaluation = dict(
     backends=dict(
         # PyTorch evaluation (uses top-level checkpoint_path)
         pytorch=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],  # or 'cpu'
         ),
         # ONNX evaluation

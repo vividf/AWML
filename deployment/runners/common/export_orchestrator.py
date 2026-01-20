@@ -198,13 +198,25 @@ class ExportOrchestrator:
         eval_config = self.config.evaluation_config
         verification_cfg = self.config.verification_config
 
-        # Check if PyTorch evaluation is needed
-        needs_pytorch_eval = False
+        # Check if any evaluation backend is enabled
+        # Note: Many pipelines (e.g., CenterPoint) require the PyTorch model
+        # even when evaluating ONNX or TensorRT backends, because they use
+        # the PyTorch model for certain operations (e.g., preprocessing).
+        needs_pytorch_for_eval = False
         if eval_config.enabled:
             backends_cfg = eval_config.backends
-            pytorch_cfg = backends_cfg.get(Backend.PYTORCH.value) or backends_cfg.get(Backend.PYTORCH, {})
-            if pytorch_cfg and pytorch_cfg.get("enabled", False):
-                needs_pytorch_eval = True
+            for backend_key in [
+                Backend.PYTORCH.value,
+                Backend.PYTORCH,
+                Backend.ONNX.value,
+                Backend.ONNX,
+                Backend.TENSORRT.value,
+                Backend.TENSORRT,
+            ]:
+                backend_cfg = backends_cfg.get(backend_key, {})
+                if backend_cfg and backend_cfg.get("enabled", False):
+                    needs_pytorch_for_eval = True
+                    break
 
         # Check if PyTorch is needed for verification
         needs_pytorch_for_verification = False
@@ -217,7 +229,7 @@ class ExportOrchestrator:
                     for policy in scenarios
                 )
 
-        return should_export_onnx or needs_pytorch_eval or needs_pytorch_for_verification
+        return should_export_onnx or needs_pytorch_for_eval or needs_pytorch_for_verification
 
     def _load_and_register_pytorch_model(
         self,
