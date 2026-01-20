@@ -1,3 +1,4 @@
+from .backbones.resnet import BEVResNet
 from .backbones.second import SECOND
 from .dense_heads.centerpoint_head import CenterHead, CustomSeparateHead
 from .detectors.centerpoint import CenterPoint
@@ -7,6 +8,7 @@ from .task_modules.coders.centerpoint_bbox_coders import CenterPointBBoxCoder
 from .voxel_encoders.pillar_encoder import BackwardPillarFeatureNet
 
 __all__ = [
+    "BEVResNet",
     "SECOND",
     "SECONDFPN",
     "CenterPoint",

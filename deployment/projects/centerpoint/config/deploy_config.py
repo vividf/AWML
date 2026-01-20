@@ -11,13 +11,14 @@ task_type = "detection3d"
 # ============================================================================
 # Checkpoint Path - Single source of truth for PyTorch model
 # ============================================================================
-checkpoint_path = "work_dirs/centerpoint/best_checkpoint.pth"
+# checkpoint_path = "work_dirs/centerpoint/best_checkpoint.pth"
+checkpoint_path = "/workspace/work_dirs/centerpoint/T4Dataset/second_resnet50_secfpn_4xb16_121m_j6gen2_base_t4metricv2_v3/epoch_30.pth"
 
 # ============================================================================
 # Device settings (shared by export, evaluation, verification)
 # ============================================================================
 devices = dict(
-    cpu="cpu",
+    cpu="none",
     cuda="cuda:0",
 )
 
@@ -25,8 +26,8 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="both",
-    work_dir="work_dirs/centerpoint_deployment",
+    mode="none",
+    work_dir="work_dirs/centerpoint_deployment_resnet50",
     onnx_path=None,
 )
 
@@ -111,7 +112,7 @@ components = dict(
 # ============================================================================
 runtime_io = dict(
     # This should be a path relative to `data_root` in the model config.
-    info_file="info/t4dataset_j6gen2_infos_val.pkl",
+    info_file="info/t4dataset_j6gen2_base_infos_val.pkl",
     sample_idx=1,
 )
 
@@ -139,7 +140,7 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=1,
+    num_samples=2,
     verbose=True,
     backends=dict(
         pytorch=dict(

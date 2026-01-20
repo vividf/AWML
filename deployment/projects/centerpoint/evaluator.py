@@ -164,8 +164,6 @@ class CenterPointEvaluator(BaseEvaluator):
         text = interface.format_last_report()
         if text:
             print(text)
-            print(f"\nTotal Samples: {results.get('num_samples', 0)}")
-            return
 
         if "latency" in results:
             latency = results["latency"].to_dict()
@@ -176,8 +174,8 @@ class CenterPointEvaluator(BaseEvaluator):
             print(f"  Max:    {latency['max_ms']:.2f} ms")
             print(f"  Median: {latency['median_ms']:.2f} ms")
 
-            if "latency_breakdown" in latency:
-                breakdown = latency["latency_breakdown"]
+            if "latency_breakdown" in results:
+                breakdown = results["latency_breakdown"].to_dict()
                 print("\nStage-wise Latency Breakdown:")
                 model_substages = {"voxel_encoder_ms", "middle_encoder_ms", "backbone_head_ms"}
                 for stage, stats in breakdown.items():

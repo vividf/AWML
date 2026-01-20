@@ -49,7 +49,7 @@ num_workers = 32
 val_interval = 1
 max_epochs = 30
 work_dir = (
-    "work_dirs/centerpoint/" + _base_.dataset_type + "/second_resnet50_secfpn_4xb16_121m_j6gen2_base_t4metricv2/"
+    "work_dirs/centerpoint/" + _base_.dataset_type + "/second_resnet50_secfpn_4xb16_121m_j6gen2_base_t4metricv2_v3/"
 )
 
 train_pipeline = [
@@ -292,14 +292,22 @@ model = dict(
     pts_middle_encoder=dict(type="PointPillarsScatter", in_channels=32, output_shape=(grid_size[0], grid_size[1])),
     pts_backbone=dict(
         _delete_=True,
-        type="mmdet.ResNet",
+        type="BEVResNet",  # Use custom BEV-friendly ResNet wrapper (renamed to avoid confusion)
         depth=50,
         num_stages=4,
-        strides=(1, 2, 2, 2),  # ResNet stage strides
-        out_indices=(0, 0, 0),  # Use stage 0 output three times
-        frozen_stages=1,
+        strides=(1, 2, 2, 2),  # ResNet stage strides: stage0=1, stage1=2, stage2=2, stage3=2
+        out_indices=(0, 1, 2),  # Get features from res_layers 0, 1, 2
+        # BEV-friendly stem configuration: no downsampling at input
+        deep_stem=True,  # Use three 3x3 convs instead of 7x7: more efficient and better boundary behavior
+        conv1_stride=1,  # First conv stride=1 (no downsampling) - applies to deep_stem's first 3x3 conv
+        with_pool=False,  # Disable maxpool (no downsampling)
+        # pool_stride is only used when with_pool=True, so omitted here
+        frozen_stages=-1,  # Don't freeze any stages initially
+        base_channels=32,  # ResNet50 outputs: 128, 256, 512 channels (32*4, 64*4, 128*4)
+        # Reduced from 64 to 32 for lighter FPN input channels while keeping ResNet structure
+        # Alternative: base_channels=16 → [64, 128, 256] (closer to SECOND channel levels)
         norm_cfg=dict(type="BN", eps=1e-3, momentum=0.01),
-        norm_eval=True,
+        norm_eval=False,  # Keep BN in training mode for better performance
         # Remove pretrained weights due to input channel mismatch (3 vs 32)
         # init_cfg=dict(type="Pretrained", checkpoint="torchvision://resnet50"),
         style="pytorch",
@@ -307,9 +315,18 @@ model = dict(
     ),
     pts_neck=dict(
         type="SECONDFPN",
-        in_channels=[256, 256, 256],  # All from ResNet stage 0: 256 channels each
+        in_channels=[
+            128,
+            256,
+            512,
+        ],  # ResNet50 layers 0, 1, 2: 128, 256, 512 channels (base_channels=32 * expansion=4)
+        # Reduced from [256, 512, 1024] to [128, 256, 512] for lighter FPN input
         out_channels=[128, 128, 128],
-        upsample_strides=[4, 4, 4],  # Upsample all 190x190 features to 760x760 BEV grid
+        # BEV-friendly: With conv1_stride=1 and no maxpool, outputs should be:
+        # stage0: (760, 760) -> upsample stride=1 -> (760, 760)
+        # stage1: (380, 380) -> upsample stride=2 -> (760, 760)
+        # stage2: (190, 190) -> upsample stride=4 -> (760, 760)
+        upsample_strides=[1, 2, 4],  # Upsample to match the largest feature map size
         norm_cfg=dict(type="BN", eps=0.001, momentum=0.01),
         upsample_cfg=dict(type="deconv", bias=False),
         use_conv_for_no_stride=True,
