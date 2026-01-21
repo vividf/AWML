@@ -36,6 +36,7 @@ quantization = dict(
     quant_backbone=True,
     quant_neck=True,
     quant_head=True,
+    quant_add=True,
     # Optional: skip quantizing early backbone stages (maps to pts_backbone.blocks.<idx>)
     skip_backbone_first_stages=0,
     skip_backbone_stages=[],

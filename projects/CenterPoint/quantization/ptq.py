@@ -22,6 +22,7 @@ def quantize_ptq(
     sensitive_layers: Optional[Set[str]] = None,
     forward_fn: Optional[callable] = None,
     verbose: bool = True,
+    quant_add: bool = False,
 ) -> nn.Module:
     """
     Apply PTQ (Post-Training Quantization) to a CenterPoint model.
@@ -29,8 +30,9 @@ def quantize_ptq(
     This function performs the complete PTQ workflow:
     1. Fuse BatchNorm layers into convolutions (optional)
     2. Insert Q/DQ nodes by replacing modules with quantized versions
-    3. Calibrate to determine optimal quantization scales
-    4. Disable quantization for sensitive layers
+    3. Attach QuantAdd to residual blocks if quant_add=True (for ResNet-style backbones)
+    4. Calibrate to determine optimal quantization scales
+    5. Disable quantization for sensitive layers
 
     Args:
         model: CenterPoint model (should be in eval mode)
@@ -41,6 +43,8 @@ def quantize_ptq(
         sensitive_layers: Set of layer names to skip quantization
         forward_fn: Optional custom forward function for calibration
         verbose: Whether to print progress information
+        quant_add: Whether to attach QuantAdd to residual blocks (BasicBlock/SparseBasicBlock).
+                   Set to True for ResNet-style backbones with residual connections.
 
     Returns:
         Quantized model
@@ -49,7 +53,10 @@ def quantize_ptq(
         >>> from projects.CenterPoint.quantization import quantize_ptq
         >>> model = init_model(cfg, checkpoint)
         >>> model.eval()
+        >>> # For standard SECOND backbone (no residual connections)
         >>> quantized_model = quantize_ptq(model, val_dataloader)
+        >>> # For ResNet-style backbone (with residual connections)
+        >>> quantized_model = quantize_ptq(model, val_dataloader, quant_add=True)
         >>> torch.save({'state_dict': quantized_model.state_dict()}, 'ptq.pth')
     """
     model.eval()
@@ -67,7 +74,10 @@ def quantize_ptq(
     # Step 2: Insert Q/DQ nodes
     if verbose:
         print("Step 2: Inserting Q/DQ nodes...")
-    quant_model(model, skip_names=sensitive_layers)
+    quant_model(model, skip_names=sensitive_layers, quant_add=quant_add)
+
+    if quant_add and verbose:
+        print("  - QuantAdd attached to residual blocks (BasicBlock/SparseBasicBlock)")
 
     # Step 3: Calibrate
     if verbose:
@@ -127,14 +137,16 @@ def load_ptq_model(
     calib_cache_path: Optional[str] = None,
     fuse_bn: bool = True,
     sensitive_layers: Optional[Set[str]] = None,
+    quant_add: bool = False,
 ) -> nn.Module:
     """
     Load a PTQ quantized model.
 
     This function:
     1. Inserts Q/DQ nodes (to match the saved model structure)
-    2. Loads the checkpoint
-    3. Optionally loads calibration cache
+    2. Attaches QuantAdd if quant_add=True (to match saved model structure)
+    3. Loads the checkpoint
+    4. Optionally loads calibration cache
 
     Args:
         model: Unquantized CenterPoint model
@@ -142,6 +154,7 @@ def load_ptq_model(
         calib_cache_path: Optional path to calibration cache
         fuse_bn: Whether BatchNorm was fused during PTQ
         sensitive_layers: Layers that were skipped during PTQ
+        quant_add: Whether QuantAdd was attached during PTQ (must match saved model)
 
     Returns:
         Loaded PTQ model
@@ -154,7 +167,7 @@ def load_ptq_model(
         fuse_model_bn(model)
 
     # Insert Q/DQ nodes
-    quant_model(model, skip_names=sensitive_layers)
+    quant_model(model, skip_names=sensitive_layers, quant_add=quant_add)
 
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location="cpu")

@@ -42,6 +42,8 @@ class QATHook(Hook):
         quant_neck: Whether to quantize pts_neck
         quant_head: Whether to quantize pts_bbox_head
         quant_voxel_encoder: Whether to quantize pts_voxel_encoder
+        quant_add: Whether to attach QuantAdd to residual blocks (BasicBlock/SparseBasicBlock).
+                   Set to True for ResNet-style backbones with residual connections.
 
     Example:
         >>> # In config file
@@ -68,6 +70,7 @@ class QATHook(Hook):
         quant_neck: bool = True,
         quant_head: bool = True,
         quant_voxel_encoder: bool = True,
+        quant_add: bool = False,
     ):
         self.calibration_batches = calibration_batches
         self.calibration_epoch = calibration_epoch
@@ -78,6 +81,7 @@ class QATHook(Hook):
         self.quant_neck = quant_neck
         self.quant_head = quant_head
         self.quant_voxel_encoder = quant_voxel_encoder
+        self.quant_add = quant_add
 
         # State flags
         self._quantized = False
@@ -96,6 +100,7 @@ class QATHook(Hook):
         """
         from projects.CenterPoint.quantization.fusion import fuse_model_bn
         from projects.CenterPoint.quantization.replace import (
+            attach_quant_add,
             quant_conv_module,
             quant_linear_module,
         )
@@ -133,6 +138,11 @@ class QATHook(Hook):
         if self.quant_voxel_encoder and hasattr(model, "pts_voxel_encoder"):
             quant_linear_module(model.pts_voxel_encoder, self.sensitive_layers, "pts_voxel_encoder")
             runner.logger.info("  - Quantized pts_voxel_encoder")
+
+        # Attach QuantAdd to residual blocks if enabled
+        if self.quant_add:
+            attach_quant_add(model)
+            runner.logger.info("  - QuantAdd attached to residual blocks (BasicBlock/SparseBasicBlock)")
 
         self._quantized = True
         runner.logger.info("QATHook: Quantization modules inserted")

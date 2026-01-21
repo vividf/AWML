@@ -191,6 +191,7 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
             - quant_backbone
             - quant_neck
             - quant_head
+            - quant_add
     """
     # Baseline: from deploy config if provided, otherwise defaults.
     fuse_bn = True
@@ -200,6 +201,7 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
         "quant_backbone": True,
         "quant_neck": True,
         "quant_head": True,
+        "quant_add": False,  # Default to False for backward compatibility
     }
 
     # Deploy config baseline
@@ -214,6 +216,10 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
         for k in list(quant_flags.keys()):
             if k in quant_cfg:
                 quant_flags[k] = bool(quant_cfg[k])
+
+        # Handle quant_add specifically (for ResNet-style backbones)
+        if "quant_add" in quant_cfg:
+            quant_flags["quant_add"] = bool(quant_cfg["quant_add"])
 
         # Sensitive layers baseline (deployment terminology)
         skip_layers |= set(quant_cfg.get("sensitive_layers", []) or [])
@@ -256,13 +262,18 @@ def run_ptq(args):
     print(f"Output: {args.output}")
     print("=" * 80)
 
+    # Build quantization settings to show quant_add status
+    _, _, quant_flags = _build_ptq_quant_settings(args)
+    if quant_flags["quant_add"]:
+        print("Note: QuantAdd enabled for residual connections (ResNet-style backbones)")
+
     # Load model
     print("\n[1/5] Loading model...")
     cfg = Config.fromfile(args.config)
     model = init_model(cfg, args.checkpoint, device=args.device)
     model.eval()
 
-    # Fuse BatchNorm
+    # Build quantization settings
     fuse_bn, skip_layers, quant_flags = _build_ptq_quant_settings(args)
 
     if fuse_bn:
@@ -279,8 +290,12 @@ def run_ptq(args):
         quant_neck=quant_flags["quant_neck"],
         quant_head=quant_flags["quant_head"],
         quant_voxel_encoder=quant_flags["quant_voxel_encoder"],
+        quant_add=quant_flags["quant_add"],
         skip_names=skip_layers,
     )
+
+    if quant_flags["quant_add"]:
+        print("  - QuantAdd attached to residual blocks (BasicBlock/SparseBasicBlock)")
 
     # Build dataloader
     print("\n[4/5] Building calibration dataloader...")
@@ -493,6 +508,7 @@ def run_qat(args):
 
     # Sensitive layers: use deploy config as the single source of truth (if provided).
     sensitive_layers = []
+    quant_add = False
     if args.deploy_cfg:
         quant_cfg, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
         sensitive_layers = list(quant_cfg.get("sensitive_layers", []) or [])
@@ -515,6 +531,9 @@ def run_qat(args):
         if not bool(quant_cfg.get("quant_head", True)):
             sensitive_layers.append("pts_bbox_head")
 
+        # Read quant_add setting
+        quant_add = bool(quant_cfg.get("quant_add", False))
+
     # De-duplicate while preserving order
     deduped = []
     seen = set()
@@ -530,6 +549,7 @@ def run_qat(args):
             calibration_epoch=0,
             freeze_bn=True,
             sensitive_layers=deduped,
+            quant_add=quant_add,
         )
     )
 
