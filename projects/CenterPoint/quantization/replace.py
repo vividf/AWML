@@ -223,14 +223,88 @@ def quant_model(
         attach_quant_add(model)
 
 
+class BasicBlockForwardHook:
+    """
+    Forward hook for BasicBlock to use QuantAdd for residual connections.
+
+    This hook replaces the forward method of BasicBlock to use quant_add
+    when available, falling back to standard addition otherwise.
+    """
+
+    def __init__(self, obj):
+        self.obj = obj
+
+    def __call__(self, x):
+        """Forward pass with quantized add support."""
+        self = self.obj
+
+        identity = x
+
+        out = self.conv1(x)
+        out = self.norm1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.norm2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        # Use quant_add if available, otherwise use standard addition
+        if hasattr(self, "quant_add"):
+            out = self.quant_add(out, identity)
+        else:
+            out = out + identity
+
+        out = self.relu(out)
+        return out
+
+
+class SparseBasicBlockForwardHook:
+    """
+    Forward hook for SparseBasicBlock to use QuantAdd for residual connections.
+
+    This hook replaces the forward method of SparseBasicBlock to use quant_add
+    when available, falling back to standard addition otherwise.
+    SparseBasicBlock works with SparseConvTensor which requires replace_feature.
+    """
+
+    def __init__(self, obj):
+        self.obj = obj
+
+    def __call__(self, x):
+        """Forward pass with quantized add support for sparse tensors."""
+        self = self.obj
+
+        identity = x
+        out = self.conv1(x)
+
+        # Handle ReLU (may be fused in conv1)
+        if hasattr(self, "relu") and not getattr(self.conv1, "act_type", None):
+            out = out.replace_feature(self.relu(out.features))
+
+        out = self.conv2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        # Use quant_add if available, otherwise use standard addition
+        if hasattr(self, "quant_add"):
+            out = out.replace_feature(self.quant_add(out.features, identity.features))
+        else:
+            out = out.replace_feature(out.features + identity.features)
+
+        out = out.replace_feature(self.relu(out.features))
+        return out
+
+
 def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = None):
     """
-    Attach QuantAdd to modules that perform residual add.
+    Attach QuantAdd to modules that perform residual add and replace their forward methods.
 
     This mirrors CUDA-CenterPoint behavior: it injects a shared-input quantizer
-    before elementwise add to align scales. Because many upstream blocks
-    implement add inside `forward`, we attach a `quant_add` attribute to the
-    target modules; custom blocks can call `self.quant_add(x, y)` in forward.
+    before elementwise add to align scales. The forward method is replaced with
+    a hook that uses quant_add when available.
 
     Args:
         model: CenterPoint model
@@ -243,5 +317,23 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
     for module in model.modules():
         cls_name = module.__class__.__name__
         if cls_name in target_class_names or any(name in cls_name for name in target_class_names):
+            # Attach QuantAdd if not already present
             if not hasattr(module, "quant_add"):
                 module.quant_add = QuantAdd()
+
+            # Replace forward method with hook that uses quant_add
+            # Check if it's SparseBasicBlock (by class name) or BasicBlock
+            is_sparse = "Sparse" in cls_name
+
+            if is_sparse:
+                # SparseBasicBlock: use SparseBasicBlockForwardHook
+                if not isinstance(module.forward, SparseBasicBlockForwardHook):
+                    if not hasattr(module, "_original_forward"):
+                        module._original_forward = module.forward
+                    module.forward = SparseBasicBlockForwardHook(module)
+            else:
+                # BasicBlock: use BasicBlockForwardHook
+                if not isinstance(module.forward, BasicBlockForwardHook):
+                    if not hasattr(module, "_original_forward"):
+                        module._original_forward = module.forward
+                    module.forward = BasicBlockForwardHook(module)

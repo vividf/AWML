@@ -1,3 +1,4 @@
+from .backbones.resnet import BEVResNet
 from .backbones.second import SECOND
 from .dense_heads.centerpoint_head import CenterHead, CustomSeparateHead
 from .dense_heads.centerpoint_head_onnx import CenterHeadONNX, SeparateHeadONNX
@@ -15,6 +16,7 @@ __all__ = [
     "CenterPoint",
     "CenterHead",
     "CustomSeparateHead",
+    "BEVResNet",
     "BackwardPillarFeatureNet",
     "PillarFeatureNetONNX",
     "BackwardPillarFeatureNetONNX",

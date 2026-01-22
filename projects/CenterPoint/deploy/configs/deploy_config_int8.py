@@ -19,7 +19,8 @@ task_type = "detection3d"
 # ============================================================================
 # Checkpoint Path - Use PTQ or QAT quantized checkpoint
 # ============================================================================
-checkpoint_path = "work_dirs/centerpoint_ptq.pth"
+# checkpoint_path = "work_dirs/centerpoint_ptq.pth"
+checkpoint_path = "work_dirs/centerpoint_resnet34_ptq.pth"
 
 # ============================================================================
 # Quantization Configuration
@@ -62,7 +63,7 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="both",  # Export ONNX -> TensorRT
+    mode="none",  # Export ONNX -> TensorRT
     work_dir="work_dirs/centerpoint_int8_deployment",
     onnx_path=None,
 )
@@ -153,7 +154,7 @@ backend_config = dict(
 # Evaluation Configuration
 # ============================================================================
 evaluation = dict(
-    enabled=False,
+    enabled=True,
     num_samples=100,
     verbose=True,
     backends=dict(

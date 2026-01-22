@@ -161,9 +161,9 @@ class CalibrationManager:
             if isinstance(module, TensorQuantizer):
                 if module._calibrator is not None:
                     if isinstance(module._calibrator, calib.MaxCalibrator):
-                        module.load_calib_amax()
+                        module.load_calib_amax(strict=False)
                     else:
-                        module.load_calib_amax(method=method)
+                        module.load_calib_amax(method=method, strict=False)
 
                     # Move amax to model device
                     if module._amax is not None:
