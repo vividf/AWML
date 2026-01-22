@@ -325,10 +325,11 @@ model = dict(
         # Same as SECOND backbone: [64, 128, 256]
         out_channels=[128, 128, 128],
         # BEV-friendly: With conv1_stride=1 and no maxpool, outputs should be:
-        # stage0: (760, 760) -> upsample stride=1 -> (760, 760)
-        # stage1: (380, 380) -> upsample stride=2 -> (760, 760)
-        # stage2: (190, 190) -> upsample stride=4 -> (760, 760)
-        upsample_strides=[1, 2, 4],  # Upsample to match the largest feature map size
+        # stage0: (1020, 1020) -> downsample stride=0.5 -> (510, 510)
+        # stage1: (510, 510) -> upsample stride=1 -> (510, 510)
+        # stage2: (255, 255) -> upsample stride=2 -> (510, 510)
+        # Final output: (510, 510) to match target size (grid_size // out_size_factor)
+        upsample_strides=[0.5, 1, 2],  # Upsample to match target feature map size (510, 510)
         norm_cfg=dict(type="BN", eps=0.001, momentum=0.01),
         upsample_cfg=dict(type="deconv", bias=False),
         use_conv_for_no_stride=True,
@@ -481,6 +482,6 @@ custom_hooks = [
 ]
 
 # Update the load_from path accordingly
-load_from = "<best_checkpoint>"
+load_from = None
 
 activation_checkpointing = ["pts_backbone"]
