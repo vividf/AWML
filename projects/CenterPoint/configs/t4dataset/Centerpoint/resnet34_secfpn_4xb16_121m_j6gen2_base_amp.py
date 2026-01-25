@@ -297,8 +297,9 @@ model = dict(
         _delete_=True,
         type="BEVResNet",  # Use custom BEV-friendly ResNet wrapper (renamed to avoid confusion)
         depth=34,
-        num_stages=4,
-        strides=(1, 2, 2, 2),  # ResNet stage strides: stage0=1, stage1=2, stage2=2, stage3=2
+        num_stages=3,
+        strides=(1, 2, 2),  # ResNet stage strides: stage0=1, stage1=2, stage2=2
+        dilations=(1, 1, 1),  # Dilation for each stage
         out_indices=(0, 1, 2),  # Get features from res_layers 0, 1, 2
         # BEV-friendly stem configuration: no downsampling at input
         deep_stem=True,  # Use three 3x3 convs instead of 7x7: more efficient and better boundary behavior
