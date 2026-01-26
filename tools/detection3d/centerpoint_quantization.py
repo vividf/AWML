@@ -265,7 +265,8 @@ def run_ptq(args):
     # Build quantization settings to show quant_add status
     _, _, quant_flags = _build_ptq_quant_settings(args)
     if quant_flags["quant_add"]:
-        print("Note: QuantAdd enabled for residual connections (ResNet-style backbones)")
+        print("Note: Residual quantization enabled for residual connections (ResNet-style backbones)")
+        print("      Using residual_quantizer (only quantizes identity branch, not conv path)")
 
     # Load model
     print("\n[1/5] Loading model...")
@@ -295,7 +296,8 @@ def run_ptq(args):
     )
 
     if quant_flags["quant_add"]:
-        print("  - QuantAdd attached to residual blocks (BasicBlock/SparseBasicBlock)")
+        print("  - Residual quantizer attached to residual blocks (BasicBlock/SparseBasicBlock)")
+        print("    Only identity branch is quantized to enable TensorRT Conv+Add fusion")
 
     # Build dataloader
     print("\n[4/5] Building calibration dataloader...")
@@ -323,6 +325,27 @@ def run_ptq(args):
     # Print status
     print("\nQuantizer Status:")
     print_quantizer_status(model)
+
+    # Debug: Check residual_quantizer status
+    if quant_flags["quant_add"]:
+        print("\nResidual Quantizer Status:")
+        residual_count = 0
+        for name, module in model.named_modules():
+            if hasattr(module, "residual_quantizer"):
+                residual_count += 1
+                rq = module.residual_quantizer
+                has_calibrator = hasattr(rq, "_calibrator") and rq._calibrator is not None
+                has_amax = hasattr(rq, "_amax") and rq._amax is not None
+                is_disabled = getattr(rq, "_disabled", False)
+                print(f"  {name}.residual_quantizer:")
+                print(f"    - Has calibrator: {has_calibrator}")
+                print(f"    - Has amax: {has_amax}")
+                print(f"    - Disabled: {is_disabled}")
+                if has_amax:
+                    print(
+                        f"    - Amax value: {rq._amax.item() if rq._amax.numel() == 1 else f'[{rq._amax.numel()} elements]'}"
+                    )
+        print(f"  Total residual quantizers: {residual_count}")
 
     # Save model
     output_path = Path(args.output)

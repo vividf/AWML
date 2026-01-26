@@ -20,7 +20,7 @@ task_type = "detection3d"
 # Checkpoint Path - Use PTQ or QAT quantized checkpoint
 # ============================================================================
 # checkpoint_path = "work_dirs/centerpoint_ptq.pth"
-checkpoint_path = "work_dirs/centerpoint_2_5_ptq.pth"
+checkpoint_path = "work_dirs/centerpoint_resnet34_exp3_ptq.pth"
 
 # ============================================================================
 # Quantization Configuration
@@ -64,7 +64,7 @@ devices = dict(
 # ============================================================================
 export = dict(
     mode="none",  # Export ONNX -> TensorRT
-    work_dir="work_dirs/centerpoint_int8_deployment",
+    work_dir="work_dirs/centerpoint_int8_resnet_deployment_exp3",
     onnx_path=None,
 )
 
@@ -165,12 +165,12 @@ evaluation = dict(
         onnx=dict(
             enabled=False,
             device=devices["cuda"],
-            model_dir="work_dirs/centerpoint_int8_deployment/onnx/",
+            model_dir="work_dirs/centerpoint_int8_resnet_deployment_exp3/onnx/",
         ),
         tensorrt=dict(
             enabled=True,
             device=devices["cuda"],
-            engine_dir="work_dirs/centerpoint_int8_deployment/tensorrt/",
+            engine_dir="work_dirs/centerpoint_int8_resnet_deployment_exp3/tensorrt/",
         ),
     ),
 )

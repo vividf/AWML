@@ -106,6 +106,17 @@ class Detection3DMetricsConfig(BaseMetricsConfig):
                 "min_point_numbers": 0,
             }
             object.__setattr__(self, "evaluation_config_dict", default_eval_config)
+        else:
+            # TODO(vividf): use this because t4metrics updates min_distance and max_distance to lists
+            # Convert min_distance and max_distance from lists to single float values
+            # T4MetricV2 uses lists for distance buckets, but PerceptionEvaluationConfig expects single floats
+            # Use the full range (min of min_distance, max of max_distance) for deployment evaluation
+            eval_config = dict(self.evaluation_config_dict)
+            if "min_distance" in eval_config and isinstance(eval_config["min_distance"], list):
+                eval_config["min_distance"] = min(eval_config["min_distance"])
+            if "max_distance" in eval_config and isinstance(eval_config["max_distance"], list):
+                eval_config["max_distance"] = max(eval_config["max_distance"])
+            object.__setattr__(self, "evaluation_config_dict", eval_config)
 
         # Set default critical object filter config if not provided
         if self.critical_object_filter_config is None:

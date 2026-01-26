@@ -154,6 +154,7 @@ def _load_quantized_checkpoint(
         quant_neck=bool(quantization.get("quant_neck", True)),
         quant_head=bool(quantization.get("quant_head", True)),
         quant_voxel_encoder=bool(quantization.get("quant_voxel_encoder", True)),
+        quant_add=bool(quantization.get("quant_add", False)),
         skip_names=skip_layers,
     )
 

@@ -202,7 +202,7 @@ def quant_model(
     Example:
         >>> model = CenterPoint(...)
         >>> quant_model(model, skip_names={'pts_backbone.blocks.0'})
-        >>> # If you also want to attach QuantAdd to residual blocks:
+        >>> # If you also want to attach residual_quantizer to residual blocks:
         >>> quant_model(model, quant_add=True)
     """
     skip_names = skip_names or set()
@@ -225,17 +225,23 @@ def quant_model(
 
 class BasicBlockForwardHook:
     """
-    Forward hook for BasicBlock to use QuantAdd for residual connections.
+    Forward hook for BasicBlock to use residual_quantizer for residual connections.
 
-    This hook replaces the forward method of BasicBlock to use quant_add
-    when available, falling back to standard addition otherwise.
+    This hook replaces the forward method of BasicBlock to quantize only the identity
+    branch (residual connection), not the conv path output. This enables TensorRT to
+    fuse Conv+Add operations, reducing reformat operations.
+
+    According to TensorRT best practices:
+    - Only quantize the residual branch (identity), not the conv path output
+    - This allows TensorRT to fuse Conv+Add into a single kernel
+    - The conv path output (after norm2) should remain unquantized until after Add
     """
 
     def __init__(self, obj):
         self.obj = obj
 
     def __call__(self, x):
-        """Forward pass with quantized add support."""
+        """Forward pass with quantized residual connection."""
         self = self.obj
 
         identity = x
@@ -250,30 +256,38 @@ class BasicBlockForwardHook:
         if self.downsample is not None:
             identity = self.downsample(x)
 
-        # Use quant_add if available, otherwise use standard addition
-        if hasattr(self, "quant_add"):
-            out = self.quant_add(out, identity)
-        else:
-            out = out + identity
+        # Quantize only the identity branch (residual connection), not the conv path output
+        # This enables TensorRT to fuse Conv+Add operations
+        if hasattr(self, "residual_quantizer"):
+            # Directly call residual_quantizer as a module
+            # This is critical for ONNX export to trace the quantizer call
+            # The quantizer must be registered as a submodule or accessible as an attribute
+            identity = self.residual_quantizer(identity)
 
+        out = out + identity
         out = self.relu(out)
         return out
 
 
 class SparseBasicBlockForwardHook:
     """
-    Forward hook for SparseBasicBlock to use QuantAdd for residual connections.
+    Forward hook for SparseBasicBlock to use residual_quantizer for residual connections.
 
-    This hook replaces the forward method of SparseBasicBlock to use quant_add
-    when available, falling back to standard addition otherwise.
+    This hook replaces the forward method of SparseBasicBlock to quantize only the identity
+    branch (residual connection), not the conv path output. This enables TensorRT to
+    fuse Conv+Add operations, reducing reformat operations.
+
     SparseBasicBlock works with SparseConvTensor which requires replace_feature.
+    According to TensorRT best practices:
+    - Only quantize the residual branch (identity), not the conv path output
+    - This allows TensorRT to fuse Conv+Add into a single kernel
     """
 
     def __init__(self, obj):
         self.obj = obj
 
     def __call__(self, x):
-        """Forward pass with quantized add support for sparse tensors."""
+        """Forward pass with quantized residual connection for sparse tensors."""
         self = self.obj
 
         identity = x
@@ -288,23 +302,26 @@ class SparseBasicBlockForwardHook:
         if self.downsample is not None:
             identity = self.downsample(x)
 
-        # Use quant_add if available, otherwise use standard addition
-        if hasattr(self, "quant_add"):
-            out = out.replace_feature(self.quant_add(out.features, identity.features))
-        else:
-            out = out.replace_feature(out.features + identity.features)
+        # Quantize only the identity branch (residual connection), not the conv path output
+        # This enables TensorRT to fuse Conv+Add operations
+        if hasattr(self, "residual_quantizer"):
+            # Directly call residual_quantizer as a module
+            # This is critical for ONNX export to trace the quantizer call
+            identity = identity.replace_feature(self.residual_quantizer(identity.features))
 
+        out = out.replace_feature(out.features + identity.features)
         out = out.replace_feature(self.relu(out.features))
         return out
 
 
 def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = None):
     """
-    Attach QuantAdd to modules that perform residual add and replace their forward methods.
+    Attach residual_quantizer to modules that perform residual add and replace their forward methods.
 
-    This mirrors CUDA-CenterPoint behavior: it injects a shared-input quantizer
-    before elementwise add to align scales. The forward method is replaced with
-    a hook that uses quant_add when available.
+    This follows the same approach as lidar-ai-solution (CUDA-BEVFusion):
+    - Only quantize the identity branch (residual connection), not the conv path output
+    - This enables TensorRT to fuse Conv+Add operations, reducing reformat operations
+    - The residual_quantizer uses the same quant descriptor as conv layers for consistency
 
     Args:
         model: CenterPoint model
@@ -312,16 +329,72 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
                             (e.g., {"SparseBasicBlock", "BasicBlock"}). If None,
                             will match class names containing "BasicBlock".
     """
+    try:
+        from pytorch_quantization import tensor_quant
+        from pytorch_quantization.nn import TensorQuantizer
+    except ImportError:
+        raise ImportError(
+            "pytorch-quantization is required for residual quantization. "
+            "Install it with: pip install pytorch-quantization --extra-index-url https://pypi.ngc.nvidia.com"
+        )
+
+    # Ensure quantization descriptors are initialized
+    _ensure_quant_descriptors_initialized()
+
     target_class_names = target_class_names or {"BasicBlock", "SparseBasicBlock"}
 
-    for module in model.modules():
+    attached_count = 0
+    for name, module in model.named_modules():
         cls_name = module.__class__.__name__
         if cls_name in target_class_names or any(name in cls_name for name in target_class_names):
-            # Attach QuantAdd if not already present
-            if not hasattr(module, "quant_add"):
-                module.quant_add = QuantAdd()
+            # Attach residual_quantizer if not already present
+            # Aligned with lidar-ai-solution:
+            # - If downsample exists: create new TensorQuantizer
+            # - If no downsample: reuse conv1._input_quantizer (shares calibration data)
+            if not hasattr(module, "residual_quantizer"):
+                if hasattr(module, "downsample") and module.downsample is not None:
+                    # Has downsample: create new quantizer
+                    quant_desc = QuantConv2d.default_quant_desc_input
+                    if quant_desc is None:
+                        # Fallback to default if not initialized
+                        quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+                    else:
+                        # Ensure calib_method is set for calibration
+                        if not hasattr(quant_desc, "calib_method") or quant_desc.calib_method is None:
+                            quant_desc.calib_method = "histogram"
+                    residual_quantizer = TensorQuantizer(quant_desc)
+                    # Register as submodule so PyTorch ONNX export can trace it
+                    module.add_module("residual_quantizer", residual_quantizer)
+                    attached_count += 1
+                elif hasattr(module, "conv1") and hasattr(module.conv1, "_input_quantizer"):
+                    # No downsample: reuse conv1._input_quantizer (same as lidar-ai-solution)
+                    # Note: We cannot use add_module() here because conv1._input_quantizer is already
+                    # a submodule of conv1. PyTorch doesn't allow a module to be a submodule of multiple parents.
+                    # However, ONNX export should still trace the call if we access it correctly.
+                    # We'll just assign it as an attribute, and the forward hook will call it.
+                    # The key is that TensorQuantizer.use_fb_fake_quant and _enable_onnx_export must be set.
+                    residual_quantizer = module.conv1._input_quantizer
+                    # Assign as attribute (not submodule) - ONNX export will trace the call
+                    # IMPORTANT: Even though it's a reference, ONNX export should trace it when called
+                    # in the forward hook. The quantizer's forward method will be called, and if
+                    # _enable_onnx_export is True, it will export as QDQ nodes.
+                    module.residual_quantizer = residual_quantizer
+                    attached_count += 1
+                else:
+                    # Fallback: create new quantizer
+                    quant_desc = QuantConv2d.default_quant_desc_input
+                    if quant_desc is None:
+                        quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+                    else:
+                        # Ensure calib_method is set for calibration
+                        if not hasattr(quant_desc, "calib_method") or quant_desc.calib_method is None:
+                            quant_desc.calib_method = "histogram"
+                    residual_quantizer = TensorQuantizer(quant_desc)
+                    # Register as submodule so PyTorch ONNX export can trace it
+                    module.add_module("residual_quantizer", residual_quantizer)
+                    attached_count += 1
 
-            # Replace forward method with hook that uses quant_add
+            # Replace forward method with hook that uses residual_quantizer
             # Check if it's SparseBasicBlock (by class name) or BasicBlock
             is_sparse = "Sparse" in cls_name
 
@@ -337,3 +410,9 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
                     if not hasattr(module, "_original_forward"):
                         module._original_forward = module.forward
                     module.forward = BasicBlockForwardHook(module)
+
+    if attached_count > 0:
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.info(f"Attached residual_quantizer to {attached_count} residual blocks")

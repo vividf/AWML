@@ -32,6 +32,13 @@ from .replace import quant_conv_module, quant_linear_module, quant_model, transf
 from .sensitivity import build_sensitivity_profile, get_sensitive_layers
 from .utils import disable_quantization, enable_quantization, print_quantizer_status
 
+# Register ONNX symbolic functions for quantized modules
+# This ensures proper ONNX export and TensorRT fusion support
+try:
+    from . import onnx_symbolic  # noqa: F401
+except ImportError:
+    pass  # ONNX symbolic registration is optional
+
 __all__ = [
     # Modules
     "QuantConv2d",
