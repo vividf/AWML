@@ -19,7 +19,7 @@ task_type = "detection3d"
 # ============================================================================
 # Checkpoint Path - Use PTQ or QAT quantized checkpoint
 # ============================================================================
-checkpoint_path = "work_dirs/centerpoint_ptq_938_rand_seed_1_batch4_no_quant_head.pth"
+checkpoint_path = "work_dirs/centerpoint_ptq_latest.pth"
 
 # ============================================================================
 # Quantization Configuration
@@ -35,7 +35,7 @@ quantization = dict(
     quant_voxel_encoder=False,
     quant_backbone=True,
     quant_neck=True,
-    quant_head=False,
+    quant_head=True,
     # Optional: skip quantizing early backbone stages (maps to pts_backbone.blocks.<idx>)
     skip_backbone_first_stages=0,
     skip_backbone_stages=[],
