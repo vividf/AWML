@@ -7,7 +7,7 @@ custom_imports = dict(imports=["projects.CenterPoint.models"], allow_failed_impo
 custom_imports["imports"] += _base_.custom_imports["imports"]
 custom_imports["imports"] += ["autoware_ml.detection3d.datasets.transforms"]
 custom_imports["imports"] += ["autoware_ml.hooks"]
-custom_imports["imports"] += ["autoware_ml.backends.mlflowbackend"]
+# custom_imports["imports"] += ["autoware_ml.backends.mlflowbackend"]
 custom_imports["imports"] += ["autoware_ml.samplers"]
 
 # This is a base file for t4dataset, add the dataset config.
@@ -41,10 +41,10 @@ eval_class_range = {
 }
 
 # user setting
-data_root = "data/t4dataset/"
-info_directory_path = "info/"
+data_root = "data/t4datasets/"
+info_directory_path = "info/kokseang_2_5/"
 train_gpu_size = 4
-train_batch_size = 16
+train_batch_size = 8
 test_batch_size = 2
 num_workers = 32
 val_interval = 1
