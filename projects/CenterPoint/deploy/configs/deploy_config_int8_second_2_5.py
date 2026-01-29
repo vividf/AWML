@@ -19,8 +19,7 @@ task_type = "detection3d"
 # ============================================================================
 # Checkpoint Path - Use PTQ or QAT quantized checkpoint
 # ============================================================================
-# checkpoint_path = "work_dirs/centerpoint_ptq.pth"
-checkpoint_path = "work_dirs/centerpoint_resnet34_exp3_ptq.pth"
+checkpoint_path = "work_dirs/centerpoint_2_5_ptq.pth"
 
 # ============================================================================
 # Quantization Configuration
@@ -37,7 +36,6 @@ quantization = dict(
     quant_backbone=True,
     quant_neck=True,
     quant_head=True,
-    quant_add=True,
     # Optional: skip quantizing early backbone stages (maps to pts_backbone.blocks.<idx>)
     skip_backbone_first_stages=0,
     skip_backbone_stages=[],
@@ -64,7 +62,7 @@ devices = dict(
 # ============================================================================
 export = dict(
     mode="none",  # Export ONNX -> TensorRT
-    work_dir="work_dirs/centerpoint_int8_resnet_deployment_exp3",
+    work_dir="work_dirs/centerpoint_int8_deployment_second_2_5",
     onnx_path=None,
 )
 
@@ -72,6 +70,7 @@ export = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
+    # info_file="data/t4dataset/info/t4dataset_j6gen2_base_infos_test.pkl",
     info_file="data/t4datasets/info/vivid/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=1,
 )
@@ -165,12 +164,12 @@ evaluation = dict(
         onnx=dict(
             enabled=False,
             device=devices["cuda"],
-            model_dir="work_dirs/centerpoint_int8_resnet_deployment_exp3/onnx/",
+            model_dir="work_dirs/centerpoint_int8_deployment_second_2_5/onnx/",
         ),
         tensorrt=dict(
             enabled=True,
             device=devices["cuda"],
-            engine_dir="work_dirs/centerpoint_int8_resnet_deployment_exp3/tensorrt/",
+            engine_dir="work_dirs/centerpoint_int8_deployment_second_2_5/tensorrt/",
         ),
     ),
 )

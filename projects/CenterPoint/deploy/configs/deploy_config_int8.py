@@ -19,8 +19,7 @@ task_type = "detection3d"
 # ============================================================================
 # Checkpoint Path - Use PTQ or QAT quantized checkpoint
 # ============================================================================
-# checkpoint_path = "work_dirs/centerpoint_ptq.pth"
-checkpoint_path = "work_dirs/centerpoint_2_5_ptq.pth"
+checkpoint_path = "work_dirs/centerpoint_ptq_latest.pth"
 
 # ============================================================================
 # Quantization Configuration
@@ -37,7 +36,6 @@ quantization = dict(
     quant_backbone=True,
     quant_neck=True,
     quant_head=True,
-    quant_add=True,
     # Optional: skip quantizing early backbone stages (maps to pts_backbone.blocks.<idx>)
     skip_backbone_first_stages=0,
     skip_backbone_stages=[],
@@ -63,7 +61,7 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="none",  # Export ONNX -> TensorRT
+    mode="both",  # Export ONNX -> TensorRT
     work_dir="work_dirs/centerpoint_int8_deployment",
     onnx_path=None,
 )
@@ -72,7 +70,8 @@ export = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    info_file="data/t4dataset/info/t4dataset_j6gen2_base_infos_test.pkl",
+    # info_file="data/t4dataset/info/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="data/info/vivid/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=1,
 )
 
@@ -141,9 +140,9 @@ backend_config = dict(
                     max_shape=[64000, 32, 11],
                 ),
                 spatial_features=dict(
-                    min_shape=[1, 32, 1020, 1020],
-                    opt_shape=[1, 32, 1020, 1020],
-                    max_shape=[1, 32, 1020, 1020],
+                    min_shape=[1, 32, 760, 760],
+                    opt_shape=[1, 32, 760, 760],
+                    max_shape=[1, 32, 760, 760],
                 ),
             )
         )
@@ -154,12 +153,12 @@ backend_config = dict(
 # Evaluation Configuration
 # ============================================================================
 evaluation = dict(
-    enabled=True,
-    num_samples=100,
+    enabled=False,
+    num_samples=-1,
     verbose=True,
     backends=dict(
         pytorch=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
         ),
         onnx=dict(

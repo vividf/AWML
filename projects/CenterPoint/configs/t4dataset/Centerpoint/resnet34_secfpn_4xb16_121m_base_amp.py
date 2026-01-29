@@ -285,7 +285,9 @@ model = dict(
         with_voxel_center=True,
         point_cloud_range=point_cloud_range,
         voxel_size=voxel_size,
-        norm_cfg=dict(type="BN1d", eps=1e-3, momentum=0.01),
+        norm_cfg=dict(
+            type="BN1d", eps=1e-5, momentum=0.01
+        ),  # Fixed: eps changed from 1e-3 to 1e-5 for numerical stability
         legacy=False,
     ),
     pts_middle_encoder=dict(type="PointPillarsScatter", in_channels=32, output_shape=(grid_size[0], grid_size[1])),
@@ -305,7 +307,9 @@ model = dict(
         frozen_stages=-1,  # Don't freeze any stages initially
         base_channels=64,  # ResNet34 outputs: 64, 128, 256 channels (64*1, 64*2, 64*4)
         # ResNet34 uses BasicBlock (expansion=1), so base_channels=64 gives [64, 128, 256]
-        norm_cfg=dict(type="BN", eps=1e-3, momentum=0.01),
+        norm_cfg=dict(
+            type="BN", eps=1e-5, momentum=0.01
+        ),  # Fixed: eps changed from 1e-3 to 1e-5 for numerical stability
         norm_eval=False,  # Keep BN in training mode for better performance
         # Remove pretrained weights due to input channel mismatch (3 vs 32)
         # init_cfg=dict(type="Pretrained", checkpoint="torchvision://resnet34"),
@@ -327,7 +331,9 @@ model = dict(
         # stage2: (255, 255) -> upsample stride=2 -> (510, 510)
         # Final output: (510, 510) to match target size (grid_size // out_size_factor)
         upsample_strides=[0.5, 1, 2],  # Upsample to match target feature map size (510, 510)
-        norm_cfg=dict(type="BN", eps=0.001, momentum=0.01),
+        norm_cfg=dict(
+            type="BN", eps=1e-5, momentum=0.01
+        ),  # Fixed: eps changed from 0.001 (1e-3) to 1e-5 for numerical stability
         upsample_cfg=dict(type="deconv", bias=False),
         use_conv_for_no_stride=True,
     ),
@@ -377,13 +383,14 @@ randomness = dict(seed=0, diff_rank_seed=False, deterministic=True)
 lr = 0.0003
 param_scheduler = [
     # learning rate scheduler
-    # During the first (max_epochs * 0.3) epochs, learning rate increases from 0 to lr * 10
-    # during the next epochs, learning rate decreases from lr * 10 to
+    # During the first (max_epochs * 0.3) epochs, learning rate increases from 0 to lr * 5
+    # during the next epochs, learning rate decreases from lr * 5 to
     # lr * 1e-4
+    # Fixed: peak LR reduced from lr*10 to lr*5 for better stability in mixed precision training
     dict(
         type="CosineAnnealingLR",
         T_max=int(max_epochs * 0.3),
-        eta_min=lr * 10,
+        eta_min=lr * 5,
         begin=0,
         end=int(max_epochs * 0.3),
         by_epoch=True,
@@ -430,7 +437,9 @@ val_cfg = dict()
 test_cfg = dict()
 
 optimizer = dict(type="AdamW", lr=lr, weight_decay=0.01)
-clip_grad = dict(max_norm=15, norm_type=2)  # max norm of gradients upper bound to be 15 since amp is used
+clip_grad = dict(
+    max_norm=10, norm_type=2
+)  # Fixed: max_norm reduced from 15 to 10 for better gradient stability in mixed precision training
 
 optim_wrapper = dict(
     type="AmpOptimWrapper",

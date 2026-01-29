@@ -41,7 +41,7 @@ eval_class_range = {
 }
 
 # user setting
-data_root = "data/t4dataset/"
+data_root = "data/t4datasets/"
 info_directory_path = "info/"
 train_gpu_size = 4
 train_batch_size = 16
