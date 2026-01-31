@@ -388,17 +388,10 @@ param_scheduler = [
     # lr * 1e-4
     # Fixed: peak LR reduced from lr*10 to lr*5 for better stability in mixed precision training
     dict(
-        type="LinearLR",
-        start_factor=1e-4,  # lr starts from base_lr * 1e-4
-        by_epoch=False,
-        begin=0,
-        end=5000,  # warmup iters (3000~5000 都行，先用 5000)
-    ),
-    dict(
         type="CosineAnnealingLR",
         T_max=int(max_epochs * 0.3),
         eta_min=lr * 2,
-        begin=5000,
+        begin=0,
         end=int(max_epochs * 0.3),
         by_epoch=True,
         convert_to_iter_based=True,
