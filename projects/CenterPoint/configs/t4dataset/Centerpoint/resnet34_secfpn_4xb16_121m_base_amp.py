@@ -380,18 +380,25 @@ randomness = dict(seed=0, diff_rank_seed=False, deterministic=True)
 
 # learning rate
 # Since mmengine doesn't support OneCycleMomentum yet, we use CosineAnnealing from the default configs
-lr = 0.0003
+lr = 0.0001
 param_scheduler = [
     # learning rate scheduler
     # During the first (max_epochs * 0.3) epochs, learning rate increases from 0 to lr * 5
-    # during the next epochs, learning rate decreases from lr * 5 to
+    # during the next epochs, learning rate decreases from lr * ㄉ to
     # lr * 1e-4
     # Fixed: peak LR reduced from lr*10 to lr*5 for better stability in mixed precision training
     dict(
+        type="LinearLR",
+        start_factor=1e-4,  # lr starts from base_lr * 1e-4
+        by_epoch=False,
+        begin=0,
+        end=5000,  # warmup iters (3000~5000 都行，先用 5000)
+    ),
+    dict(
         type="CosineAnnealingLR",
         T_max=int(max_epochs * 0.3),
-        eta_min=lr * 5,
-        begin=0,
+        eta_min=lr * 2,
+        begin=5000,
         end=int(max_epochs * 0.3),
         by_epoch=True,
         convert_to_iter_based=True,
@@ -436,7 +443,12 @@ train_cfg = dict(
 val_cfg = dict()
 test_cfg = dict()
 
-optimizer = dict(type="AdamW", lr=lr, weight_decay=0.01)
+optimizer = dict(
+    type="AdamW",
+    lr=lr,
+    weight_decay=0.01,
+    eps=1e-6,
+)
 clip_grad = dict(
     max_norm=10, norm_type=2
 )  # Fixed: max_norm reduced from 15 to 10 for better gradient stability in mixed precision training
