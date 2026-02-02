@@ -6,6 +6,7 @@ the deployment/export pipeline (not training).
 
 from typing import Any, Dict, List, Tuple
 
+import numpy as np
 import torch
 from mmdet3d.models.detectors.centerpoint import CenterPoint
 from mmdet3d.registry import MODELS
@@ -13,7 +14,6 @@ from mmengine.logging import MMLogger
 from torch import nn
 
 from deployment.core.device import DeviceSpec
-
 
 class CenterPointHeadONNX(nn.Module):
     """Head module for centerpoint with BACKBONE, NECK and BBOX_HEAD"""
@@ -103,6 +103,7 @@ class CenterPointONNX(CenterPoint):
         points = points.to(self._torch_device)
         points = [points]
         return {"points": points, "data_samples": None}
+
 
     def _extract_features(self, data_loader, sample_idx=0) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Extract (input_features, voxel_dict) using a sample from the data loader.

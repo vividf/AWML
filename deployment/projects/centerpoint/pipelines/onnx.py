@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from typing import List
 
+
 import numpy as np
 import onnxruntime as ort
 import torch
@@ -17,6 +18,7 @@ from deployment.core.artifacts import resolve_artifact_path
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
 from deployment.projects.centerpoint.pipelines.centerpoint_pipeline import CenterPointInferencePipeline
+
 
 logger = logging.getLogger(__name__)
 
