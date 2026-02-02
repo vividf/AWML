@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 
+
 from mmengine.config import Config
 
 from deployment.cli.args import add_deployment_file_logging, setup_logging
@@ -15,6 +16,7 @@ from deployment.projects.centerpoint.eval.metrics_utils import extract_t4metric_
 from deployment.projects.centerpoint.io.data_loader import CenterPointDataLoader
 from deployment.projects.centerpoint.runner import CenterPointDeploymentRunner
 from deployment.projects.registry import project_registry
+
 
 
 def run(args: argparse.Namespace) -> int:
