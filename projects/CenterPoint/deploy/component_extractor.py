@@ -34,16 +34,18 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
     - Configuring ONNX export settings
     """
 
-    def __init__(self, logger: logging.Logger = None, simplify: bool = True):
+    def __init__(self, logger: logging.Logger = None, simplify: bool = True, opset_version: int = 16):
         """
         Initialize extractor.
 
         Args:
             logger: Optional logger instance
             simplify: Whether to run onnx-simplifier for the exported parts
+            opset_version: ONNX opset version to use for export
         """
         self.logger = logger or logging.getLogger(__name__)
         self.simplify = simplify
+        self.opset_version = opset_version
 
     def extract_components(self, model: torch.nn.Module, sample_data: Any) -> List[ExportableComponent]:
         """
@@ -87,7 +89,7 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
                     "input_features": {0: "num_voxels", 1: "num_max_points"},
                     "pillar_features": {0: "num_voxels"},
                 },
-                opset_version=16,
+                opset_version=self.opset_version,
                 do_constant_folding=True,
                 simplify=self.simplify,
                 save_file=voxel_cfg["onnx_file"],
@@ -122,7 +124,7 @@ class CenterPointComponentExtractor(ModelComponentExtractor):
                 input_names=("spatial_features",),
                 output_names=output_names,
                 dynamic_axes=dynamic_axes,
-                opset_version=16,
+                opset_version=self.opset_version,
                 do_constant_folding=True,
                 simplify=self.simplify,
                 save_file=backbone_cfg["onnx_file"],

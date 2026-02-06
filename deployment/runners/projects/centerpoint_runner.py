@@ -60,8 +60,12 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             output format conversion is needed for ONNX export.
         """
         # Create component extractor for model-specific logic
-        simplify_onnx = config.get_onnx_settings().simplify
-        component_extractor = CenterPointComponentExtractor(logger=logger, simplify=simplify_onnx)
+        onnx_settings = config.get_onnx_settings()
+        simplify_onnx = onnx_settings.simplify
+        opset_version = onnx_settings.opset_version
+        component_extractor = CenterPointComponentExtractor(
+            logger=logger, simplify=simplify_onnx, opset_version=opset_version
+        )
 
         # Initialize base runner with IdentityWrapper
         super().__init__(
