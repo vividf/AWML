@@ -94,10 +94,17 @@ class ConvNeXt_PC(ConvNeXt):
         with_cp=False,
         first_downsample=1,
         large_arch=None,
+        use_bn_relu=False,
         init_cfg=None,
     ):
         super().__init__(init_cfg=init_cfg)
         self.first_downsample = first_downsample
+        self.use_bn_relu = use_bn_relu
+
+        if self.use_bn_relu:
+            # Switch LayerNorm/GELU to BatchNorm/ReLU for this backbone.
+            norm_cfg = dict(type="BN", eps=1e-5)
+            act_cfg = dict(type="ReLU")
 
         self.depths = depths
         self.channels = out_channels
@@ -153,15 +160,19 @@ class ConvNeXt_PC(ConvNeXt):
             channels = self.channels[i]
 
             if i >= self.first_downsample:
+                if self.use_bn_relu:
+                    downsample_norm = nn.BatchNorm2d
+                else:
+                    downsample_norm = LayerNorm2d
                 if self.first_downsample == 0 and i == 0:
                     downsample_layer = nn.Sequential(
-                        LayerNorm2d(in_channels),
+                        downsample_norm(in_channels),
                         nn.Conv2d(in_channels, channels, kernel_size=2, stride=2),
                     )
                     self.downsample_layers.append(downsample_layer)
                 else:
                     downsample_layer = nn.Sequential(
-                        LayerNorm2d(self.channels[i - 1]),
+                        downsample_norm(self.channels[i - 1]),
                         nn.Conv2d(self.channels[i - 1], channels, kernel_size=2, stride=2),
                     )
                     self.downsample_layers.append(downsample_layer)

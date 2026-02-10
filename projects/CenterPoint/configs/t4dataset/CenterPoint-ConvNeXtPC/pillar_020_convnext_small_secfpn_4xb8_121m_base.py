@@ -41,7 +41,7 @@ eval_class_range = {
 
 # user setting
 data_root = "data/t4dataset/"
-info_directory_path = "info/user_name/"
+info_directory_path = "info/"
 train_gpu_size = 4
 train_batch_size = 8
 test_batch_size = 2
@@ -253,6 +253,7 @@ model = dict(
         layer_scale_init_value=1.0,
         gap_before_final_norm=False,
         with_cp=True,  # We set with_cp to True for svaing gpu memory
+        use_bn_relu=True,
         # No loading any pretrained weights
     ),
     pts_neck=dict(

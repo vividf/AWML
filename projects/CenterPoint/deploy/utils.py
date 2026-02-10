@@ -7,6 +7,7 @@ including ONNX-compatible config creation and model building.
 
 import copy
 import logging
+import os
 from typing import List, Optional, Tuple
 
 import torch
@@ -118,7 +119,7 @@ def _load_quantized_checkpoint(
         Model with quantized checkpoint loaded
     """
     try:
-        from projects.CenterPoint.quantization import fuse_model_bn, quant_model
+        from projects.CenterPoint.quantization import CalibrationManager, fuse_model_bn, quant_model
     except ImportError as e:
         raise ImportError(
             "Quantization modules not found. Make sure projects/CenterPoint/quantization "
@@ -148,6 +149,19 @@ def _load_quantized_checkpoint(
     for i in quantization.get("skip_backbone_stages", []) or []:
         skip_layers.add(f"pts_backbone.blocks.{int(i)}")
 
+    logger.info(
+        "#########################################################"
+        "Quantization flags: backbone=%s, neck=%s, head=%s, voxel_encoder=%s, "
+        "add=%s, linear_backbone=%s"
+        "#########################################################",
+        bool(quantization.get("quant_backbone", True)),
+        bool(quantization.get("quant_neck", True)),
+        bool(quantization.get("quant_head", True)),
+        bool(quantization.get("quant_voxel_encoder", True)),
+        bool(quantization.get("quant_add", False)),
+        bool(quantization.get("quant_linear_backbone", False)),
+    )
+
     quant_model(
         model,
         quant_backbone=bool(quantization.get("quant_backbone", True)),
@@ -155,8 +169,19 @@ def _load_quantized_checkpoint(
         quant_head=bool(quantization.get("quant_head", True)),
         quant_voxel_encoder=bool(quantization.get("quant_voxel_encoder", True)),
         quant_add=bool(quantization.get("quant_add", False)),
+        quant_linear_backbone=bool(quantization.get("quant_linear_backbone", False)),
         skip_names=skip_layers,
     )
+
+    # 2.5 Load calibration cache if provided (fills amax for newly added quantizers)
+    calib_cache_path = quantization.get("calib_cache_path")
+    if calib_cache_path:
+        if os.path.exists(calib_cache_path):
+            logger.info(f"Loading calibration cache from {calib_cache_path}...")
+            calibrator = CalibrationManager(model)
+            calibrator.load_calib_cache(calib_cache_path)
+        else:
+            logger.warning(f"Calibration cache not found: {calib_cache_path}")
 
     # 3. Load the quantized checkpoint
     logger.info(f"Loading quantized checkpoint from {checkpoint_path}...")
@@ -183,11 +208,14 @@ def _load_quantized_checkpoint(
     # and we need to ensure it's on the same device as the inputs
     _move_quantizer_amax_to_device(model, device, logger)
 
-    # 5. Disable quantization for sensitive layers (e.g., ConvTranspose2d)
+    # 5. Validate quantizer amax values (TensorRT requires positive scales)
+    _validate_quantizer_amax(model, logger)
+
+    # 6. Disable quantization for sensitive layers (e.g., ConvTranspose2d)
     # These layers may not have TensorRT INT8 support
     _disable_quantization_for_sensitive_layers(model, skip_layers, logger)
 
-    # 6. Configure pytorch-quantization for proper ONNX export
+    # 7. Configure pytorch-quantization for proper ONNX export
     # This enables Q/DQ nodes to be exported as QuantizeLinear/DequantizeLinear
     setup_quantization_for_onnx_export()
 
@@ -270,6 +298,53 @@ def _disable_quantization_for_sensitive_layers(
 
     if disabled_count > 0:
         logger.info(f"Disabled {disabled_count} quantizers for sensitive layers: {sensitive_layers}")
+
+
+def _validate_quantizer_amax(model: torch.nn.Module, logger: logging.Logger) -> None:
+    """
+    Validate TensorQuantizers that have invalid amax values.
+
+    TensorRT requires positive QuantizeLinear scales. If amax is None, non-finite,
+    or <= 0, the exported scale can be invalid and parsing will fail.
+    """
+    try:
+        from pytorch_quantization.nn import TensorQuantizer
+    except ImportError:
+        return
+
+    invalid_names = []
+    for name, module in model.named_modules():
+        if not isinstance(module, TensorQuantizer):
+            continue
+
+        amax = getattr(module, "_amax", None)
+        if amax is None:
+            invalid_names.append((name, "amax=None"))
+            continue
+
+        if torch.is_tensor(amax):
+            invalid = (not torch.isfinite(amax).all()) or (amax <= 0).any()
+        else:
+            try:
+                invalid = (not torch.isfinite(torch.tensor(amax))) or (amax <= 0)
+            except Exception:
+                invalid = True
+
+        if invalid:
+            invalid_names.append((name, f"amax={amax}"))
+
+    if invalid_names:
+        for name, reason in invalid_names:
+            logger.error(f"Invalid quantizer amax: {name} ({reason})")
+        raise RuntimeError(f"Found {len(invalid_names)} TensorQuantizer modules with invalid amax values")
+
+
+def _get_module_device(module: torch.nn.Module) -> torch.device:
+    for param in module.parameters(recurse=False):
+        return param.device
+    for buffer in module.buffers(recurse=False):
+        return buffer.device
+    return torch.device("cpu")
 
 
 def setup_quantization_for_onnx_export() -> None:

@@ -44,6 +44,7 @@ class QATHook(Hook):
         quant_voxel_encoder: Whether to quantize pts_voxel_encoder
         quant_add: Whether to attach QuantAdd to residual blocks (BasicBlock/SparseBasicBlock).
                    Set to True for ResNet-style backbones with residual connections.
+        quant_linear_backbone: Whether to quantize Linear layers in pts_backbone
 
     Example:
         >>> # In config file
@@ -71,6 +72,7 @@ class QATHook(Hook):
         quant_head: bool = True,
         quant_voxel_encoder: bool = True,
         quant_add: bool = False,
+        quant_linear_backbone: bool = False,
     ):
         self.calibration_batches = calibration_batches
         self.calibration_epoch = calibration_epoch
@@ -82,6 +84,7 @@ class QATHook(Hook):
         self.quant_head = quant_head
         self.quant_voxel_encoder = quant_voxel_encoder
         self.quant_add = quant_add
+        self.quant_linear_backbone = quant_linear_backbone
 
         # State flags
         self._quantized = False
@@ -125,6 +128,8 @@ class QATHook(Hook):
 
         if self.quant_backbone and hasattr(model, "pts_backbone"):
             quant_conv_module(model.pts_backbone, self.sensitive_layers, "pts_backbone")
+            if self.quant_linear_backbone:
+                quant_linear_module(model.pts_backbone, self.sensitive_layers, "pts_backbone")
             runner.logger.info("  - Quantized pts_backbone")
 
         if self.quant_neck and hasattr(model, "pts_neck"):
