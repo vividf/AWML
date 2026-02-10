@@ -3,6 +3,7 @@
 from typing import Optional, Set, Type
 
 import torch.nn as nn
+import torch.utils.checkpoint as cp
 
 from .modules import QuantAdd, QuantConv2d, QuantConvTranspose2d, QuantLinear
 
@@ -121,6 +122,10 @@ def quant_conv_module(model: nn.Module, skip_names: Optional[Set[str]] = None, p
     """
     skip_names = skip_names or set()
 
+    # Check if model is None or not a valid nn.Module
+    if model is None or not isinstance(model, nn.Module):
+        return
+
     for name in list(model._modules.keys()):
         submodule = model._modules[name]
         full_name = f"{prefix}.{name}" if prefix else name
@@ -130,8 +135,9 @@ def quant_conv_module(model: nn.Module, skip_names: Optional[Set[str]] = None, p
         if full_name in skip_names:
             continue
 
-        # Recursively process submodules
-        quant_conv_module(submodule, skip_names, full_name)
+        # Recursively process submodules (only if submodule is not None)
+        if submodule is not None:
+            quant_conv_module(submodule, skip_names, full_name)
 
         # Replace Conv2d with QuantConv2d
         if isinstance(submodule, nn.Conv2d) and not isinstance(submodule, QuantConv2d):
@@ -160,6 +166,10 @@ def quant_linear_module(model: nn.Module, skip_names: Optional[Set[str]] = None,
     """
     skip_names = skip_names or set()
 
+    # Check if model is None or not a valid nn.Module
+    if model is None or not isinstance(model, nn.Module):
+        return
+
     for name in list(model._modules.keys()):
         submodule = model._modules[name]
         full_name = f"{prefix}.{name}" if prefix else name
@@ -168,8 +178,9 @@ def quant_linear_module(model: nn.Module, skip_names: Optional[Set[str]] = None,
         if full_name in skip_names:
             continue
 
-        # Recursively process submodules
-        quant_linear_module(submodule, skip_names, full_name)
+        # Recursively process submodules (only if submodule is not None)
+        if submodule is not None:
+            quant_linear_module(submodule, skip_names, full_name)
 
         # Replace Linear with QuantLinear
         if isinstance(submodule, nn.Linear) and not isinstance(submodule, QuantLinear):
@@ -183,6 +194,7 @@ def quant_model(
     quant_head: bool = True,
     quant_voxel_encoder: bool = True,
     quant_add: bool = False,
+    quant_linear_backbone: bool = False,
     skip_names: Optional[Set[str]] = None,
 ):
     """
@@ -197,6 +209,7 @@ def quant_model(
         quant_neck: Whether to quantize pts_neck
         quant_head: Whether to quantize pts_bbox_head
         quant_voxel_encoder: Whether to quantize pts_voxel_encoder
+        quant_linear_backbone: Whether to quantize Linear layers in pts_backbone
         skip_names: Set of module names to skip
 
     Example:
@@ -209,6 +222,8 @@ def quant_model(
 
     if quant_backbone and hasattr(model, "pts_backbone"):
         quant_conv_module(model.pts_backbone, skip_names, "pts_backbone")
+        if quant_linear_backbone:
+            quant_linear_module(model.pts_backbone, skip_names, "pts_backbone")
 
     if quant_neck and hasattr(model, "pts_neck"):
         quant_conv_module(model.pts_neck, skip_names, "pts_neck")
@@ -314,6 +329,57 @@ class SparseBasicBlockForwardHook:
         return out
 
 
+class ConvNeXtBlockForwardHook:
+    """
+    Forward hook for ConvNeXtBlock to use residual_quantizer on the identity branch.
+
+    Mirrors mmpretrain ConvNeXtBlock.forward, but quantizes the shortcut before add.
+    """
+
+    def __init__(self, obj):
+        self.obj = obj
+
+    def __call__(self, x):
+        """Forward pass with quantized residual connection for ConvNeXtBlock."""
+        self = self.obj
+
+        def _inner_forward(x):
+            identity = x
+
+            x = self.depthwise_conv(x)
+
+            if self.linear_pw_conv:
+                x = x.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
+                x = self.norm(x, data_format="channel_last")
+                x = self.pointwise_conv1(x)
+                x = self.act(x)
+                if self.grn is not None:
+                    x = self.grn(x, data_format="channel_last")
+                x = self.pointwise_conv2(x)
+                x = x.permute(0, 3, 1, 2)  # (N, H, W, C) -> (N, C, H, W)
+            else:
+                x = self.norm(x, data_format="channel_first")
+                x = self.pointwise_conv1(x)
+                x = self.act(x)
+                if self.grn is not None:
+                    x = self.grn(x, data_format="channel_first")
+                x = self.pointwise_conv2(x)
+
+            if self.gamma is not None:
+                x = x.mul(self.gamma.view(1, -1, 1, 1))
+
+            # Quantize only the identity branch (residual connection).
+            if hasattr(self, "residual_quantizer"):
+                identity = self.residual_quantizer(identity)
+
+            x = identity + self.drop_path(x)
+            return x
+
+        if getattr(self, "with_cp", False) and x.requires_grad:
+            return cp.checkpoint(_inner_forward, x)
+        return _inner_forward(x)
+
+
 def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = None):
     """
     Attach residual_quantizer to modules that perform residual add and replace their forward methods.
@@ -341,7 +407,7 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
     # Ensure quantization descriptors are initialized
     _ensure_quant_descriptors_initialized()
 
-    target_class_names = target_class_names or {"BasicBlock", "SparseBasicBlock"}
+    target_class_names = target_class_names or {"BasicBlock", "SparseBasicBlock", "ConvNeXtBlock"}
 
     attached_count = 0
     for name, module in model.named_modules():
@@ -380,6 +446,11 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
                     # _enable_onnx_export is True, it will export as QDQ nodes.
                     module.residual_quantizer = residual_quantizer
                     attached_count += 1
+                elif hasattr(module, "depthwise_conv") and hasattr(module.depthwise_conv, "_input_quantizer"):
+                    # ConvNeXtBlock: reuse depthwise_conv._input_quantizer
+                    residual_quantizer = module.depthwise_conv._input_quantizer
+                    module.residual_quantizer = residual_quantizer
+                    attached_count += 1
                 else:
                     # Fallback: create new quantizer
                     quant_desc = QuantConv2d.default_quant_desc_input
@@ -395,10 +466,12 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
                     attached_count += 1
 
             # Replace forward method with hook that uses residual_quantizer
-            # Check if it's SparseBasicBlock (by class name) or BasicBlock
-            is_sparse = "Sparse" in cls_name
-
-            if is_sparse:
+            if "ConvNeXtBlock" in cls_name:
+                if not isinstance(module.forward, ConvNeXtBlockForwardHook):
+                    if not hasattr(module, "_original_forward"):
+                        module._original_forward = module.forward
+                    module.forward = ConvNeXtBlockForwardHook(module)
+            elif "Sparse" in cls_name:
                 # SparseBasicBlock: use SparseBasicBlockForwardHook
                 if not isinstance(module.forward, SparseBasicBlockForwardHook):
                     if not hasattr(module, "_original_forward"):

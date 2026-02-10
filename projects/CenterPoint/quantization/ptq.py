@@ -23,6 +23,7 @@ def quantize_ptq(
     forward_fn: Optional[callable] = None,
     verbose: bool = True,
     quant_add: bool = False,
+    quant_linear_backbone: bool = False,
 ) -> nn.Module:
     """
     Apply PTQ (Post-Training Quantization) to a CenterPoint model.
@@ -45,6 +46,7 @@ def quantize_ptq(
         verbose: Whether to print progress information
         quant_add: Whether to attach QuantAdd to residual blocks (BasicBlock/SparseBasicBlock).
                    Set to True for ResNet-style backbones with residual connections.
+        quant_linear_backbone: Whether to quantize Linear layers in pts_backbone
 
     Returns:
         Quantized model
@@ -74,11 +76,15 @@ def quantize_ptq(
     # Step 2: Insert Q/DQ nodes
     if verbose:
         print("Step 2: Inserting Q/DQ nodes...")
-    quant_model(model, skip_names=sensitive_layers, quant_add=quant_add)
+    quant_model(
+        model,
+        skip_names=sensitive_layers,
+        quant_add=quant_add,
+        quant_linear_backbone=quant_linear_backbone,
+    )
 
     if quant_add and verbose:
         print("  - QuantAdd attached to residual blocks (BasicBlock/SparseBasicBlock)")
-
     # Step 3: Calibrate
     if verbose:
         print(f"Step 3: Calibrating with {num_calibration_batches} batches...")
@@ -138,6 +144,7 @@ def load_ptq_model(
     fuse_bn: bool = True,
     sensitive_layers: Optional[Set[str]] = None,
     quant_add: bool = False,
+    quant_linear_backbone: bool = False,
 ) -> nn.Module:
     """
     Load a PTQ quantized model.
@@ -155,6 +162,7 @@ def load_ptq_model(
         fuse_bn: Whether BatchNorm was fused during PTQ
         sensitive_layers: Layers that were skipped during PTQ
         quant_add: Whether QuantAdd was attached during PTQ (must match saved model)
+        quant_linear_backbone: Whether Linear layers in pts_backbone were quantized
 
     Returns:
         Loaded PTQ model
@@ -167,7 +175,12 @@ def load_ptq_model(
         fuse_model_bn(model)
 
     # Insert Q/DQ nodes
-    quant_model(model, skip_names=sensitive_layers, quant_add=quant_add)
+    quant_model(
+        model,
+        skip_names=sensitive_layers,
+        quant_add=quant_add,
+        quant_linear_backbone=quant_linear_backbone,
+    )
 
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location="cpu")

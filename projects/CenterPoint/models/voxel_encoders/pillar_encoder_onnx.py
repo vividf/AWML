@@ -38,6 +38,21 @@ class PillarFeatureNetONNX(PillarFeatureNet):
         Returns:
             torch.Tensor: Features of pillars.
         """
+        # Calculate the base input channels expected by the model
+        # self.in_channels includes cluster center (+3) and voxel center (+3) and distance (+1 if enabled)
+        # So we need to subtract these to get the base input channels
+        base_channels = self.in_channels
+        if self._with_cluster_center:
+            base_channels -= 3
+        if self._with_voxel_center:
+            base_channels -= 3  # PillarFeatureNet uses 3 channels for voxel center (x, y, z)
+        if self._with_distance:
+            base_channels -= 1
+
+        # Slice features to match the expected base input channels
+        # This handles cases where voxelization produces more channels (e.g., 5 with intensity)
+        if features.shape[-1] > base_channels:
+            features = features[:, :, :base_channels]
         features_ls = [features]
         # Find distance of x, y, and z from cluster center
         if self._with_cluster_center:
@@ -144,6 +159,21 @@ class BackwardPillarFeatureNetONNX(BackwardPillarFeatureNet):
         Returns:
             torch.Tensor: Features of pillars.
         """
+        # Calculate the base input channels expected by the model
+        # self.in_channels includes cluster center (+3) and voxel center (+2) and distance (+1 if enabled)
+        # So we need to subtract these to get the base input channels
+        base_channels = self.in_channels
+        if self._with_cluster_center:
+            base_channels -= 3
+        if self._with_voxel_center:
+            base_channels -= 2
+        if self._with_distance:
+            base_channels -= 1
+
+        # Slice features to match the expected base input channels
+        # This handles cases where voxelization produces more channels (e.g., 5 with intensity)
+        if features.shape[-1] > base_channels:
+            features = features[:, :, :base_channels]
         features_ls = [features]
         # Find distance of x, y, and z from cluster center
         if self._with_cluster_center:

@@ -192,6 +192,7 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
             - quant_neck
             - quant_head
             - quant_add
+            - quant_linear_backbone
     """
     # Baseline: from deploy config if provided, otherwise defaults.
     fuse_bn = True
@@ -202,6 +203,7 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
         "quant_neck": True,
         "quant_head": True,
         "quant_add": False,  # Default to False for backward compatibility
+        "quant_linear_backbone": False,  # ConvNeXt pointwise linear support
     }
 
     # Deploy config baseline
@@ -220,6 +222,8 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
         # Handle quant_add specifically (for ResNet-style backbones)
         if "quant_add" in quant_cfg:
             quant_flags["quant_add"] = bool(quant_cfg["quant_add"])
+        if "quant_linear_backbone" in quant_cfg:
+            quant_flags["quant_linear_backbone"] = bool(quant_cfg["quant_linear_backbone"])
 
         # Sensitive layers baseline (deployment terminology)
         skip_layers |= set(quant_cfg.get("sensitive_layers", []) or [])
@@ -292,6 +296,7 @@ def run_ptq(args):
         quant_head=quant_flags["quant_head"],
         quant_voxel_encoder=quant_flags["quant_voxel_encoder"],
         quant_add=quant_flags["quant_add"],
+        quant_linear_backbone=quant_flags["quant_linear_backbone"],
         skip_names=skip_layers,
     )
 

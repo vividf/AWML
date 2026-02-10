@@ -1,5 +1,6 @@
 from typing import List, Optional
 
+import torch
 from mmdet3d.models.necks import SECONDFPN as _SECONDFPN
 from mmdet3d.registry import MODELS
 from mmengine.logging import print_log
@@ -55,6 +56,40 @@ class SECONDFPN(_SECONDFPN):
 
         print_log(f"Frozen SECONDFPN up to stage {frozen_stages}")
         self._freeze_stages()
+
+    def forward(self, x):
+        """Forward function.
+
+        Args:
+            x (List[torch.Tensor]): Multi-level features with 4D Tensor in
+                (N, C, H, W) shape.
+
+        Returns:
+            list[torch.Tensor]: Multi-level feature maps.
+        """
+        assert len(x) == len(self.in_channels)
+        ups = [deblock(x[i]) for i, deblock in enumerate(self.deblocks)]
+
+        if len(ups) > 1:
+            # Fix dimension mismatch for TensorRT compatibility (修法1: crop alignment)
+            # Transpose convolutions can produce slightly different spatial dimensions
+            # (e.g., 255 vs 254). Use crop to align all feature maps to the minimum size
+            # This is the most stable approach for cross-framework deployment.
+            min_h = min(up.shape[2] for up in ups)
+            min_w = min(up.shape[3] for up in ups)
+            target_size = (min_h, min_w)
+
+            aligned_ups = []
+            for up in ups:
+                h, w = up.shape[2], up.shape[3]
+                if (h, w) != target_size:
+                    # Crop to target size (crop from top-left, most stable for detection)
+                    up = up[..., :min_h, :min_w]
+                aligned_ups.append(up)
+            out = torch.cat(aligned_ups, dim=1)
+        else:
+            out = ups[0]
+        return [out]
 
     def _freeze_stages(self):
         """Freeze parameters in every layer/stage."""
