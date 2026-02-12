@@ -6,6 +6,7 @@ from typing import List, Sequence
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as cp
 from mmdet3d.registry import MODELS
 from mmengine.model import ModuleList, Sequential
 from mmpretrain.models.backbones.convnext import ConvNeXt, ConvNeXtBlock
@@ -45,7 +46,49 @@ class LayerNorm2d(nn.LayerNorm):
         )  # NOTE
 
 
-class ConvNeXtBlockLarge(ConvNeXtBlock):
+class ConvNeXtBlockPC(ConvNeXtBlock):
+    """ConvNeXt block that supports both LayerNorm and BatchNorm."""
+
+    def _apply_norm(self, x, data_format):
+        # BatchNorm does not accept "data_format" and expects NCHW.
+        if isinstance(self.norm, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.SyncBatchNorm)):
+            return self.norm(x)
+        return self.norm(x, data_format=data_format)
+
+    def forward(self, x):
+        def _inner_forward(x):
+            shortcut = x
+            x = self.depthwise_conv(x)
+
+            if self.linear_pw_conv:
+                x = x.permute(0, 2, 3, 1)
+                x = self._apply_norm(x, data_format="channel_last")
+                x = self.pointwise_conv1(x)
+                x = self.act(x)
+                if self.grn is not None:
+                    x = self.grn(x, data_format="channel_last")
+                x = self.pointwise_conv2(x)
+                x = x.permute(0, 3, 1, 2)
+            else:
+                x = self._apply_norm(x, data_format="channel_first")
+                x = self.pointwise_conv1(x)
+                x = self.act(x)
+                if self.grn is not None:
+                    x = self.grn(x, data_format="channel_first")
+                x = self.pointwise_conv2(x)
+
+            if self.gamma is not None:
+                x = x.mul(self.gamma.view(1, -1, 1, 1))
+
+            x = shortcut + self.drop_path(x)
+            return x
+
+        if self.with_cp and x.requires_grad:
+            return cp.checkpoint(_inner_forward, x)
+        return _inner_forward(x)
+
+
+class ConvNeXtBlockLarge(ConvNeXtBlockPC):
     def __init__(
         self,
         in_channels,
@@ -105,6 +148,8 @@ class ConvNeXt_PC(ConvNeXt):
             # Switch LayerNorm/GELU to BatchNorm/ReLU for this backbone.
             norm_cfg = dict(type="BN", eps=1e-5)
             act_cfg = dict(type="ReLU")
+            # BN path should keep tensors in NCHW (Conv2d pointwise branch).
+            linear_pw_conv = False
 
         self.depths = depths
         self.channels = out_channels
@@ -199,7 +244,7 @@ class ConvNeXt_PC(ConvNeXt):
             else:
                 stage = Sequential(
                     *[
-                        ConvNeXtBlock(
+                        ConvNeXtBlockPC(
                             in_channels=channels,
                             drop_path_rate=dpr[block_idx + j],
                             norm_cfg=norm_cfg,
