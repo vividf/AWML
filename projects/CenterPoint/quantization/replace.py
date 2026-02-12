@@ -336,8 +336,26 @@ class ConvNeXtBlockForwardHook:
     Mirrors mmpretrain ConvNeXtBlock.forward, but quantizes the shortcut before add.
     """
 
+    # Norm/GRN types that do NOT accept a ``data_format`` keyword argument.
+    # After BN-fusion the norm may become nn.Identity, which also does not
+    # accept ``data_format``.
+    _PLAIN_NORM_TYPES = (
+        nn.BatchNorm1d,
+        nn.BatchNorm2d,
+        nn.BatchNorm3d,
+        nn.SyncBatchNorm,
+        nn.Identity,
+    )
+
     def __init__(self, obj):
         self.obj = obj
+
+    @staticmethod
+    def _safe_call(module, x, data_format):
+        """Call *module* with ``data_format`` only when it accepts one."""
+        if isinstance(module, ConvNeXtBlockForwardHook._PLAIN_NORM_TYPES):
+            return module(x)
+        return module(x, data_format=data_format)
 
     def __call__(self, x):
         """Forward pass with quantized residual connection for ConvNeXtBlock."""
@@ -350,19 +368,19 @@ class ConvNeXtBlockForwardHook:
 
             if self.linear_pw_conv:
                 x = x.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
-                x = self.norm(x, data_format="channel_last")
+                x = ConvNeXtBlockForwardHook._safe_call(self.norm, x, "channel_last")
                 x = self.pointwise_conv1(x)
                 x = self.act(x)
                 if self.grn is not None:
-                    x = self.grn(x, data_format="channel_last")
+                    x = ConvNeXtBlockForwardHook._safe_call(self.grn, x, "channel_last")
                 x = self.pointwise_conv2(x)
                 x = x.permute(0, 3, 1, 2)  # (N, H, W, C) -> (N, C, H, W)
             else:
-                x = self.norm(x, data_format="channel_first")
+                x = ConvNeXtBlockForwardHook._safe_call(self.norm, x, "channel_first")
                 x = self.pointwise_conv1(x)
                 x = self.act(x)
                 if self.grn is not None:
-                    x = self.grn(x, data_format="channel_first")
+                    x = ConvNeXtBlockForwardHook._safe_call(self.grn, x, "channel_first")
                 x = self.pointwise_conv2(x)
 
             if self.gamma is not None:

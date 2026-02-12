@@ -20,7 +20,8 @@ task_type = "detection3d"
 # Checkpoint Path - Use PTQ or QAT quantized checkpoint
 # ============================================================================
 # checkpoint_path = "work_dirs/centerpoint_ptq.pth"
-checkpoint_path = "work_dirs/centerpoint-convnext/small/epoch_30_small_ptq_exp4.pth"
+# checkpoint_path = "work_dirs/centerpoint-convnext/small/convext_batch_relu_epoch_2_ptq.pth"
+checkpoint_path = "work_dirs/centerpoint-convnext/small/convext_batch_relu_epoch_2_ptq_fuse_downsample.pth"
 
 # ============================================================================
 # Quantization Configuration
@@ -66,9 +67,9 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="none",  # Export ONNX -> TensorRT
-    work_dir="work_dirs/centerpoint-convnext/small/int8_exp4",
-    onnx_path="work_dirs/centerpoint-convnext/small/int8_exp4/onnx",
+    mode="both",  # Export ONNX -> TensorRT
+    work_dir="work_dirs/centerpoint-convnext/small/int8_exp6",
+    onnx_path="work_dirs/centerpoint-convnext/small/int8_exp6/onnx",
 )
 
 # ============================================================================
@@ -175,12 +176,12 @@ evaluation = dict(
         onnx=dict(
             enabled=True,
             device=devices["cuda"],
-            model_dir="work_dirs/centerpoint-convnext/small/int8_exp4/onnx/",
+            model_dir="work_dirs/centerpoint-convnext/small/int8_exp6/onnx/",
         ),
         tensorrt=dict(
             enabled=True,
             device=devices["cuda"],
-            engine_dir="work_dirs/centerpoint-convnext/small/int8_exp4/tensorrt/",
+            engine_dir="work_dirs/centerpoint-convnext/small/int8_exp6/tensorrt/",
         ),
     ),
 )

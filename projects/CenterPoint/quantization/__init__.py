@@ -24,7 +24,7 @@ Example PTQ workflow:
 """
 
 from .calibration import CalibrationManager
-from .fusion import fuse_conv_bn, fuse_model_bn
+from .fusion import fuse_bn_conv, fuse_conv_bn, fuse_model_bn
 from .hooks import QATHook
 from .modules import QuantAdd, QuantConv2d, QuantConvTranspose2d, QuantLinear
 from .ptq import load_ptq_model, quantize_ptq, save_ptq_model
@@ -54,6 +54,7 @@ __all__ = [
     "CalibrationManager",
     # Fusion
     "fuse_conv_bn",
+    "fuse_bn_conv",
     "fuse_model_bn",
     # PTQ
     "quantize_ptq",

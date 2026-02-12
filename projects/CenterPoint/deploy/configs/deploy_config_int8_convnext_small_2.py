@@ -1,24 +1,62 @@
 """
-CenterPoint Deployment Configuration
+CenterPoint INT8 Quantization Deployment Configuration
+
+This configuration extends the base deploy_config.py with quantization settings
+for deploying PTQ (Post-Training Quantization) or QAT (Quantization-Aware Training)
+models to TensorRT INT8.
+
+Usage:
+    python projects/CenterPoint/deploy/main.py \
+        projects/CenterPoint/deploy/configs/deploy_config_int8.py \
+        projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_j6gen2_base_t4metric_v2.py
 """
 
 # ============================================================================
 # Task type for pipeline building
-# Options: 'detection2d', 'detection3d', 'classification', 'segmentation'
 # ============================================================================
 task_type = "detection3d"
 
 # ============================================================================
-# Checkpoint Path - Single source of truth for PyTorch model
+# Checkpoint Path - Use PTQ or QAT quantized checkpoint
 # ============================================================================
-# This is the main checkpoint path used by:
-# - Export pipeline: to load the PyTorch model for ONNX conversion
-# - Evaluation: for PyTorch backend evaluation
-# - Verification: when PyTorch is used as reference or test backend
-checkpoint_path = "work_dirs/centerpoint-convnext/small/epoch_30_small.pth"
+# checkpoint_path = "work_dirs/centerpoint_ptq.pth"
+# checkpoint_path = "work_dirs/centerpoint-convnext/small/convext_batch_relu_epoch_2_ptq.pth"
+checkpoint_path = "work_dirs/centerpoint-convnext/small/convext_batch_relu_epoch_2_ptq.pth"
 
 # ============================================================================
-# Device settings (shared by export, evaluation, verification)
+# Quantization Configuration
+# ============================================================================
+# This tells the deployment pipeline to apply quantization transformations
+# (BN fusion, Q/DQ node insertion) before loading the checkpoint.
+quantization = dict(
+    enabled=True,
+    mode="ptq",  # 'ptq' or 'qat'
+    fuse_bn=True,  # BatchNorm was fused during PTQ
+    # Match the PTQ graph you exported. If these don't match, checkpoint keys
+    # may not align with the model structure built during deployment.
+    quant_voxel_encoder=False,
+    quant_backbone=True,
+    quant_neck=True,
+    quant_head=True,
+    quant_add=True,
+    quant_linear_backbone=True,
+    # Optional: load calibration cache to populate amax for newly added quantizers
+    # calib_cache_path="work_dirs/centerpoint-convnext/small/epoch_30_small_ptq_exp3.calib",
+    # Optional: skip quantizing early backbone stages (maps to pts_backbone.blocks.<idx>)
+    skip_backbone_first_stages=0,
+    skip_backbone_stages=[],
+    # Layers that were skipped during quantization
+    # Note: ConvTranspose2d (deblocks) are excluded because TensorRT has
+    # limited INT8 support for transposed convolutions
+    sensitive_layers=[
+        # "pts_neck.deblocks.0.0",  # ConvTranspose2d - no TRT INT8 support
+        # "pts_neck.deblocks.1.0",  # ConvTranspose2d - no TRT INT8 support
+        # "pts_neck.deblocks.2.0",  # ConvTranspose2d - no TRT INT8 support
+    ],
+)
+
+# ============================================================================
+# Device settings
 # ============================================================================
 devices = dict(
     cpu="cpu",
@@ -29,28 +67,16 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    # Export mode:
-    # - 'onnx' : export PyTorch -> ONNX
-    # - 'trt'  : build TensorRT engine from an existing ONNX
-    # - 'both' : export PyTorch -> ONNX -> TensorRT
-    # - 'none' : no export (only evaluation / verification on existing artifacts)
-    mode="both",
-    # ---- Common options ----------------------------------------------------
-    work_dir="work_dirs/centerpoint-convnext/small/fp16",
-    # ---- ONNX source when building TensorRT only ---------------------------
-    # Rule:
-    # - mode == 'trt'  -> onnx_path MUST be provided (file or directory)
-    # - mode in ['onnx', 'both'] -> onnx_path can be None (pipeline uses newly exported ONNX)
-    onnx_path="work_dirs/centerpoint-convnext/small/fp16/onnx",  # e.g. "work_dirs/centerpoint_deployment/centerpoint.onnx"
+    mode="none",  # Export ONNX -> TensorRT
+    work_dir="work_dirs/centerpoint-convnext/small/int8_exp5",
+    onnx_path="work_dirs/centerpoint-convnext/small/int8_exp5/onnx",
 )
 
 # ============================================================================
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    # Path to info.pkl file
     info_file="data/t4dataset/info/t4dataset_base_infos_test.pkl",
-    # Sample index for export (use first sample)
     sample_idx=1,
 )
 
@@ -58,23 +84,15 @@ runtime_io = dict(
 # Model Input/Output Configuration
 # ============================================================================
 model_io = dict(
-    # Primary input configuration for 3D detection
     input_name="voxels",
-    input_shape=(32, 4),  # (max_points_per_voxel, point_dim); batch dim added automatically
+    input_shape=(32, 4),
     input_dtype="float32",
-    # Additional inputs for 3D detection
     additional_inputs=[
-        dict(name="num_points", shape=(-1,), dtype="int32"),  # (num_voxels,)
-        dict(name="coors", shape=(-1, 4), dtype="int32"),  # (num_voxels, 4) = (batch, z, y, x)
+        dict(name="num_points", shape=(-1,), dtype="int32"),
+        dict(name="coors", shape=(-1, 4), dtype="int32"),
     ],
-    # Head output names for ONNX export (order matters!)
-    # These are tied to CenterHead architecture
     head_output_names=("heatmap", "reg", "height", "dim", "rot", "vel"),
-    # Batch size configuration
-    # - int  : fixed batch size
-    # - None : dynamic batch size with dynamic_axes
     batch_size=None,
-    # Dynamic axes when batch_size=None
     dynamic_axes={
         "voxels": {0: "num_voxels"},
         "num_points": {0: "num_voxels"},
@@ -85,18 +103,13 @@ model_io = dict(
 # ============================================================================
 # ONNX Export Configuration
 # ============================================================================
-# CenterPoint uses multi-file ONNX export (voxel encoder + backbone/head).
-# Component definitions below specify names and file outputs for each stage.
 onnx_config = dict(
     opset_version=20,
     do_constant_folding=True,
     export_params=True,
     keep_initializers_as_inputs=False,
     simplify=False,
-    # Multi-file export: produces a directory with multiple .onnx/.engine files
     multi_file=True,
-    # Component definitions for multi-stage export
-    # Each component maps to a model sub-module that gets exported separately
     components=dict(
         voxel_encoder=dict(
             name="pts_voxel_encoder",
@@ -112,15 +125,16 @@ onnx_config = dict(
 )
 
 # ============================================================================
-# Backend Configuration (mainly for TensorRT)
+# Backend Configuration - INT8 TensorRT
 # ============================================================================
 backend_config = dict(
     common_config=dict(
-        # Precision policy for TensorRT
+        # Use INT8 precision for quantized model
+        # TensorRT will use Q/DQ nodes in ONNX to determine INT8 layers
         # Options: 'auto', 'fp16', 'fp32_tf32', 'strongly_typed'
+        # For Q/DQ INT8 export/build, prefer 'STRONGLY_TYPED'
         precision_policy="fp16",
-        # TensorRT workspace size (bytes)
-        max_workspace_size=4 << 30,  # 4 GB
+        max_workspace_size=4 << 30,  # 4 GB for INT8 calibration
     ),
     model_inputs=[
         dict(
@@ -152,34 +166,22 @@ backend_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=100,  # Number of samples to evaluate
+    num_samples=100,
     verbose=True,
-    # Decide which backends to evaluate and on which devices.
-    # Note:
-    # - tensorrt.device MUST be a CUDA device (e.g., 'cuda:0')
-    # - For 'none' export mode, all models must already exist on disk.
-    # - PyTorch backend uses top-level checkpoint_path (no need to specify here)
     backends=dict(
-        # PyTorch evaluation (uses top-level checkpoint_path)
         pytorch=dict(
             enabled=True,
-            device=devices["cuda"],  # or 'cpu'
+            device=devices["cuda"],
         ),
-        # ONNX evaluation
         onnx=dict(
             enabled=True,
-            device=devices["cuda"],  # 'cpu' or 'cuda:0'
-            # If None: pipeline will infer from export.work_dir / onnx_config.save_file
-            # model_dir=None,
-            model_dir="work_dirs/centerpoint-convnext/small/fp16/onnx/",
+            device=devices["cuda"],
+            model_dir="work_dirs/centerpoint-convnext/small/int8_exp5/onnx/",
         ),
-        # TensorRT evaluation
         tensorrt=dict(
             enabled=True,
-            device=devices["cuda"],  # must be CUDA
-            # If None: pipeline will infer from export.work_dir + "/tensorrt"
-            # engine_dir=None,
-            engine_dir="work_dirs/centerpoint-convnext/small/fp16/tensorrt/",
+            device=devices["cuda"],
+            engine_dir="work_dirs/centerpoint-convnext/small/int8_exp5/tensorrt/",
         ),
     ),
 )
@@ -187,39 +189,11 @@ evaluation = dict(
 # ============================================================================
 # Verification Configuration
 # ============================================================================
-# This block defines *scenarios* per export.mode, so the pipeline does not
-# need many if/else branches; it just chooses the policy based on export["mode"].
-# ----------------------------------------------------------------------------
 verification = dict(
-    # Master switch to enable/disable verification
     enabled=False,
-    tolerance=1e-1,
+    tolerance=1e-1,  # INT8 may have larger tolerance than FP16
     num_verify_samples=1,
-    # Device aliases for flexible device management
-    #
-    # Benefits of using aliases:
-    # - Change all CPU verifications to "cuda:1"? Just update devices["cpu"] = "cuda:1"
-    # - Switch ONNX verification device? Just update devices["cuda"] = "cuda:1"
-    # - Scenarios reference these aliases (e.g., ref_device="cpu", test_device="cuda")
     devices=devices,
-    # Verification scenarios per export mode
-    #
-    # Each policy is a list of comparison pairs:
-    #   - ref_backend   : reference backend ('pytorch' or 'onnx')
-    #   - ref_device    : device alias (e.g., "cpu", "cuda") - resolved via devices dict above
-    #   - test_backend  : backend under test ('onnx' or 'tensorrt')
-    #   - test_device   : device alias (e.g., "cpu", "cuda") - resolved via devices dict above
-    #
-    # Pipeline resolves devices like: actual_device = verification["devices"][policy["ref_device"]]
-    #
-    # This structure encodes:
-    # - 'both':
-    #     1) PyTorch(cpu) vs ONNX(cpu)
-    #     2) ONNX(cuda)   vs TensorRT(cuda)
-    # - 'onnx':
-    #     1) PyTorch(cpu) vs ONNX(cpu)
-    # - 'trt':
-    #     1) ONNX(cuda)   vs TensorRT(cuda)  (using provided ONNX)
     scenarios=dict(
         both=[
             dict(
