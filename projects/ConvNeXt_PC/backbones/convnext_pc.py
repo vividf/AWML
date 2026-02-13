@@ -138,11 +138,13 @@ class ConvNeXt_PC(ConvNeXt):
         first_downsample=1,
         large_arch=None,
         use_bn_relu=False,
+        downsample_conv_first=False,
         init_cfg=None,
     ):
         super().__init__(init_cfg=init_cfg)
         self.first_downsample = first_downsample
         self.use_bn_relu = use_bn_relu
+        self.downsample_conv_first = downsample_conv_first
 
         if self.use_bn_relu:
             # Switch LayerNorm/GELU to BatchNorm/ReLU for this backbone.
@@ -210,16 +212,28 @@ class ConvNeXt_PC(ConvNeXt):
                 else:
                     downsample_norm = LayerNorm2d
                 if self.first_downsample == 0 and i == 0:
-                    downsample_layer = nn.Sequential(
-                        downsample_norm(in_channels),
-                        nn.Conv2d(in_channels, channels, kernel_size=2, stride=2),
-                    )
+                    if self.downsample_conv_first:
+                        downsample_layer = nn.Sequential(
+                            nn.Conv2d(in_channels, channels, kernel_size=2, stride=2),
+                            downsample_norm(channels),
+                        )
+                    else:
+                        downsample_layer = nn.Sequential(
+                            downsample_norm(in_channels),
+                            nn.Conv2d(in_channels, channels, kernel_size=2, stride=2),
+                        )
                     self.downsample_layers.append(downsample_layer)
                 else:
-                    downsample_layer = nn.Sequential(
-                        downsample_norm(self.channels[i - 1]),
-                        nn.Conv2d(self.channels[i - 1], channels, kernel_size=2, stride=2),
-                    )
+                    if self.downsample_conv_first:
+                        downsample_layer = nn.Sequential(
+                            nn.Conv2d(self.channels[i - 1], channels, kernel_size=2, stride=2),
+                            downsample_norm(channels),
+                        )
+                    else:
+                        downsample_layer = nn.Sequential(
+                            downsample_norm(self.channels[i - 1]),
+                            nn.Conv2d(self.channels[i - 1], channels, kernel_size=2, stride=2),
+                        )
                     self.downsample_layers.append(downsample_layer)
             if large_arch is not None and i in large_stages:
                 stage_idx = large_stages.index(3)

@@ -254,6 +254,7 @@ model = dict(
         gap_before_final_norm=False,
         with_cp=True,  # We set with_cp to True for svaing gpu memory
         use_bn_relu=True,
+        downsample_conv_first=True,
         # No loading any pretrained weights
     ),
     pts_neck=dict(
