@@ -39,3 +39,18 @@ train_dataloader = dict(
         frame_object_sampler=train_frame_object_sampler,
     ),
 )
+
+# Switch from FP16 to BF16 to avoid loss scaler collapse
+# BF16 has larger dynamic range (8-bit exponent vs FP16's 5-bit), preventing overflow/NaN issues
+# A100 GPUs natively support BF16
+optim_wrapper = dict(
+    type="AmpOptimWrapper",
+    dtype="bfloat16",
+    optimizer=_base_.optimizer,
+    clip_grad=_base_.clip_grad,
+)
+
+# Override checkpoint settings to keep more epochs
+default_hooks = dict(
+    checkpoint=dict(type="CheckpointHook", interval=1, max_keep_ckpts=10, save_best="NuScenes metric/T4Metric/mAP"),
+)
