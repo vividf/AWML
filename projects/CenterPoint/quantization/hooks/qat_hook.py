@@ -65,7 +65,6 @@ class QATHook(Hook):
         calibration_batches: int = 100,
         calibration_epoch: int = 0,
         freeze_bn: bool = True,
-        fuse_bn_mode: str = "new",
         sensitive_layers: Optional[List[str]] = None,
         amax_method: str = "mse",
         quant_backbone: bool = True,
@@ -78,7 +77,6 @@ class QATHook(Hook):
         self.calibration_batches = calibration_batches
         self.calibration_epoch = calibration_epoch
         self.freeze_bn = freeze_bn
-        self.fuse_bn_mode = fuse_bn_mode
         self.sensitive_layers: Set[str] = set(sensitive_layers or [])
         self.amax_method = amax_method
         self.quant_backbone = quant_backbone
@@ -120,9 +118,9 @@ class QATHook(Hook):
 
         # Step 1: Fuse BatchNorm
         if self.freeze_bn:
-            runner.logger.info(f"QATHook: Fusing BatchNorm layers... (mode={self.fuse_bn_mode})")
+            runner.logger.info("QATHook: Fusing BatchNorm layers...")
             model.eval()
-            fuse_model_bn(model, mode=self.fuse_bn_mode)
+            fuse_model_bn(model)
             model.train()
 
         # Step 2: Insert Q/DQ nodes

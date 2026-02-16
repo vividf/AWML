@@ -82,12 +82,6 @@ def parse_args():
         default="cuda:0",
         help="Device for calibration (default: cuda:0)",
     )
-    ptq_parser.add_argument(
-        "--fuse-bn-mode",
-        choices=["new", "old"],
-        default=None,
-        help=("BatchNorm fusion mode override. " "'new' fuses Conv-BN and BN-Conv, 'old' fuses Conv-BN only."),
-    )
 
     # =========================================================================
     # Sensitivity command
@@ -116,12 +110,6 @@ def parse_args():
         "--device",
         default="cuda:0",
         help="Device for calibration (default: cuda:0)",
-    )
-    sens_parser.add_argument(
-        "--fuse-bn-mode",
-        choices=["new", "old"],
-        default="new",
-        help="BatchNorm fusion mode for sensitivity run.",
     )
 
     # =========================================================================
@@ -163,16 +151,6 @@ def parse_args():
     )
     qat_parser.add_argument("--output", required=True, help="Output checkpoint path")
     qat_parser.add_argument("--work-dir", default=None, help="Working directory for training")
-    qat_parser.add_argument(
-        "--fuse-bn-mode",
-        choices=["new", "old"],
-        default=None,
-        help=(
-            "BatchNorm fusion mode override for QAT hook. "
-            "'new' fuses Conv-BN and BN-Conv, 'old' fuses Conv-BN only."
-        ),
-    )
-
     return parser.parse_args()
 
 
@@ -200,13 +178,12 @@ def _load_deploy_quantization_cfg(
     return quant, ckpt
 
 
-def _build_ptq_quant_settings(args) -> Tuple[bool, str, Set[str], Dict[str, bool]]:
+def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
     """
     Build PTQ quantization settings from (optional) deploy config.
 
     Returns:
         fuse_bn: bool
-        fuse_bn_mode: str
         skip_layers: Set[str]
         quant_flags: Dict[str, bool] with keys:
             - quant_voxel_encoder
@@ -218,7 +195,6 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, str, Set[str], Dict[str, bool
     """
     # Baseline: from deploy config if provided, otherwise defaults.
     fuse_bn = True
-    fuse_bn_mode = "new"
     skip_layers: Set[str] = set()
     quant_flags: Dict[str, bool] = {
         "quant_voxel_encoder": True,
@@ -236,8 +212,6 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, str, Set[str], Dict[str, bool
         # BN fusion baseline
         if "fuse_bn" in quant_cfg:
             fuse_bn = bool(quant_cfg.get("fuse_bn", True))
-        if "fuse_bn_mode" in quant_cfg:
-            fuse_bn_mode = str(quant_cfg.get("fuse_bn_mode", "new")).lower()
 
         # Quant flags baseline
         for k in list(quant_flags.keys()):
@@ -268,14 +242,7 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, str, Set[str], Dict[str, bool
         for i in quant_cfg.get("skip_backbone_downsample_layers", []) or []:
             skip_layers.add(f"pts_backbone.downsample_layers.{int(i)}")
 
-    # CLI override has the highest priority
-    if getattr(args, "fuse_bn_mode", None) is not None:
-        fuse_bn_mode = args.fuse_bn_mode
-
-    if fuse_bn_mode not in {"new", "old"}:
-        raise ValueError(f"Unsupported fuse_bn_mode={fuse_bn_mode}. Expected 'new' or 'old'.")
-
-    return fuse_bn, fuse_bn_mode, skip_layers, quant_flags
+    return fuse_bn, skip_layers, quant_flags
 
 
 def run_ptq(args):
@@ -306,7 +273,7 @@ def run_ptq(args):
     print("=" * 80)
 
     # Build quantization settings to show quant_add status
-    _, _, _, quant_flags = _build_ptq_quant_settings(args)
+    _, _, quant_flags = _build_ptq_quant_settings(args)
     if quant_flags["quant_add"]:
         print("Note: Residual quantization enabled for residual connections (ResNet-style backbones)")
         print("      Using residual_quantizer (only quantizes identity branch, not conv path)")
@@ -318,11 +285,11 @@ def run_ptq(args):
     model.eval()
 
     # Build quantization settings
-    fuse_bn, fuse_bn_mode, skip_layers, quant_flags = _build_ptq_quant_settings(args)
+    fuse_bn, skip_layers, quant_flags = _build_ptq_quant_settings(args)
 
     if fuse_bn:
-        print(f"\n[2/5] Fusing BatchNorm layers... (mode={fuse_bn_mode})")
-        fuse_model_bn(model, mode=fuse_bn_mode)
+        print("\n[2/5] Fusing BatchNorm layers...")
+        fuse_model_bn(model)
     else:
         print("\n[2/5] Skipping BatchNorm fusion")
 
@@ -443,7 +410,7 @@ def run_sensitivity(args):
 
     # Fuse BatchNorm and insert Q/DQ nodes
     print("\n[2/4] Preparing quantized model...")
-    fuse_model_bn(model, mode=args.fuse_bn_mode)
+    fuse_model_bn(model)
     quant_model(model)
 
     # Build dataloader
@@ -576,7 +543,6 @@ def run_qat(args):
     # Sensitive layers: use deploy config as the single source of truth (if provided).
     sensitive_layers = []
     quant_add = False
-    fuse_bn_mode = "new"
     if args.deploy_cfg:
         quant_cfg, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
         sensitive_layers = list(quant_cfg.get("sensitive_layers", []) or [])
@@ -601,13 +567,6 @@ def run_qat(args):
 
         # Read quant_add setting
         quant_add = bool(quant_cfg.get("quant_add", False))
-        fuse_bn_mode = str(quant_cfg.get("fuse_bn_mode", "new")).lower()
-
-    if args.fuse_bn_mode is not None:
-        fuse_bn_mode = args.fuse_bn_mode
-
-    if fuse_bn_mode not in {"new", "old"}:
-        raise ValueError(f"Unsupported fuse_bn_mode={fuse_bn_mode}. Expected 'new' or 'old'.")
 
     # De-duplicate while preserving order
     deduped = []
@@ -623,7 +582,6 @@ def run_qat(args):
             calibration_batches=args.calibrate_batches,
             calibration_epoch=0,
             freeze_bn=True,
-            fuse_bn_mode=fuse_bn_mode,
             sensitive_layers=deduped,
             quant_add=quant_add,
         )

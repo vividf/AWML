@@ -21,7 +21,7 @@ task_type = "detection3d"
 # ============================================================================
 # checkpoint_path = "work_dirs/centerpoint_ptq.pth"
 # checkpoint_path = "work_dirs/centerpoint-convnext/small/convext_batch_relu_epoch_2_ptq.pth"
-checkpoint_path = "work_dirs/centerpoint-convnext/small/convext_batch_relu_epoch_2_ptq_fuse_downsample.pth"
+checkpoint_path = "work_dirs/centerpoint-convnext/epoch_5_downsample_conv_first_ptq.pth"
 
 # ============================================================================
 # Quantization Configuration

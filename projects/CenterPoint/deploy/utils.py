@@ -131,11 +131,10 @@ def _load_quantized_checkpoint(
 
     # 1. Fuse BatchNorm if enabled (must be done before quantization)
     fuse_bn = quantization.get("fuse_bn", True)
-    fuse_bn_mode = str(quantization.get("fuse_bn_mode", "new")).lower()
     if fuse_bn:
-        logger.info("Fusing BatchNorm layers... (mode=%s)", fuse_bn_mode)
+        logger.info("Fusing BatchNorm layers...")
         model.eval()
-        fuse_model_bn(model, mode=fuse_bn_mode)
+        fuse_model_bn(model)
 
     # 2. Insert Q/DQ nodes
     logger.info("Inserting Q/DQ nodes...")

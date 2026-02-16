@@ -15,7 +15,7 @@ task_type = "detection3d"
 # - Export pipeline: to load the PyTorch model for ONNX conversion
 # - Evaluation: for PyTorch backend evaluation
 # - Verification: when PyTorch is used as reference or test backend
-checkpoint_path = "work_dirs/centerpoint-convnext/small/epoch_30_small.pth"
+checkpoint_path = "work_dirs/centerpoint-convnext/epoch_5_downsample_conv_first.pth"
 
 # ============================================================================
 # Device settings (shared by export, evaluation, verification)
@@ -36,12 +36,12 @@ export = dict(
     # - 'none' : no export (only evaluation / verification on existing artifacts)
     mode="both",
     # ---- Common options ----------------------------------------------------
-    work_dir="work_dirs/centerpoint-convnext/small/fp16",
+    work_dir="work_dirs/centerpoint-convnext/small/fp16-downsample-conv-first",
     # ---- ONNX source when building TensorRT only ---------------------------
     # Rule:
     # - mode == 'trt'  -> onnx_path MUST be provided (file or directory)
     # - mode in ['onnx', 'both'] -> onnx_path can be None (pipeline uses newly exported ONNX)
-    onnx_path="work_dirs/centerpoint-convnext/small/fp16/onnx",  # e.g. "work_dirs/centerpoint_deployment/centerpoint.onnx"
+    onnx_path="work_dirs/centerpoint-convnext/small/fp16-downsample-conv-first/onnx",  # e.g. "work_dirs/centerpoint_deployment/centerpoint.onnx"
 )
 
 # ============================================================================
@@ -171,7 +171,7 @@ evaluation = dict(
             device=devices["cuda"],  # 'cpu' or 'cuda:0'
             # If None: pipeline will infer from export.work_dir / onnx_config.save_file
             # model_dir=None,
-            model_dir="work_dirs/centerpoint-convnext/small/fp16/onnx/",
+            model_dir="work_dirs/centerpoint-convnext/small/fp16-downsample-conv-first/onnx/",
         ),
         # TensorRT evaluation
         tensorrt=dict(
@@ -179,7 +179,7 @@ evaluation = dict(
             device=devices["cuda"],  # must be CUDA
             # If None: pipeline will infer from export.work_dir + "/tensorrt"
             # engine_dir=None,
-            engine_dir="work_dirs/centerpoint-convnext/small/fp16/tensorrt/",
+            engine_dir="work_dirs/centerpoint-convnext/small/fp16-downsample-conv-first/tensorrt/",
         ),
     ),
 )

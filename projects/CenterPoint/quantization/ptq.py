@@ -24,7 +24,6 @@ def quantize_ptq(
     verbose: bool = True,
     quant_add: bool = False,
     quant_linear_backbone: bool = False,
-    fuse_bn_mode: str = "new",
 ) -> nn.Module:
     """
     Apply PTQ (Post-Training Quantization) to a CenterPoint model.
@@ -48,7 +47,6 @@ def quantize_ptq(
         quant_add: Whether to attach QuantAdd to residual blocks (BasicBlock/SparseBasicBlock).
                    Set to True for ResNet-style backbones with residual connections.
         quant_linear_backbone: Whether to quantize Linear layers in pts_backbone
-        fuse_bn_mode: BN fusion mode, ``'new'`` (Conv-BN + BN-Conv) or ``'old'`` (Conv-BN only)
 
     Returns:
         Quantized model
@@ -69,8 +67,8 @@ def quantize_ptq(
     # Step 1: Fuse BatchNorm
     if fuse_bn:
         if verbose:
-            print(f"Step 1: Fusing BatchNorm layers... (mode={fuse_bn_mode})")
-        fuse_model_bn(model, mode=fuse_bn_mode)
+            print("Step 1: Fusing BatchNorm layers...")
+        fuse_model_bn(model)
     else:
         if verbose:
             print("Step 1: Skipping BatchNorm fusion")
@@ -147,7 +145,6 @@ def load_ptq_model(
     sensitive_layers: Optional[Set[str]] = None,
     quant_add: bool = False,
     quant_linear_backbone: bool = False,
-    fuse_bn_mode: str = "new",
 ) -> nn.Module:
     """
     Load a PTQ quantized model.
@@ -166,7 +163,6 @@ def load_ptq_model(
         sensitive_layers: Layers that were skipped during PTQ
         quant_add: Whether QuantAdd was attached during PTQ (must match saved model)
         quant_linear_backbone: Whether Linear layers in pts_backbone were quantized
-        fuse_bn_mode: BN fusion mode used during PTQ, ``'new'`` or ``'old'``
 
     Returns:
         Loaded PTQ model
@@ -176,7 +172,7 @@ def load_ptq_model(
 
     # Fuse BN if it was done during PTQ
     if fuse_bn:
-        fuse_model_bn(model, mode=fuse_bn_mode)
+        fuse_model_bn(model)
 
     # Insert Q/DQ nodes
     quant_model(

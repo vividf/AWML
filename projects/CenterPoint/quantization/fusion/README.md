@@ -103,11 +103,9 @@ y_o = Σ_i W_{o,i} * (α_i · x_i + β_i) + b_o
 > - The bias requires an additional **weighted summation** `Σ_i W_{o,i} · β_i` across the input channel and spatial dimensions.
 > - For **grouped convolutions** (including depthwise), the scaling and summation are performed independently per group.
 
-#### Implementation
+#### Status
 
-- `fuse_bn_conv_weights()` — low-level weight computation (group-aware)
-- `fuse_bn_conv()` — in-place module-level fusion
-- `find_bn_conv_pairs()` — automatic pair detection
+BN -> Conv fusion support has been removed. The fusion pipeline now only supports the standard Conv -> BN pattern.
 
 Supported module combinations:
 
@@ -131,13 +129,13 @@ For group g (g = 0 .. G-1):
     b'[o] = b[o] + Σ_{i_local} W[o, i_local, ...] · β[g * I/G + i_local]
 ```
 
-This is handled automatically by `fuse_bn_conv_weights()`.
+This section is kept as historical background only.
 
 ---
 
 ## Top-Level Entry Point: `fuse_model_bn()`
 
-`fuse_model_bn(model)` is the single entry point used by PTQ, QAT, and deployment pipelines. It performs both fusion patterns in one call:
+`fuse_model_bn(model)` is the single entry point used by PTQ, QAT, and deployment pipelines. It fuses Conv -> BN pairs in one call:
 
 ```text
 fuse_model_bn(model)
@@ -146,15 +144,8 @@ fuse_model_bn(model)
     │       └── fuse_conv_bn(conv, bn)      # fold BN into Conv
     │           └── BN replaced with Identity
     │
-    ├── 2. find_bn_conv_pairs(model)        # detect BN → Conv
-    │       └── (skip BNs already claimed by step 1)
-    │       └── fuse_bn_conv(bn, conv)      # fold BN into Conv
-    │           └── BN replaced with Identity
-    │
     └── print summary
 ```
-
-**Conflict avoidance:** If a BN layer was already fused as part of a `Conv → BN` pair in step 1, it is excluded from `BN → Conv` matching in step 2. This prevents double-fusion.
 
 ### When It Runs
 
@@ -180,25 +171,16 @@ fuse_bn_weights(conv_weight, conv_bias, bn_mean, bn_var, bn_eps, bn_weight, bn_b
 
 Fuse a **following** BN into Conv weights (Case 1). Scale along output channel.
 
-```python
-fuse_bn_conv_weights(conv_weight, conv_bias, bn_mean, bn_var, bn_eps, bn_weight, bn_bias,
-                     is_transposed=False, groups=1) -> (fused_weight, fused_bias)
-```
-
-Fuse a **preceding** BN into Conv weights (Case 2). Scale along input channel, group-aware.
-
 ### Module-Level Functions
 
 ```python
-fuse_conv_bn(conv, bn)       # Case 1: in-place, modifies conv.weight/bias
-fuse_bn_conv(bn, conv)       # Case 2: in-place, modifies conv.weight/bias
+fuse_conv_bn(conv, bn)       # in-place, modifies conv.weight/bias
 ```
 
 ### Pair Detection
 
 ```python
-find_conv_bn_pairs(model) -> List[(conv_name, bn_name)]   # Case 1
-find_bn_conv_pairs(model) -> List[(bn_name, conv_name)]   # Case 2
+find_conv_bn_pairs(model) -> List[(conv_name, bn_name)]
 ```
 
 ### Top-Level
@@ -207,7 +189,7 @@ find_bn_conv_pairs(model) -> List[(bn_name, conv_name)]   # Case 2
 fuse_model_bn(model, inplace=True) -> model
 ```
 
-Fuses all Conv–BN and BN–Conv pairs, replaces fused BNs with `nn.Identity`.
+Fuses all Conv-BN pairs, replaces fused BNs with `nn.Identity`.
 
 ---
 
