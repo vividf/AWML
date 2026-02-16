@@ -235,13 +235,6 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
         for i in quant_cfg.get("skip_backbone_stages", []) or []:
             skip_layers.add(f"pts_backbone.blocks.{int(i)}")
 
-        # Optional ConvNeXt downsample skips (deployment terminology)
-        # Useful when stride-2 downsample convs are PTQ-sensitive.
-        if bool(quant_cfg.get("skip_backbone_downsample_all", False)):
-            skip_layers.add("pts_backbone.downsample_layers")
-        for i in quant_cfg.get("skip_backbone_downsample_layers", []) or []:
-            skip_layers.add(f"pts_backbone.downsample_layers.{int(i)}")
-
     return fuse_bn, skip_layers, quant_flags
 
 

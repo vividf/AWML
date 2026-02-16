@@ -45,9 +45,6 @@ quantization = dict(
     # Optional: skip quantizing early backbone stages (maps to pts_backbone.blocks.<idx>)
     skip_backbone_first_stages=0,
     skip_backbone_stages=[],
-    # Optional: skip ConvNeXt downsample layers (often PTQ-sensitive for stride-2 convs)
-    skip_backbone_downsample_all=True,
-    skip_backbone_downsample_layers=[],
     # Layers that were skipped during quantization
     # Note: ConvTranspose2d (deblocks) are excluded because TensorRT has
     # limited INT8 support for transposed convolutions
@@ -71,8 +68,8 @@ devices = dict(
 # ============================================================================
 export = dict(
     mode="both",  # Export ONNX -> TensorRT
-    work_dir="work_dirs/centerpoint-convnext/small/int8_exp6",
-    onnx_path="work_dirs/centerpoint-convnext/small/int8_exp6/onnx",
+    work_dir="work_dirs/centerpoint-convnext/small/int8_exp7",
+    onnx_path="work_dirs/centerpoint-convnext/small/int8_exp7/onnx",
 )
 
 # ============================================================================
@@ -179,12 +176,12 @@ evaluation = dict(
         onnx=dict(
             enabled=True,
             device=devices["cuda"],
-            model_dir="work_dirs/centerpoint-convnext/small/int8_exp6/onnx/",
+            model_dir="work_dirs/centerpoint-convnext/small/int8_exp7/onnx/",
         ),
         tensorrt=dict(
             enabled=True,
             device=devices["cuda"],
-            engine_dir="work_dirs/centerpoint-convnext/small/int8_exp6/tensorrt/",
+            engine_dir="work_dirs/centerpoint-convnext/small/int8_exp7/tensorrt/",
         ),
     ),
 )

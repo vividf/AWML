@@ -149,13 +149,6 @@ def _load_quantized_checkpoint(
     for i in quantization.get("skip_backbone_stages", []) or []:
         skip_layers.add(f"pts_backbone.blocks.{int(i)}")
 
-    # Optional helpers for ConvNeXt downsample layers.
-    # These expand to module prefixes like 'pts_backbone.downsample_layers.<idx>'.
-    if bool(quantization.get("skip_backbone_downsample_all", False)):
-        skip_layers.add("pts_backbone.downsample_layers")
-    for i in quantization.get("skip_backbone_downsample_layers", []) or []:
-        skip_layers.add(f"pts_backbone.downsample_layers.{int(i)}")
-
     logger.info(
         "#########################################################"
         "Quantization flags: backbone=%s, neck=%s, head=%s, voxel_encoder=%s, "
