@@ -127,11 +127,11 @@ backend_config = dict(
             input_shapes=dict(
                 input_features=dict(
                     # BackwardPillarFeatureNet channel calculation:
-                    # base (4) + cluster_center (3) + voxel_center (2) = 9 channels
+                    # base (5) + cluster_center (3) + voxel_center (2) = 10 channels
                     # Shape: (num_voxels, max_points_per_voxel, channels)
-                    min_shape=[1000, 32, 9],  # Minimum supported input shape
-                    opt_shape=[20000, 32, 9],  # Optimal shape for performance tuning
-                    max_shape=[64000, 32, 9],  # Maximum supported input shape
+                    min_shape=[1000, 32, 10],  # Minimum supported input shape
+                    opt_shape=[20000, 32, 10],  # Optimal shape for performance tuning
+                    max_shape=[64000, 32, 10],  # Maximum supported input shape
                 ),
                 spatial_features=dict(
                     # spatial_features shape should match grid_size from training config

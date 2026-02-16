@@ -7,7 +7,7 @@ Fusing BatchNorm into preceding convolutions is important for quantization becau
 3. It's required for accurate fake quantization during QAT training
 """
 
-from typing import List, Tuple, Union
+from typing import Iterator, List, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -296,6 +296,38 @@ def _get_bn_num_features(bn: nn.Module) -> int:
     return bn.num_features
 
 
+def _iter_adjacent_named_children(
+    model: nn.Module, prefix: str = ""
+) -> Iterator[Tuple[str, nn.Module, str, nn.Module]]:
+    """
+    Iterate adjacent sibling module pairs in the module tree.
+
+    Unlike scanning ``named_modules()`` linearly, this only emits adjacent
+    modules that share the same parent container, preventing accidental
+    cross-boundary pairing (e.g., last BN of one block with first Conv of
+    another block).
+    """
+    children = list(model._modules.items())
+
+    # Adjacent siblings under the same parent.
+    for i in range(len(children) - 1):
+        left_name, left_module = children[i]
+        right_name, right_module = children[i + 1]
+        if left_module is None or right_module is None:
+            continue
+
+        left_full = f"{prefix}.{left_name}" if prefix else left_name
+        right_full = f"{prefix}.{right_name}" if prefix else right_name
+        yield left_full, left_module, right_full, right_module
+
+    # Recurse into each child.
+    for child_name, child_module in children:
+        if child_module is None:
+            continue
+        child_prefix = f"{prefix}.{child_name}" if prefix else child_name
+        yield from _iter_adjacent_named_children(child_module, child_prefix)
+
+
 def find_conv_bn_pairs(model: nn.Module) -> List[Tuple[str, str]]:
     """
     Find all Conv-BN pairs in the model.
@@ -317,8 +349,6 @@ def find_conv_bn_pairs(model: nn.Module) -> List[Tuple[str, str]]:
         List of (conv_name, bn_name) tuples
     """
     pairs = []
-    prev_name = None
-    prev_module = None
 
     # Mapping of conv types to their expected BN types
     conv_to_bn = {
@@ -328,20 +358,15 @@ def find_conv_bn_pairs(model: nn.Module) -> List[Tuple[str, str]]:
         nn.Linear: nn.BatchNorm1d,
     }
 
-    for name, module in model.named_modules():
-        # Check if current module is a BN that follows a conv
-        if prev_module is not None:
-            for conv_type, bn_type in conv_to_bn.items():
-                if isinstance(prev_module, conv_type) and isinstance(module, bn_type):
-                    # Validate that channel dimensions match
-                    conv_out_channels = _get_conv_out_channels(prev_module)
-                    bn_num_features = _get_bn_num_features(module)
-                    if conv_out_channels == bn_num_features:
-                        pairs.append((prev_name, name))
-                    break
-
-        prev_name = name
-        prev_module = module
+    for left_name, left_module, right_name, right_module in _iter_adjacent_named_children(model):
+        for conv_type, bn_type in conv_to_bn.items():
+            if isinstance(left_module, conv_type) and isinstance(right_module, bn_type):
+                # Validate that channel dimensions match
+                conv_out_channels = _get_conv_out_channels(left_module)
+                bn_num_features = _get_bn_num_features(right_module)
+                if conv_out_channels == bn_num_features:
+                    pairs.append((left_name, right_name))
+                break
 
     return pairs
 
@@ -367,8 +392,6 @@ def find_bn_conv_pairs(model: nn.Module) -> List[Tuple[str, str]]:
         List of (bn_name, conv_name) tuples
     """
     pairs = []
-    prev_name = None
-    prev_module = None
 
     # Mapping of BN types to their acceptable following conv types
     bn_to_conv = {
@@ -376,20 +399,15 @@ def find_bn_conv_pairs(model: nn.Module) -> List[Tuple[str, str]]:
         nn.BatchNorm2d: (nn.Conv2d, nn.ConvTranspose2d),
     }
 
-    for name, module in model.named_modules():
-        # Check if current module is a Conv that follows a BN
-        if prev_module is not None:
-            for bn_type, conv_types in bn_to_conv.items():
-                if isinstance(prev_module, bn_type) and isinstance(module, conv_types):
-                    # Validate that channel dimensions match
-                    bn_num_features = _get_bn_num_features(prev_module)
-                    conv_in_channels = _get_conv_in_channels(module)
-                    if bn_num_features == conv_in_channels:
-                        pairs.append((prev_name, name))
-                    break
-
-        prev_name = name
-        prev_module = module
+    for left_name, left_module, right_name, right_module in _iter_adjacent_named_children(model):
+        for bn_type, conv_types in bn_to_conv.items():
+            if isinstance(left_module, bn_type) and isinstance(right_module, conv_types):
+                # Validate that channel dimensions match
+                bn_num_features = _get_bn_num_features(left_module)
+                conv_in_channels = _get_conv_in_channels(right_module)
+                if bn_num_features == conv_in_channels:
+                    pairs.append((left_name, right_name))
+                break
 
     return pairs
 
