@@ -134,6 +134,7 @@ class ConvNeXt_PC(ConvNeXt):
         out_indices=-1,
         frozen_stages=0,
         gap_before_final_norm=True,
+        apply_out_norm=True,
         with_cp=False,
         first_downsample=1,
         large_arch=None,
@@ -145,6 +146,8 @@ class ConvNeXt_PC(ConvNeXt):
         self.first_downsample = first_downsample
         self.use_bn_relu = use_bn_relu
         self.downsample_conv_first = downsample_conv_first
+        # Controls whether output-stage norm layers (norm{i}) are applied before neck.
+        self.apply_out_norm = apply_out_norm
 
         if self.use_bn_relu:
             # Switch LayerNorm/GELU to BatchNorm/ReLU for this backbone.
@@ -292,11 +295,13 @@ class ConvNeXt_PC(ConvNeXt):
                 norm_layer = getattr(self, f"norm{i}")
                 if self.gap_before_final_norm:
                     gap = x.mean([-2, -1], keepdim=True)
-                    outs.append(norm_layer(gap).flatten(1))
+                    out = norm_layer(gap) if self.apply_out_norm else gap
+                    outs.append(out.flatten(1))
                 else:
                     # The output of LayerNorm2d may be discontiguous, which
                     # may cause some problem in the downstream tasks
-                    outs.append(norm_layer(x).contiguous())
+                    out = norm_layer(x) if self.apply_out_norm else x
+                    outs.append(out.contiguous())
         # for index, i in enumerate(outs):
         #     print_log(f"output shape {index}: {i.shape}")
         return tuple(outs)

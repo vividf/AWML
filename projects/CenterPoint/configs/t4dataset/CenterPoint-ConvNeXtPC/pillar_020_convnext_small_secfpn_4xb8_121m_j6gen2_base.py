@@ -252,6 +252,7 @@ model = dict(
         drop_path_rate=0.0,  # No drop path
         layer_scale_init_value=1.0,
         gap_before_final_norm=False,
+        apply_out_norm=False,
         with_cp=True,  # We set with_cp to True for svaing gpu memory
         use_bn_relu=True,
         downsample_conv_first=True,
