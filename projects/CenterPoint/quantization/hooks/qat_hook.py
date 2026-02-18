@@ -33,7 +33,8 @@ class QATHook(Hook):
     ```
 
     Args:
-        calibration_batches: Number of batches for initial calibration
+        calibration_batches: Number of batches for initial calibration.
+            If None or <= 0, calibrate on all available training batches.
         calibration_epoch: Epoch at which to run calibration (default: 0)
         freeze_bn: Whether to fuse and freeze BatchNorm layers
         sensitive_layers: List of layer names to skip quantization
@@ -45,6 +46,8 @@ class QATHook(Hook):
         quant_add: Whether to attach QuantAdd to residual blocks (BasicBlock/SparseBasicBlock).
                    Set to True for ResNet-style backbones with residual connections.
         quant_linear_backbone: Whether to quantize Linear layers in pts_backbone
+        calib_cache_path: Optional path to a PTQ calibration cache (.calib). If provided,
+            QATHook will load amax values from this cache and skip the initial calibration.
 
     Example:
         >>> # In config file
@@ -62,7 +65,7 @@ class QATHook(Hook):
 
     def __init__(
         self,
-        calibration_batches: int = 100,
+        calibration_batches: Optional[int] = 100,
         calibration_epoch: int = 0,
         freeze_bn: bool = True,
         sensitive_layers: Optional[List[str]] = None,
@@ -73,6 +76,7 @@ class QATHook(Hook):
         quant_voxel_encoder: bool = True,
         quant_add: bool = False,
         quant_linear_backbone: bool = False,
+        calib_cache_path: Optional[str] = None,
     ):
         self.calibration_batches = calibration_batches
         self.calibration_epoch = calibration_epoch
@@ -85,6 +89,7 @@ class QATHook(Hook):
         self.quant_voxel_encoder = quant_voxel_encoder
         self.quant_add = quant_add
         self.quant_linear_backbone = quant_linear_backbone
+        self.calib_cache_path = calib_cache_path
 
         # State flags
         self._quantized = False
@@ -173,15 +178,30 @@ class QATHook(Hook):
 
             dataloader = runner.train_dataloader
 
-            runner.logger.info(f"QATHook: Starting calibration with {self.calibration_batches} batches...")
+            # Resolve "all batches" mode
+            if self.calibration_batches is None or int(self.calibration_batches) <= 0:
+                try:
+                    effective_batches = len(dataloader)
+                except Exception:
+                    effective_batches = 100
+            else:
+                effective_batches = int(self.calibration_batches)
 
-            # Run calibration
-            calibrator = CalibrationManager(model)
-            calibrator.calibrate(
-                dataloader,
-                num_batches=self.calibration_batches,
-                method=self.amax_method,
-            )
+            # If calibration cache is provided, load it and skip calibration
+            if self.calib_cache_path:
+                runner.logger.info(f"QATHook: Loading calibration cache: {self.calib_cache_path}")
+                calibrator = CalibrationManager(model)
+                calibrator.load_calib_cache(self.calib_cache_path)
+            else:
+                runner.logger.info(f"QATHook: Starting calibration with {effective_batches} batches...")
+
+                # Run calibration
+                calibrator = CalibrationManager(model)
+                calibrator.calibrate(
+                    dataloader,
+                    num_batches=effective_batches,
+                    method=self.amax_method,
+                )
 
             # Disable sensitive layers
             if self.sensitive_layers:

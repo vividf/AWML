@@ -11,21 +11,34 @@ Usage:
     python tools/detection3d/centerpoint_quantization.py ptq \
         --config projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
         --checkpoint work_dirs/centerpoint/best.pth \
-        --calibrate-batches 100 \
+        --calibrate-samples 938 \
+        --batch-size 4 \
+        --calib-seed 0 \
+        --output work_dirs/centerpoint_ptq.pth
+
+    # PTQ Mode with larger batch_size (reduces seed sensitivity)
+    python tools/detection3d/centerpoint_quantization.py ptq \
+        --config projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
+        --checkpoint work_dirs/centerpoint/best.pth \
+        --calibrate-samples 938 \
+        --batch-size 16 \
+        --calib-seed 0 \
         --output work_dirs/centerpoint_ptq.pth
 
     # Sensitivity Analysis - Find layers sensitive to quantization
     python tools/detection3d/centerpoint_quantization.py sensitivity \
         --config projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
         --checkpoint work_dirs/centerpoint/best.pth \
-        --calibrate-batches 100 \
+        --calibrate-samples 100 \
+        --batch-size 1 \
         --output sensitivity_report.csv
 
     # QAT Mode - Fine-tune with quantization
     python tools/detection3d/centerpoint_quantization.py qat \
         --config projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
         --checkpoint work_dirs/centerpoint/best.pth \
-        --calibrate-batches 100 \
+        --calibrate-samples 100 \
+        --batch-size 1 \
         --epochs 10 \
         --lr 0.0001 \
         --output work_dirs/centerpoint_qat.pth
@@ -71,16 +84,36 @@ def parse_args():
         ),
     )
     ptq_parser.add_argument(
-        "--calibrate-batches",
+        "--calibrate-samples",
         type=int,
         default=100,
-        help="Number of batches for calibration (default: 100)",
+        help=(
+            "Total number of samples for calibration (default: 100). "
+            "Batches will be auto-calculated based on --batch-size."
+        ),
     )
     ptq_parser.add_argument("--output", required=True, help="Output checkpoint path")
     ptq_parser.add_argument(
         "--device",
         default="cuda:0",
         help="Device for calibration (default: cuda:0)",
+    )
+    ptq_parser.add_argument(
+        "--calib-shuffle",
+        action="store_true",
+        help="Shuffle the calibration data",
+    )
+    ptq_parser.add_argument(
+        "--calib-seed",
+        type=int,
+        default=None,
+        help="Random seed for calibration data shuffling",
+    )
+    ptq_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Batch size for calibration (default: 1). Larger batch size can reduce seed sensitivity.",
     )
 
     # =========================================================================
@@ -94,10 +127,19 @@ def parse_args():
     sens_parser.add_argument("--config", required=True, help="Model config file path")
     sens_parser.add_argument("--checkpoint", required=True, help="Model checkpoint file path")
     sens_parser.add_argument(
-        "--calibrate-batches",
+        "--calibrate-samples",
         type=int,
         default=100,
-        help="Number of batches for calibration (default: 100)",
+        help=(
+            "Total number of samples for calibration (default: 100). "
+            "Batches will be auto-calculated based on --batch-size."
+        ),
+    )
+    sens_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Batch size for calibration (default: 1)",
     )
     sens_parser.add_argument(
         "--eval-samples",
@@ -132,10 +174,20 @@ def parse_args():
         ),
     )
     qat_parser.add_argument(
-        "--calibrate-batches",
+        "--calibrate-samples",
         type=int,
-        default=100,
-        help="Number of batches for initial calibration (default: 100)",
+        default=None,
+        help=(
+            "Total number of samples for initial calibration. "
+            "If not specified, use all training batches (recommended for QAT). "
+            "Batches will be auto-calculated based on --batch-size if specified."
+        ),
+    )
+    qat_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Batch size for calibration/training dataloaders (default: 1)",
     )
     qat_parser.add_argument(
         "--epochs",
@@ -151,6 +203,13 @@ def parse_args():
     )
     qat_parser.add_argument("--output", required=True, help="Output checkpoint path")
     qat_parser.add_argument("--work-dir", default=None, help="Working directory for training")
+    qat_parser.add_argument(
+        "--ptq-calib-cache",
+        default=None,
+        help="Path to PTQ calibration cache (.calib file). If provided, QAT will load "
+        "existing amax values instead of running new calibration, significantly "
+        "speeding up the process.",
+    )
     return parser.parse_args()
 
 
@@ -240,6 +299,8 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
 
 def run_ptq(args):
     """Run PTQ quantization pipeline."""
+    import math
+
     import torch
     from mmdet3d.apis import init_model
     from mmengine.config import Config
@@ -253,12 +314,24 @@ def run_ptq(args):
         quant_model,
     )
 
+    # Auto-calculate calibrate_batches from calibrate_samples and batch_size
+    args.calibrate_batches = math.ceil(args.calibrate_samples / args.batch_size)
+    actual_samples = args.calibrate_batches * args.batch_size
+    print(
+        f"Auto-calculated: {args.calibrate_samples} samples → "
+        f"{args.calibrate_batches} batches × {args.batch_size} = {actual_samples} samples"
+    )
+
     print("=" * 80)
     print("CenterPoint PTQ Quantization")
     print("=" * 80)
     print(f"Config: {args.config}")
     print(f"Checkpoint: {args.checkpoint}")
     print(f"Calibration batches: {args.calibrate_batches}")
+    print(f"Batch size: {args.batch_size}")
+    print(f"Calibration shuffle: {args.calib_shuffle}")
+    if args.calib_seed is not None:
+        print(f"Calibration seed: {args.calib_seed}")
     print("Amax method: mse")
     if args.deploy_cfg:
         print(f"Deploy cfg: {args.deploy_cfg}")
@@ -305,11 +378,42 @@ def run_ptq(args):
 
     # Build dataloader
     print("\n[4/5] Building calibration dataloader...")
-    # dataloader = Runner.build_dataloader(cfg.val_dataloader)
+    # Override batch_size for PTQ calibration (best-effort)
+    if isinstance(cfg.val_dataloader, dict):
+        cfg.val_dataloader["batch_size"] = args.batch_size
+
+        # Handle shuffle + seed for calibration
+        if args.calib_seed is not None:
+            import random
+
+            import numpy as np
+
+            random.seed(args.calib_seed)
+            np.random.seed(args.calib_seed)
+            torch.manual_seed(args.calib_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(args.calib_seed)
+
+        if args.calib_shuffle:
+            # Remove existing sampler to allow shuffle (they are mutually exclusive)
+            if "sampler" in cfg.val_dataloader:
+                del cfg.val_dataloader["sampler"]
+            cfg.val_dataloader["shuffle"] = True
+
     dataloader = Runner.build_dataloader(cfg.val_dataloader)
 
+    # Print dataset size (best-effort)
+    try:
+        total_samples = len(dataloader.dataset)
+        total_calib_samples = args.calibrate_batches * args.batch_size
+        print(f"  Total samples in dataset: {total_samples}")
+        print(f"  Total calibration samples: {total_calib_samples}")
+    except Exception:
+        pass
+
     # Calibrate
-    print(f"\n[5/5] Calibrating with {args.calibrate_batches} batches...")
+    total_calib_samples = args.calibrate_batches * args.batch_size
+    print(f"\n[5/5] Calibrating with {args.calibrate_batches} batches ({total_calib_samples} samples)...")
     calibrator = CalibrationManager(model)
     calibrator.calibrate(
         dataloader,
@@ -369,6 +473,8 @@ def run_ptq(args):
 
 def run_sensitivity(args):
     """Run layer sensitivity analysis."""
+    import math
+
     import torch
     from mmdet3d.apis import init_model
     from mmengine.config import Config
@@ -386,12 +492,18 @@ def run_sensitivity(args):
         print("Error: pytorch-quantization is required for sensitivity analysis")
         sys.exit(1)
 
+    # Auto-calculate calibrate_batches from calibrate_samples and batch_size
+    args.calibrate_batches = math.ceil(args.calibrate_samples / args.batch_size)
+    actual_samples = args.calibrate_batches * args.batch_size
+
     print("=" * 80)
     print("CenterPoint Sensitivity Analysis")
     print("=" * 80)
     print(f"Config: {args.config}")
     print(f"Checkpoint: {args.checkpoint}")
-    print(f"Calibration batches: {args.calibrate_batches}")
+    print(f"Batch size: {args.batch_size}")
+    print(f"Calibration samples: {args.calibrate_samples}")
+    print(f"Calibration batches: {args.calibrate_batches} ({actual_samples} samples) [auto]")
     print(f"Output: {args.output}")
     print("=" * 80)
 
@@ -408,6 +520,11 @@ def run_sensitivity(args):
 
     # Build dataloader
     print("\n[3/4] Building dataloaders...")
+    # Override batch_size for calibration/evaluation (best-effort)
+    if isinstance(cfg.train_dataloader, dict):
+        cfg.train_dataloader["batch_size"] = args.batch_size
+    if isinstance(cfg.val_dataloader, dict):
+        cfg.val_dataloader["batch_size"] = args.batch_size
     train_dataloader = Runner.build_dataloader(cfg.train_dataloader)
     val_dataloader = Runner.build_dataloader(cfg.val_dataloader)
 
@@ -504,13 +621,30 @@ def run_sensitivity(args):
 
 def run_qat(args):
     """Run QAT training pipeline."""
+    import math
+
+    import torch
     from mmengine.config import Config
+
+    # Auto-calculate calibrate_batches from calibrate_samples and batch_size
+    # If not specified, use all training batches (handled inside QATHook)
+    if args.calibrate_samples is not None:
+        calibration_batches = math.ceil(args.calibrate_samples / args.batch_size)
+    else:
+        calibration_batches = 0
 
     print("=" * 80)
     print("CenterPoint QAT Training")
     print("=" * 80)
     print(f"Config: {args.config}")
     print(f"Checkpoint: {args.checkpoint}")
+    if calibration_batches > 0:
+        print(
+            f"Calibration: {calibration_batches} batches "
+            f"(from calibrate_samples={args.calibrate_samples}, batch_size={args.batch_size})"
+        )
+    else:
+        print("Calibration: using all training batches (or loading calib cache if provided)")
     print(f"Epochs: {args.epochs}")
     print(f"Learning rate: {args.lr}")
     print(f"Output: {args.output}")
@@ -519,9 +653,44 @@ def run_qat(args):
     # Load and modify config
     cfg = Config.fromfile(args.config)
 
+    # Ensure QATHook is registered
+    if not hasattr(cfg, "custom_imports"):
+        cfg.custom_imports = dict(imports=[], allow_failed_imports=False)
+    if "imports" not in cfg.custom_imports:
+        cfg.custom_imports["imports"] = []
+
+    qat_hook_import = "projects.CenterPoint.quantization.hooks"
+    if qat_hook_import not in cfg.custom_imports["imports"]:
+        cfg.custom_imports["imports"].append(qat_hook_import)
+
+    try:
+        __import__(qat_hook_import)
+        print(f"  Imported QATHook module: {qat_hook_import}")
+    except ImportError as e:
+        raise ImportError(
+            f"Failed to import QATHook module '{qat_hook_import}'. "
+            f"Please ensure the module is available. Error: {e}"
+        ) from e
+
     # Override training settings
     cfg.optim_wrapper.optimizer.lr = args.lr
     cfg.train_cfg.max_epochs = args.epochs
+
+    # Check if AmpOptimWrapper is used but GPU is not available
+    if cfg.optim_wrapper.get("type") == "AmpOptimWrapper":
+        if not torch.cuda.is_available():
+            print("Warning: AmpOptimWrapper detected but CUDA is not available.")
+            print("Switching to OptimWrapper for CPU/GPU compatibility...")
+            cfg.optim_wrapper.type = "OptimWrapper"
+            cfg.optim_wrapper.pop("dtype", None)
+            cfg.optim_wrapper.pop("loss_scale", None)
+            print("Optimizer wrapper changed to: OptimWrapper")
+
+    # Override dataloader batch_size (best-effort)
+    if isinstance(getattr(cfg, "train_dataloader", None), dict):
+        cfg.train_dataloader["batch_size"] = args.batch_size
+    if isinstance(getattr(cfg, "val_dataloader", None), dict):
+        cfg.val_dataloader["batch_size"] = args.batch_size
 
     # Set work directory
     if args.work_dir:
@@ -536,6 +705,12 @@ def run_qat(args):
     # Sensitive layers: use deploy config as the single source of truth (if provided).
     sensitive_layers = []
     quant_add = False
+    quant_linear_backbone = False
+    quant_backbone = True
+    quant_neck = True
+    quant_head = True
+    quant_voxel_encoder = True
+
     if args.deploy_cfg:
         quant_cfg, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
         sensitive_layers = list(quant_cfg.get("sensitive_layers", []) or [])
@@ -558,8 +733,13 @@ def run_qat(args):
         if not bool(quant_cfg.get("quant_head", True)):
             sensitive_layers.append("pts_bbox_head")
 
-        # Read quant_add setting
+        # Read quantization toggle settings
         quant_add = bool(quant_cfg.get("quant_add", False))
+        quant_linear_backbone = bool(quant_cfg.get("quant_linear_backbone", False))
+        quant_backbone = bool(quant_cfg.get("quant_backbone", True))
+        quant_neck = bool(quant_cfg.get("quant_neck", True))
+        quant_head = bool(quant_cfg.get("quant_head", True))
+        quant_voxel_encoder = bool(quant_cfg.get("quant_voxel_encoder", True))
 
     # De-duplicate while preserving order
     deduped = []
@@ -572,11 +752,17 @@ def run_qat(args):
     cfg.custom_hooks.append(
         dict(
             type="QATHook",
-            calibration_batches=args.calibrate_batches,
+            calibration_batches=calibration_batches,
             calibration_epoch=0,
             freeze_bn=True,
             sensitive_layers=deduped,
             quant_add=quant_add,
+            quant_linear_backbone=quant_linear_backbone,
+            quant_backbone=quant_backbone,
+            quant_neck=quant_neck,
+            quant_head=quant_head,
+            quant_voxel_encoder=quant_voxel_encoder,
+            calib_cache_path=args.ptq_calib_cache,
         )
     )
 
@@ -585,10 +771,41 @@ def run_qat(args):
 
     print("\nQAT training configuration prepared.")
     print(f"Work directory: {cfg.work_dir}")
-    print("\nTo run training, execute:")
-    print(f"  python tools/train.py {args.config} --work-dir {cfg.work_dir}")
-    print("\nNote: QAT training requires the QATHook to be registered.")
-    print("Make sure to import projects.CenterPoint.quantization.hooks in your config.")
+    if args.ptq_calib_cache:
+        print(f"Using PTQ calibration cache: {args.ptq_calib_cache}")
+        print("Note: This will skip the initial calibration phase and use existing amax values.")
+    print("\nStarting QAT training...")
+    print("=" * 80)
+
+    # Import custom modules before building runner (ensures registries are populated)
+    if hasattr(cfg, "custom_imports") and "imports" in cfg.custom_imports:
+        for module_path in cfg.custom_imports["imports"]:
+            try:
+                __import__(module_path)
+                print(f"  Imported: {module_path}")
+            except ImportError as e:
+                if not cfg.custom_imports.get("allow_failed_imports", False):
+                    raise ImportError(
+                        f"Failed to import module '{module_path}'. "
+                        f"Please ensure the module is available. Error: {e}"
+                    ) from e
+                else:
+                    print(f"  Warning: Failed to import {module_path}: {e}")
+
+    from mmengine.registry import RUNNERS
+    from mmengine.runner import Runner
+
+    if "runner_type" not in cfg:
+        runner = Runner.from_cfg(cfg)
+    else:
+        runner = RUNNERS.build(cfg)
+
+    runner.train()
+
+    print("\n" + "=" * 80)
+    print("QAT training completed!")
+    print(f"Model saved in: {cfg.work_dir}")
+    print("=" * 80)
 
 
 def main():

@@ -20,7 +20,7 @@ task_type = "detection3d"
 # Checkpoint Path - Use PTQ or QAT quantized checkpoint
 # ============================================================================
 # checkpoint_path = "work_dirs/centerpoint_ptq.pth"
-checkpoint_path = "work_dirs/centerpoint_resnet34_exp3_ptq.pth"
+checkpoint_path = "work_dirs/centerpoint_int8_resnet_deployment/test.pth"
 
 # ============================================================================
 # Quantization Configuration
@@ -63,8 +63,8 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="none",  # Export ONNX -> TensorRT
-    work_dir="work_dirs/centerpoint_int8_resnet_deployment_exp3",
+    mode="both",  # Export ONNX -> TensorRT
+    work_dir="work_dirs/centerpoint_int8_resnet_deployment_exp4",
     onnx_path=None,
 )
 
@@ -72,7 +72,7 @@ export = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    info_file="data/t4datasets/info/vivid/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="data/t4dataset/info/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=1,
 )
 
@@ -136,9 +136,9 @@ backend_config = dict(
         dict(
             input_shapes=dict(
                 input_features=dict(
-                    min_shape=[1000, 32, 11],
-                    opt_shape=[20000, 32, 11],
-                    max_shape=[64000, 32, 11],
+                    min_shape=[1000, 32, 10],
+                    opt_shape=[20000, 32, 10],
+                    max_shape=[64000, 32, 10],
                 ),
                 spatial_features=dict(
                     min_shape=[1, 32, 1020, 1020],
@@ -165,12 +165,12 @@ evaluation = dict(
         onnx=dict(
             enabled=False,
             device=devices["cuda"],
-            model_dir="work_dirs/centerpoint_int8_resnet_deployment_exp3/onnx/",
+            model_dir="work_dirs/centerpoint_int8_resnet_deployment_exp4/onnx/",
         ),
         tensorrt=dict(
             enabled=True,
             device=devices["cuda"],
-            engine_dir="work_dirs/centerpoint_int8_resnet_deployment_exp3/tensorrt/",
+            engine_dir="work_dirs/centerpoint_int8_resnet_deployment_exp4/tensorrt/",
         ),
     ),
 )
