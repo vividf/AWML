@@ -5,7 +5,7 @@ CenterPoint Deployment Configuration
 # ============================================================================
 # Checkpoint Path - Single source of truth for PyTorch model
 # ============================================================================
-checkpoint_path = "work_dirs/centerpoint/best_checkpoint.pth"
+checkpoint_path = "work_dirs/centerpoint/centerpoint_2_5.pth"
 
 # Log file path (relative paths are under export.work_dir). Set to None to disable file logging.
 deploy_log_path = "deployment.log"
