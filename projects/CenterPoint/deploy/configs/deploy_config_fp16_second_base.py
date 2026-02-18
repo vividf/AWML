@@ -155,7 +155,7 @@ evaluation = dict(
     backends=dict(
         # PyTorch evaluation (uses top-level checkpoint_path)
         pytorch=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],  # or 'cpu'
         ),
         # ONNX evaluation
