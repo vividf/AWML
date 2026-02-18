@@ -6,7 +6,6 @@ the deployment/export pipeline (not training).
 
 from typing import Any, Dict, List, Tuple
 
-import numpy as np
 import torch
 from mmdet3d.models.detectors.centerpoint import CenterPoint
 from mmdet3d.registry import MODELS
