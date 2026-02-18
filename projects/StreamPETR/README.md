@@ -91,6 +91,9 @@ python tools/detection3d/visualize_bboxes_cameraonly.py projects/StreamPETR/conf
 ```
 ### 5. Deploy
 
+- Detailed architecture + why we split ONNX into `extract_img_feat` / `position_embedding` / `pts_head_memory`:
+  - See `projects/StreamPETR/README_arch_deploy.md`
+
 - Make onnx files for a StreamPETR model
 
 ```sh
