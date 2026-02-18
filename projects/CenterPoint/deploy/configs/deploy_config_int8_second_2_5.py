@@ -19,7 +19,7 @@ task_type = "detection3d"
 # ============================================================================
 # Checkpoint Path - Use PTQ or QAT quantized checkpoint
 # ============================================================================
-checkpoint_path = "work_dirs/centerpoint_2_5_ptq.pth"
+checkpoint_path = "models/2_5/base/centerpoint_second_base_2_5_epoch49_ptq.pth"
 
 # ============================================================================
 # Quantization Configuration
@@ -71,7 +71,7 @@ export = dict(
 # ============================================================================
 runtime_io = dict(
     # info_file="data/t4dataset/info/t4dataset_j6gen2_base_infos_test.pkl",
-    info_file="data/t4datasets/info/vivid/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="data/t4datasets/info/kokseang_2_5/t4dataset_base_infos_test.pkl",
     sample_idx=1,
 )
 
@@ -135,9 +135,9 @@ backend_config = dict(
         dict(
             input_shapes=dict(
                 input_features=dict(
-                    min_shape=[1000, 32, 11],
-                    opt_shape=[20000, 32, 11],
-                    max_shape=[64000, 32, 11],
+                    min_shape=[1000, 32, 10],
+                    opt_shape=[20000, 32, 10],
+                    max_shape=[64000, 32, 10],
                 ),
                 spatial_features=dict(
                     min_shape=[1, 32, 1020, 1020],
@@ -154,7 +154,7 @@ backend_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=100,
+    num_samples=5,
     verbose=True,
     backends=dict(
         pytorch=dict(

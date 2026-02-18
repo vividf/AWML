@@ -20,7 +20,7 @@ task_type = "detection3d"
 # Checkpoint Path - Use PTQ or QAT quantized checkpoint
 # ============================================================================
 # checkpoint_path = "work_dirs/centerpoint_ptq.pth"
-checkpoint_path = "work_dirs/centerpoint_int8_resnet_deployment/test.pth"
+checkpoint_path = "models/2_5/base/centerpoint_resnet34_base_2_5_epoch49_ptq.pth"
 
 # ============================================================================
 # Quantization Configuration
@@ -63,8 +63,8 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="both",  # Export ONNX -> TensorRT
-    work_dir="work_dirs/centerpoint_int8_resnet_deployment_exp4",
+    mode="none",  # Export ONNX -> TensorRT
+    work_dir="work_dirs/centerpoint_int8_resnet_deployment",
     onnx_path=None,
 )
 
@@ -72,7 +72,7 @@ export = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    info_file="data/t4dataset/info/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="data/t4datasets/info/kokseang_2_5/t4dataset_base_infos_test.pkl",
     sample_idx=1,
 )
 
@@ -155,7 +155,7 @@ backend_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=100,
+    num_samples=5,
     verbose=True,
     backends=dict(
         pytorch=dict(
@@ -165,12 +165,12 @@ evaluation = dict(
         onnx=dict(
             enabled=False,
             device=devices["cuda"],
-            model_dir="work_dirs/centerpoint_int8_resnet_deployment_exp4/onnx/",
+            model_dir="work_dirs/centerpoint_int8_resnet_deployment/onnx/",
         ),
         tensorrt=dict(
             enabled=True,
             device=devices["cuda"],
-            engine_dir="work_dirs/centerpoint_int8_resnet_deployment_exp4/tensorrt/",
+            engine_dir="work_dirs/centerpoint_int8_resnet_deployment/tensorrt/",
         ),
     ),
 )
