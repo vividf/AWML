@@ -149,6 +149,13 @@ class ConvNeXt_PC(ConvNeXt):
         # Controls whether output-stage norm layers (norm{i}) are applied before neck.
         self.apply_out_norm = apply_out_norm
 
+        # Remove parent ConvNeXt output norm modules so this subclass fully controls
+        # which norm{i} modules exist. This avoids dangling trainable params when
+        # apply_out_norm=False.
+        for module_name in list(self._modules.keys()):
+            if module_name.startswith("norm") and module_name[4:].isdigit():
+                delattr(self, module_name)
+
         if self.use_bn_relu:
             # Switch LayerNorm/GELU to BatchNorm/ReLU for this backbone.
             norm_cfg = dict(type="BN", eps=1e-5)
