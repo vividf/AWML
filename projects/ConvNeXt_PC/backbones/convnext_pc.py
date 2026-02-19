@@ -278,7 +278,7 @@ class ConvNeXt_PC(ConvNeXt):
 
             self.stages.append(stage)
 
-            if i in self.out_indices:
+            if i in self.out_indices and self.apply_out_norm:
                 norm_layer = build_norm_layer(norm_cfg, channels)
                 self.add_module(f"norm{i}", norm_layer)
 
@@ -292,15 +292,14 @@ class ConvNeXt_PC(ConvNeXt):
                 x = self.downsample_layers[i](x)  # NOTE, pretrain_weight
             x = stage(x)
             if i in self.out_indices:
-                norm_layer = getattr(self, f"norm{i}")
                 if self.gap_before_final_norm:
                     gap = x.mean([-2, -1], keepdim=True)
-                    out = norm_layer(gap) if self.apply_out_norm else gap
+                    out = getattr(self, f"norm{i}")(gap) if self.apply_out_norm else gap
                     outs.append(out.flatten(1))
                 else:
                     # The output of LayerNorm2d may be discontiguous, which
                     # may cause some problem in the downstream tasks
-                    out = norm_layer(x) if self.apply_out_norm else x
+                    out = getattr(self, f"norm{i}")(x) if self.apply_out_norm else x
                     outs.append(out.contiguous())
         # for index, i in enumerate(outs):
         #     print_log(f"output shape {index}: {i.shape}")
