@@ -107,7 +107,12 @@ class EvaluationOrchestrator:
                 clear_cuda_memory()
 
         if len(all_results) > 1:
-            self._print_cross_backend_comparison(all_results)
+            try:
+                self._print_cross_backend_comparison(all_results)
+            except Exception as e:
+                # Keep evaluation resilient: comparison formatting issues should not
+                # hide backend-specific evaluation outputs.
+                self.logger.error(f"Failed to print cross-backend comparison: {e}", exc_info=True)
 
         return all_results
 
@@ -210,6 +215,18 @@ class EvaluationOrchestrator:
 
                 if "latency" in results:
                     latency = results["latency"]
-                    self.logger.info(f"  Latency: {latency.mean_ms:.2f} ± {latency.std_ms:.2f} ms")
+                    if hasattr(latency, "mean_ms") and hasattr(latency, "std_ms"):
+                        self.logger.info(f"  Latency: {latency.mean_ms:.2f} ± {latency.std_ms:.2f} ms")
+                    elif isinstance(latency, Mapping):
+                        mean_ms = float(latency.get("mean_ms", 0.0))
+                        std_ms = float(latency.get("std_ms", 0.0))
+                        self.logger.info(f"  Latency: {mean_ms:.2f} ± {std_ms:.2f} ms")
+                    elif hasattr(latency, "to_dict"):
+                        latency_dict = latency.to_dict()
+                        mean_ms = float(latency_dict.get("mean_ms", 0.0))
+                        std_ms = float(latency_dict.get("std_ms", 0.0))
+                        self.logger.info(f"  Latency: {mean_ms:.2f} ± {std_ms:.2f} ms")
+                    else:
+                        self.logger.info("  Latency: unavailable")
             else:
                 self.logger.info("  No results available")

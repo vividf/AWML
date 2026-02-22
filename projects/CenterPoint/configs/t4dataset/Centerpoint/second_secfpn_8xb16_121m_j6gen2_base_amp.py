@@ -433,19 +433,19 @@ auto_scale_lr = dict(enable=False, base_batch_size=train_gpu_size * train_batch_
 if train_gpu_size > 1:
     sync_bn = "torch"
 
-vis_backends = [
-    dict(type="LocalVisBackend"),
-    dict(type="TensorboardVisBackend"),
-    # Update info accordingly
-    dict(
-        type="SafeMLflowVisBackend",
-        exp_name="(UserName) CenterPoint",
-        run_name="CenterPoint base",
-        tracking_uri="http://localhost:5000",
-        artifact_suffix=(),
-    ),
-]
-visualizer = dict(type="Det3DLocalVisualizer", vis_backends=vis_backends, name="visualizer")
+# vis_backends = [
+#     dict(type="LocalVisBackend"),
+#     dict(type="TensorboardVisBackend"),
+#     # Update info accordingly
+#     dict(
+#         type="SafeMLflowVisBackend",
+#         exp_name="(UserName) CenterPoint",
+#         run_name="CenterPoint base",
+#         tracking_uri="http://localhost:5000",
+#         artifact_suffix=(),
+#     ),
+# ]
+# visualizer = dict(type="Det3DLocalVisualizer", vis_backends=vis_backends, name="visualizer")
 
 logger_interval = 50
 default_hooks = dict(
@@ -459,6 +459,6 @@ custom_hooks = [
 ]
 
 # Update the load_from path accordingly
-load_from = "<best_checkpoint>"
+load_from = None
 
-activation_checkpointing = ["pts_backbone"]
+activation_checkpointing = None
