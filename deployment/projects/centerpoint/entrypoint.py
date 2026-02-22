@@ -40,17 +40,22 @@ def run(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success).
     """
-    logger = setup_logging(args.log_level)
-
     deploy_cfg = Config.fromfile(args.deploy_cfg)
+    logger = setup_logging(args.log_level, deploy_cfg.get("output_path"))
     model_cfg = Config.fromfile(args.model_cfg)
     config = BaseDeploymentConfig(deploy_cfg)
 
     _validate_required_components(config.components_cfg)
 
+    quantization_cfg = deploy_cfg.get("quantization", None)
+
     logger.info("=" * 80)
     logger.info("CenterPoint Deployment Pipeline (Unified CLI)")
     logger.info("=" * 80)
+    if quantization_cfg and quantization_cfg.get("enabled", False):
+        logger.info(f"  Quantization: {quantization_cfg.get('mode', 'ptq')} (enabled)")
+    else:
+        logger.info("  Quantization: disabled")
 
     data_loader = CenterPointDataLoader(
         info_file=config.runtime_config.info_file,
