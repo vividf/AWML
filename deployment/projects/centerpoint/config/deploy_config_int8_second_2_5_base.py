@@ -49,8 +49,8 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="none",
-    work_dir="work_dirs/centerpoint_int8_deployment_second_2_5",
+    mode="both",
+    work_dir="work_dirs/centerpoint_int8_deployment_second_2_5_base",
     onnx_path=None,
 )
 
@@ -128,7 +128,7 @@ components = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    info_file="data/t4datasets/info/kokseang_2_5/t4dataset_base_infos_test.pkl",
+    info_file="info/kokseang_2_5/t4dataset_base_infos_test.pkl",
     sample_idx=1,
 )
 
