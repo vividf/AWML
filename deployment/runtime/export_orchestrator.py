@@ -163,10 +163,15 @@ class ExportOrchestrator:
 
         eval_config = self.config.evaluation_config
         if eval_config.enabled:
-            backends_cfg = eval_config.backends
-            pytorch_cfg = backends_cfg.get(Backend.PYTORCH.value) or backends_cfg.get(Backend.PYTORCH, {})
-            if pytorch_cfg and pytorch_cfg.get("enabled", False):
-                return True
+            backends_cfg = eval_config.backends or {}
+            for backend_key, backend_cfg in backends_cfg.items():
+                if not backend_cfg or not backend_cfg.get("enabled", False):
+                    continue
+                backend_enum = (
+                    backend_key if isinstance(backend_key, Backend) else Backend.from_value(str(backend_key))
+                )
+                if backend_enum in (Backend.PYTORCH, Backend.ONNX, Backend.TENSORRT):
+                    return True
 
         verification_cfg = self.config.verification_config
         if verification_cfg.enabled:
