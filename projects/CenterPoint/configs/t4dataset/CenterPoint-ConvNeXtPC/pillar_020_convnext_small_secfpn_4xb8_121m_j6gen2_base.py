@@ -1,6 +1,6 @@
 _base_ = [
     "../../../../../autoware_ml/configs/detection3d/default_runtime.py",
-    "../../../../../autoware_ml/configs/detection3d/dataset/t4dataset/base.py",
+    "../../../../../autoware_ml/configs/detection3d/dataset/t4dataset/j6gen2_base.py",
     "../../default/second_secfpn_base.py",
 ]
 custom_imports = dict(imports=["projects.CenterPoint.models"], allow_failed_imports=False)
@@ -28,7 +28,7 @@ backend_args = None
 # backend_args = dict(backend="disk")
 point_load_dim = 5  # x, y, z, intensity, ring_id
 point_use_dim = 3  # x, y, z
-lidar_sweep_dims = [0, 1, 2, 4]
+lidar_sweep_dims = [0, 1, 2, 3, 4]
 
 # eval parameter
 eval_class_range = {
@@ -40,15 +40,15 @@ eval_class_range = {
 }
 
 # user setting
-data_root = "data/t4dataset/"
-info_directory_path = "info/"
+data_root = "data/t4datasets/"
+info_directory_path = "info/kokseang_2_5_experiment/"
 train_gpu_size = 4
 train_batch_size = 8
 test_batch_size = 2
 num_workers = 32
 val_interval = 5
 max_epochs = 30
-work_dir = "work_dirs/centerpoint/" + _base_.dataset_type + "/pillar_020_convnext_small_secfpn_4xb8_121m_base"
+work_dir = "work_dirs/centerpoint/" + _base_.dataset_type + "/pillar_020_convnext_small_secfpn_4xb8_121m_j6gen2_base"
 
 train_pipeline = [
     dict(
@@ -273,7 +273,7 @@ model = dict(
     # Use BackwardPillarFeatureNet without computing voxel center for z-dimensionality
     pts_voxel_encoder=dict(
         type="BackwardPillarFeatureNet",
-        in_channels=4,
+        in_channels=5,
         feat_channels=[32, 32],
         with_distance=False,
         with_cluster_center=True,
@@ -294,6 +294,7 @@ model = dict(
         drop_path_rate=0.0,  # No drop path
         layer_scale_init_value=1.0,
         gap_before_final_norm=False,
+        apply_out_norm=False,
         with_cp=True,  # We set with_cp to True for svaing gpu memory
         use_bn_relu=True,
         downsample_conv_first=True,
