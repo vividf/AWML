@@ -50,8 +50,8 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="none",
-    work_dir="work_dirs/centerpoint_int8_resnet_deployment",
+    mode="both",
+    work_dir="work_dirs/centerpoint_int8_resnet_deployment_base",
     onnx_path=None,
 )
 
@@ -85,7 +85,7 @@ components = dict(
             input_features=dict(
                 min_shape=[1000, 32, 10],
                 opt_shape=[20000, 32, 10],
-                max_shape=[64000, 32, 10],
+                max_shape=[80000, 32, 10],
             ),
         ),
     ),
@@ -157,7 +157,7 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=1,
+    num_samples=-1,
     verbose=True,
     backends=dict(
         pytorch=dict(
