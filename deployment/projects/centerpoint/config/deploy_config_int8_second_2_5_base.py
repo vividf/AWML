@@ -84,7 +84,7 @@ components = dict(
             input_features=dict(
                 min_shape=[1000, 32, 10],
                 opt_shape=[20000, 32, 10],
-                max_shape=[64000, 32, 10],
+                max_shape=[80000, 32, 10],
             ),
         ),
     ),
@@ -156,7 +156,7 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=5,
+    num_samples=-1,
     verbose=True,
     backends=dict(
         pytorch=dict(
