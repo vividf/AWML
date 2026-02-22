@@ -102,7 +102,7 @@ components = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    info_file="data/t4datasets/info/kokseang_2_5/t4dataset_base_infos_test.pkl",
+    info_file="info/kokseang_2_5/t4dataset_base_infos_test.pkl",
     sample_idx=1,
 )
 
@@ -130,7 +130,7 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=-1,
+    num_samples=1,
     verbose=True,
     backends=dict(
         pytorch=dict(
