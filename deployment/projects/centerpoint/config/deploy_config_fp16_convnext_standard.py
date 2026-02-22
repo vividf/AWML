@@ -1,20 +1,19 @@
 """
-CenterPoint Deployment Configuration
+CenterPoint FP16 Deployment Configuration - ConvNeXt Standard Backbone
 """
 
 # ============================================================================
 # Task type for pipeline building
-# Options: 'detection2d', 'detection3d', 'classification', 'segmentation'
 # ============================================================================
 task_type = "detection3d"
 
 # ============================================================================
-# Checkpoint Path - Single source of truth for PyTorch model
+# Checkpoint Path
 # ============================================================================
-checkpoint_path = "work_dirs/centerpoint/centerpoint_2_5.pth"
+checkpoint_path = "work_dirs/centerpoint-convnext/standard/epoch_30_standard.pth"
 
 # ============================================================================
-# Device settings (shared by export, evaluation, verification)
+# Device settings
 # ============================================================================
 devices = dict(
     cpu="cpu",
@@ -25,8 +24,8 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="none",
-    work_dir="work_dirs/centerpoint_deployment",
+    mode="onnx",
+    work_dir="work_dirs/centerpoint-convnext/standard",
     onnx_path=None,
 )
 
@@ -34,16 +33,9 @@ export = dict(
 _WORK_DIR = str(export["work_dir"]).rstrip("/")
 _ONNX_DIR = f"{_WORK_DIR}/onnx"
 _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
-
+output_path = f"{_WORK_DIR}/deploy.log"
 # ============================================================================
-# Unified Component Configuration (Single Source of Truth)
-#
-# Each component defines:
-#   - name: Component identifier used in export
-#   - onnx_file: Output ONNX filename
-#   - engine_file: Output TensorRT engine filename
-#   - io: Input/output specification for ONNX export
-#   - tensorrt_profile: TensorRT optimization profile (min/opt/max shapes)
+# Unified Component Configuration
 # ============================================================================
 components = dict(
     voxel_encoder=dict(
@@ -110,13 +102,12 @@ components = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    # This should be a path relative to `data_root` in the model config.
-    info_file="info/t4dataset_j6gen2_infos_val.pkl",
+    info_file="data/t4dataset/info/t4dataset_base_infos_test.pkl",
     sample_idx=1,
 )
 
 # ============================================================================
-# ONNX Export Settings (shared across all components)
+# ONNX Export Settings
 # ============================================================================
 onnx_config = dict(
     opset_version=16,
@@ -127,11 +118,11 @@ onnx_config = dict(
 )
 
 # ============================================================================
-# TensorRT Build Settings (shared across all components)
+# TensorRT Build Settings
 # ============================================================================
 tensorrt_config = dict(
-    precision_policy="auto",
-    max_workspace_size=2 << 30,
+    precision_policy="fp16",
+    max_workspace_size=4 << 30,
 )
 
 # ============================================================================
@@ -139,7 +130,7 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=1,
+    num_samples=100,
     verbose=True,
     backends=dict(
         pytorch=dict(
@@ -147,7 +138,7 @@ evaluation = dict(
             device=devices["cuda"],
         ),
         onnx=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
             model_dir=_ONNX_DIR,
         ),
@@ -164,7 +155,7 @@ evaluation = dict(
 # ============================================================================
 verification = dict(
     enabled=False,
-    tolerance=1,
+    tolerance=1e-1,
     num_verify_samples=1,
     devices=devices,
     scenarios=dict(

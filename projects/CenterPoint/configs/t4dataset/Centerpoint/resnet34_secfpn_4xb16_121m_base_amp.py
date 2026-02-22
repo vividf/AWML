@@ -6,14 +6,15 @@ _base_ = [
 custom_imports = dict(imports=["projects.CenterPoint.models"], allow_failed_imports=False)
 custom_imports["imports"] += _base_.custom_imports["imports"]
 custom_imports["imports"] += ["autoware_ml.detection3d.datasets.transforms"]
-custom_imports["imports"] += ["projects.ConvNeXt_PC"]
 custom_imports["imports"] += ["autoware_ml.hooks"]
+# custom_imports["imports"] += ["autoware_ml.backends.mlflowbackend"]
+custom_imports["imports"] += ["autoware_ml.samplers"]
 
 # This is a base file for t4dataset, add the dataset config.
 # type, data_root and ann_file of data.train, data.val and data.test
-point_cloud_range = [-121.60, -121.60, -3.0, 121.60, 121.60, 5.0]
-voxel_size = [0.20, 0.20, 8.0]
-grid_size = [1216, 1216, 1]  # (121.60 / 0.32 == 380, 380 * 2 == 760)
+point_cloud_range = [-122.40, -122.40, -3.0, 122.40, 122.40, 5.0]
+voxel_size = [0.24, 0.24, 8.0]
+grid_size = [1020, 1020, 1]  # (122.40 / 0.24 == 510, 510 * 2 == 1020)
 sweeps_num = 1
 input_modality = dict(
     use_lidar=True,
@@ -22,7 +23,7 @@ input_modality = dict(
     use_map=False,
     use_external=False,
 )
-out_size_factor = 4
+out_size_factor = 2
 
 backend_args = None
 # backend_args = dict(backend="disk")
@@ -40,15 +41,18 @@ eval_class_range = {
 }
 
 # user setting
-data_root = "data/t4dataset/"
-info_directory_path = "info/"
+data_root = "data/t4datasets/"
+info_directory_path = "info/kokseang_2_5/"
 train_gpu_size = 4
 train_batch_size = 8
 test_batch_size = 2
 num_workers = 32
 val_interval = 5
-max_epochs = 30
-work_dir = "work_dirs/centerpoint/" + _base_.dataset_type + "/pillar_020_convnext_small_secfpn_4xb8_121m_base"
+max_epochs = 50
+
+experiment_group_name = "centerpoint/base/" + _base_.dataset_type
+experiment_name = "resnet34_secfpn_4xb16_121m_base_amp"
+work_dir = "work_dirs/" + experiment_group_name + "/" + experiment_name
 
 train_pipeline = [
     dict(
@@ -195,6 +199,7 @@ train_dataloader = dict(
         box_type_3d="LiDAR",
     ),
 )
+
 val_dataloader = dict(
     batch_size=test_batch_size,
     num_workers=num_workers,
@@ -256,6 +261,7 @@ test_evaluator = dict(
     name_mapping={{_base_.name_mapping}},
     eval_class_range=eval_class_range,
     filter_attributes=_base_.filter_attributes,
+    save_csv=True,
 )
 
 model = dict(
@@ -266,13 +272,12 @@ model = dict(
             max_num_points=32,
             voxel_size=voxel_size,
             point_cloud_range=point_cloud_range,
-            max_voxels=(48000, 60000),
+            max_voxels=(96000, 96000),
             deterministic=True,
         ),
     ),
-    # Use BackwardPillarFeatureNet without computing voxel center for z-dimensionality
     pts_voxel_encoder=dict(
-        type="BackwardPillarFeatureNet",
+        type="PillarFeatureNet",
         in_channels=4,
         feat_channels=[32, 32],
         with_distance=False,
@@ -280,31 +285,55 @@ model = dict(
         with_voxel_center=True,
         point_cloud_range=point_cloud_range,
         voxel_size=voxel_size,
-        norm_cfg=dict(type="BN1d", eps=1e-3, momentum=0.01),
+        norm_cfg=dict(
+            type="BN1d", eps=1e-5, momentum=0.01
+        ),  # Fixed: eps changed from 1e-3 to 1e-5 for numerical stability
         legacy=False,
     ),
     pts_middle_encoder=dict(type="PointPillarsScatter", in_channels=32, output_shape=(grid_size[0], grid_size[1])),
     pts_backbone=dict(
         _delete_=True,
-        type="ConvNeXt_PC",
+        type="BEVResNet",  # Use custom BEV-friendly ResNet wrapper (renamed to avoid confusion)
+        depth=34,
+        num_stages=3,
+        strides=(1, 2, 2),  # ResNet stage strides: stage0=1, stage1=2, stage2=2
+        dilations=(1, 1, 1),  # Dilation for each stage
+        out_indices=(0, 1, 2),  # Get features from res_layers 0, 1, 2
+        # BEV-friendly stem configuration: no downsampling at input
+        deep_stem=True,  # Use three 3x3 convs instead of 7x7: more efficient and better boundary behavior
+        conv1_stride=1,  # First conv stride=1 (no downsampling) - applies to deep_stem's first 3x3 conv
+        with_pool=False,  # Disable maxpool (no downsampling)
+        # pool_stride is only used when with_pool=True, so omitted here
+        frozen_stages=-1,  # Don't freeze any stages initially
+        base_channels=64,  # ResNet34 outputs: 64, 128, 256 channels (64*1, 64*2, 64*4)
+        # ResNet34 uses BasicBlock (expansion=1), so base_channels=64 gives [64, 128, 256]
+        norm_cfg=dict(
+            type="BN", eps=1e-5, momentum=0.01
+        ),  # Fixed: eps changed from 1e-3 to 1e-5 for numerical stability
+        norm_eval=False,  # Keep BN in training mode for better performance
+        # Remove pretrained weights due to input channel mismatch (3 vs 32)
+        # init_cfg=dict(type="Pretrained", checkpoint="torchvision://resnet34"),
+        style="pytorch",
         in_channels=32,
-        out_channels=[32, 64, 128, 128, 128],
-        depths=[3, 2, 1, 1, 1],
-        out_indices=[2, 3, 4],
-        drop_path_rate=0.0,  # No drop path
-        layer_scale_init_value=1.0,
-        gap_before_final_norm=False,
-        with_cp=True,  # We set with_cp to True for svaing gpu memory
-        use_bn_relu=True,
-        downsample_conv_first=True,
-        # No loading any pretrained weights
     ),
     pts_neck=dict(
         type="SECONDFPN",
-        in_channels=[128, 128, 128],
+        in_channels=[
+            64,
+            128,
+            256,
+        ],  # ResNet34 layers 0, 1, 2: 64, 128, 256 channels (base_channels=64 * expansion=1 for BasicBlock)
+        # Same as SECOND backbone: [64, 128, 256]
         out_channels=[128, 128, 128],
-        upsample_strides=[1, 2, 4],
-        norm_cfg=dict(type="BN", eps=1e-3, momentum=0.01),
+        # BEV-friendly: With conv1_stride=1 and no maxpool, outputs should be:
+        # stage0: (1020, 1020) -> downsample stride=0.5 -> (510, 510)
+        # stage1: (510, 510) -> upsample stride=1 -> (510, 510)
+        # stage2: (255, 255) -> upsample stride=2 -> (510, 510)
+        # Final output: (510, 510) to match target size (grid_size // out_size_factor)
+        upsample_strides=[0.5, 1, 2],  # Upsample to match target feature map size (510, 510)
+        norm_cfg=dict(
+            type="BN", eps=1e-5, momentum=0.01
+        ),  # Fixed: eps changed from 0.001 (1e-3) to 1e-5 for numerical stability
         upsample_cfg=dict(type="deconv", bias=False),
         use_conv_for_no_stride=True,
     ),
@@ -321,7 +350,9 @@ model = dict(
             post_center_range=[-200.0, -200.0, -10.0, 200.0, 200.0, 10.0],
             out_size_factor=out_size_factor,
         ),
-        loss_cls=dict(type="mmdet.GaussianFocalLoss", reduction="none", loss_weight=1.0),
+        # sigmoid(-4.595) = 0.01 for initial small values
+        separate_head=dict(type="CustomSeparateHead", init_bias=-4.595, final_kernel=1),
+        loss_cls=dict(type="mmdet.AmpGaussianFocalLoss", reduction="none", loss_weight=1.0),
         loss_bbox=dict(type="mmdet.L1Loss", reduction="mean", loss_weight=0.25),
         norm_bbox=True,
     ),
@@ -349,28 +380,28 @@ randomness = dict(seed=0, diff_rank_seed=False, deterministic=True)
 
 # learning rate
 # Since mmengine doesn't support OneCycleMomentum yet, we use CosineAnnealing from the default configs
-lr = 0.0003
-t_max_ratio = 0.20
+lr = 0.0001
 param_scheduler = [
     # learning rate scheduler
-    # During the first (max_epochs * 0.3) epochs, learning rate increases from 0 to lr * 10
-    # during the next epochs, learning rate decreases from lr * 10 to
+    # During the first (max_epochs * 0.3) epochs, learning rate increases from 0 to lr * 5
+    # during the next epochs, learning rate decreases from lr * ㄉ to
     # lr * 1e-4
+    # Fixed: peak LR reduced from lr*10 to lr*5 for better stability in mixed precision training
     dict(
         type="CosineAnnealingLR",
-        T_max=8,
-        eta_min=lr * 10,
+        T_max=int(max_epochs * 0.3),
+        eta_min=lr * 2,
         begin=0,
-        end=8,
+        end=int(max_epochs * 0.3),
         by_epoch=True,
         convert_to_iter_based=True,
     ),
     dict(
         type="CosineAnnealingLR",
-        T_max=22,
+        T_max=max_epochs - int(max_epochs * 0.3),
         eta_min=lr * 1e-4,
-        begin=8,
-        end=30,
+        begin=int(max_epochs * 0.3),
+        end=max_epochs,
         by_epoch=True,
         convert_to_iter_based=True,
     ),
@@ -379,18 +410,18 @@ param_scheduler = [
     # during the next epochs, momentum increases from 0.85 / 0.95 to 1
     dict(
         type="CosineAnnealingMomentum",
-        T_max=8,
+        T_max=int(max_epochs * 0.3),
         eta_min=0.85 / 0.95,
         begin=0,
-        end=8,
+        end=int(max_epochs * 0.3),
         by_epoch=True,
         convert_to_iter_based=True,
     ),
     dict(
         type="CosineAnnealingMomentum",
-        T_max=22,
+        T_max=max_epochs - int(max_epochs * 0.3),
         eta_min=1,
-        begin=8,
+        begin=int(max_epochs * 0.3),
         end=max_epochs,
         by_epoch=True,
         convert_to_iter_based=True,
@@ -400,15 +431,31 @@ param_scheduler = [
 # runtime settings
 # Run validation for every val_interval epochs before max_epochs - 10, and run validation every 2 epoch after max_epochs - 10
 train_cfg = dict(
-    by_epoch=True, max_epochs=max_epochs, val_interval=val_interval, dynamic_intervals=[(max_epochs - 10, 2)]
+    by_epoch=True, max_epochs=max_epochs, val_interval=val_interval, dynamic_intervals=[(max_epochs - 5, 1)]
 )
 val_cfg = dict()
 test_cfg = dict()
 
+optimizer = dict(
+    type="AdamW",
+    lr=lr,
+    weight_decay=0.01,
+    eps=1e-6,
+)
+clip_grad = dict(
+    max_norm=10, norm_type=2
+)  # Fixed: max_norm reduced from 15 to 10 for better gradient stability in mixed precision training
+
 optim_wrapper = dict(
-    type="OptimWrapper",
-    optimizer=dict(type="AdamW", lr=lr, weight_decay=0.01),
-    clip_grad=dict(max_norm=35, norm_type=2),
+    type="AmpOptimWrapper",
+    dtype="float16",
+    optimizer=optimizer,
+    clip_grad=clip_grad,
+    # Update it accordingly
+    loss_scale={
+        "init_scale": 2.0**8,  # intial_scale: 256
+        "growth_interval": 2000,
+    },
 )
 
 # Default setting for scaling LR automatically
@@ -422,11 +469,19 @@ auto_scale_lr = dict(enable=False, base_batch_size=train_gpu_size * train_batch_
 if train_gpu_size > 1:
     sync_bn = "torch"
 
-vis_backends = [
-    dict(type="LocalVisBackend"),
-    dict(type="TensorboardVisBackend"),
-]
-visualizer = dict(type="Det3DLocalVisualizer", vis_backends=vis_backends, name="visualizer")
+# vis_backends = [
+#     dict(type="LocalVisBackend"),
+#     dict(type="TensorboardVisBackend"),
+#     # Update info accordingly
+#     dict(
+#         type="SafeMLflowVisBackend",
+#         exp_name="(UserName) CenterPoint",
+#         run_name="CenterPoint base",
+#         tracking_uri="http://localhost:5000",
+#         artifact_suffix=(),
+#     ),
+# ]
+# visualizer = dict(type="Det3DLocalVisualizer", vis_backends=vis_backends, name="visualizer")
 
 logger_interval = 50
 default_hooks = dict(
@@ -436,4 +491,7 @@ default_hooks = dict(
 
 custom_hooks = [
     dict(type="MomentumInfoHook"),
+    dict(type="LossScaleInfoHook"),
 ]
+
+activation_checkpointing = ["pts_backbone"]

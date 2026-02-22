@@ -11,6 +11,7 @@ import argparse
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
@@ -618,18 +619,52 @@ class BaseDeploymentConfig:
         return None
 
 
-def setup_logging(level: str = "INFO") -> logging.Logger:
+def setup_logging(level: str = "INFO", log_file: Optional[str] = None) -> logging.Logger:
     """
     Setup logging configuration.
 
+    Attaches a dedicated StreamHandler to the ``deployment`` logger so that
+    its output is independent of the root logger.  Third-party libraries
+    (notably ``absl-py``, pulled in by ``pytorch_quantization``) can hijack
+    the root logger's handlers/level at import time, which silently drops
+    messages that only propagate through root.  By giving the ``deployment``
+    logger its own handler and setting ``propagate = False``, we guarantee
+    that deployment INFO messages always reach stderr regardless of what
+    other libraries do to the root logger.
+
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        log_file: Optional path to write logs to file.
 
     Returns:
         Configured logger instance
     """
     logging.basicConfig(level=getattr(logging, level), format="%(levelname)s:%(name)s:%(message)s")
-    return logging.getLogger("deployment")
+
+    deployment_logger = logging.getLogger("deployment")
+
+    if not deployment_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+        deployment_logger.addHandler(handler)
+
+    if log_file:
+        log_path = Path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path = str(log_path.resolve())
+        has_file_handler = any(
+            isinstance(handler, logging.FileHandler) and getattr(handler, "baseFilename", None) == file_path
+            for handler in deployment_logger.handlers
+        )
+        if not has_file_handler:
+            file_handler = logging.FileHandler(file_path, mode="a")
+            file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s:%(name)s:%(message)s"))
+            deployment_logger.addHandler(file_handler)
+
+    deployment_logger.setLevel(getattr(logging, level))
+    deployment_logger.propagate = False
+
+    return deployment_logger
 
 
 def parse_base_args(parser: Optional[argparse.ArgumentParser] = None) -> argparse.ArgumentParser:

@@ -6,6 +6,7 @@ from typing import List, Sequence
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as cp
 from mmdet3d.registry import MODELS
 from mmengine.model import ModuleList, Sequential
 from mmpretrain.models.backbones.convnext import ConvNeXt, ConvNeXtBlock
@@ -45,7 +46,49 @@ class LayerNorm2d(nn.LayerNorm):
         )  # NOTE
 
 
-class ConvNeXtBlockLarge(ConvNeXtBlock):
+class ConvNeXtBlockPC(ConvNeXtBlock):
+    """ConvNeXt block that supports both LayerNorm and BatchNorm."""
+
+    def _apply_norm(self, x, data_format):
+        # BatchNorm does not accept "data_format" and expects NCHW.
+        if isinstance(self.norm, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.SyncBatchNorm)):
+            return self.norm(x)
+        return self.norm(x, data_format=data_format)
+
+    def forward(self, x):
+        def _inner_forward(x):
+            shortcut = x
+            x = self.depthwise_conv(x)
+
+            if self.linear_pw_conv:
+                x = x.permute(0, 2, 3, 1)
+                x = self._apply_norm(x, data_format="channel_last")
+                x = self.pointwise_conv1(x)
+                x = self.act(x)
+                if self.grn is not None:
+                    x = self.grn(x, data_format="channel_last")
+                x = self.pointwise_conv2(x)
+                x = x.permute(0, 3, 1, 2)
+            else:
+                x = self._apply_norm(x, data_format="channel_first")
+                x = self.pointwise_conv1(x)
+                x = self.act(x)
+                if self.grn is not None:
+                    x = self.grn(x, data_format="channel_first")
+                x = self.pointwise_conv2(x)
+
+            if self.gamma is not None:
+                x = x.mul(self.gamma.view(1, -1, 1, 1))
+
+            x = shortcut + self.drop_path(x)
+            return x
+
+        if self.with_cp and x.requires_grad:
+            return cp.checkpoint(_inner_forward, x)
+        return _inner_forward(x)
+
+
+class ConvNeXtBlockLarge(ConvNeXtBlockPC):
     def __init__(
         self,
         in_channels,
@@ -91,13 +134,34 @@ class ConvNeXt_PC(ConvNeXt):
         out_indices=-1,
         frozen_stages=0,
         gap_before_final_norm=True,
+        apply_out_norm=True,
         with_cp=False,
         first_downsample=1,
         large_arch=None,
+        use_bn_relu=False,
+        downsample_conv_first=False,
         init_cfg=None,
     ):
         super().__init__(init_cfg=init_cfg)
         self.first_downsample = first_downsample
+        self.use_bn_relu = use_bn_relu
+        self.downsample_conv_first = downsample_conv_first
+        # Controls whether output-stage norm layers (norm{i}) are applied before neck.
+        self.apply_out_norm = apply_out_norm
+
+        # Remove parent ConvNeXt output norm modules so this subclass fully controls
+        # which norm{i} modules exist. This avoids dangling trainable params when
+        # apply_out_norm=False.
+        for module_name in list(self._modules.keys()):
+            if module_name.startswith("norm") and module_name[4:].isdigit():
+                delattr(self, module_name)
+
+        if self.use_bn_relu:
+            # Switch LayerNorm/GELU to BatchNorm/ReLU for this backbone.
+            norm_cfg = dict(type="BN", eps=1e-5)
+            act_cfg = dict(type="ReLU")
+            # BN path should keep tensors in NCHW (Conv2d pointwise branch).
+            linear_pw_conv = False
 
         self.depths = depths
         self.channels = out_channels
@@ -153,17 +217,33 @@ class ConvNeXt_PC(ConvNeXt):
             channels = self.channels[i]
 
             if i >= self.first_downsample:
+                if self.use_bn_relu:
+                    downsample_norm = nn.BatchNorm2d
+                else:
+                    downsample_norm = LayerNorm2d
                 if self.first_downsample == 0 and i == 0:
-                    downsample_layer = nn.Sequential(
-                        LayerNorm2d(in_channels),
-                        nn.Conv2d(in_channels, channels, kernel_size=2, stride=2),
-                    )
+                    if self.downsample_conv_first:
+                        downsample_layer = nn.Sequential(
+                            nn.Conv2d(in_channels, channels, kernel_size=2, stride=2),
+                            downsample_norm(channels),
+                        )
+                    else:
+                        downsample_layer = nn.Sequential(
+                            downsample_norm(in_channels),
+                            nn.Conv2d(in_channels, channels, kernel_size=2, stride=2),
+                        )
                     self.downsample_layers.append(downsample_layer)
                 else:
-                    downsample_layer = nn.Sequential(
-                        LayerNorm2d(self.channels[i - 1]),
-                        nn.Conv2d(self.channels[i - 1], channels, kernel_size=2, stride=2),
-                    )
+                    if self.downsample_conv_first:
+                        downsample_layer = nn.Sequential(
+                            nn.Conv2d(self.channels[i - 1], channels, kernel_size=2, stride=2),
+                            downsample_norm(channels),
+                        )
+                    else:
+                        downsample_layer = nn.Sequential(
+                            downsample_norm(self.channels[i - 1]),
+                            nn.Conv2d(self.channels[i - 1], channels, kernel_size=2, stride=2),
+                        )
                     self.downsample_layers.append(downsample_layer)
             if large_arch is not None and i in large_stages:
                 stage_idx = large_stages.index(3)
@@ -188,7 +268,7 @@ class ConvNeXt_PC(ConvNeXt):
             else:
                 stage = Sequential(
                     *[
-                        ConvNeXtBlock(
+                        ConvNeXtBlockPC(
                             in_channels=channels,
                             drop_path_rate=dpr[block_idx + j],
                             norm_cfg=norm_cfg,
@@ -205,7 +285,7 @@ class ConvNeXt_PC(ConvNeXt):
 
             self.stages.append(stage)
 
-            if i in self.out_indices:
+            if i in self.out_indices and self.apply_out_norm:
                 norm_layer = build_norm_layer(norm_cfg, channels)
                 self.add_module(f"norm{i}", norm_layer)
 
@@ -219,14 +299,15 @@ class ConvNeXt_PC(ConvNeXt):
                 x = self.downsample_layers[i](x)  # NOTE, pretrain_weight
             x = stage(x)
             if i in self.out_indices:
-                norm_layer = getattr(self, f"norm{i}")
                 if self.gap_before_final_norm:
                     gap = x.mean([-2, -1], keepdim=True)
-                    outs.append(norm_layer(gap).flatten(1))
+                    out = getattr(self, f"norm{i}")(gap) if self.apply_out_norm else gap
+                    outs.append(out.flatten(1))
                 else:
                     # The output of LayerNorm2d may be discontiguous, which
                     # may cause some problem in the downstream tasks
-                    outs.append(norm_layer(x).contiguous())
+                    out = getattr(self, f"norm{i}")(x) if self.apply_out_norm else x
+                    outs.append(out.contiguous())
         # for index, i in enumerate(outs):
         #     print_log(f"output shape {index}: {i.shape}")
         return tuple(outs)

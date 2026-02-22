@@ -94,11 +94,14 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         """
         rot_y_axis_reference = self._extract_rot_y_axis_reference(context)
 
+        quantization = self.config.deploy_cfg.get("quantization", None)
+
         model, onnx_cfg = build_centerpoint_onnx_model(
             base_model_cfg=self.model_cfg,
             checkpoint_path=checkpoint_path,
             device="cpu",
             rot_y_axis_reference=rot_y_axis_reference,
+            quantization=quantization,
         )
 
         # Update model_cfg with ONNX-compatible version
