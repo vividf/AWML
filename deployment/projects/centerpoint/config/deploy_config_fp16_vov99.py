@@ -10,7 +10,7 @@ task_type = "detection3d"
 # ============================================================================
 # Checkpoint Path
 # ============================================================================
-checkpoint_path = "work_dirs/centerpoint-vov99/vov99_epoch_1.pth"
+checkpoint_path = "models/2_5/epoch_2.pth"
 
 # ============================================================================
 # Device settings
@@ -102,7 +102,7 @@ components = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="info/kokseang_2_5_experiment/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=1,
 )
 
