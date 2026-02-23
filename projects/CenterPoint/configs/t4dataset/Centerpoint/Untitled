@@ -1,0 +1,4 @@
+	# pts_bbox_head=dict(
+	# 		# sigmoid(-6.9078) = 0.01 for initial small values
+	# 		separate_head=dict(type="CustomSeparateHead", init_bias=-6.9078, final_kernel=1),
+  #   ),
