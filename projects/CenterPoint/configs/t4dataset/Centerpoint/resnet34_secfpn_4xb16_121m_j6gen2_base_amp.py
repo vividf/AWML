@@ -2,7 +2,7 @@ _base_ = ["./second_secfpn_4xb16_121m_j6gen2_base_amp.py"]
 
 # ResNet34 backbone variant - only override what differs from SECOND base
 experiment_name = "resnet34_secfpn_4xb16_121m_j6gen2_base_amp"
-work_dir = "work_dirs/" + experiment_group_name + "/" + experiment_name
+work_dir = "work_dirs/" + _base_.experiment_group_name + "/" + experiment_name
 
 # ResNet34 uses smaller batch size (8 vs 16) due to larger backbone memory
 train_batch_size = 8
