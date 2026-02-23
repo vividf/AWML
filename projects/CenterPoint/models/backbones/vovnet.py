@@ -356,6 +356,7 @@ class BEVVoVNet(VoVNet):
         depthwise = stage_specs["dw"]
         input_ch = kwargs.get("input_ch", 3)
 
+        # Rebuild stem with configurable strides
         conv_type = dw_conv3x3 if depthwise else conv3x3
         stem = conv3x3(input_ch, stem_ch[0], "stem", "1", stem_strides[0])
         stem += conv_type(stem_ch[0], stem_ch[1], "stem", "2", stem_strides[1])
@@ -363,19 +364,34 @@ class BEVVoVNet(VoVNet):
 
         self.stem = nn.Sequential(OrderedDict(stem))
 
+        # Prune stages beyond the last requested out_feature to avoid
+        # unused parameters (which cause DDP warnings and waste memory)
+        out_features = kwargs.get("out_features") or ()
+        max_stage_needed = 2
+        for feat in out_features:
+            if feat.startswith("stage"):
+                max_stage_needed = max(max_stage_needed, int(feat[-1]))
+
+        stages_to_remove = [name for name in self.stage_names if int(name[-1]) > max_stage_needed]
+        for name in stages_to_remove:
+            delattr(self, name)
+        self.stage_names = [name for name in self.stage_names if name not in stages_to_remove]
+
+        # Recalculate stride tracking
         total_stem_stride = 1
         for s in stem_strides:
             total_stem_stride *= s
 
         current_stride = total_stem_stride
         self._out_feature_strides = {"stem": current_stride, "stage2": current_stride}
-        for i in range(1, 4):
-            name = f"stage{i + 2}"
+        for i in range(1, len(self.stage_names)):
+            name = self.stage_names[i]
             current_stride *= 2
             self._out_feature_strides[name] = current_stride
 
         print_log(
             f"BEVVoVNet: stem_strides={stem_strides}, "
+            f"stages={self.stage_names}, "
             f"total_stem_stride={total_stem_stride}, "
             f"feature_strides={self._out_feature_strides}"
         )
