@@ -2,6 +2,7 @@
 
 from typing import Optional, Set, Type
 
+import torch
 import torch.nn as nn
 import torch.utils.checkpoint as cp
 
@@ -398,6 +399,42 @@ class ConvNeXtBlockForwardHook:
         return _inner_forward(x)
 
 
+class OSAModuleForwardHook:
+    """
+    Forward hook for _OSA_module (VoVNet/V-99-eSE) to use residual_quantizer on the identity branch.
+
+    Mirrors _OSA_module.forward: quantize identity_feat before xt = xt + identity_feat
+    so that Conv+Add can be fused in TensorRT (same approach as BasicBlock/ConvNeXtBlock).
+    """
+
+    def __init__(self, obj):
+        self.obj = obj
+
+    def __call__(self, x):
+        """Forward pass with quantized residual connection for _OSA_module."""
+        self = self.obj
+        identity_feat = x
+
+        output = []
+        output.append(x)
+        if self.depthwise and self.isReduced:
+            x = self.conv_reduction(x)
+        for layer in self.layers:
+            x = layer(x)
+            output.append(x)
+
+        x = torch.cat(output, dim=1)
+        xt = self.concat(x)
+        xt = self.ese(xt)
+
+        if self.identity:
+            if hasattr(self, "residual_quantizer"):
+                identity_feat = self.residual_quantizer(identity_feat)
+            xt = xt + identity_feat
+
+        return xt
+
+
 def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = None):
     """
     Attach residual_quantizer to modules that perform residual add and replace their forward methods.
@@ -425,12 +462,15 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
     # Ensure quantization descriptors are initialized
     _ensure_quant_descriptors_initialized()
 
-    target_class_names = target_class_names or {"BasicBlock", "SparseBasicBlock", "ConvNeXtBlock"}
+    target_class_names = target_class_names or {"BasicBlock", "SparseBasicBlock", "ConvNeXtBlock", "_OSA_module"}
 
     attached_count = 0
     for name, module in model.named_modules():
         cls_name = module.__class__.__name__
-        if cls_name in target_class_names or any(name in cls_name for name in target_class_names):
+        if cls_name in target_class_names or any(t in cls_name for t in target_class_names):
+            # _OSA_module: only attach when identity=True (block has residual add)
+            if cls_name == "_OSA_module" and not getattr(module, "identity", False):
+                continue
             # Attach residual_quantizer if not already present
             # Aligned with lidar-ai-solution:
             # - If downsample exists: create new TensorQuantizer
@@ -469,6 +509,16 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
                     residual_quantizer = module.depthwise_conv._input_quantizer
                     module.residual_quantizer = residual_quantizer
                     attached_count += 1
+                elif (
+                    cls_name == "_OSA_module"
+                    and hasattr(module, "concat")
+                    and len(module.concat) > 0
+                    and hasattr(module.concat[0], "_input_quantizer")
+                ):
+                    # VoVNet _OSA_module: reuse concat's first conv (QuantConv2d) input quantizer
+                    residual_quantizer = module.concat[0]._input_quantizer
+                    module.residual_quantizer = residual_quantizer
+                    attached_count += 1
                 else:
                     # Fallback: create new quantizer
                     quant_desc = QuantConv2d.default_quant_desc_input
@@ -489,6 +539,11 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
                     if not hasattr(module, "_original_forward"):
                         module._original_forward = module.forward
                     module.forward = ConvNeXtBlockForwardHook(module)
+            elif cls_name == "_OSA_module":
+                if not isinstance(module.forward, OSAModuleForwardHook):
+                    if not hasattr(module, "_original_forward"):
+                        module._original_forward = module.forward
+                    module.forward = OSAModuleForwardHook(module)
             elif "Sparse" in cls_name:
                 # SparseBasicBlock: use SparseBasicBlockForwardHook
                 if not isinstance(module.forward, SparseBasicBlockForwardHook):
