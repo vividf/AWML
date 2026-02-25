@@ -15,7 +15,7 @@ task_type = "detection3d"
 # ============================================================================
 # Checkpoint Path - Use PTQ quantized checkpoint
 # ============================================================================
-checkpoint_path = "models/2_5/base/centerpoint_second_base_2_5_epoch49_ptq.pth"
+checkpoint_path = "models/2_5/base/centerpoint_second_base_2_5_epoch49_exp2_ptq.pth"
 
 # ============================================================================
 # Quantization Configuration
@@ -50,7 +50,7 @@ devices = dict(
 # ============================================================================
 export = dict(
     mode="both",
-    work_dir="work_dirs/centerpoint_int8_deployment_second_2_5_base",
+    work_dir="work_dirs/centerpoint_int8_deployment_second_2_5_base_exp2",
     onnx_path=None,
 )
 
