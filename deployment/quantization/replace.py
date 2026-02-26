@@ -423,6 +423,9 @@ class OSAModuleForwardHook:
             x = layer(x)
             output.append(x)
 
+        # Q/DQ in front of Concat (each branch quantized before concat, like Add)
+        if hasattr(self, "concat_input_quantizers") and len(self.concat_input_quantizers) == len(output):
+            output = [self.concat_input_quantizers[i](t) for i, t in enumerate(output)]
         x = torch.cat(output, dim=1)
         xt = self.concat(x)
         xt = self.ese(xt)
@@ -468,9 +471,28 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
     for name, module in model.named_modules():
         cls_name = module.__class__.__name__
         if cls_name in target_class_names or any(t in cls_name for t in target_class_names):
-            # _OSA_module: only attach when identity=True (block has residual add)
-            if cls_name == "_OSA_module" and not getattr(module, "identity", False):
-                continue
+            # _OSA_module: attach concat_input_quantizers for ALL blocks (concat has Q/DQ in front)
+            if cls_name == "_OSA_module":
+                n_concat_inputs = len(module.layers) + 1
+                if (
+                    not hasattr(module, "concat_input_quantizers")
+                    or len(module.concat_input_quantizers) != n_concat_inputs
+                ):
+                    quant_desc = QuantConv2d.default_quant_desc_input
+                    if quant_desc is None:
+                        quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+                    else:
+                        if not hasattr(quant_desc, "calib_method") or quant_desc.calib_method is None:
+                            quant_desc.calib_method = "histogram"
+                    concat_quantizers = nn.ModuleList([TensorQuantizer(quant_desc) for _ in range(n_concat_inputs)])
+                    module.add_module("concat_input_quantizers", concat_quantizers)
+                # Only attach residual_quantizer when identity=True (block has add)
+                if not getattr(module, "identity", False):
+                    if not isinstance(module.forward, OSAModuleForwardHook):
+                        if not hasattr(module, "_original_forward"):
+                            module._original_forward = module.forward
+                        module.forward = OSAModuleForwardHook(module)
+                    continue
             # Attach residual_quantizer if not already present
             # Aligned with lidar-ai-solution:
             # - If downsample exists: create new TensorQuantizer
