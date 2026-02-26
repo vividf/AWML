@@ -423,9 +423,11 @@ class OSAModuleForwardHook:
             x = layer(x)
             output.append(x)
 
-        # Q/DQ in front of Concat (each branch quantized before concat, like Add)
-        if hasattr(self, "concat_input_quantizers") and len(self.concat_input_quantizers) == len(output):
-            output = [self.concat_input_quantizers[i](t) for i, t in enumerate(output)]
+        # Q/DQ only on branch inputs before Concat (same as ResNet Add: main path no Q/DQ, only branch)
+        # output[0]=x, output[1..-2]=intermediate layers, output[-1]=main path (last layer) → no Q/DQ on output[-1]
+        if hasattr(self, "concat_input_quantizers") and len(self.concat_input_quantizers) == len(output) - 1:
+            for i in range(len(output) - 1):
+                output[i] = self.concat_input_quantizers[i](output[i])
         x = torch.cat(output, dim=1)
         xt = self.concat(x)
         xt = self.ese(xt)
@@ -471,12 +473,12 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
     for name, module in model.named_modules():
         cls_name = module.__class__.__name__
         if cls_name in target_class_names or any(t in cls_name for t in target_class_names):
-            # _OSA_module: attach concat_input_quantizers for ALL blocks (concat has Q/DQ in front)
+            # _OSA_module: attach concat_input_quantizers for branch inputs only (main path no Q/DQ, like ResNet Add)
             if cls_name == "_OSA_module":
-                n_concat_inputs = len(module.layers) + 1
+                n_branch_inputs = len(module.layers)  # skip connections: x + layer0..layer(n-2); main = layer(n-1) out
                 if (
                     not hasattr(module, "concat_input_quantizers")
-                    or len(module.concat_input_quantizers) != n_concat_inputs
+                    or len(module.concat_input_quantizers) != n_branch_inputs
                 ):
                     quant_desc = QuantConv2d.default_quant_desc_input
                     if quant_desc is None:
@@ -484,7 +486,7 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
                     else:
                         if not hasattr(quant_desc, "calib_method") or quant_desc.calib_method is None:
                             quant_desc.calib_method = "histogram"
-                    concat_quantizers = nn.ModuleList([TensorQuantizer(quant_desc) for _ in range(n_concat_inputs)])
+                    concat_quantizers = nn.ModuleList([TensorQuantizer(quant_desc) for _ in range(n_branch_inputs)])
                     module.add_module("concat_input_quantizers", concat_quantizers)
                 # Only attach residual_quantizer when identity=True (block has add)
                 if not getattr(module, "identity", False):
