@@ -5,7 +5,7 @@ experiment_name = "vov99_secfpn_4xb16_121m_j6gen2_base_amp"
 work_dir = "work_dirs/" + _base_.experiment_group_name + "/" + experiment_name
 
 # VoVNet99 uses smaller batch size due to larger backbone memory
-train_batch_size = 8
+train_batch_size = 2
 train_dataloader = dict(batch_size=train_batch_size)
 
 custom_imports = dict(imports=_base_.custom_imports["imports"].copy(), allow_failed_imports=False)
@@ -155,4 +155,4 @@ optim_wrapper = dict(
 
 load_from = None
 
-activation_checkpointing = ["pts_backbone"]
+activation_checkpointing = None
