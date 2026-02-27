@@ -254,6 +254,8 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
             - quant_head
             - quant_add
             - quant_linear_backbone
+            - quant_linear_backbone
+            - quant_ese_mul_identity
     """
     # Baseline: from deploy config if provided, otherwise defaults.
     fuse_bn = True
@@ -265,6 +267,7 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
         "quant_head": True,
         "quant_add": False,  # Default to False for backward compatibility
         "quant_linear_backbone": False,  # ConvNeXt pointwise linear support
+        "quant_ese_mul_identity": False,  # Quantize identity branch of eSE Mul for INT8
     }
 
     # Deploy config baseline
@@ -285,6 +288,8 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
             quant_flags["quant_add"] = bool(quant_cfg["quant_add"])
         if "quant_linear_backbone" in quant_cfg:
             quant_flags["quant_linear_backbone"] = bool(quant_cfg["quant_linear_backbone"])
+        if "quant_ese_mul_identity" in quant_cfg:
+            quant_flags["quant_ese_mul_identity"] = bool(quant_cfg["quant_ese_mul_identity"])
 
         # Sensitive layers baseline (deployment terminology)
         skip_layers |= set(quant_cfg.get("sensitive_layers", []) or [])
@@ -372,12 +377,16 @@ def run_ptq(args):
         quant_voxel_encoder=quant_flags["quant_voxel_encoder"],
         quant_add=quant_flags["quant_add"],
         quant_linear_backbone=quant_flags["quant_linear_backbone"],
+        quant_ese_mul_identity=quant_flags.get("quant_ese_mul_identity", False),
         skip_names=skip_layers,
     )
 
     if quant_flags["quant_add"]:
         print("  - Residual quantizer attached to residual blocks (BasicBlock/SparseBasicBlock)")
         print("    Only identity branch is quantized to enable TensorRT Conv+Add fusion")
+
+    if quant_flags.get("quant_ese_mul_identity"):
+        print("  - eSE Mul: identity branch quantized for INT8 (Conv-ReLU -> identity + Pool->Conv->Hsigmoid -> Mul)")
 
     # Build dataloader
     print("\n[4/5] Building calibration dataloader...")
