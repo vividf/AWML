@@ -142,7 +142,11 @@ def _load_quantized_checkpoint(
         Model with quantized checkpoint loaded.
     """
     try:
-        from deployment.quantization import CalibrationManager, fuse_model_bn, quant_model
+        from deployment.quantization import (
+            CalibrationManager,
+            fuse_model_bn,
+            quant_model,
+        )
     except ImportError as e:
         raise ImportError(
             "Quantization modules not found. Make sure deployment/quantization " f"is properly installed. Error: {e}"
@@ -162,13 +166,15 @@ def _load_quantized_checkpoint(
     skip_layers = _build_skip_layers(quantization)
 
     logger.info(
-        "Quantization flags: backbone=%s, neck=%s, head=%s, voxel_encoder=%s, " "add=%s, linear_backbone=%s",
+        "Quantization flags: backbone=%s, neck=%s, head=%s, voxel_encoder=%s, "
+        "add=%s, linear_backbone=%s, quant_ese_mul_identity=%s",
         bool(quantization.get("quant_backbone", True)),
         bool(quantization.get("quant_neck", True)),
         bool(quantization.get("quant_head", True)),
         bool(quantization.get("quant_voxel_encoder", True)),
         bool(quantization.get("quant_add", False)),
         bool(quantization.get("quant_linear_backbone", False)),
+        bool(quantization.get("quant_ese_mul_identity", False)),
     )
 
     quant_model(
@@ -179,6 +185,7 @@ def _load_quantized_checkpoint(
         quant_voxel_encoder=bool(quantization.get("quant_voxel_encoder", True)),
         quant_add=bool(quantization.get("quant_add", False)),
         quant_linear_backbone=bool(quantization.get("quant_linear_backbone", False)),
+        quant_ese_mul_identity=bool(quantization.get("quant_ese_mul_identity", False)),
         skip_names=skip_layers,
     )
 
@@ -288,7 +295,11 @@ def _disable_quantization_for_sensitive_layers(
 
 
 def _validate_quantizer_amax(model: torch.nn.Module) -> None:
-    """Validate TensorQuantizers have valid amax values (TensorRT requires positive scales)."""
+    """Validate TensorQuantizers have valid amax values (TensorRT requires positive scales).
+
+    Skips quantizers that are disabled. Disabled quantizers are not used in forward
+    and may have amax=nan from never being calibrated.
+    """
     tensor_quantizer_cls = _import_tensor_quantizer()
     if tensor_quantizer_cls is None:
         return
@@ -296,6 +307,9 @@ def _validate_quantizer_amax(model: torch.nn.Module) -> None:
     invalid_names = []
     for name, module in model.named_modules():
         if not isinstance(module, tensor_quantizer_cls):
+            continue
+
+        if getattr(module, "_disabled", False):
             continue
 
         amax = getattr(module, "_amax", None)

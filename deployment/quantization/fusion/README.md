@@ -193,11 +193,12 @@ Fuses all Conv-BN pairs, replaces fused BNs with `nn.Identity`.
 
 ---
 
+
 ## File Layout
 
 ```text
-projects/CenterPoint/quantization/fusion/
-├── __init__.py       # Public exports
-├── bn_fusion.py      # All fusion logic
-└── README.md         # This file
+deployment/quantization/fusion/
+├── __init__.py         # Public exports
+├── bn_fusion.py        # Conv-BN fusion
+└── README.md           # This file
 ```
