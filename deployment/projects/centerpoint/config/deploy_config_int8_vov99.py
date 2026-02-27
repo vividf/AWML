@@ -15,7 +15,8 @@ task_type = "detection3d"
 # ============================================================================
 # Checkpoint Path - Use PTQ quantized checkpoint
 # ============================================================================
-checkpoint_path = "models/2_5/vov_epoch_30_ptq.pth"
+# checkpoint_path = "models/2_5/experiment_j6_gen2/vov_epoch_30_ptq_exp6.pth"
+checkpoint_path = "data/user/vivid/models/2_5/experiment_j6_gen2/vov_epoch_30_exp6.pth"
 # ============================================================================
 # Quantization Configuration
 # ============================================================================
@@ -23,6 +24,7 @@ quantization = dict(
     enabled=True,
     mode="ptq",
     fuse_bn=True,
+    quant_ese_mul_identity=True,  # Q/DQ on identity branch before eSE Mul (so Mul has QDQ node)
     quant_voxel_encoder=False,
     quant_backbone=True,
     quant_neck=True,
@@ -53,7 +55,7 @@ devices = dict(
 # ============================================================================
 export = dict(
     mode="both",
-    work_dir="work_dirs/centerpoint-vov99/int8-deployment",
+    work_dir="work_dirs/centerpoint-vov99/int8-deployment-exp6",
     onnx_path=None,
 )
 
@@ -142,7 +144,7 @@ runtime_io = dict(
 # ONNX Export Settings
 # ============================================================================
 onnx_config = dict(
-    opset_version=20,
+    opset_version=22,
     do_constant_folding=True,
     export_params=True,
     keep_initializers_as_inputs=False,
@@ -162,7 +164,7 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=100,
+    num_samples=10,
     verbose=True,
     backends=dict(
         pytorch=dict(
@@ -170,7 +172,7 @@ evaluation = dict(
             device=devices["cuda"],
         ),
         onnx=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
             model_dir=_ONNX_DIR,
         ),

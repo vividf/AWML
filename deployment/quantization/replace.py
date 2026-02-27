@@ -196,6 +196,7 @@ def quant_model(
     quant_voxel_encoder: bool = True,
     quant_add: bool = False,
     quant_linear_backbone: bool = False,
+    quant_ese_mul_identity: bool = False,
     skip_names: Optional[Set[str]] = None,
 ):
     """
@@ -211,6 +212,7 @@ def quant_model(
         quant_head: Whether to quantize pts_bbox_head
         quant_voxel_encoder: Whether to quantize pts_voxel_encoder
         quant_linear_backbone: Whether to quantize Linear layers in pts_backbone
+        quant_ese_mul_identity: Whether to quantize the identity branch of eSE Mul (VoVNet)
         skip_names: Set of module names to skip
 
     Example:
@@ -218,6 +220,8 @@ def quant_model(
         >>> quant_model(model, skip_names={'pts_backbone.blocks.0'})
         >>> # If you also want to attach residual_quantizer to residual blocks:
         >>> quant_model(model, quant_add=True)
+        >>> # For VoVNet eSE INT8: quantize identity branch before Mul
+        >>> quant_model(model, quant_ese_mul_identity=True)
     """
     skip_names = skip_names or set()
 
@@ -237,6 +241,9 @@ def quant_model(
 
     if quant_add:
         attach_quant_add(model)
+
+    if quant_ese_mul_identity:
+        attach_ese_mul_identity_quantizer(model)
 
 
 class BasicBlockForwardHook:
@@ -440,6 +447,29 @@ class OSAModuleForwardHook:
         return xt
 
 
+class eSEModuleForwardHook:
+    """
+    Forward hook for eSEModule (VoVNet): quantize the identity branch before Mul.
+
+    eSE: Conv-ReLU (concat) splits into (1) Pool -> Conv (fc) -> Hsigmoid and (2) identity;
+    both feed Mul. If neither branch is quantized, Mul runs in FP and eSEModule cannot INT8.
+    Quantizing the identity branch (concat output) before Mul gives Mul one quantized input.
+    """
+
+    def __init__(self, obj):
+        self.obj = obj
+
+    def __call__(self, x):
+        self = self.obj
+        identity = x
+        x = self.avg_pool(x)
+        x = self.fc(x)
+        x = self.hsigmoid(x)
+        if hasattr(self, "mul_identity_quantizer") and self.mul_identity_quantizer is not None:
+            identity = self.mul_identity_quantizer(identity)
+        return identity * x
+
+
 def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = None):
     """
     Attach residual_quantizer to modules that perform residual add and replace their forward methods.
@@ -586,3 +616,57 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
 
         logger = logging.getLogger(__name__)
         logger.info(f"Attached residual_quantizer to {attached_count} residual blocks")
+
+
+def attach_ese_mul_identity_quantizer(model: nn.Module) -> int:
+    """
+    Attach mul_identity_quantizer to eSEModule so the Mul has one quantized input.
+
+    eSE: Conv-ReLU (concat) -> split -> (1) Pool -> Conv (fc) -> Hsigmoid, (2) identity -> Mul.
+    If neither branch is quantized, Mul runs in FP and eSEModule cannot INT8.
+    Quantizing the identity branch before Mul gives Mul one quantized input.
+
+    Returns:
+        Number of eSEModules that got mul_identity_quantizer attached.
+    """
+    try:
+        from pytorch_quantization import tensor_quant
+        from pytorch_quantization.nn import TensorQuantizer
+    except ImportError:
+        raise ImportError(
+            "pytorch-quantization is required for eSE Mul quantization. "
+            "Install it with: pip install pytorch-quantization --extra-index-url https://pypi.ngc.nvidia.com"
+        )
+
+    _ensure_quant_descriptors_initialized()
+    count = 0
+    for name, module in model.named_modules():
+        if module.__class__.__name__ != "eSEModule":
+            continue
+        if hasattr(module, "mul_identity_quantizer") and module.mul_identity_quantizer is not None:
+            if not isinstance(module.forward, eSEModuleForwardHook):
+                if not hasattr(module, "_original_forward"):
+                    module._original_forward = module.forward
+                module.forward = eSEModuleForwardHook(module)
+            count += 1
+            continue
+        quant_desc = QuantConv2d.default_quant_desc_input
+        if quant_desc is None:
+            quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+        elif not getattr(quant_desc, "calib_method", None):
+            quant_desc.calib_method = "histogram"
+        if hasattr(module, "fc") and hasattr(module.fc, "_input_quantizer") and module.fc._input_quantizer is not None:
+            module.mul_identity_quantizer = module.fc._input_quantizer
+        else:
+            q = TensorQuantizer(quant_desc)
+            module.add_module("mul_identity_quantizer", q)
+        if not hasattr(module, "_original_forward"):
+            module._original_forward = module.forward
+        module.forward = eSEModuleForwardHook(module)
+        count += 1
+    if count > 0:
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.info(f"Attached mul_identity_quantizer to {count} eSEModules (identity branch before Mul)")
+    return count
