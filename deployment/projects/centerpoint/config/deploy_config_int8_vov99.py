@@ -26,6 +26,7 @@ quantization = dict(
     fuse_bn=True,
     quant_ese_mul_identity=True,  # Q/DQ on identity branch before eSE Mul (so Mul has QDQ node)
     quant_ese_pool_input=True,  # Q/DQ before pooling layer in eSE (so Pool has QDQ input)
+    quant_maxpool_input=True,  # Q/DQ before MaxPool2d (VoVNet _OSA_stage)
     quant_voxel_encoder=False,
     quant_backbone=True,
     quant_neck=True,

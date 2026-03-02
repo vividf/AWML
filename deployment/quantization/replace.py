@@ -198,6 +198,7 @@ def quant_model(
     quant_linear_backbone: bool = False,
     quant_ese_mul_identity: bool = False,
     quant_ese_pool_input: bool = False,
+    quant_maxpool_input: bool = False,
     skip_names: Optional[Set[str]] = None,
 ):
     """
@@ -215,6 +216,7 @@ def quant_model(
         quant_linear_backbone: Whether to quantize Linear layers in pts_backbone
         quant_ese_mul_identity: Whether to quantize the identity branch of eSE Mul (VoVNet)
         quant_ese_pool_input: Whether to add Q/DQ before pooling layer in eSE (VoVNet)
+        quant_maxpool_input: Whether to add Q/DQ before MaxPool2d (e.g. VoVNet _OSA_stage)
         skip_names: Set of module names to skip
 
     Example:
@@ -225,6 +227,7 @@ def quant_model(
         >>> # For VoVNet eSE INT8: quantize identity branch before Mul
         >>> quant_model(model, quant_ese_mul_identity=True)
         >>> quant_model(model, quant_ese_pool_input=True)  # QDQ before avg_pool in eSE
+        >>> quant_model(model, quant_maxpool_input=True)   # QDQ before MaxPool2d
     """
     skip_names = skip_names or set()
 
@@ -250,6 +253,24 @@ def quant_model(
 
     if quant_ese_pool_input:
         attach_ese_pool_input_quantizer(model)
+
+    if quant_maxpool_input:
+        attach_maxpool_input_quantizer(model, skip_names)
+
+
+class QuantBeforePool(nn.Module):
+    """
+    Wraps TensorQuantizer + any pool (AvgPool, MaxPool) so QDQ appears before the pool in the graph.
+    Used by replacing a pool submodule with this wrapper; ONNX export then sees Quantize -> Dequantize -> Pool.
+    """
+
+    def __init__(self, quantizer: nn.Module, pool: nn.Module):
+        super().__init__()
+        self.quantizer = quantizer
+        self.pool = pool
+
+    def forward(self, x):
+        return self.pool(self.quantizer(x))
 
 
 class BasicBlockForwardHook:
@@ -730,4 +751,69 @@ def attach_ese_pool_input_quantizer(model: nn.Module) -> int:
 
         logger = logging.getLogger(__name__)
         logger.info(f"Attached pool_input_quantizer to {count} eSEModules (QDQ before pooling)")
+    return count
+
+
+def attach_maxpool_input_quantizer(
+    model: nn.Module,
+    skip_names: Optional[Set[str]] = None,
+) -> int:
+    """
+    Replace nn.MaxPool2d modules with QuantBeforePool(quantizer, pool) so QDQ is applied before MaxPool.
+
+    VoVNet _OSA_stage uses "Pooling" (MaxPool2d) before the first OSA block in stage3/stage4.
+    This adds QDQ on the pool input so the MaxPool layer has quantized input in the ONNX graph.
+
+    Returns:
+        Number of MaxPool2d modules replaced with QuantBeforePool.
+    """
+    try:
+        from pytorch_quantization import tensor_quant
+        from pytorch_quantization.nn import TensorQuantizer
+    except ImportError:
+        raise ImportError(
+            "pytorch-quantization is required for MaxPool input quantization. "
+            "Install it with: pip install pytorch-quantization --extra-index-url https://pypi.ngc.nvidia.com"
+        )
+
+    _ensure_quant_descriptors_initialized()
+    skip_names = skip_names or set()
+    name_to_module = dict(model.named_modules())
+    to_replace = []  # (parent_module, child_name, pool_module)
+
+    for name, module in model.named_modules():
+        if not isinstance(module, nn.MaxPool2d):
+            continue
+        if isinstance(module, QuantBeforePool):
+            continue
+        if any(name.startswith(s) for s in skip_names):
+            continue
+        parts = name.split(".")
+        if not parts:
+            continue
+        parent_name = ".".join(parts[:-1])
+        child_name = parts[-1]
+        parent = name_to_module.get(parent_name) if parent_name else model
+        if parent is None:
+            continue
+        to_replace.append((parent, child_name, module))
+
+    quant_desc = QuantConv2d.default_quant_desc_input
+    if quant_desc is None:
+        quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+    elif not getattr(quant_desc, "calib_method", None):
+        quant_desc.calib_method = "histogram"
+
+    count = 0
+    for parent, child_name, pool_module in to_replace:
+        q = TensorQuantizer(quant_desc)
+        wrapper = QuantBeforePool(q, pool_module)
+        setattr(parent, child_name, wrapper)
+        count += 1
+
+    if count > 0:
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.info(f"Attached QDQ before {count} MaxPool2d modules")
     return count
