@@ -8,6 +8,17 @@ This document describes the architecture of the CenterPoint backbone variant usi
 - **Base**: `second_secfpn_4xb16_121m_j6gen2_base_amp.py`
 - **Input BEV feature**: `(B, 32, 1020, 1020)`
 
+### What does "99" mean?
+
+The number **99** in VoVNet (V-99-eSE) comes from the **original VoVNet/OSANet naming**: it indicates the **network depth** (number of layers). VoVNet variants are named by approximate layer count:
+
+- **V-19**: ~19 layers (lightweight)
+- **V-39**: ~39 layers
+- **V-57**: ~57 layers
+- **V-99**: ~99 layers (deepest standard variant)
+
+So "VoV99" = VoVNet with depth ~99. The same spec uses **OSA (One-Shot Aggregation)** blocks: each block has 5 conv layers, and the count 1+3+9+3 blocks × 5 layers plus stem gives a deep network suited for higher accuracy. The "eSE" suffix means **eSE (effective Squeeze-Excitation)** attention is used in the OSA modules.
+
 ### Key Config Values
 
 ```python
@@ -39,6 +50,19 @@ pts_neck = dict(
 | Blocks per stage | [1, 3, 9, 3] |
 | eSE (Squeeze-Excitation) | Yes |
 | Depthwise separable | No |
+
+### Why are the OSA block counts 1, 3, 9, 3?
+
+The pattern **1, 3, 9, 3** (for stages 2, 3, 4, 5) comes from the **original VoVNet paper** (CVPRW 2019, Lee et al.). The design follows a common backbone principle: **spend more depth where spatial size is smaller** (so compute per layer is lower) and **keep the first stage light** (highest resolution is the most expensive).
+
+| Stage | Blocks | Spatial (BEV) | Rationale |
+|-------|--------|----------------|-----------|
+| **Stage 2** | **1** | 1020×1020 | Highest resolution; one OSA block is enough to build low-level features without blowing up compute. |
+| **Stage 3** | **3** | 510×510 | After 2× downsampling; a few more blocks add capacity at moderate cost. |
+| **Stage 4** | **9** | 255×255 | Heaviest stage. Resolution is ¼ of stage 2, so each conv is much cheaper; more blocks here give strong semantic features for detection. |
+| **Stage 5** | **3** | (pruned in BEV) | Smallest resolution in original image VoVNet; fewer blocks than stage 4 to balance depth and avoid overfitting, and to hit the target ~99-layer depth. |
+
+So: **light at high resolution (1) → ramp up in the middle (3, 9) → taper at the end (3)**. The exact numbers 1-3-9-3 were chosen empirically in the paper to get a good accuracy/speed trade-off and the desired depth; lighter variants (e.g. V-39, V-57) use fewer blocks per stage (e.g. [1,1,2,2] or [1,1,4,3]).
 
 > **Note**: Stage5 (1024ch, 3 blocks) is pruned since `out_features` only requests up to `stage4`.
 
@@ -190,11 +214,49 @@ BEVVoVNet has significantly more parameters and FLOPs due to:
 
 ---
 
-## 6. Latency Reduction Strategies
+## 7. BEVVoVNet (AWML) vs StreamPETR VoVNet
+
+Both use the **same V-99-eSE spec** (stage_out_ch [256, 512, 768, 1024], block_per_stage [1, 3, 9, 3], layer_per_block=5, eSE). The differences are:
+
+| Aspect | StreamPETR VoVNet | AWML BEVVoVNet |
+|--------|-------------------|----------------|
+| **Class** | `VoVNet` | `BEVVoVNet` (subclass of VoVNet) |
+| **Input** | Camera/image features (e.g. 3ch or feature dim) | BEV pillar features (32ch, 1020×1020) |
+| **Stem strides** | Default `(2, 1, 2)` → **4× spatial downsampling** | **`(1, 1, 1)`** → no downsampling |
+| **Spatial size after stem** | 4× smaller (e.g. 256×256 for 1024 input) | Same as input (1020×1020) |
+| **Purpose** | Image backbone for multi-view 3D (camera) | BEV backbone for LiDAR/point-cloud BEV |
+| **Neck** | Projection/FPN for camera stream | SECONDFPN with in_channels=[256, 512, 768] |
+
+**Summary**: StreamPETR uses VoVNet as designed for **image** backbones (stem downsamples 4×). AWML adds **BEVVoVNet**, which keeps the same OSA/stage structure but **rebuilds the stem with configurable strides** so that with `stem_strides=(1,1,1)` the BEV grid keeps full resolution. The V-99-eSE **spec (channels, blocks, eSE) is identical**; only the stem and usage context differ.
+
+---
+
+## 8. Why Stage Output Channels Differ from SECOND / BEVResNet34
+
+| Backbone | Stage output channels | Neck `in_channels` |
+|----------|------------------------|--------------------|
+| SECOND | 64 / 128 / 256 | [64, 128, 256] |
+| BEVResNet34 | 64 / 128 / 256 | [64, 128, 256] |
+| BEVVoVNet V-99-eSE | **256 / 512 / 768** | **[256, 512, 768]** |
+
+**Reasons:**
+
+1. **Different backbone families**  
+   SECOND and BEVResNet34 use a **lightweight** channel schedule: base 64, then 64→128→256 per stage. VoVNet comes from the **original paper** (CVPRW 2019, ETRI/Megvii) and uses a **heavier** schedule: stage_out_ch = [256, 512, 768, 1024]. So 256/512/768 are the **native** VoVNet design for higher capacity, not chosen to match SECOND.
+
+2. **SECONDFPN is backbone-agnostic**  
+   The neck only requires that `in_channels` matches the backbone’s multi-scale output channels. It then projects each branch to 128 and concatenates → 384 for the head. So we set `pts_neck.in_channels=[256, 512, 768]` when using VoV99; no need to change SECOND or ResNet.
+
+3. **Accuracy vs cost**  
+   VoV99’s larger channels (and OSA depth) aim for **higher accuracy** at the cost of more parameters and compute. SECOND/ResNet34’s 64/128/256 are a **smaller, faster** design. The stage output channel difference is therefore an intentional capacity choice per backbone family, not a bug or inconsistency.
+
+---
+
+## 9. Latency Reduction Strategies
 
 If you need to reduce the overall network latency of the VoVNet-based CenterPoint pipeline, consider the following directions:
 
-### 6.1 Backbone Architecture Changes
+### 9.1 Backbone Architecture Changes
 
 1. **Use a lighter VoVNet variant**: Replace V-99-eSE with a smaller spec (e.g., V-39-eSE or V-57-eSE) by defining a new spec dict with fewer `block_per_stage` and smaller channels. The heaviest component is Stage4 with 9 OSA blocks — reducing this to 3-5 blocks yields the largest speedup.
 
@@ -206,13 +268,13 @@ If you need to reduce the overall network latency of the VoVNet-based CenterPoin
 
 5. **Reduce OSA layers per block**: The `layer_per_block=5` setting means each OSA block has 5 intermediate conv layers. Reducing to 3 decreases both compute and the concat dimension.
 
-### 6.2 Input Resolution / Voxelization
+### 9.2 Input Resolution / Voxelization
 
 6. **Increase voxel size**: Changing `voxel_size` from `[0.24, 0.24, 8.0]` to `[0.32, 0.32, 8.0]` reduces the BEV grid from 1020x1020 to 765x765. This quadratically reduces compute in the backbone (especially stage2 at full resolution). This is the single most impactful change for latency.
 
 7. **Reduce point cloud range**: Narrowing the detection range (e.g., from 122.4m to 100m) shrinks the grid proportionally.
 
-### 6.3 Deployment Optimizations
+### 9.3 Deployment Optimizations
 
 8. **INT8 quantization (PTQ/QAT)**: Apply post-training quantization or quantization-aware training for TensorRT deployment. INT8 can provide ~2x speedup over FP16 for conv-heavy backbones. See `deployment/projects/centerpoint/config/` for reference INT8 configs.
 
@@ -220,7 +282,7 @@ If you need to reduce the overall network latency of the VoVNet-based CenterPoin
 
 10. **Operator fusion**: TensorRT automatically fuses Conv+BN+ReLU sequences. Ensure BN is fused before export (`fuse_bn=True` in deploy config) for maximum throughput.
 
-### 6.4 Recommended Priority
+### 9.4 Recommended Priority
 
 For the best latency-accuracy trade-off, the recommended approach (from most impactful to least):
 
@@ -232,7 +294,7 @@ For the best latency-accuracy trade-off, the recommended approach (from most imp
 | 4 | Skip stage2 (drop high-res branch) | ~15-20% | Moderate |
 | 5 | Use lighter VoVNet variant | ~30-50% | Depends on variant |
 
-### 6.5 Notes
+### 9.5 Notes
 
 - When changing voxel_size or point_cloud_range, remember to update `grid_size`, `out_size_factor`, and all dependent configs (neck upsample_strides, head, train_cfg, test_cfg).
 - Reducing backbone capacity may require tuning the learning rate schedule, batch size, and training epochs to maintain convergence.
