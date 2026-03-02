@@ -256,6 +256,7 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
             - quant_linear_backbone
             - quant_linear_backbone
             - quant_ese_mul_identity
+            - quant_ese_pool_input
     """
     # Baseline: from deploy config if provided, otherwise defaults.
     fuse_bn = True
@@ -268,6 +269,7 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
         "quant_add": False,  # Default to False for backward compatibility
         "quant_linear_backbone": False,  # ConvNeXt pointwise linear support
         "quant_ese_mul_identity": False,  # Quantize identity branch of eSE Mul for INT8
+        "quant_ese_pool_input": False,  # Q/DQ before pooling layer in eSE
     }
 
     # Deploy config baseline
@@ -290,6 +292,8 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
             quant_flags["quant_linear_backbone"] = bool(quant_cfg["quant_linear_backbone"])
         if "quant_ese_mul_identity" in quant_cfg:
             quant_flags["quant_ese_mul_identity"] = bool(quant_cfg["quant_ese_mul_identity"])
+        if "quant_ese_pool_input" in quant_cfg:
+            quant_flags["quant_ese_pool_input"] = bool(quant_cfg["quant_ese_pool_input"])
 
         # Sensitive layers baseline (deployment terminology)
         skip_layers |= set(quant_cfg.get("sensitive_layers", []) or [])
@@ -378,6 +382,7 @@ def run_ptq(args):
         quant_add=quant_flags["quant_add"],
         quant_linear_backbone=quant_flags["quant_linear_backbone"],
         quant_ese_mul_identity=quant_flags.get("quant_ese_mul_identity", False),
+        quant_ese_pool_input=quant_flags.get("quant_ese_pool_input", False),
         skip_names=skip_layers,
     )
 
@@ -387,6 +392,9 @@ def run_ptq(args):
 
     if quant_flags.get("quant_ese_mul_identity"):
         print("  - eSE Mul: identity branch quantized for INT8 (Conv-ReLU -> identity + Pool->Conv->Hsigmoid -> Mul)")
+
+    if quant_flags.get("quant_ese_pool_input"):
+        print("  - eSE Pool: Q/DQ before avg_pool for INT8 (input -> QDQ -> avg_pool -> fc -> Hsigmoid)")
 
     # Build dataloader
     print("\n[4/5] Building calibration dataloader...")
