@@ -77,6 +77,15 @@ def build_model_from_cfg(
         model_cfg: MMEngine model configuration.
         checkpoint_path: Path to the checkpoint file.
         device: Target device specification.
+        quantization: Optional quantization config dict with keys:
+            - enabled: bool, whether to enable quantization
+            - mode: str, 'ptq' or 'qat'
+            - fuse_bn: bool, whether to fuse BatchNorm (default: True)
+            - quant_backbone, quant_neck, quant_head, quant_voxel_encoder: bool
+            - quant_add, quant_linear_backbone: bool
+            - quant_ese_mul_identity, quant_ese_pool_input: bool
+            - sensitive_layers: list of layer names to skip
+            - calib_cache_path: optional path to calibration cache
 
     Returns:
         Loaded and initialized PyTorch model in eval mode.
@@ -141,7 +150,7 @@ def _load_quantized_checkpoint(
 
     logger.info(
         "Quantization flags: backbone=%s, neck=%s, head=%s, voxel_encoder=%s, "
-        "add=%s, linear_backbone=%s, quant_ese_mul_identity=%s",
+        "add=%s, linear_backbone=%s, quant_ese_mul_identity=%s, quant_ese_pool_input=%s",
         bool(quantization.get("quant_backbone", True)),
         bool(quantization.get("quant_neck", True)),
         bool(quantization.get("quant_head", True)),
@@ -149,6 +158,7 @@ def _load_quantized_checkpoint(
         bool(quantization.get("quant_add", False)),
         bool(quantization.get("quant_linear_backbone", False)),
         bool(quantization.get("quant_ese_mul_identity", False)),
+        bool(quantization.get("quant_ese_pool_input", False)),
     )
 
     quant_model(
@@ -160,6 +170,7 @@ def _load_quantized_checkpoint(
         quant_add=bool(quantization.get("quant_add", False)),
         quant_linear_backbone=bool(quantization.get("quant_linear_backbone", False)),
         quant_ese_mul_identity=bool(quantization.get("quant_ese_mul_identity", False)),
+        quant_ese_pool_input=bool(quantization.get("quant_ese_pool_input", False)),
         skip_names=skip_layers,
     )
 
