@@ -197,6 +197,7 @@ def quant_model(
     quant_add: bool = False,
     quant_linear_backbone: bool = False,
     quant_ese_mul_identity: bool = False,
+    quant_ese_pool_input: bool = False,
     skip_names: Optional[Set[str]] = None,
 ):
     """
@@ -213,6 +214,7 @@ def quant_model(
         quant_voxel_encoder: Whether to quantize pts_voxel_encoder
         quant_linear_backbone: Whether to quantize Linear layers in pts_backbone
         quant_ese_mul_identity: Whether to quantize the identity branch of eSE Mul (VoVNet)
+        quant_ese_pool_input: Whether to add Q/DQ before pooling layer in eSE (VoVNet)
         skip_names: Set of module names to skip
 
     Example:
@@ -222,6 +224,7 @@ def quant_model(
         >>> quant_model(model, quant_add=True)
         >>> # For VoVNet eSE INT8: quantize identity branch before Mul
         >>> quant_model(model, quant_ese_mul_identity=True)
+        >>> quant_model(model, quant_ese_pool_input=True)  # QDQ before avg_pool in eSE
     """
     skip_names = skip_names or set()
 
@@ -244,6 +247,9 @@ def quant_model(
 
     if quant_ese_mul_identity:
         attach_ese_mul_identity_quantizer(model)
+
+    if quant_ese_pool_input:
+        attach_ese_pool_input_quantizer(model)
 
 
 class BasicBlockForwardHook:
@@ -450,10 +456,12 @@ class OSAModuleForwardHook:
 class eSEModuleForwardHook:
     """
     Forward hook for eSEModule (VoVNet): quantize the identity branch before Mul.
+    Optionally quantize the input before Pool (QDQ before pooling) for INT8.
 
     eSE: Conv-ReLU (concat) splits into (1) Pool -> Conv (fc) -> Hsigmoid and (2) identity;
     both feed Mul. If neither branch is quantized, Mul runs in FP and eSEModule cannot INT8.
     Quantizing the identity branch (concat output) before Mul gives Mul one quantized input.
+    Quantizing the input before avg_pool (pool_input_quantizer) adds QDQ before pooling layer.
     """
 
     def __init__(self, obj):
@@ -462,6 +470,9 @@ class eSEModuleForwardHook:
     def __call__(self, x):
         self = self.obj
         identity = x
+        # QDQ before pooling when pool_input_quantizer is attached
+        if hasattr(self, "pool_input_quantizer") and self.pool_input_quantizer is not None:
+            x = self.pool_input_quantizer(x)
         x = self.avg_pool(x)
         x = self.fc(x)
         x = self.hsigmoid(x)
@@ -669,4 +680,54 @@ def attach_ese_mul_identity_quantizer(model: nn.Module) -> int:
 
         logger = logging.getLogger(__name__)
         logger.info(f"Attached mul_identity_quantizer to {count} eSEModules (identity branch before Mul)")
+    return count
+
+
+def attach_ese_pool_input_quantizer(model: nn.Module) -> int:
+    """
+    Attach pool_input_quantizer to eSEModule so that QDQ is applied before avg_pool.
+
+    eSE: input -> [optional QDQ] -> avg_pool -> fc -> hsigmoid; identity -> [optional QDQ] -> Mul.
+    This adds QDQ on the pooling branch input so the pooling layer has quantized input.
+
+    Returns:
+        Number of eSEModules that got pool_input_quantizer attached.
+    """
+    try:
+        from pytorch_quantization import tensor_quant
+        from pytorch_quantization.nn import TensorQuantizer
+    except ImportError:
+        raise ImportError(
+            "pytorch-quantization is required for eSE pool input quantization. "
+            "Install it with: pip install pytorch-quantization --extra-index-url https://pypi.ngc.nvidia.com"
+        )
+
+    _ensure_quant_descriptors_initialized()
+    count = 0
+    for name, module in model.named_modules():
+        if module.__class__.__name__ != "eSEModule":
+            continue
+        if hasattr(module, "pool_input_quantizer") and module.pool_input_quantizer is not None:
+            if not isinstance(module.forward, eSEModuleForwardHook):
+                if not hasattr(module, "_original_forward"):
+                    module._original_forward = module.forward
+                module.forward = eSEModuleForwardHook(module)
+            count += 1
+            continue
+        quant_desc = QuantConv2d.default_quant_desc_input
+        if quant_desc is None:
+            quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+        elif not getattr(quant_desc, "calib_method", None):
+            quant_desc.calib_method = "histogram"
+        q = TensorQuantizer(quant_desc)
+        module.add_module("pool_input_quantizer", q)
+        if not hasattr(module, "_original_forward"):
+            module._original_forward = module.forward
+        module.forward = eSEModuleForwardHook(module)
+        count += 1
+    if count > 0:
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.info(f"Attached pool_input_quantizer to {count} eSEModules (QDQ before pooling)")
     return count
