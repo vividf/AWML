@@ -30,8 +30,19 @@ VoVNet99_eSE = {
     "dw": False,
 }
 
+VoVNet57_eSE = {
+    "stem": [64, 64, 128],
+    "stage_conv_ch": [128, 160, 192, 224],
+    "stage_out_ch": [256, 512, 768, 1024],
+    "layer_per_block": 5,
+    "block_per_stage": [1, 1, 4, 3],
+    "eSE": True,
+    "dw": False,
+}
+
 _STAGE_SPECS = {
     "V-99-eSE": VoVNet99_eSE,
+    "V-57-eSE": VoVNet57_eSE,
 }
 
 
