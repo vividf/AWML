@@ -214,7 +214,7 @@ def quant_model(
         quant_head: Whether to quantize pts_bbox_head
         quant_voxel_encoder: Whether to quantize pts_voxel_encoder
         quant_linear_backbone: Whether to quantize Linear layers in pts_backbone
-        quant_ese_mul_identity: Whether to quantize the identity branch of eSE Mul (VoVNet)
+        quant_ese_mul_identity: Whether to quantize both inputs to eSE Mul (identity + gate) for INT8; both get Q-DQ before Mul.
         quant_ese_pool_input: Whether to add Q/DQ before pooling layer in eSE (VoVNet)
         quant_maxpool_input: Whether to add Q/DQ before MaxPool2d (e.g. VoVNet _OSA_stage)
         skip_names: Set of module names to skip
@@ -222,11 +222,7 @@ def quant_model(
     Example:
         >>> model = CenterPoint(...)
         >>> quant_model(model, skip_names={'pts_backbone.blocks.0'})
-        >>> # If you also want to attach residual_quantizer to residual blocks:
-        >>> quant_model(model, quant_add=True)
-        >>> # For VoVNet eSE INT8: quantize identity branch before Mul
-        >>> quant_model(model, quant_ese_mul_identity=True)
-        >>> quant_model(model, quant_ese_pool_input=True)  # QDQ before avg_pool in eSE
+        >>> quant_model(model, quant_ese_mul_identity=True, quant_ese_pool_input=True)  # eSE INT8
         >>> quant_model(model, quant_maxpool_input=True)   # QDQ before MaxPool2d
     """
     skip_names = skip_names or set()
@@ -248,11 +244,10 @@ def quant_model(
     if quant_add:
         attach_quant_add(model)
 
-    if quant_ese_mul_identity:
-        attach_ese_mul_identity_quantizer(model)
-
     if quant_ese_pool_input:
         attach_ese_pool_input_quantizer(model)
+    if quant_ese_mul_identity:
+        attach_ese_mul_identity_quantizer(model)
 
     if quant_maxpool_input:
         attach_maxpool_input_quantizer(model, skip_names)
@@ -476,13 +471,17 @@ class OSAModuleForwardHook:
 
 class eSEModuleForwardHook:
     """
-    Forward hook for eSEModule (VoVNet): quantize the identity branch before Mul.
-    Optionally quantize the input before Pool (QDQ before pooling) for INT8.
+    Forward hook for eSEModule (VoVNet): single Q at eSE input, fan-out to both paths.
 
-    eSE: Conv-ReLU (concat) splits into (1) Pool -> Conv (fc) -> Hsigmoid and (2) identity;
-    both feed Mul. If neither branch is quantized, Mul runs in FP and eSEModule cannot INT8.
-    Quantizing the identity branch (concat output) before Mul gives Mul one quantized input.
-    Quantizing the input before avg_pool (pool_input_quantizer) adds QDQ before pooling layer.
+    TRT expects only ONE QuantizeLinear at eSE input (one FP32→INT8), then the same
+    Q output (after DQ) feeds both the GAP path and the bypass path to Mul.
+    So: conv_out FP32 → Reformat → Qx (single) → DQ → { GAP path; bypass path } → Mul.
+
+    - When pool_input_quantizer is present: it is the single Qx. identity = qx (same as
+      pool path input); gate = GAP(qx)→fc→hsigmoid→mul_gate_quantizer. Do NOT use
+      mul_identity_quantizer (that would be a second Q on conv_out → second reformat).
+    - When pool_input_quantizer is absent but mul_identity_quantizer is present:
+      legacy two-Q path (identity = mul_identity_quantizer(x), gate = mul_gate_quantizer(...)).
     """
 
     def __init__(self, obj):
@@ -490,15 +489,24 @@ class eSEModuleForwardHook:
 
     def __call__(self, x):
         self = self.obj
-        identity = x
-        # QDQ before pooling when pool_input_quantizer is attached
+        # Single Q at input: pool_input_quantizer is Qx; bypass uses its output (no second Q)
         if hasattr(self, "pool_input_quantizer") and self.pool_input_quantizer is not None:
-            x = self.pool_input_quantizer(x)
+            qx = self.pool_input_quantizer(x)
+            gate = self.avg_pool(qx)
+            gate = self.fc(gate)
+            gate = self.hsigmoid(gate)
+            if hasattr(self, "mul_gate_quantizer") and self.mul_gate_quantizer is not None:
+                gate = self.mul_gate_quantizer(gate)
+            return qx * gate
+        # No pool_input_quantizer: identity and gate each get their own Q (legacy)
+        identity = x
         x = self.avg_pool(x)
         x = self.fc(x)
         x = self.hsigmoid(x)
         if hasattr(self, "mul_identity_quantizer") and self.mul_identity_quantizer is not None:
             identity = self.mul_identity_quantizer(identity)
+        if hasattr(self, "mul_gate_quantizer") and self.mul_gate_quantizer is not None:
+            x = self.mul_gate_quantizer(x)
         return identity * x
 
 
@@ -652,14 +660,13 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
 
 def attach_ese_mul_identity_quantizer(model: nn.Module) -> int:
     """
-    Attach mul_identity_quantizer to eSEModule so the Mul has one quantized input.
-
-    eSE: Conv-ReLU (concat) -> split -> (1) Pool -> Conv (fc) -> Hsigmoid, (2) identity -> Mul.
-    If neither branch is quantized, Mul runs in FP and eSEModule cannot INT8.
-    Quantizing the identity branch before Mul gives Mul one quantized input.
+    Attach mul_gate_quantizer to eSEModule so gate path has Q-DQ before Mul.
+    When pool_input_quantizer is already present, do NOT add mul_identity_quantizer:
+    bypass path uses pool_input_quantizer output (single Q at eSE input → one reformat).
+    When pool_input_quantizer is absent, add both mul_identity_quantizer and mul_gate_quantizer.
 
     Returns:
-        Number of eSEModules that got mul_identity_quantizer attached.
+        Number of eSEModules that got (mul_gate_quantizer and optionally mul_identity_quantizer) attached.
     """
     try:
         from pytorch_quantization import tensor_quant
@@ -675,11 +682,34 @@ def attach_ese_mul_identity_quantizer(model: nn.Module) -> int:
     for name, module in model.named_modules():
         if module.__class__.__name__ != "eSEModule":
             continue
+        # Already has pool_input_quantizer → single Q at input; only ensure mul_gate_quantizer (no mul_identity)
+        if hasattr(module, "pool_input_quantizer") and module.pool_input_quantizer is not None:
+            if not hasattr(module, "mul_gate_quantizer") or module.mul_gate_quantizer is None:
+                quant_desc = QuantConv2d.default_quant_desc_input
+                if quant_desc is None:
+                    quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+                elif not getattr(quant_desc, "calib_method", None):
+                    quant_desc.calib_method = "histogram"
+                module.add_module("mul_gate_quantizer", TensorQuantizer(quant_desc))
+            if not isinstance(module.forward, eSEModuleForwardHook):
+                if not hasattr(module, "_original_forward"):
+                    module._original_forward = module.forward
+                module.forward = eSEModuleForwardHook(module)
+            count += 1
+            continue
+        # No pool_input_quantizer: attach both mul_identity and mul_gate (legacy two-Q path)
         if hasattr(module, "mul_identity_quantizer") and module.mul_identity_quantizer is not None:
             if not isinstance(module.forward, eSEModuleForwardHook):
                 if not hasattr(module, "_original_forward"):
                     module._original_forward = module.forward
                 module.forward = eSEModuleForwardHook(module)
+            if not hasattr(module, "mul_gate_quantizer") or module.mul_gate_quantizer is None:
+                quant_desc = QuantConv2d.default_quant_desc_input
+                if quant_desc is None:
+                    quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+                elif not getattr(quant_desc, "calib_method", None):
+                    quant_desc.calib_method = "histogram"
+                module.add_module("mul_gate_quantizer", TensorQuantizer(quant_desc))
             count += 1
             continue
         quant_desc = QuantConv2d.default_quant_desc_input
@@ -692,6 +722,7 @@ def attach_ese_mul_identity_quantizer(model: nn.Module) -> int:
         else:
             q = TensorQuantizer(quant_desc)
             module.add_module("mul_identity_quantizer", q)
+        module.add_module("mul_gate_quantizer", TensorQuantizer(quant_desc))
         if not hasattr(module, "_original_forward"):
             module._original_forward = module.forward
         module.forward = eSEModuleForwardHook(module)
@@ -700,7 +731,10 @@ def attach_ese_mul_identity_quantizer(model: nn.Module) -> int:
         import logging
 
         logger = logging.getLogger(__name__)
-        logger.info(f"Attached mul_identity_quantizer to {count} eSEModules (identity branch before Mul)")
+        logger.info(
+            f"Attached eSE Mul quantizers to {count} eSEModules "
+            "(single Q at input when pool_input present, else identity+gate Q-DQ)"
+        )
     return count
 
 
@@ -710,6 +744,9 @@ def attach_ese_pool_input_quantizer(model: nn.Module) -> int:
 
     eSE: input -> [optional QDQ] -> avg_pool -> fc -> hsigmoid; identity -> [optional QDQ] -> Mul.
     This adds QDQ on the pooling branch input so the pooling layer has quantized input.
+
+    For full TRT-friendly placement (single Q at input, QDQ around GAP→Conv, Q gate before Mul),
+    see simple_submodules.py module docstring "Recommended QDQ placement (TRT friendly)".
 
     Returns:
         Number of eSEModules that got pool_input_quantizer attached.

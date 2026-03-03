@@ -45,6 +45,10 @@ Usage:
         --epochs 10 \
         --lr 0.0001 \
         --output work_dirs/centerpoint_qat.pth
+
+    # PTQ-Simple (SimpleOSA / Simple_eSE with random calibration) → use simple_quantization.py:
+    #   python deployment/quantization/simple_quantization.py ptq-simple --submodule osa|ese --deploy-cfg ... --output ...
+    # Export: python deployment/quantization/export_simple_submodule_onnx.py --submodule osa|ese --checkpoint ... --output ...
 """
 
 import argparse
@@ -269,7 +273,7 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
         "quant_head": True,
         "quant_add": False,  # Default to False for backward compatibility
         "quant_linear_backbone": False,  # ConvNeXt pointwise linear support
-        "quant_ese_mul_identity": False,  # Quantize identity branch of eSE Mul for INT8
+        "quant_ese_mul_identity": False,  # Quantize both inputs to eSE Mul (identity + gate) for INT8
         "quant_ese_pool_input": False,  # Q/DQ before pooling layer in eSE
         "quant_maxpool_input": False,  # Q/DQ before MaxPool2d (e.g. VoVNet _OSA_stage)
     }
@@ -396,7 +400,7 @@ def run_ptq(args):
         print("    Only identity branch is quantized to enable TensorRT Conv+Add fusion")
 
     if quant_flags.get("quant_ese_mul_identity"):
-        print("  - eSE Mul: identity branch quantized for INT8 (Conv-ReLU -> identity + Pool->Conv->Hsigmoid -> Mul)")
+        print("  - eSE Mul: both inputs quantized (identity + gate) for INT8 → Q-DQ on both sides before Mul")
 
     if quant_flags.get("quant_ese_pool_input"):
         print("  - eSE Pool: Q/DQ before avg_pool for INT8 (input -> QDQ -> avg_pool -> fc -> Hsigmoid)")
