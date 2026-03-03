@@ -114,10 +114,10 @@ clip_grad = dict(max_norm=1.0, norm_type=2)  # max norm of gradients upper bound
 
 
 # Replace SECOND backbone with VoVNet V-99-eSE (BEVVoVNet)
-# BEVVoVNet removes stem downsampling so spatial sizes match SECONDFPN:
-#   Stage2: 256ch @ 1020x1020 → upsample_stride=0.5 → 128ch @ 510x510
+# Use stage3, stage4, stage5 (last 3 stages) → SECONDFPN; stage5 is used (not ignored).
 #   Stage3: 512ch @ 510x510   → upsample_stride=1   → 128ch @ 510x510
 #   Stage4: 768ch @ 255x255   → upsample_stride=2   → 128ch @ 510x510
+#   Stage5: 1024ch @ 128x128  → upsample_stride=4   → 128ch @ 510x510
 #   Concat → 384ch @ 510x510 (same as original SECOND/BEVResNet pipeline)
 model = dict(
     pts_backbone=dict(
@@ -126,15 +126,15 @@ model = dict(
         spec_name="V-99-eSE",
         input_ch=32,
         stem_strides=(1, 1, 1),
-        out_features=("stage2", "stage3", "stage4"),
+        out_features=("stage3", "stage4", "stage5"),
         frozen_stages=-1,
         norm_eval=False,
     ),
     pts_neck=dict(
         type="SECONDFPN",
-        in_channels=[256, 512, 768],
+        in_channels=[512, 768, 1024],
         out_channels=[128, 128, 128],
-        upsample_strides=[0.5, 1, 2],
+        upsample_strides=[1, 2, 4],
         norm_cfg=dict(type="BN", eps=1e-5, momentum=0.01),
         upsample_cfg=dict(type="deconv", bias=False),
         use_conv_for_no_stride=True,
