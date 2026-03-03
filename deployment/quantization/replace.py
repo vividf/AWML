@@ -430,39 +430,54 @@ class ConvNeXtBlockForwardHook:
 
 class OSAModuleForwardHook:
     """
-    Forward hook for _OSA_module (VoVNet/V-99-eSE) to use residual_quantizer on the identity branch.
+    Forward hook for _OSA_module (VoVNet/V-99-eSE) to use residual_quantizer or block_input_quantizer.
 
-    Mirrors _OSA_module.forward: quantize identity_feat before xt = xt + identity_feat
-    so that Conv+Add can be fused in TensorRT (same approach as BasicBlock/ConvNeXtBlock).
+    When identity=True, the block input is used in three places: first conv, concat branch,
+    and Add after eSE. To avoid three FP32 reformats in TRT, use a single block_input_quantizer (one Q)
+    and fan-out to all three. When block_input_quantizer is present:
+      qx = block_input_quantizer(x); use qx for output[0], for first layer input, and for Add.
+    When block_input_quantizer is absent, mirror original: concat_input_quantizers per branch,
+    residual_quantizer(identity_feat) for Add.
     """
 
     def __init__(self, obj):
         self.obj = obj
 
     def __call__(self, x):
-        """Forward pass with quantized residual connection for _OSA_module."""
+        """Forward pass with optional single Q at block input (identity three-way fork)."""
         self = self.obj
         identity_feat = x
 
-        output = []
-        output.append(x)
-        if self.depthwise and self.isReduced:
-            x = self.conv_reduction(x)
-        for layer in self.layers:
-            x = layer(x)
-            output.append(x)
+        use_block_input_q = getattr(self, "block_input_quantizer", None) is not None and getattr(
+            self, "identity", False
+        )
+        if use_block_input_q:
+            qx = self.block_input_quantizer(x)
+            identity_feat = qx
+            output = [qx]
+            x_in = qx
+        else:
+            output = [x]
+            x_in = x
 
-        # Q/DQ only on branch inputs before Concat (same as ResNet Add: main path no Q/DQ, only branch)
-        # output[0]=x, output[1..-2]=intermediate layers, output[-1]=main path (last layer) → no Q/DQ on output[-1]
+        if getattr(self, "depthwise", False) and getattr(self, "isReduced", False):
+            x_in = self.conv_reduction(x_in)
+        for layer in self.layers:
+            x_in = layer(x_in)
+            output.append(x_in)
+
+        # Q/DQ on branch inputs before Concat. When block_input_quantizer is used, output[0] is already qx; skip index 0.
         if hasattr(self, "concat_input_quantizers") and len(self.concat_input_quantizers) == len(output) - 1:
-            for i in range(len(output) - 1):
+            start_i = 1 if use_block_input_q else 0
+            for i in range(start_i, len(output) - 1):
                 output[i] = self.concat_input_quantizers[i](output[i])
+
         x = torch.cat(output, dim=1)
         xt = self.concat(x)
         xt = self.ese(xt)
 
         if self.identity:
-            if hasattr(self, "residual_quantizer"):
+            if not use_block_input_q and hasattr(self, "residual_quantizer"):
                 identity_feat = self.residual_quantizer(identity_feat)
             xt = xt + identity_feat
 
@@ -558,7 +573,17 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
                             quant_desc.calib_method = "histogram"
                     concat_quantizers = nn.ModuleList([TensorQuantizer(quant_desc) for _ in range(n_branch_inputs)])
                     module.add_module("concat_input_quantizers", concat_quantizers)
-                # Only attach residual_quantizer when identity=True (block has add)
+                # Single Q at block input when identity=True (three-way fork: conv, concat, Add) to avoid 3 reformats
+                if getattr(module, "identity", False) and not hasattr(module, "block_input_quantizer"):
+                    qdesc = QuantConv2d.default_quant_desc_input
+                    if qdesc is None:
+                        qdesc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+                    else:
+                        if not getattr(qdesc, "calib_method", None):
+                            qdesc.calib_method = "histogram"
+                    module.add_module("block_input_quantizer", TensorQuantizer(qdesc))
+                    attached_count += 1
+                # Attach residual_quantizer when identity=True only if we did NOT add block_input_quantizer (legacy path)
                 if not getattr(module, "identity", False):
                     if not isinstance(module.forward, OSAModuleForwardHook):
                         if not hasattr(module, "_original_forward"):
