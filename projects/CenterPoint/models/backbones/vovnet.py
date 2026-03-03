@@ -186,11 +186,20 @@ class _OSA_module(nn.Module):
 
 class _OSA_stage(nn.Sequential):
     def __init__(
-        self, in_ch, stage_ch, concat_ch, block_per_stage, layer_per_block, stage_num, SE=False, depthwise=False
+        self,
+        in_ch,
+        stage_ch,
+        concat_ch,
+        block_per_stage,
+        layer_per_block,
+        stage_num,
+        SE=False,
+        depthwise=False,
+        add_pool=True,
     ):
         super(_OSA_stage, self).__init__()
 
-        if not stage_num == 2:
+        if add_pool and not stage_num == 2:
             self.add_module("Pooling", nn.MaxPool2d(kernel_size=3, stride=2, ceil_mode=True))
 
         if block_per_stage != 1:
@@ -235,6 +244,7 @@ class VoVNet(BaseModule):
         norm_eval=True,
         pretrained=None,
         init_cfg=None,
+        no_pool_stages=(),
     ):
         super(VoVNet, self).__init__(init_cfg)
         self.frozen_stages = frozen_stages
@@ -269,6 +279,8 @@ class VoVNet(BaseModule):
         self.stage_names = []
         for i in range(4):
             name = "stage%d" % (i + 2)
+            stage_num = i + 2
+            add_pool = (stage_num != 2) and (stage_num not in no_pool_stages)
             self.stage_names.append(name)
             self.add_module(
                 name,
@@ -278,9 +290,10 @@ class VoVNet(BaseModule):
                     config_concat_ch[i],
                     block_per_stage[i],
                     layer_per_block,
-                    i + 2,
+                    stage_num,
                     SE,
                     depthwise,
+                    add_pool=add_pool,
                 ),
             )
 
