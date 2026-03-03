@@ -20,6 +20,8 @@ checkpoint_path = "data/user/vivid/models/2_5/experiment_j6_gen2/vov_epoch_30_ex
 # ============================================================================
 # Quantization Configuration
 # ============================================================================
+# PTQ accuracy: If mAP drops a lot (e.g. 0.5 -> 0.25), try quant_head=False and/or
+# sensitive_layers (see deployment/quantization/README_PTQ_ACCURACY_VOV99.md).
 quantization = dict(
     enabled=True,
     mode="ptq",
@@ -30,17 +32,24 @@ quantization = dict(
     quant_voxel_encoder=False,
     quant_backbone=True,
     quant_neck=True,
-    quant_head=True,
+    quant_head=True,  # Set False to keep detection head FP16 (often recovers mAP)
     quant_add=True,
     quant_linear_backbone=True,
     # Optional: load calibration cache to populate amax for newly added quantizers
     # calib_cache_path="work_dirs/centerpoint-convnext/small/epoch_30_small_ptq_exp3.calib",
-    skip_backbone_first_stages=0,
+    skip_backbone_first_stages=0,  # For SECOND/ResNet; VoVNet uses skip_vovnet_stages instead
     skip_backbone_stages=[],
+    # VoVNet backbone only: keep these stages in FP16 (0=stem, 1=stage2, 2=stage3, 3=stage4).
+    # If mAP drops and neck/head skip did not help, try [0], then [0,1], or binary-search by stage.
+    skip_vovnet_stages=[0],  # [0]=stem FP16; try [0,1] or [1] if needed
     sensitive_layers=[
+        # Keep layers in FP16 to recover mAP (VoVNet: pts_backbone.stem, .stage2, .stage3, .stage4)
+        # "pts_bbox_head",           # whole head FP16 (alternative to quant_head=False)
+        # "pts_backbone.stem",      # first backbone stage FP16
+        # "pts_backbone.stage2",    # second stage FP16
         # "pts_neck.deblocks.0.0",  # ConvTranspose2d - no TRT INT8 support
-        # "pts_neck.deblocks.1.0",  # ConvTranspose2d - no TRT INT8 support
-        # "pts_neck.deblocks.2.0",  # ConvTranspose2d - no TRT INT8 support
+        # "pts_neck.deblocks.1.0",
+        # "pts_neck.deblocks.2.0",
     ],
 )
 
