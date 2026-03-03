@@ -35,7 +35,7 @@ pts_neck = dict(
     type="SECONDFPN",
     in_channels=[512, 768, 1024],
     out_channels=[128, 128, 128],
-    upsample_strides=[1, 2, 4],   # 510→510, 255→510, 128→510
+    upsample_strides=[1, 2, 4],   # 510→510, 255→510, 127→508 then align to 510
 )
 ```
 
@@ -60,7 +60,7 @@ The pattern **1, 3, 9, 3** (for stages 2, 3, 4, 5) comes from the **original VoV
 | **Stage 2** | **1** | 1020×1020 | Highest resolution; one OSA block is enough to build low-level features without blowing up compute. |
 | **Stage 3** | **3** | 510×510 | After 2× downsampling; a few more blocks add capacity at moderate cost. |
 | **Stage 4** | **9** | 255×255 | Heaviest stage. Resolution is ¼ of stage 2, so each conv is much cheaper; more blocks here give strong semantic features for detection. |
-| **Stage 5** | **3** | 128×128 | Used: output to SECONDFPN (last 3 stages = stage3, 4, 5). |
+| **Stage 5** | **3** | **127×127** | Used: output to SECONDFPN (last 3 stages = stage3, 4, 5). MaxPool(3,2,ceil) on 255 gives 127, not 128. |
 
 So: **light at high resolution (1) → ramp up in the middle (3, 9) → taper at the end (3)**. The exact numbers 1-3-9-3 were chosen empirically in the paper to get a good accuracy/speed trade-off and the desired depth; lighter variants (e.g. V-39, V-57) use fewer blocks per stage (e.g. [1,1,2,2] or [1,1,4,3]).
 
@@ -81,7 +81,7 @@ A lighter variant uses **V-57-eSE** with **only the last three stages** (stage3,
 | **out_features** | `("stage3", "stage4", "stage5")` | `("stage3", "stage4", "stage5")` |
 | **Neck in_channels** | [512, 768, 1024] | [512, 768, 1024] |
 | **Neck upsample_strides** | [1, 2, 4] | [1, 2, 4] |
-| **Spatial sizes** | 510, 255, 128 | 510, 255, 128 |
+| **Spatial sizes** | 510, 255, 127 | 510, 255, 127 |
 
 **Config files** (under `projects/CenterPoint/configs/t4dataset/Centerpoint/`):
 
@@ -102,7 +102,7 @@ A lighter variant uses **V-57-eSE** with **only the last three stages** (stage3,
 | **Stage2** | 1020×1020 | **255×255**（無 MaxPool） |
 | **Stage3** | 510×510 | **128×128**（255÷2） |
 | **Stage4** | 255×255 | **64×64**（128÷2） |
-| **Stage5** | 128×128 | **32×32**（64÷2） |
+| **Stage5** | **127×127**（MaxPool 255→127） | **32×32**（64÷2） |
 
 也就是：**一開始就 4× 縮小，後面每個 stage 再各 2×，整體更小、更快，但高解析度細節會少**。
 
@@ -227,7 +227,13 @@ Conv1x1(768 → 256) + eSE → 256ch
   - Last block has eSE; all blocks after the first have identity shortcut.
 - Input: `(B, 512, 510, 510)` → After MaxPool: `(B, 512, 255, 255)` → Output: `(B, 768, 255, 255)`
 
-### 2.5 Backbone Summary
+### 2.5 Stage5 (1024ch, MaxPool ↓2)
+
+- **MaxPool2d(k=3, s=2, ceil_mode=True)**: `255 → 127` (formula: ceil((255-3)/2+1)=127, **not** 128)
+- **3 OSA blocks** (block_per_stage[3] = 3)
+- Input: `(B, 768, 255, 255)` → After MaxPool: `(B, 768, 127, 127)` → Output: `(B, 1024, 127, 127)`
+
+### 2.6 Backbone Summary
 
 ```text
 Input: (B, 32, 1020, 1020)
@@ -237,7 +243,7 @@ BEVVoVNet V-99-eSE:
     Stage2 (1 OSA)  → (B, 256, 1020, 1020)   [not used by neck]
     Stage3 (3 OSA)  → (B, 512, 510, 510)     ← out_features
     Stage4 (9 OSA)  → (B, 768, 255, 255)     ← out_features
-    Stage5 (3 OSA)  → (B, 1024, 128, 128)    ← out_features
+    Stage5 (3 OSA)  → (B, 1024, 127, 127)    ← out_features
 ```
 
 ---
@@ -246,7 +252,7 @@ BEVVoVNet V-99-eSE:
 
 ### Configuration
 
-Default V-99 feeds **stage3, stage4, stage5** to SECONDFPN (spatial 510, 255, 128):
+Default V-99 feeds **stage3, stage4, stage5** to SECONDFPN (spatial 510, 255, **127**). Stage5 is 127×127 because MaxPool2d(k=3, s=2, ceil_mode=True) on 255 gives ceil((255-3)/2+1)=127. With upsample_strides [1, 2, 4], branch2 becomes 127×4=**508**; the project’s SECONDFPN aligns 508→510 before concat so all branches match.
 
 ```python
 pts_neck = dict(
@@ -266,7 +272,7 @@ pts_neck = dict(
 |--------|-------|-----------------|-----------|--------|
 | 0 (stage3) | `512 x 510 x 510` | 1 | Conv2d(512→128, k=1, s=1) | `128 x 510 x 510` |
 | 1 (stage4) | `768 x 255 x 255` | 2 | ConvTranspose2d(768→128, k=2, s=2) | `128 x 510 x 510` |
-| 2 (stage5) | `1024 x 128 x 128` | 4 | ConvTranspose2d(1024→128, k=2, s=4) | `128 x 512 x 512` → 510 |
+| 2 (stage5) | `1024 x 127 x 127` | 4 | ConvTranspose2d(1024→128, k=4, s=4) → 508×508, then **aligned to 510×510** | `128 x 510 x 510` |
 
 ### Concatenation
 
@@ -284,18 +290,18 @@ out = torch.cat([up0, up1, up2], dim=1) → (B, 384, 510, 510)
 
 | 項目 | **[0.5, 1, 2]**（stage2,3,4） | **[1, 2, 4]**（stage3,4,5，目前預設） |
 |------|-------------------------------|----------------------------------------|
-| **Backbone 給 neck 的空間** | 1020, 510, 255 | 510, 255, 128 |
-| **Neck 各 branch 做什麼** | 1020**↓2**→510、510 不變、255**↑2**→510 | 510 不變、255**↑2**→510、128**↑4**→510 |
+| **Backbone 給 neck 的空間** | 1020, 510, 255 | 510, 255, **127** |
+| **Neck 各 branch 做什麼** | 1020**↓2**→510、510 不變、255**↑2**→510 | 510 不變、255**↑2**→510、**127**↑4→508→**align 510** |
 | **有沒有 1020 高解析度** | ✅ 有（stage2） | ❌ 沒有 |
 | **Neck 裡有沒有下採樣** | ✅ 有（branch0 從 1020 壓到 510） | ❌ 沒有（只有不變或上採樣） |
-| **與 SECOND 空間金字塔** | 不一致（1020/510/255） | **一致（510/255/128）** |
+| **與 SECOND 空間金字塔** | 不一致（1020/510/255） | 概念一致（510/255；stage5=127 需 align） |
 | **計算／顯存** | 較重（要算 stage2 @ 1020×1020） | 較輕 |
 | **適合** | 要最高空間細節、小目標、可接受較慢 | 要速度、或希望與 510/255/128 設計一致 |
 
 **簡要結論：**
 
 - **選 [1, 2, 4]**（現在預設）：  
-  - 用 stage3、4、5，**不忽略 stage5**，且 510/255/128 與 SECOND 一致。  
+  - 用 stage3、4、5，**不忽略 stage5**；空間為 510/255/127（stage5 實為 127，neck 內對齊到 510）。  
   - Neck 只做「保持 510」或「上採樣到 510」，語意單純；且不做 1020 的 branch，**較快、較省顯存**。  
   - 代價是**沒有 1020 那一層**，極高解析度的細節會少一點。
 
@@ -304,7 +310,7 @@ out = torch.cat([up0, up1, up2], dim=1) → (B, 384, 510, 510)
   - Neck 要在 branch0 做一次**下採樣**（1020→510），實作上沒問題，但計算與顯存較大。  
   - 若你更在意精度、且能接受較重 backbone，可以改回 `out_features=("stage2","stage3","stage4")` 並配 `in_channels=[256,512,768]`、`upsample_strides=[0.5,1,2]`。
 
-所以：**沒有單一「比較好」**——[1, 2, 4] 較適合速度與 510/255/128 對齊；[0.5, 1, 2] 較適合極致利用 1020 的精度。目前 **V-99 與 V-57** 預設皆用 [1, 2, 4]（stage3,4,5），以與 SECOND 空間一致並控制計算量。
+所以：**沒有單一「比較好」**——[1, 2, 4] 較適合速度與 510/255 對齊（stage5=127→508，專案 SECONDFPN 對齊至 510）；[0.5, 1, 2] 較適合極致利用 1020 的精度。目前 **V-99 與 V-57** 預設皆用 [1, 2, 4]（stage3,4,5），以控制計算量。
 
 ---
 
@@ -325,12 +331,12 @@ Point Cloud
   → Stage4 (MaxPool ↓2, 9 OSA blocks)
      → 768 x 255 x 255   ← to SECONDFPN
   → Stage5 (MaxPool ↓2, 3 OSA blocks)
-     → 1024 x 128 x 128  ← to SECONDFPN
+     → 1024 x 127 x 127  ← to SECONDFPN (127×4=508, aligned to 510 in project SECONDFPN)
 
   → SECONDFPN
      branch 0: 512 x 510  → stride 1 → 128 x 510
      branch 1: 768 x 255  → stride 2 → 128 x 510
-     branch 2: 1024 x 128 → stride 4 → 128 x 510
+     branch 2: 1024 x 127 → stride 4 → 128 x 508 → align to 510
      concat → 384 x 510 x 510
 
   → CenterHead (in_channels=384, out_size_factor=2)
@@ -343,7 +349,7 @@ Point Cloud
 | | SECOND | BEVResNet34 | BEVVoVNet V-99-eSE | BEVVoVNet V-57-eSE |
 |---|---|---|---|---|
 | **Stage outputs (ch)** | 64 / 128 / 256 | 64 / 128 / 256 | 512 / 768 / 1024 (stage3,4,5) | 512 / 768 / 1024 (stage3,4,5) |
-| **Stage outputs (spatial)** | 510 / 255 / 128 | 1020 / 510 / 255 | 510 / 255 / 128 | 510 / 255 / 128 |
+| **Stage outputs (spatial)** | 1020 / 510 / 255 | 1020 / 510 / 255 | 510 / 255 / **127** | 510 / 255 / **127** |
 | **Blocks** | 3+5+5 Conv | 3+4+6 BasicBlock | 3+9+3 OSA (5 layers each) | 3+4+3 OSA (5 layers each) |
 | **Neck in_channels** | [64, 128, 256] | [64, 128, 256] | [512, 768, 1024] | [512, 768, 1024] |
 | **Key feature** | Simple stacked Conv | Residual connections | Dense aggregation + eSE | Dense aggregation + eSE (lighter) |
