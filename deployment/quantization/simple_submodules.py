@@ -11,8 +11,9 @@ In real VoV99, when identity=True the block input (identity_feat) is used in thr
   1. Input to first conv (layers[0])
   2. First element of concat (output[0] → torch.cat → concat 1x1)
   3. Add at end of eSE (xt + identity_feat)
-If we insert a separate Q for each use, TRT does three FP32 reformats. Use a single
-block_input_quantizer (one Q) and fan-out to all three (same as eSE single-Q at input).
+If we insert a separate Q for each use, TRT does three FP32 reformats. The fix is to use a single Q
+at block input: we reuse concat_input_quantizers[0] (it receives x and gets calibrated), then fan-out
+its output to all three branches (same idea as eSE single Q at input).
 
 Recommended QDQ placement (TRT friendly)
 ----------------------------------------
