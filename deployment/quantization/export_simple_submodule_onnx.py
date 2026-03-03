@@ -50,7 +50,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--submodule", required=True, choices=["osa", "ese"], help="Submodule: osa or ese")
+    parser.add_argument(
+        "--submodule", required=True, choices=["osa", "osa3", "ese"], help="Submodule: osa, osa3, or ese"
+    )
     parser.add_argument("--checkpoint", required=True, help="Path to PTQ-simple checkpoint (.pth)")
     parser.add_argument(
         "--deploy-cfg",

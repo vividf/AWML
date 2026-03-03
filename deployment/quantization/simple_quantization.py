@@ -28,6 +28,18 @@ Usage:
         --checkpoint work_dirs/simple_osa_ptq.pth \
         --deploy-cfg deployment/projects/centerpoint/config/deploy_config_int8_vov99.py \
         --output work_dirs/simple_osa.onnx
+
+    # PTQ and export for SimpleOSA3 (three OSA blocks, single Q at identity fork)
+    python deployment/quantization/simple_quantization.py ptq-simple \
+        --submodule osa3 \
+        --deploy-cfg deployment/projects/centerpoint/config/deploy_config_int8_vov99.py \
+        --calibrate-samples 64 --batch-size 2 --seed 0 \
+        --output work_dirs/simple_osa3_ptq.pth
+    python deployment/quantization/export_simple_submodule_onnx.py \
+        --submodule osa3 \
+        --checkpoint work_dirs/simple_osa3_ptq.pth \
+        --deploy-cfg deployment/projects/centerpoint/config/deploy_config_int8_vov99.py \
+        --output work_dirs/simple_osa3.onnx
 """
 
 import argparse
@@ -58,8 +70,8 @@ def parse_args():
     ptq_simple_parser.add_argument(
         "--submodule",
         required=True,
-        choices=["osa", "ese"],
-        help="Submodule to test: 'osa' (one OSA block) or 'ese' (one eSE block)",
+        choices=["osa", "osa3", "ese"],
+        help="Submodule to test: 'osa' (one OSA block), 'osa3' (three OSA blocks, identity 3-way Q), or 'ese' (one eSE block)",
     )
     ptq_simple_parser.add_argument(
         "--deploy-cfg",
