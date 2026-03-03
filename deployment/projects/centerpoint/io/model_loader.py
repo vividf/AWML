@@ -86,6 +86,8 @@ def build_model_from_cfg(
             - quant_ese_mul_identity, quant_ese_pool_input: bool
             - quant_maxpool_input: bool
             - sensitive_layers: list of layer names to skip
+            - skip_vovnet_stages: list of int (VoVNet only): 0=stem, 1=stage2, 2=stage3, 3=stage4;
+              must match the config used during PTQ so model structure matches checkpoint
             - calib_cache_path: optional path to calibration cache
 
     Returns:
@@ -223,14 +225,24 @@ def _load_quantized_checkpoint(
 
 def _build_skip_layers(quantization: dict) -> Set[str]:
     """Build the set of layer name prefixes to skip during quantization."""
-    skip_layers: Set[str] = set(quantization.get("sensitive_layers", []))
+    skip_layers: Set[str] = set(quantization.get("sensitive_layers", []) or [])
 
+    # SECOND/ResNet: pts_backbone.blocks.*
     skip_first = int(quantization.get("skip_backbone_first_stages", 0) or 0)
     if skip_first > 0:
         for i in range(skip_first):
             skip_layers.add(f"pts_backbone.blocks.{i}")
     for i in quantization.get("skip_backbone_stages", []) or []:
         skip_layers.add(f"pts_backbone.blocks.{int(i)}")
+
+    # VoVNet: pts_backbone.stem, .stage2, .stage3, .stage4 (must match PTQ so model structure = checkpoint)
+    vovnet_stages = quantization.get("skip_vovnet_stages", None)
+    if vovnet_stages is not None:
+        _vovnet_names = ["stem", "stage2", "stage3", "stage4"]
+        for idx in vovnet_stages:
+            i = int(idx)
+            if 0 <= i < len(_vovnet_names):
+                skip_layers.add(f"pts_backbone.{_vovnet_names[i]}")
 
     return skip_layers
 
