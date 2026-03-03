@@ -1,8 +1,18 @@
 """
-Minimal networks for testing QDQ insertion: SimpleOSA (one OSA module) and Simple_eSE (one eSE module).
+Minimal networks for testing QDQ insertion: SimpleOSA (one OSA module), SimpleOSA3 (three OSA blocks),
+and Simple_eSE (one eSE module).
 
 Used with ptq-simple to calibrate using random tensors (no dataset). Weights are initialized
 in a reasonable range so PTQ calibration and export can be tested without full CenterPoint.
+
+Three-branch identity (VoVNet-like)
+------------------------------------
+In real VoV99, when identity=True the block input (identity_feat) is used in three places:
+  1. Input to first conv (layers[0])
+  2. First element of concat (output[0] → torch.cat → concat 1x1)
+  3. Add at end of eSE (xt + identity_feat)
+If we insert a separate Q for each use, TRT does three FP32 reformats. Use a single
+block_input_quantizer (one Q) and fan-out to all three (same as eSE single-Q at input).
 
 Recommended QDQ placement (TRT friendly)
 ----------------------------------------
@@ -191,6 +201,66 @@ class SimpleOSA(nn.Module):
         return self.osa(x)
 
 
+class SimpleOSA3(nn.Module):
+    """
+    Three OSA blocks (VoVNet-like stage) for testing shared Q/DQ on identity three-way fork.
+
+    Structure: OSA2_1 (no identity) → OSA2_2 (identity=True) → OSA2_3 (identity=True).
+    Same channels as VoVNet stage2: in_ch=128, stage_ch=160, concat_ch=256, 5 layers per block.
+    The block input when identity=True is used in three places: first conv, concat branch,
+    and Add after eSE. A single block_input_quantizer (one Q) should feed all three to avoid
+    three FP32 reformats in TRT.
+
+    Input: (B, 128, H, W), output: (B, 256, H, W).
+    """
+
+    def __init__(
+        self,
+        in_ch: int = 128,
+        stage_ch: int = 160,
+        concat_ch: int = 256,
+        layer_per_block: int = 5,
+    ):
+        super().__init__()
+        self.osa1 = _OSA_module(
+            in_ch,
+            stage_ch,
+            concat_ch,
+            layer_per_block,
+            module_name="OSA2_1",
+            SE=True,
+            identity=False,
+            depthwise=False,
+        )
+        self.osa2 = _OSA_module(
+            concat_ch,
+            stage_ch,
+            concat_ch,
+            layer_per_block,
+            module_name="OSA2_2",
+            SE=False,
+            identity=True,
+            depthwise=False,
+        )
+        self.osa3 = _OSA_module(
+            concat_ch,
+            stage_ch,
+            concat_ch,
+            layer_per_block,
+            module_name="OSA2_3",
+            SE=False,
+            identity=True,
+            depthwise=False,
+        )
+        self.apply(lambda m: _init_weights(m, gain=0.5))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.osa1(x)
+        x = self.osa2(x)
+        x = self.osa3(x)
+        return x
+
+
 class SimpleWrapper(nn.Module):
     """
     Wraps a submodule as pts_backbone so quant_model() can be used unchanged.
@@ -206,10 +276,10 @@ class SimpleWrapper(nn.Module):
 
 def build_simple_model(submodule_type: str, device: str = "cuda:0") -> nn.Module:
     """
-    Build SimpleOSA or Simple_eSE wrapped for quant_model (has pts_backbone).
+    Build SimpleOSA, SimpleOSA3, or Simple_eSE wrapped for quant_model (has pts_backbone).
 
     Args:
-        submodule_type: "osa" or "ese"
+        submodule_type: "osa", "osa3", or "ese"
         device: target device
 
     Returns:
@@ -219,8 +289,10 @@ def build_simple_model(submodule_type: str, device: str = "cuda:0") -> nn.Module
         sub = Simple_eSE(channel=256)
     elif submodule_type.lower() == "osa":
         sub = SimpleOSA(in_ch=128, stage_ch=160, concat_ch=256, layer_per_block=5)
+    elif submodule_type.lower() == "osa3":
+        sub = SimpleOSA3(in_ch=128, stage_ch=160, concat_ch=256, layer_per_block=5)
     else:
-        raise ValueError(f"submodule_type must be 'osa' or 'ese', got {submodule_type!r}")
+        raise ValueError(f"submodule_type must be 'osa', 'osa3', or 'ese', got {submodule_type!r}")
     model = SimpleWrapper(sub)
     model = model.to(device)
     return model
@@ -232,4 +304,6 @@ def get_simple_input_shape(submodule_type: str) -> tuple:
         return (256, 32, 32)
     if submodule_type.lower() == "osa":
         return (128, 64, 64)
-    raise ValueError(f"submodule_type must be 'osa' or 'ese', got {submodule_type!r}")
+    if submodule_type.lower() == "osa3":
+        return (128, 64, 64)
+    raise ValueError(f"submodule_type must be 'osa', 'osa3', or 'ese', got {submodule_type!r}")
