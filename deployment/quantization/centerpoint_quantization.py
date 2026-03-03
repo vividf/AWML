@@ -306,7 +306,7 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
         # Sensitive layers baseline (deployment terminology)
         skip_layers |= set(quant_cfg.get("sensitive_layers", []) or [])
 
-        # Optional backbone stage skips baseline (deployment terminology)
+        # Optional backbone stage skips (SECOND/ResNet use .blocks; VoVNet uses .stem, .stage2, .stage3, .stage4)
         skip_first = int(quant_cfg.get("skip_backbone_first_stages", 0) or 0)
         if skip_first > 0:
             for i in range(skip_first):
@@ -314,6 +314,14 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
         for i in quant_cfg.get("skip_backbone_stages", []) or []:
             skip_layers.add(f"pts_backbone.blocks.{int(i)}")
 
+        # VoVNet-specific: skip backbone stages by index (0=stem, 1=stage2, 2=stage3, 3=stage4)
+        vovnet_stages = quant_cfg.get("skip_vovnet_stages", None)
+        if vovnet_stages is not None:
+            _vovnet_names = ["stem", "stage2", "stage3", "stage4"]
+            for idx in vovnet_stages:
+                i = int(idx)
+                if 0 <= i < len(_vovnet_names):
+                    skip_layers.add(f"pts_backbone.{_vovnet_names[i]}")
     return fuse_bn, skip_layers, quant_flags
 
 
