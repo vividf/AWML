@@ -19,6 +19,43 @@ VoVNet 的 backbone 結構是 **pts_backbone.stem / .stage2 / .stage3 / .stage4*
 
 ---
 
+## 1.1 為什麼不量化 stem 與 stage2 時精度會明顯提升？
+
+實務上常觀察到：**不量化 stem 和 stage2（即 `skip_vovnet_stages=[0, 1]`）時，mAP 會明顯回升**。主要原因如下。
+
+### （1）早期層的動態範圍與量化誤差放大
+
+- **Stem** 與 **stage2** 直接吃 **32ch @ 1020×1020** 的 BEV 特徵，數值分布（範圍、outlier、稀疏性）和後段 stage 差異大。
+- INT8 只有 256 個等級；若 activation 動態範圍大或分布不勻，單一 scale（amax）難以同時照顧小值與大值，**量化誤差在早期層特別大**。
+- PTQ 的 calibration 用有限樣本估計 amax；**前幾層最依賴輸入分布**，若 calibration 樣本不足或與實際部署分布有 gap，stem / stage2 的 scale 容易估差，後面 stage 的輸入已被網路「平滑」過，相對好估。
+
+### （2）誤差會一路往後傳遞
+
+- Stem 和 stage2 的輸出會進入 stage3 → stage4 → stage5 → neck → head。
+- 前段一旦被量化壞，**誤差會累積、放大**，後段再怎麼量化得當也難以完全彌補。
+- 保留 stem + stage2 為 FP16，等於讓「整條 backbone 的輸入端」保持較高精度，後面 stage3/4/5 的 INT8 才有機會在較乾淨的輸入上發揮。
+
+### （3）解析度最高、像素數最多
+
+- Stem 與 stage2 都在 **1020×1020** 全解析度上運算。
+- 每個像素一點誤差，會乘上 **~10^6** 個位置；對 heatmap、bbox 回歸等需要**精準空間定位**的任務，早期在 high-res 上的量化誤差特別傷 mAP。
+- Stage3/4/5 已是 510 / 255 / 255 等較低解析度，同樣的絕對誤差對最終 grid 的影響較小。
+
+### （4）VoVNet 結構：concat + eSE
+
+- **Stage2** 內含 **OSA**（多層 conv 後 concat）與 **eSE**（global pooling → FC → scale）。
+- **Concat** 把多個 branch 的 activation 拼在一起，若其中一支被量化壓縮得太厲害，會拉低整條 concat 的表現。
+- **eSE** 的 scale 是逐 channel 的乘法，數值通常較小、動態範圍敏感；INT8 量化容易讓 scale 偏掉，進而影響整張 feature map 的幅度。
+
+### （5）與 ResNet / SECOND 的差異
+
+- ResNet / SECOND 在相同 PTQ 設定下若較不掉點，多半是因為：結構較單純（無 eSE、無大量 concat）、或前段層數/通道較少，量化誤差相對可控。
+- VoVNet 的 **stem + stage2** 負責「從 raw BEV 抽出第一層高解析度特徵」，這一段保留 FP16 是**用少量額外算力換取穩定 mAP** 的常見做法。
+
+**實務建議**：若 PTQ 後 mAP 掉很多，可先設 `skip_vovnet_stages=[0, 1]`（stem + stage2 不量化），再視需要縮小為 `[0]` 或擴大為 `[0, 1, 2]`，在精度與速度之間取得平衡。
+
+---
+
 ## 2A. 快速實驗：先試「head / neck 不量化」
 
 在 `deploy_config_int8_vov99.py` 的 `quantization` 裡改成：
