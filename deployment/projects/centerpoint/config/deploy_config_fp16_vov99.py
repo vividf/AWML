@@ -10,7 +10,7 @@ task_type = "detection3d"
 # ============================================================================
 # Checkpoint Path
 # ============================================================================
-checkpoint_path = "models/2_5/vov_epoch_30.pth"
+checkpoint_path = "models/2_5/experiment_j6_gen2/vov_epoch_30.pth"
 
 # ============================================================================
 # Device settings
@@ -58,7 +58,7 @@ components = dict(
             input_features=dict(
                 min_shape=[1000, 32, 11],
                 opt_shape=[20000, 32, 11],
-                max_shape=[64000, 32, 11],
+                max_shape=[96000, 32, 11],
             ),
         ),
     ),
@@ -130,7 +130,7 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=100,
+    num_samples=-1,
     verbose=True,
     backends=dict(
         pytorch=dict(

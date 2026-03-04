@@ -16,7 +16,7 @@ task_type = "detection3d"
 # Checkpoint Path - Use PTQ quantized checkpoint
 # ============================================================================
 # checkpoint_path = "models/2_5/experiment_j6_gen2/vov_epoch_30_ptq_exp6.pth"
-checkpoint_path = "data/user/vivid/models/2_5/experiment_j6_gen2/vov_epoch_30_exp6.pth"
+checkpoint_path = "models/2_5/experiment_j6_gen2/vov_epoch_30_exp12.pth"
 # ============================================================================
 # Quantization Configuration
 # ============================================================================
@@ -41,7 +41,7 @@ quantization = dict(
     skip_backbone_stages=[],
     # VoVNet backbone only: keep these stages in FP16 (0=stem, 1=stage2, 2=stage3, 3=stage4).
     # If mAP drops and neck/head skip did not help, try [0], then [0,1], or binary-search by stage.
-    skip_vovnet_stages=[0],  # [0]=stem FP16; try [0,1] or [1] if needed
+    skip_vovnet_stages=[0, 1],  # [0]=stem FP16; try [0,1] or [1] if needed
     sensitive_layers=[
         # Keep layers in FP16 to recover mAP (VoVNet: pts_backbone.stem, .stage2, .stage3, .stage4)
         # "pts_bbox_head",           # whole head FP16 (alternative to quant_head=False)
@@ -66,7 +66,7 @@ devices = dict(
 # ============================================================================
 export = dict(
     mode="both",
-    work_dir="work_dirs/centerpoint-vov99/int8-deployment-exp6",
+    work_dir="models/2_5/experiment_j6_gen2/int8-deployment_exp12",
     onnx_path=None,
 )
 
@@ -103,7 +103,7 @@ components = dict(
             input_features=dict(
                 min_shape=[1000, 32, 11],
                 opt_shape=[20000, 32, 11],
-                max_shape=[64000, 32, 11],
+                max_shape=[96000, 32, 11],
             ),
         ),
     ),
@@ -175,11 +175,11 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=10,
+    num_samples=-1,
     verbose=True,
     backends=dict(
         pytorch=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
         ),
         onnx=dict(
