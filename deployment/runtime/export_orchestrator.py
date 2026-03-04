@@ -164,7 +164,7 @@ class ExportOrchestrator:
         eval_config = self.config.evaluation_config
         if eval_config.enabled:
             backends_cfg = eval_config.backends
-            pytorch_cfg = backends_cfg.get(Backend.PYTORCH.value) or backends_cfg.get(Backend.PYTORCH, {})
+            pytorch_cfg = backends_cfg.get(Backend.PYTORCH.value, {})
             if pytorch_cfg and pytorch_cfg.get("enabled", False):
                 return True
 
@@ -288,8 +288,7 @@ class ExportOrchestrator:
         """
         if not os.path.exists(onnx_path):
             return
-        multi_file = os.path.isdir(onnx_path)
-        self.artifact_manager.register_artifact(Backend.ONNX, Artifact(path=onnx_path, multi_file=multi_file))
+        self.artifact_manager.register_artifact(Backend.ONNX, Artifact(path=onnx_path))
 
     def _run_tensorrt_export(self, onnx_path: str, context: ExportContext) -> Optional[str]:
         """
@@ -369,9 +368,8 @@ class ExportOrchestrator:
 
         exporter.export(pytorch_model, input_tensor, output_path)
 
-        multi_file = bool(self.config.onnx_config.get("multi_file", False))
-        artifact_path = onnx_dir if multi_file else output_path
-        artifact = Artifact(path=artifact_path, multi_file=multi_file)
+        # Non-pipeline path: always single file
+        artifact = Artifact(path=output_path)
         self.artifact_manager.register_artifact(Backend.ONNX, artifact)
         self.logger.info(f"ONNX export successful: {artifact.path}")
         return artifact
@@ -511,8 +509,7 @@ class ExportOrchestrator:
 
         if artifact_path and os.path.exists(artifact_path):
             setattr(result, attr_name, artifact_path)
-            multi_file = os.path.isdir(artifact_path)
-            self.artifact_manager.register_artifact(backend, Artifact(path=artifact_path, multi_file=multi_file))
+            self.artifact_manager.register_artifact(backend, Artifact(path=artifact_path))
         elif artifact_path:
             self.logger.warning(f"{backend.value} file from config does not exist: {artifact_path}")
 

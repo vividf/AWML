@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Dict, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
 import torch
 from mmengine.config import Config
@@ -214,6 +214,168 @@ class TensorRTConfig:
         return PRECISION_POLICIES[self.precision_policy]
 
 
+# =============================================================================
+# Component config (deploy_cfg["components"]): generic for any project
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class InputSpec:
+    """Single input name/dtype for a component."""
+
+    name: str
+    dtype: str = "float32"
+
+
+@dataclass(frozen=True)
+class OutputSpec:
+    """Single output name/dtype for a component."""
+
+    name: str
+    dtype: str = "float32"
+
+
+@dataclass(frozen=True)
+class ComponentIO:
+    """I/O specification for a component (inputs, outputs, dynamic_axes)."""
+
+    inputs: List[InputSpec]
+    outputs: List[OutputSpec]
+    dynamic_axes: Dict[str, Dict[int, str]]
+
+
+@dataclass(frozen=True)
+class ComponentCfg:
+    """Configuration for one deployable component (e.g. model, voxel_encoder, backbone_head)."""
+
+    name: str
+    onnx_file: str
+    engine_file: str
+    io: ComponentIO
+    tensorrt_profile: Dict[str, TensorRTProfileConfig]
+
+
+@dataclass(frozen=True)
+class ComponentsCfg:
+    """Unified component configuration: mapping of component name -> ComponentCfg.
+
+    Generic: single-component (e.g. "model") or multi-component (e.g. "voxel_encoder", "backbone_head").
+    Use from_dict(deploy_cfg["components"]) to build; project-specific code may validate required names.
+    """
+
+    _components: Mapping[str, ComponentCfg]
+
+    def get_component(self, name: str) -> ComponentCfg:
+        """Get component config by name. Raises KeyError if not found."""
+        if name not in self._components:
+            raise KeyError(f"Unknown component: {name}. Available: {list(self._components.keys())}")
+        return self._components[name]
+
+    def get_artifact_filename(self, component: str, file_key: str) -> Optional[str]:
+        """Return artifact filename for path resolution (onnx_file or engine_file)."""
+        comp = self._components.get(component)
+        if comp is None:
+            return None
+        return getattr(comp, file_key, None) or None
+
+    def component_names(self) -> Iterable[str]:
+        """Iterate over component names."""
+        return self._components.keys()
+
+    def items(self) -> Iterable[Tuple[str, ComponentCfg]]:
+        """Iterate (name, ComponentCfg) pairs."""
+        return self._components.items()
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> ComponentsCfg:
+        """Build ComponentsCfg from deploy_cfg['components'] dict. Generic: any keys allowed."""
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"components must be a mapping, got {type(raw).__name__}")
+        parsed = {}
+        for label, comp in raw.items():
+            parsed[label] = cls._parse_component(comp, label)
+        return cls(_components=MappingProxyType(parsed))
+
+    @classmethod
+    def _parse_component(cls, comp: Any, label: str) -> ComponentCfg:
+        if not isinstance(comp, Mapping):
+            raise TypeError(f"components['{label}'] must be a mapping, got {type(comp).__name__}")
+        for field in ("name", "onnx_file", "engine_file", "io"):
+            if field not in comp:
+                raise KeyError(f"components['{label}'] must define '{field}'.")
+        io_raw = comp["io"]
+        if not isinstance(io_raw, Mapping):
+            raise TypeError(f"components['{label}'].io must be a mapping, got {type(io_raw).__name__}")
+        if "outputs" not in io_raw or not io_raw["outputs"]:
+            raise KeyError(f"components['{label}'].io.outputs must be a non-empty list.")
+        if "inputs" not in io_raw or not io_raw["inputs"]:
+            raise KeyError(f"components['{label}'].io.inputs must be a non-empty list.")
+        outputs = []
+        for i, out in enumerate(io_raw["outputs"]):
+            if not isinstance(out, Mapping) or "name" not in out:
+                raise KeyError(f"components['{label}'].io.outputs[{i}] must define 'name'.")
+            name = out["name"]
+            if not name or not isinstance(name, str):
+                raise ValueError(f"components['{label}'].io.outputs[{i}].name must be a non-empty string.")
+            outputs.append(OutputSpec(name=name, dtype=out.get("dtype", "float32")))
+        inputs = []
+        for i, inp in enumerate(io_raw["inputs"]):
+            if not isinstance(inp, Mapping) or "name" not in inp:
+                raise KeyError(f"components['{label}'].io.inputs[{i}] must define 'name'.")
+            n = inp["name"]
+            if not n or not isinstance(n, str):
+                raise ValueError(f"components['{label}'].io.inputs[{i}].name must be a non-empty string.")
+            inputs.append(InputSpec(name=n, dtype=inp.get("dtype", "float32")))
+        io = ComponentIO(
+            inputs=inputs,
+            outputs=outputs,
+            dynamic_axes=dict(io_raw.get("dynamic_axes", {})),
+        )
+        profile_raw = comp.get("tensorrt_profile") or {}
+        if not isinstance(profile_raw, Mapping):
+            raise TypeError(f"components['{label}'].tensorrt_profile must be a mapping.")
+        tensorrt_profile = {}
+        for input_name, shape_cfg in profile_raw.items():
+            if not isinstance(shape_cfg, Mapping):
+                raise TypeError(
+                    f"components['{label}'].tensorrt_profile['{input_name}'] must be a mapping, got {type(shape_cfg).__name__}."
+                )
+            tensorrt_profile[input_name] = TensorRTProfileConfig.from_dict(shape_cfg)
+        return ComponentCfg(
+            name=str(comp["name"]),
+            onnx_file=str(comp["onnx_file"]),
+            engine_file=str(comp["engine_file"]),
+            io=io,
+            tensorrt_profile=tensorrt_profile,
+        )
+
+
+@dataclass(frozen=True)
+class OnnxConfig:
+    """ONNX export settings (shared across all components)."""
+
+    opset_version: int = 16
+    do_constant_folding: bool = True
+    export_params: bool = True
+    keep_initializers_as_inputs: bool = False
+    simplify: bool = False
+
+    @classmethod
+    def from_dict(cls, raw: Optional[Mapping[str, Any]]) -> OnnxConfig:
+        """Build OnnxConfig from deploy_cfg['onnx_config']."""
+        if not raw:
+            return cls()
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"onnx_config must be a mapping, got {type(raw).__name__}")
+        return cls(
+            opset_version=int(raw.get("opset_version", 16)),
+            do_constant_folding=bool(raw.get("do_constant_folding", True)),
+            export_params=bool(raw.get("export_params", True)),
+            keep_initializers_as_inputs=bool(raw.get("keep_initializers_as_inputs", False)),
+            simplify=bool(raw.get("simplify", False)),
+        )
+
+
 @dataclass(frozen=True)
 class EvaluationConfig:
     """Typed configuration for evaluation settings."""
@@ -351,8 +513,10 @@ class BaseDeploymentConfig:
         self.deploy_cfg = deploy_cfg
         self._validate_config()
 
-        self._checkpoint_path: Optional[str] = deploy_cfg.get("checkpoint_path")
+        self._checkpoint_path = deploy_cfg.get("checkpoint_path")
         self._device_config = DeviceConfig.from_dict(deploy_cfg.get("devices", {}))
+        self.components_cfg = ComponentsCfg.from_dict(deploy_cfg.get("components", {}))
+        self._onnx_export_config = OnnxConfig.from_dict(deploy_cfg.get("onnx_config"))
 
         # Initialize config sections
         self.export_config = ExportConfig.from_dict(deploy_cfg.get("export", {}))
@@ -365,19 +529,20 @@ class BaseDeploymentConfig:
 
     def _validate_config(self) -> None:
         """Validate configuration structure and required fields."""
-        # Validate required sections
         if "export" not in self.deploy_cfg:
             raise ValueError(
                 "Missing 'export' section in deploy config. " "Please update your config to include 'export' section."
             )
-
-        # Validate export mode
         try:
             ExportMode.from_value(self.deploy_cfg.get("export", {}).get("mode", ExportMode.BOTH))
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
 
-        # Validate precision policy if present
+        components = self.deploy_cfg.get("components", None)
+        if components is None:
+            raise ValueError("Missing 'components' section in deploy config.")
+        ComponentsCfg.from_dict(components)
+
         tensorrt_config = self.deploy_cfg.get("tensorrt_config")
         if tensorrt_config is None:
             tensorrt_config = {}
@@ -422,7 +587,7 @@ class BaseDeploymentConfig:
 
         evaluation_cfg = self.evaluation_config
         backends_cfg = evaluation_cfg.backends
-        tensorrt_backend = backends_cfg.get(Backend.TENSORRT.value) or backends_cfg.get(Backend.TENSORRT, {})
+        tensorrt_backend = backends_cfg.get(Backend.TENSORRT.value, {})
         if tensorrt_backend and tensorrt_backend.get("enabled", False):
             return True
 
@@ -456,9 +621,9 @@ class BaseDeploymentConfig:
         return self._evaluation_config
 
     @property
-    def onnx_config(self) -> Mapping[str, Any]:
-        """Get ONNX configuration."""
-        return self.deploy_cfg.get("onnx_config", {})
+    def onnx_config(self) -> OnnxConfig:
+        """Get ONNX export configuration (typed)."""
+        return self._onnx_export_config
 
     @property
     def verification_config(self) -> VerificationConfig:
@@ -497,125 +662,93 @@ class BaseDeploymentConfig:
         """Get task type for pipeline building."""
         return self.deploy_cfg.get("task_type")
 
-    def get_onnx_settings(self) -> ONNXExportConfig:
+    def resolve_component(self, component: Optional[str] = None) -> str:
         """
-        Get ONNX export settings from unified components configuration.
+        Resolve to a single component name. Central point for single-component usage.
 
-        Reads I/O from components.model.io.{inputs, outputs, dynamic_axes}
-
-        Returns:
-            ONNXExportConfig instance containing ONNX export parameters
+        - If component is specified: validate and return it.
+        - If component is None and exactly one component exists: return that name.
+        - If component is None and multiple components: raise (caller must specify or use resolve_components).
         """
-        onnx_config = self.onnx_config
-        components_io = self._get_model_io_from_components()
+        names = tuple(self.components_cfg.component_names())
+        if component is not None:
+            self.components_cfg.get_component(component)
+            return component
+        if len(names) == 1:
+            return names[0]
+        if len(names) == 0:
+            raise ValueError("No components defined in deploy config. Add at least one entry under 'components'.")
+        raise ValueError(f"Multiple components {list(names)}. Please specify which component to use.")
 
-        # Get input/output names from components
-        input_names = [inp.get("name", "input") for inp in components_io.get("inputs", [])]
-        output_names = [out.get("name", "output") for out in components_io.get("outputs", [])]
+    def resolve_components(self, component: Optional[str] = None) -> Tuple[str, ...]:
+        """
+        Resolve to a tuple of component names for iteration. Central point for export/build loops.
 
-        # Fallback to defaults if components not configured
+        - If component is specified: validate and return (component,).
+        - If component is None: return all component names.
+        """
+        if component is not None:
+            self.components_cfg.get_component(component)
+            return (component,)
+        return tuple(self.components_cfg.component_names())
+
+    def get_onnx_settings(self, component: Optional[str] = None) -> ONNXExportConfig:
+        """
+        Get ONNX export settings for a component. I/O and save_file come from ComponentCfg only.
+
+        Uses resolve_component(component): single component auto-resolved if only one defined.
+        """
+        name = self.resolve_component(component)
+        comp = self.components_cfg.get_component(name)
+        o = self._onnx_export_config
+        input_names = tuple(inp.name for inp in comp.io.inputs)
+        output_names = tuple(out.name for out in comp.io.outputs)
         if not input_names:
-            input_names = ["input"]
+            input_names = ("input",)
         if not output_names:
-            output_names = ["output"]
-
+            output_names = ("output",)
         settings_dict = {
-            "opset_version": onnx_config.get("opset_version", 16),
-            "do_constant_folding": onnx_config.get("do_constant_folding", True),
-            "input_names": tuple(input_names),
-            "output_names": tuple(output_names),
-            "dynamic_axes": components_io.get("dynamic_axes"),
-            "export_params": onnx_config.get("export_params", True),
-            "keep_initializers_as_inputs": onnx_config.get("keep_initializers_as_inputs", False),
-            "verbose": onnx_config.get("verbose", False),
-            "save_file": components_io.get("onnx_file") or onnx_config.get("save_file", "model.onnx"),
+            "opset_version": o.opset_version,
+            "do_constant_folding": o.do_constant_folding,
+            "input_names": input_names,
+            "output_names": output_names,
+            "dynamic_axes": comp.io.dynamic_axes,
+            "export_params": o.export_params,
+            "keep_initializers_as_inputs": o.keep_initializers_as_inputs,
+            "verbose": False,
+            "save_file": comp.onnx_file,
             "batch_size": None,
+            "simplify": o.simplify,
         }
-
-        if "simplify" in onnx_config:
-            settings_dict["simplify"] = onnx_config["simplify"]
-
         return ONNXExportConfig.from_mapping(settings_dict)
 
-    def _get_model_io_from_components(self) -> Dict[str, Any]:
+    def get_tensorrt_settings(self, component: Optional[str] = None) -> TensorRTExportConfig:
         """
-        Extract model I/O configuration from components.
+        Get TensorRT export settings for a component. Profile and I/O come from ComponentCfg only.
 
-        For end-to-end models (single component), returns the io config
-        from components.model.
-
-        Returns:
-            Dictionary with inputs, outputs, dynamic_axes, and onnx_file.
+        Uses resolve_component(component): single component auto-resolved if only one defined.
         """
-        components = self.deploy_cfg.get("components", {})
-        if not components:
-            return {}
-
-        # For single-component models, look for 'model' component
-        if "model" in components:
-            comp_cfg = components["model"]
-            io_cfg = comp_cfg.get("io", {})
-            return {
-                "inputs": io_cfg.get("inputs", None),
-                "outputs": io_cfg.get("outputs", None),
-                "dynamic_axes": io_cfg.get("dynamic_axes"),
-                "onnx_file": comp_cfg.get("onnx_file"),
+        name = self.resolve_component(component)
+        comp = self.components_cfg.get_component(name)
+        if not comp.tensorrt_profile:
+            return TensorRTExportConfig.from_mapping(
+                {
+                    "max_workspace_size": self.tensorrt_config.max_workspace_size,
+                    "precision_policy": self.tensorrt_config.precision_policy,
+                    "policy_flags": self.tensorrt_config.precision_flags,
+                    "model_inputs": None,
+                }
+            )
+        input_shapes = dict(comp.tensorrt_profile)
+        model_inputs = (TensorRTModelInputConfig(input_shapes=MappingProxyType(input_shapes)),)
+        return TensorRTExportConfig.from_mapping(
+            {
+                "max_workspace_size": self.tensorrt_config.max_workspace_size,
+                "precision_policy": self.tensorrt_config.precision_policy,
+                "policy_flags": self.tensorrt_config.precision_flags,
+                "model_inputs": model_inputs,
             }
-
-        return {}
-
-    def get_tensorrt_settings(self) -> TensorRTExportConfig:
-        """
-        Get TensorRT export settings from unified components configuration.
-
-        TensorRT profiles are read from components.model.tensorrt_profile.
-
-        Returns:
-            TensorRTExportConfig instance containing TensorRT export parameters
-        """
-        model_inputs = self._build_model_inputs()
-
-        settings_dict = {
-            "max_workspace_size": self.tensorrt_config.max_workspace_size,
-            "precision_policy": self.tensorrt_config.precision_policy,
-            "policy_flags": self.tensorrt_config.precision_flags,
-            "model_inputs": model_inputs,
-        }
-        return TensorRTExportConfig.from_mapping(settings_dict)
-
-    def _build_model_inputs(self) -> Optional[Tuple[TensorRTModelInputConfig, ...]]:
-        """
-        Build model_inputs from components configuration.
-
-        For end-to-end models (single component), extracts tensorrt_profile
-        from components.model and converts to TensorRTModelInputConfig format.
-
-        Returns:
-            Tuple of TensorRTModelInputConfig, or None if not configured.
-        """
-        components = self.deploy_cfg.get("components", {})
-        if not components or "model" not in components:
-            return None
-
-        comp_cfg = components["model"]
-        tensorrt_profile = comp_cfg.get("tensorrt_profile", {})
-
-        if not tensorrt_profile:
-            return None
-
-        input_shapes = {}
-        for input_name, shape_cfg in tensorrt_profile.items():
-            if isinstance(shape_cfg, Mapping):
-                input_shapes[input_name] = TensorRTProfileConfig(
-                    min_shape=shape_cfg.get("min_shape", None),
-                    opt_shape=shape_cfg.get("opt_shape", None),
-                    max_shape=shape_cfg.get("max_shape", None),
-                )
-
-        if input_shapes:
-            return (TensorRTModelInputConfig(input_shapes=MappingProxyType(input_shapes)),)
-
-        return None
+        )
 
 
 def setup_logging(level: str = "INFO") -> logging.Logger:

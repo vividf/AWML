@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import os.path as osp
 import time
-from typing import Any, Dict, List, Mapping, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pycuda.autoinit  # noqa: F401
@@ -16,6 +16,7 @@ import tensorrt as trt
 import torch
 
 from deployment.core.artifacts import resolve_artifact_path
+from deployment.core.config.base_config import ComponentsCfg
 from deployment.pipelines.gpu_resource_mixin import (
     GPUResourceMixin,
     TensorRTResourceManager,
@@ -41,7 +42,7 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
         pytorch_model: torch.nn.Module,
         tensorrt_dir: str,
         device: str = "cuda",
-        components_cfg: Mapping[str, Any] | None = None,
+        components_cfg: ComponentsCfg | None = None,
     ) -> None:
         """Initialize TensorRT pipeline.
 
@@ -49,11 +50,10 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
             pytorch_model: Reference PyTorch model for preprocessing.
             tensorrt_dir: Directory containing TensorRT engine files.
             device: Target CUDA device ('cuda:N').
-            components_cfg: Component configuration dict from deploy_config.
-                           If None, uses default component names.
+            components_cfg: Component configuration from deploy_config (use ComponentsCfg.from_dict).
 
         Raises:
-            ValueError: If device is not a CUDA device.
+            ValueError: If device is not a CUDA device or components_cfg is None.
         """
         if not device.startswith("cuda"):
             raise ValueError("TensorRT requires CUDA device")
@@ -63,8 +63,6 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
         self.tensorrt_dir = tensorrt_dir
         if components_cfg is None:
             raise ValueError("components_cfg is required for CenterPoint TensorRT pipeline.")
-        if not isinstance(components_cfg, Mapping):
-            raise TypeError(f"components_cfg must be a mapping, got {type(components_cfg).__name__}")
         self._components_cfg = components_cfg
         self._engines: dict = {}
         self._contexts: dict = {}
@@ -233,16 +231,7 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
         input_name, trt_output_names = self._get_io_names(engine, single_output=False)
         context.set_input_shape(input_name, input_array.shape)
 
-        # Get expected output order from components_cfg
-        try:
-            outputs = self._components_cfg["backbone_head"]["io"]["outputs"]
-        except KeyError as exc:
-            raise KeyError("Missing required config path: components_cfg['backbone_head']['io']['outputs']") from exc
-        expected_output_names = [out["name"] for out in outputs]
-        if not expected_output_names or any(not name for name in expected_output_names):
-            raise ValueError(
-                "Each entry in components_cfg['backbone_head']['io']['outputs'] must define a non-empty 'name'."
-            )
+        expected_output_names = [out.name for out in self._components_cfg.get_component("backbone_head").io.outputs]
 
         # Validate outputs: check for missing or extra outputs
         trt_output_set = set(trt_output_names)

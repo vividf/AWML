@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import argparse
 import logging
-from typing import Any, Mapping
 
 from mmengine.config import Config
 
 from deployment.core.config.base_config import BaseDeploymentConfig, setup_logging
 from deployment.core.contexts import CenterPointExportContext
+from deployment.projects.centerpoint.config.components_schema import CenterPointDeployConfig
 from deployment.projects.centerpoint.data_loader import CenterPointDataLoader
 from deployment.projects.centerpoint.evaluator import CenterPointEvaluator
 from deployment.projects.centerpoint.metrics_utils import extract_t4metric_v2_config
@@ -34,10 +34,8 @@ def run(args: argparse.Namespace) -> int:
     model_cfg = Config.fromfile(args.model_cfg)
     config = BaseDeploymentConfig(deploy_cfg)
 
-    # Extract components config for dependency injection
-    if "components" not in deploy_cfg:
-        raise KeyError("deploy_cfg must define 'components' for CenterPoint deployment.")
-    components_cfg: Mapping[str, Any] = deploy_cfg["components"]
+    # Build typed config once; validation happens in from_dict
+    centerpoint_deploy = CenterPointDeployConfig.from_dict(deploy_cfg)
 
     logger.info("=" * 80)
     logger.info("CenterPoint Deployment Pipeline (Unified CLI)")
@@ -56,7 +54,7 @@ def run(args: argparse.Namespace) -> int:
     evaluator = CenterPointEvaluator(
         model_cfg=model_cfg,
         metrics_config=metrics_config,
-        components_cfg=components_cfg,
+        components_cfg=centerpoint_deploy.components,
     )
 
     runner = CenterPointDeploymentRunner(
@@ -65,6 +63,7 @@ def run(args: argparse.Namespace) -> int:
         config=config,
         model_cfg=model_cfg,
         logger=logger,
+        centerpoint_deploy=centerpoint_deploy,
     )
 
     context = CenterPointExportContext(rot_y_axis_reference=bool(getattr(args, "rot_y_axis_reference", False)))

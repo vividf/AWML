@@ -29,16 +29,13 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class Artifact:
     """
-    Represents an exported model artifact (ONNX file, TensorRT engine, etc.).
+    Represents an exported model artifact (ONNX file, TensorRT engine, or directory of such files).
 
     Attributes:
         path: Filesystem path to the artifact (file or directory).
-        multi_file: True if artifact is a directory containing multiple files
-                    (e.g., CenterPoint has voxel_encoder.onnx + backbone_head.onnx).
     """
 
     path: str
-    multi_file: bool = False
 
     @property
     def exists(self) -> bool:
@@ -47,7 +44,7 @@ class Artifact:
 
     @property
     def is_directory(self) -> bool:
-        """Whether the artifact is a directory."""
+        """Whether the artifact is a directory (e.g. multi-component ONNX/TRT output)."""
         return os.path.isdir(self.path)
 
     def __str__(self) -> str:
@@ -160,14 +157,15 @@ def _get_filename_from_config(
     component: str,
     file_key: str,
 ) -> Optional[str]:
-    """Extract filename from components config."""
-    if not components_cfg:
+    """Extract filename from components config (dict or ComponentsCfg dataclass)."""
+    if components_cfg is None:
         return None
-
+    if hasattr(components_cfg, "get_artifact_filename"):
+        out = components_cfg.get_artifact_filename(component, file_key)
+        return out if isinstance(out, str) and out else None
     comp_cfg = components_cfg.get(component, {})
     if not isinstance(comp_cfg, Mapping):
         return None
-
     filename = comp_cfg.get(file_key)
     if isinstance(filename, str) and filename:
         return filename

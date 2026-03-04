@@ -16,6 +16,7 @@ from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import IdentityWrapper
 from deployment.exporters.export_pipelines.base import OnnxExportPipeline, TensorRTExportPipeline
+from deployment.projects.centerpoint.config.components_schema import CenterPointDeployConfig
 from deployment.projects.centerpoint.evaluator import CenterPointEvaluator
 from deployment.projects.centerpoint.export.component_extractor import CenterPointComponentExtractor
 from deployment.projects.centerpoint.export.onnx_export_pipeline import CenterPointONNXExportPipeline
@@ -42,6 +43,7 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         config: BaseDeploymentConfig,
         model_cfg: Config,
         logger: logging.Logger,
+        centerpoint_deploy: CenterPointDeployConfig,
         onnx_pipeline: Optional[OnnxExportPipeline] = None,
         tensorrt_pipeline: Optional[TensorRTExportPipeline] = None,
     ) -> None:
@@ -53,10 +55,15 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             config: Deployment configuration.
             model_cfg: MMEngine model configuration.
             logger: Logger instance.
+            centerpoint_deploy: Typed CenterPoint config (components + onnx_config).
             onnx_pipeline: Optional custom ONNX export pipeline.
             tensorrt_pipeline: Optional custom TensorRT export pipeline.
         """
-        component_extractor = CenterPointComponentExtractor(config=config, logger=logger)
+        component_extractor = CenterPointComponentExtractor(
+            components_cfg=centerpoint_deploy.components,
+            onnx_config=centerpoint_deploy.onnx_config,
+            logger=logger,
+        )
 
         super().__init__(
             data_loader=data_loader,
@@ -79,6 +86,8 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         if self._tensorrt_pipeline is None:
             self._tensorrt_pipeline = CenterPointTensorRTExportPipeline(
                 exporter_factory=ExporterFactory,
+                components_cfg=centerpoint_deploy.components,
+                tensorrt_config=config.tensorrt_config,
                 logger=self.logger,
             )
 

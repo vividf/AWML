@@ -54,7 +54,7 @@ class CenterPointONNXExportPipeline(OnnxExportPipeline):
         exported_paths = self._export_components(components, output_dir_path, config)
         self._log_summary(exported_paths)
 
-        return Artifact(path=str(output_dir_path), multi_file=True)
+        return Artifact(path=str(output_dir_path))
 
     def _log_header(self, output_dir: Path, sample_idx: int) -> None:
         self.logger.info("=" * 80)

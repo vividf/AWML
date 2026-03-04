@@ -11,7 +11,7 @@ task_type = "detection3d"
 # ============================================================================
 # Checkpoint Path - Single source of truth for PyTorch model
 # ============================================================================
-checkpoint_path = "work_dirs/centerpoint/centerpoint_2_5.pth"
+checkpoint_path = "work_dirs/centerpoint/best_checkpoint.pth"
 
 # ============================================================================
 # Device settings (shared by export, evaluation, verification)
@@ -111,7 +111,7 @@ components = dict(
 # ============================================================================
 runtime_io = dict(
     # This should be a path relative to `data_root` in the model config.
-    info_file="info/t4dataset_j6gen2_infos_val.pkl",
+    info_file="info/vivid_small_dataset/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=1,
 )
 
@@ -138,7 +138,7 @@ tensorrt_config = dict(
 # Evaluation Configuration
 # ============================================================================
 evaluation = dict(
-    enabled=True,
+    enabled=False,
     num_samples=1,
     verbose=True,
     backends=dict(
@@ -163,8 +163,8 @@ evaluation = dict(
 # Verification Configuration
 # ============================================================================
 verification = dict(
-    enabled=False,
-    tolerance=1,
+    enabled=True,
+    tolerance=1.0,
     num_verify_samples=1,
     devices=devices,
     scenarios=dict(
