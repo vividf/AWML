@@ -130,7 +130,7 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=-1,
+    num_samples=100,
     verbose=True,
     backends=dict(
         pytorch=dict(
