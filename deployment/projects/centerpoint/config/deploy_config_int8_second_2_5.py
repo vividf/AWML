@@ -1,5 +1,10 @@
 """
-CenterPoint FP16 Deployment Configuration - SECOND Backbone
+CenterPoint INT8 Quantization Deployment Configuration - SECOND Backbone (2.5)
+
+Usage:
+    python -m deployment.cli.main centerpoint \
+        deployment/projects/centerpoint/config/deploy_config_int8_second_2_5.py \
+        projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_j6gen2_base_t4metric_v2.py
 """
 
 # ============================================================================
@@ -8,9 +13,29 @@ CenterPoint FP16 Deployment Configuration - SECOND Backbone
 task_type = "detection3d"
 
 # ============================================================================
-# Checkpoint Path
+# Checkpoint Path - Use PTQ quantized checkpoint
 # ============================================================================
-checkpoint_path = "work_dirs/centerpoint_2_5.pth"
+checkpoint_path = "models/2_5/experiment_j6_gen2/second/epoch_30_ptq.pth"
+
+# ============================================================================
+# Quantization Configuration
+# ============================================================================
+quantization = dict(
+    enabled=True,
+    mode="ptq",
+    fuse_bn=True,
+    quant_voxel_encoder=False,
+    quant_backbone=True,
+    quant_neck=True,
+    quant_head=True,
+    skip_backbone_first_stages=0,
+    skip_backbone_stages=[],
+    sensitive_layers=[
+        # "pts_neck.deblocks.0.0",  # ConvTranspose2d - no TRT INT8 support
+        # "pts_neck.deblocks.1.0",  # ConvTranspose2d - no TRT INT8 support
+        # "pts_neck.deblocks.2.0",  # ConvTranspose2d - no TRT INT8 support
+    ],
+)
 
 # ============================================================================
 # Device settings
@@ -24,8 +49,8 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="none",
-    work_dir="work_dirs/centerpoint_fp16_second_deployment_2_5",
+    mode="both",
+    work_dir="models/2_5/experiment_j6_gen2/second/int8-deployment",
     onnx_path=None,
 )
 
@@ -34,6 +59,7 @@ _WORK_DIR = str(export["work_dir"]).rstrip("/")
 _ONNX_DIR = f"{_WORK_DIR}/onnx"
 _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
 output_path = f"{_WORK_DIR}/deploy.log"
+
 # ============================================================================
 # Unified Component Configuration
 # ============================================================================
@@ -58,7 +84,7 @@ components = dict(
             input_features=dict(
                 min_shape=[1000, 32, 11],
                 opt_shape=[20000, 32, 11],
-                max_shape=[64000, 32, 11],
+                max_shape=[96000, 32, 11],
             ),
         ),
     ),
@@ -102,7 +128,7 @@ components = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    info_file="data/t4datasets/info/vivid/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="info/kokseang_2_5_experiment/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=1,
 )
 
@@ -130,11 +156,11 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=100,
+    num_samples=-1,
     verbose=True,
     backends=dict(
         pytorch=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
         ),
         onnx=dict(
