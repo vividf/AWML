@@ -134,7 +134,7 @@ onnx_config = dict(
 # Supports `auto`, `fp16`, `fp32_tf32`, and `strongly_typed`
 # ============================================================================
 tensorrt_config = dict(
-    precision_policy="auto",
+    precision_policy="fp32_tf32",
     max_workspace_size=2 << 30,
 )
 
@@ -142,7 +142,7 @@ tensorrt_config = dict(
 # Evaluation Configuration
 # ============================================================================
 evaluation = dict(
-    enabled=True,
+    enabled=False,
     num_samples=1,
     verbose=True,
     backends=dict(
