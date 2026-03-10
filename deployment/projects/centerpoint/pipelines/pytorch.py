@@ -13,7 +13,6 @@ from typing_extensions import override
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
 from deployment.projects.centerpoint.pipelines.centerpoint_pipeline import CenterPointInferencePipeline
-
 logger = logging.getLogger(__name__)
 
 
