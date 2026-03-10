@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from abc import abstractmethod
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -261,7 +261,6 @@ class CenterPointInferencePipeline(BaseInferencePipeline):
             predictions_list = self.pytorch_model.pts_bbox_head.predict_by_feat(
                 preds_dicts=preds_dicts, batch_input_metas=batch_input_metas
             )
-
 
         results: List[Dict[str, Union[List[float], float, int]]] = []
         for pred_instances in predictions_list:
