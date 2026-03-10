@@ -68,7 +68,7 @@ class CenterPointONNX(CenterPoint):
             device: Target device specification.
             **kwargs: Passed to CenterPoint base class.
         """
-        super().__init__()
+        super().__init__(**kwargs)
         self._point_channels = point_channels
         self._device = device
         self._torch_device = self._device.to_torch_device()
