@@ -19,7 +19,6 @@ from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
 from deployment.projects.centerpoint.pipelines.centerpoint_pipeline import CenterPointInferencePipeline
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -63,7 +62,6 @@ class CenterPointONNXPipeline(CenterPointInferencePipeline):
 
         Uses self.onnx_dir, self._components_cfg, and self.device to resolve paths
         and select execution providers.
-
         Raises:
             FileNotFoundError: If ONNX model files are not found.
             RuntimeError: If model loading fails.
