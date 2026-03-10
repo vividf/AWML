@@ -3,7 +3,7 @@ CenterPoint Evaluator for deployment.
 """
 
 import logging
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Dict, List, Mapping, Optional
 
 import numpy as np
 from mmengine.config import Config
@@ -18,6 +18,7 @@ from deployment.core import (
     TaskProfile,
 )
 from deployment.core.io.base_data_loader import BaseDataLoader
+from deployment.pipelines.base_pipeline import BaseDeploymentPipeline
 from deployment.pipelines.factory import PipelineFactory
 
 logger = logging.getLogger(__name__)
@@ -77,22 +78,9 @@ class CenterPointEvaluator(BaseEvaluator):
         io_cfg = backbone_head_cfg.get("io", {})
         outputs = io_cfg.get("outputs", [])
 
-        if not outputs:
-            raise ValueError(
-                "Output names must be provided via components_cfg.backbone_head.io.outputs. "
-                "No fallback values are allowed in deployment framework."
-            )
 
-        output_names = [out.get("name") for out in outputs if out.get("name")]
-        if not output_names:
-            raise ValueError(
-                "Output names must be provided via components_cfg.backbone_head.io.outputs. "
-                "Each output must have a 'name' field."
-            )
-
-        return output_names
-
-    def _create_pipeline(self, model_spec: ModelSpec, device: str) -> Any:
+    @override
+    def _create_pipeline(self, model_spec: ModelSpec, device: DeviceSpec) -> BaseDeploymentPipeline:
         return PipelineFactory.create(
             project_name="centerpoint",
             model_spec=model_spec,
@@ -103,7 +91,7 @@ class CenterPointEvaluator(BaseEvaluator):
 
     def _prepare_input(
         self,
-        sample: Dict[str, Any],
+        sample: Mapping[str, object],
         data_loader: BaseDataLoader,
         device: str,
     ) -> InferenceInput:
@@ -114,10 +102,12 @@ class CenterPointEvaluator(BaseEvaluator):
             raise ValueError(f"Expected 'points' in sample. Got keys: {list(sample.keys())}")
         return InferenceInput(data=points, metadata=metadata)
 
-    def _parse_predictions(self, pipeline_output: Any) -> List[Dict]:
+    @override
+    def _parse_predictions(self, pipeline_output: object) -> List[Dict]:
         return pipeline_output if isinstance(pipeline_output, list) else []
 
-    def _parse_ground_truths(self, gt_data: Dict[str, Any]) -> List[Dict]:
+    @override
+    def _parse_ground_truths(self, gt_data: Mapping[str, object]) -> List[Dict]:
         ground_truths = []
 
         if "gt_bboxes_3d" in gt_data and "gt_labels_3d" in gt_data:
