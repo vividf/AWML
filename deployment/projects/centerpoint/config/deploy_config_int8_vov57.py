@@ -16,7 +16,7 @@ task_type = "detection3d"
 # Checkpoint Path - Use PTQ quantized checkpoint
 # ============================================================================
 # checkpoint_path = "models/2_5/experiment_j6_gen2/vov_epoch_30_ptq_exp6.pth"
-checkpoint_path = "models/2_5/experiment_j6_gen2/vov57-v2/epoch_30_ptq.pth"
+checkpoint_path = "models/2_5/experiment_j6_gen2/vov57-v2-downsample/epoch_30_ptq.pth"
 # ============================================================================
 # Quantization Configuration
 # ============================================================================
@@ -66,7 +66,7 @@ devices = dict(
 # ============================================================================
 export = dict(
     mode="both",
-    work_dir="models/2_5/experiment_j6_gen2/vov57-v2/int8-deployment-bench",
+    work_dir="models/2_5/experiment_j6_gen2/vov57-v2-downsample/int8-deployment-bench",
     onnx_path=None,
 )
 
