@@ -10,7 +10,7 @@ task_type = "detection3d"
 # ============================================================================
 # Checkpoint Path
 # ============================================================================
-checkpoint_path = "models/2_5/experiment_j6_gen2/vov57-v2/epoch_30.pth"
+checkpoint_path = "models/2_5/experiment_j6_gen2/vov57-v2-downsample/epoch_30.pth"
 
 # ============================================================================
 # Device settings
@@ -25,7 +25,7 @@ devices = dict(
 # ============================================================================
 export = dict(
     mode="both",
-    work_dir="work_dirs/centerpoint-vov57-v2/fp16-deployment",
+    work_dir="work_dirs/centerpoint-vov57-v2-downsample/fp16-deployment",
     onnx_path=None,
 )
 
