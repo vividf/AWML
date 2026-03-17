@@ -38,6 +38,7 @@ class BEVFusionPyTorchPipeline(BEVFusionDeploymentPipeline):
         Performs: voxel mean reduction → sparse encoder → backbone → neck → head → postprocess.
         """
         model = self.pytorch_model
+        model.eval()
         device = self.torch_device
 
         voxels = voxels.to(device)
@@ -45,28 +46,21 @@ class BEVFusionPyTorchPipeline(BEVFusionDeploymentPipeline):
         num_points_per_voxel = num_points_per_voxel.to(device)
 
         with torch.no_grad():
-            # Voxel mean reduction (same as inside ONNX graph)
-            feats = voxels.sum(dim=1, keepdim=False) / num_points_per_voxel.float().view(-1, 1)
+            # Match the export wrapper path exactly:
+            # (voxels, coors, num_points_per_voxel) -> model._forward(...)
+            if coors.shape[1] == 3:
+                num_points = coors.shape[0]
+                batch_coors = torch.zeros(num_points, 1, device=device, dtype=coors.dtype)
+                coors = torch.cat([batch_coors, coors], dim=1).contiguous()
 
-            # Add batch index (flip z,y,x → x,y,z then prepend batch=0)
-            coors_flipped = coors.flip(dims=[-1]).contiguous()
-            batch_coors = torch.zeros(coors.shape[0], 1, device=device)
-            coors_with_batch = torch.cat([batch_coors, coors_flipped], dim=1).contiguous()
-
-            # Sparse 3D encoder → BEV feature
-            x = model.pts_middle_encoder(feats, coors_with_batch, batch_size=1)
-
-            # Backbone + Neck
-            if model.pts_backbone is not None:
-                x = model.pts_backbone(x)
-            if model.pts_neck is not None:
-                x = model.pts_neck(x)
-
-            # Head forward
-            outputs = model.bbox_head(x, [])
-
-            # Extract first layer, first batch
-            preds = outputs[0][0]
+            batch_inputs_dict = {
+                "voxels": {
+                    "voxels": voxels,
+                    "coors": coors,
+                    "num_points_per_voxel": num_points_per_voxel,
+                }
+            }
+            preds = model._forward(batch_inputs_dict, using_image_features=True)
 
             # Replicate the TrtBevFusionMainContainer postprocessing
             import torch.nn.functional as F
