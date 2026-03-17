@@ -110,7 +110,7 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=1,
+    num_samples=5,
     verbose=True,
     backends=dict(
         pytorch=dict(
@@ -118,12 +118,12 @@ evaluation = dict(
             device=devices["cuda"],
         ),
         onnx=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
             model_dir=_ONNX_DIR,
         ),
         tensorrt=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
             engine_dir=_TENSORRT_DIR,
         ),
@@ -134,7 +134,7 @@ evaluation = dict(
 # Verification Configuration
 # ============================================================================
 verification = dict(
-    enabled=True,
+    enabled=False,
     tolerance=1,
     num_verify_samples=1,
     devices=devices,

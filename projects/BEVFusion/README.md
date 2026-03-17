@@ -58,6 +58,9 @@ pip install spconv-cu120
 `AWML` will automatically select this implementation if the dependency is installed.
 
 ### 2. Train
+
+- 訓練流程、網路架構與 **spconv / cumm** 在訓練中的角色說明，請見 [TRAINING 說明](docs/TRAINING.md)。
+
 #### 2.1. Train the LiDAR-only model first
 
 - (Choice) Train with a single GPU
@@ -132,6 +135,8 @@ bash tools/detection3d/dist_script.sh projects/BEVFusion/configs/t4dataset/bevfu
 Sparse convolutions are not deployable by default. In the [deployment](configs/deploy/bevfusion_lidar_tensorrt_dynamic.py) we follow the instructions found in the [SparseConvolution](../SparseConvolution/README.md) project to enable this feature.
 
 Note: we only support traveller59's backend during deployment, but the model checkpoints can correspond to either backend.
+
+- 若需了解 **spconv_cpp** 倉庫的用途、與 cumm/spconv 的關係、以及對 Autoware BEVFusion 部署的影響，請見 [spconv_cpp 說明](docs/SPCONV_CPP.md)。
 
 #### 4.2. ONNX export
 
