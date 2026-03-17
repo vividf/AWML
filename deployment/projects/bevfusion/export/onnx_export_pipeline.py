@@ -47,7 +47,6 @@ class BEVFusionMainBodyWrapper(nn.Module):
 
         if coors.shape[1] == 3:
             num_points = coors.shape[0]
-            coors = coors.flip(dims=[-1]).contiguous()
             batch_coors = torch.zeros(num_points, 1).to(coors.device)
             coors = torch.cat([batch_coors, coors], dim=1).contiguous()
 

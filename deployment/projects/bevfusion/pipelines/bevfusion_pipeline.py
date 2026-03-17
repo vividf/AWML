@@ -147,9 +147,11 @@ class BEVFusionDeploymentPipeline(BaseDeploymentPipeline):
     ) -> List[Dict[str, Union[List[float], float, int]]]:
         """Decode bbox_pred/score/label_pred into detection dicts.
 
-        The BEVFusion ONNX model already includes postprocessing (sigmoid, TopK,
-        Transformer Decoder), so outputs are:
-        - bbox_pred: [10, num_proposals] → (center_x, center_y, height, w, l, h, sin, cos, vx, vy)
+        The BEVFusion ONNX model already includes query scoring / selection, but
+        bbox outputs are still in the head-encoded space and must be decoded to
+        metric coordinates:
+        - bbox_pred: [10, num_proposals]
+          (center_x_feat, center_y_feat, z_gravity, dim0_log, dim1_log, dim2_log, sin, cos, vx, vy)
         - score: [num_proposals]
         - label_pred: [num_proposals]
 
@@ -162,27 +164,69 @@ class BEVFusionDeploymentPipeline(BaseDeploymentPipeline):
         """
         bbox_pred, score, label_pred = [self.to_device_tensor(o) for o in model_outputs]
 
-        results: List[Dict[str, Union[List[float], float, int]]] = []
+        # Normalize common export/runtime shapes to [10, num_proposals], [num_proposals], [num_proposals].
+        if bbox_pred.ndim == 3 and bbox_pred.shape[0] == 1:
+            bbox_pred = bbox_pred[0]
+        if bbox_pred.ndim == 2 and bbox_pred.shape[0] != 10 and bbox_pred.shape[1] == 10:
+            bbox_pred = bbox_pred.transpose(0, 1).contiguous()
+        if bbox_pred.ndim != 2 or bbox_pred.shape[0] != 10:
+            logger.warning(f"Unexpected bbox_pred shape {tuple(bbox_pred.shape)}; skipping frame.")
+            return []
 
-        num_proposals = score.shape[0]
-        for i in range(num_proposals):
-            s = float(score[i].item())
+        score = score.reshape(-1)
+        label_pred = label_pred.reshape(-1)
+
+        num_proposals = min(bbox_pred.shape[1], score.shape[0], label_pred.shape[0])
+        if num_proposals == 0:
+            return []
+
+        # Decode via BEVFusion's own bbox_coder to avoid convention drift.
+        bbox_coder = getattr(self.pytorch_model.bbox_head, "bbox_coder", None)
+        if bbox_coder is None:
+            logger.warning("bbox_coder not found on model.bbox_head; skipping frame.")
+            return []
+
+        center = bbox_pred[0:2, :num_proposals].unsqueeze(0)
+        height = bbox_pred[2:3, :num_proposals].unsqueeze(0)
+        dim = bbox_pred[3:6, :num_proposals].unsqueeze(0)
+        rot = bbox_pred[6:8, :num_proposals].unsqueeze(0)
+        vel = bbox_pred[8:10, :num_proposals].unsqueeze(0)
+
+        labels = label_pred[:num_proposals].long()
+        scores = score[:num_proposals].to(dtype=bbox_pred.dtype)
+        heatmap = torch.zeros((1, self.num_classes, num_proposals), device=self.torch_device, dtype=bbox_pred.dtype)
+        valid = (labels >= 0) & (labels < self.num_classes)
+        if valid.any():
+            valid_idx = torch.nonzero(valid, as_tuple=False).reshape(-1)
+            heatmap[0, labels[valid_idx], valid_idx] = scores[valid_idx]
+
+        decoded = bbox_coder.decode(heatmap, rot, dim, center, height, vel, filter=False)[0]
+        decoded_boxes = decoded["bboxes"]
+        decoded_scores = decoded["scores"]
+        decoded_labels = decoded["labels"]
+
+        results: List[Dict[str, Union[List[float], float, int]]] = []
+        for i in range(decoded_boxes.shape[0]):
+            s = float(decoded_scores[i].item())
             if s < 1e-6:
                 continue
 
-            bbox = bbox_pred[:, i].cpu().numpy()
-            cx, cy = float(bbox[0]), float(bbox[1])
-            z = float(bbox[2])
-            w, l, h = float(bbox[3]), float(bbox[4]), float(bbox[5])
-            sin_yaw, cos_yaw = float(bbox[6]), float(bbox[7])
-            yaw = float(np.arctan2(sin_yaw, cos_yaw))
-            vx, vy = float(bbox[8]), float(bbox[9])
+            bbox = decoded_boxes[i].detach().cpu().numpy()
+            # decoded box format: [x, y, z, dx, dy, dz, yaw, vx, vy]
+            if bbox.shape[0] < 7:
+                continue
+
+            cx, cy, z = float(bbox[0]), float(bbox[1]), float(bbox[2])
+            d0, d1, d2 = float(bbox[3]), float(bbox[4]), float(bbox[5])
+            yaw = float(bbox[6])
+            vx = float(bbox[7]) if bbox.shape[0] > 7 else 0.0
+            vy = float(bbox[8]) if bbox.shape[0] > 8 else 0.0
 
             results.append(
                 {
-                    "bbox_3d": [cx, cy, z, w, l, h, yaw, vx, vy],
+                    "bbox_3d": [cx, cy, z, d0, d1, d2, yaw, vx, vy],
                     "score": s,
-                    "label": int(label_pred[i].item()),
+                    "label": int(decoded_labels[i].item()),
                 }
             )
 
