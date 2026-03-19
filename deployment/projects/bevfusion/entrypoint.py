@@ -70,9 +70,9 @@ def run(args: argparse.Namespace) -> int:
         model_cfg=model_cfg,
         metrics_config=metrics_config,
         components_cfg=config.components_cfg,
+        tensorrt_plugin_libraries=config.tensorrt_config.plugin_libraries,
     )
 
-    bevfusion_deploy_cfg_path = getattr(args, "bevfusion_deploy_cfg", None)
     module = getattr(args, "module", "main_body")
 
     runner = BEVFusionDeploymentRunner(
@@ -81,7 +81,6 @@ def run(args: argparse.Namespace) -> int:
         config=config,
         model_cfg=model_cfg,
         logger=logger,
-        bevfusion_deploy_cfg_path=bevfusion_deploy_cfg_path,
         module=module,
     )
 

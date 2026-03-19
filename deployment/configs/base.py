@@ -265,6 +265,7 @@ class BaseDeploymentConfig:
                     "max_workspace_size": self.tensorrt_config.max_workspace_size,
                     "precision_policy": self.tensorrt_config.precision_policy,
                     "policy_flags": self.tensorrt_config.precision_flags,
+                    "plugin_libraries": self.tensorrt_config.plugin_libraries,
                     "model_inputs": None,
                 }
             )
@@ -275,6 +276,7 @@ class BaseDeploymentConfig:
                 "max_workspace_size": self.tensorrt_config.max_workspace_size,
                 "precision_policy": self.tensorrt_config.precision_policy,
                 "policy_flags": self.tensorrt_config.precision_flags,
+                "plugin_libraries": self.tensorrt_config.plugin_libraries,
                 "model_inputs": model_inputs,
             }
         )

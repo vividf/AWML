@@ -78,11 +78,9 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
 
     def __init__(
         self,
-        bevfusion_deploy_cfg_path: Optional[str] = None,
         module: str = "main_body",
         logger: Optional[logging.Logger] = None,
     ) -> None:
-        self.bevfusion_deploy_cfg_path = bevfusion_deploy_cfg_path
         self.module = module
         self.logger = logger or logging.getLogger(__name__)
 
@@ -188,72 +186,25 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
     ) -> None:
         """Export the wrapped model to ONNX."""
         device = next(model.parameters()).device
+        wrapper = BEVFusionMainBodyWrapper(model)
+        model_inputs = (voxels.to(device), coors.to(device), num_points_per_voxel.to(device))
+        wrapper.eval()
+        wrapper.to(device)
 
-        try:
-            from mmdeploy.core import RewriterContext, patch_model
-            from mmdeploy.utils import IR, Backend, get_backend, get_ir_config, load_config
-
-            if self.bevfusion_deploy_cfg_path:
-                deploy_cfg = load_config(self.bevfusion_deploy_cfg_path)[0]
-                backend = get_backend(deploy_cfg).value
-                ir = IR.get(get_ir_config(deploy_cfg)["type"])
-                patched_model = patch_model(model, cfg=deploy_cfg, backend=backend, ir=ir)
-            else:
-                patched_model = model
-                deploy_cfg = None
-
-            patched_model.eval()
-            patched_model.to(device)
-
-            wrapper = BEVFusionMainBodyWrapper(patched_model)
-            model_inputs = (voxels.to(device), coors.to(device), num_points_per_voxel.to(device))
-
-            context_kwargs = {}
-            if deploy_cfg is not None:
-                context_kwargs = dict(
-                    deploy_cfg=deploy_cfg,
-                    ir=ir,
-                    backend=backend,
-                    opset=onnx_cfg["opset_version"],
-                    cfg=deploy_cfg,
-                )
-
-            with RewriterContext(**context_kwargs) if deploy_cfg else torch.no_grad():
-                with torch.no_grad():
-                    torch.onnx.export(
-                        wrapper,
-                        model_inputs,
-                        output_path,
-                        export_params=onnx_cfg["export_params"],
-                        input_names=onnx_cfg["input_names"],
-                        output_names=onnx_cfg["output_names"],
-                        opset_version=onnx_cfg["opset_version"],
-                        dynamic_axes=onnx_cfg["dynamic_axes"],
-                        keep_initializers_as_inputs=onnx_cfg["keep_initializers_as_inputs"],
-                        verbose=onnx_cfg["verbose"],
-                    )
-
-            self.logger.info(f"Exported raw ONNX to {output_path}")
-
-        except ImportError:
-            self.logger.warning("mmdeploy not available; exporting without RewriterContext patching")
-            wrapper = BEVFusionMainBodyWrapper(model)
-            model_inputs = (voxels.to(device), coors.to(device), num_points_per_voxel.to(device))
-
-            with torch.no_grad():
-                torch.onnx.export(
-                    wrapper,
-                    model_inputs,
-                    output_path,
-                    export_params=onnx_cfg["export_params"],
-                    input_names=onnx_cfg["input_names"],
-                    output_names=onnx_cfg["output_names"],
-                    opset_version=onnx_cfg["opset_version"],
-                    dynamic_axes=onnx_cfg["dynamic_axes"],
-                    keep_initializers_as_inputs=onnx_cfg["keep_initializers_as_inputs"],
-                    verbose=onnx_cfg["verbose"],
-                )
-            self.logger.info(f"Exported raw ONNX (no mmdeploy) to {output_path}")
+        with torch.no_grad():
+            torch.onnx.export(
+                wrapper,
+                model_inputs,
+                output_path,
+                export_params=onnx_cfg["export_params"],
+                input_names=onnx_cfg["input_names"],
+                output_names=onnx_cfg["output_names"],
+                opset_version=onnx_cfg["opset_version"],
+                dynamic_axes=onnx_cfg["dynamic_axes"],
+                keep_initializers_as_inputs=onnx_cfg["keep_initializers_as_inputs"],
+                verbose=onnx_cfg["verbose"],
+            )
+        self.logger.info("Exported ONNX to %s", output_path)
 
     def _get_num_proposals(self, model: torch.nn.Module) -> int:
         """Extract num_proposals from the BEVFusion model config."""
