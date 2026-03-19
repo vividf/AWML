@@ -169,6 +169,7 @@ class TensorRTConfig:
 
     precision_policy: str = PrecisionPolicy.AUTO.value
     max_workspace_size: int = DEFAULT_WORKSPACE_SIZE
+    plugin_libraries: Tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         """Validate TensorRT precision policy at construction time."""
@@ -180,9 +181,15 @@ class TensorRTConfig:
 
     @classmethod
     def from_dict(cls, config_dict: Mapping[str, Any]) -> TensorRTConfig:
+        plugin_libraries_raw = config_dict.get("plugin_libraries", ())
+        if isinstance(plugin_libraries_raw, str):
+            plugin_libraries = (plugin_libraries_raw,)
+        else:
+            plugin_libraries = tuple(str(path) for path in plugin_libraries_raw)
         return cls(
             precision_policy=config_dict.get("precision_policy", PrecisionPolicy.AUTO.value),
             max_workspace_size=config_dict.get("max_workspace_size", DEFAULT_WORKSPACE_SIZE),
+            plugin_libraries=plugin_libraries,
         )
 
     @property

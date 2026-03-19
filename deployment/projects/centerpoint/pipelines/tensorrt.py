@@ -20,6 +20,7 @@ from deployment.configs import ComponentsConfig
 from deployment.core.artifacts import resolve_artifact_path
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
+from deployment.core.tensorrt_plugins import load_tensorrt_plugin_libraries
 from deployment.pipelines.gpu_resource_mixin import (
     GPUResourceMixin,
     TensorRTResourceManager,
@@ -82,6 +83,7 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
             FileNotFoundError: If engine files are not found.
             RuntimeError: If engine loading or context creation fails.
         """
+        load_tensorrt_plugin_libraries(logger)
         trt.init_libnvinfer_plugins(self._logger, "")
         runtime = trt.Runtime(self._logger)
 

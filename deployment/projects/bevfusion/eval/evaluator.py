@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Mapping, Optional
+from typing import Dict, Iterable, List, Mapping, Optional
 
 import numpy as np
 from mmengine.config import Config
@@ -35,6 +35,7 @@ class BEVFusionEvaluator(BaseEvaluator):
         model_cfg: Config,
         metrics_config: Detection3DMetricsConfig,
         components_cfg: ComponentsConfig,
+        tensorrt_plugin_libraries: Iterable[str] = (),
     ) -> None:
         if hasattr(model_cfg, "class_names"):
             class_names = model_cfg.class_names
@@ -42,6 +43,7 @@ class BEVFusionEvaluator(BaseEvaluator):
             raise ValueError("class_names must be provided via model_cfg.class_names.")
 
         self._components_cfg = components_cfg
+        self._tensorrt_plugin_libraries = tuple(tensorrt_plugin_libraries)
 
         task_profile = TaskProfile(
             task_name="bevfusion_3d_detection",
@@ -70,6 +72,7 @@ class BEVFusionEvaluator(BaseEvaluator):
             pytorch_model=self.pytorch_model,
             device=device,
             components_cfg=self._components_cfg,
+            tensorrt_plugin_libraries=self._tensorrt_plugin_libraries,
         )
 
     @override

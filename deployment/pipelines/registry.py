@@ -5,7 +5,7 @@ Flattened from `deployment/pipelines/common/registry.py`.
 """
 
 import logging
-from typing import Dict, Type
+from typing import Dict, Iterable, Type
 
 import torch
 
@@ -78,6 +78,7 @@ class PipelineRegistry:
         pytorch_model: torch.nn.Module,
         device: DeviceSpec,
         components_cfg: ComponentsConfig,
+        tensorrt_plugin_libraries: Iterable[str] = (),
     ) -> BaseDeploymentPipeline:
         """Create a project-specific pipeline instance using the registered factory.
 
@@ -90,6 +91,7 @@ class PipelineRegistry:
             pytorch_model=pytorch_model,
             device=device,
             components_cfg=components_cfg,
+            tensorrt_plugin_libraries=tensorrt_plugin_libraries,
         )
 
     def list_projects(self) -> list:

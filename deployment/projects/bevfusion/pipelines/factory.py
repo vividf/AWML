@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Iterable
 
 import torch
 from typing_extensions import override
@@ -38,6 +39,7 @@ class BEVFusionPipelineFactory(BasePipelineFactory):
         pytorch_model: torch.nn.Module,
         device: DeviceSpec,
         components_cfg: ComponentsConfig,
+        tensorrt_plugin_libraries: Iterable[str] = (),
     ) -> BaseDeploymentPipeline:
         device = device or model_spec.device
         backend = model_spec.backend
@@ -59,11 +61,13 @@ class BEVFusionPipelineFactory(BasePipelineFactory):
 
         if backend is Backend.TENSORRT:
             logger.info(f"Creating BEVFusion TensorRT pipeline from {model_spec.path} on {device}")
+            plugin_libs = tuple(tensorrt_plugin_libraries)
             return BEVFusionTensorRTPipeline(
                 pytorch_model,
                 tensorrt_dir=model_spec.path,
                 device=device,
                 components_cfg=components_cfg,
+                plugin_libraries=plugin_libs,
             )
 
         raise ValueError(f"Unsupported backend: {backend.value}")

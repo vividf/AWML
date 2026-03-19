@@ -7,6 +7,7 @@ import tensorrt as trt
 import torch
 
 from deployment.core.artifacts import Artifact
+from deployment.core.tensorrt_plugins import load_tensorrt_plugin_libraries
 from deployment.exporters.common.base_exporter import BaseExporter
 from deployment.exporters.common.configs import TensorRTExportConfig, TensorRTModelInputConfig, TensorRTProfileConfig
 
@@ -92,6 +93,7 @@ class TensorRTExporter(BaseExporter):
         """
         # Initialize TensorRT
         trt_logger = trt.Logger(trt.Logger.WARNING)
+        load_tensorrt_plugin_libraries(self.logger, self.config.plugin_libraries)
         trt.init_libnvinfer_plugins(trt_logger, "")
 
         builder = trt.Builder(trt_logger)

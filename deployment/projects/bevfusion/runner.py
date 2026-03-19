@@ -32,12 +32,10 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
         config: BaseDeploymentConfig,
         model_cfg: Config,
         logger: logging.Logger,
-        bevfusion_deploy_cfg_path: Optional[str] = None,
         module: str = "main_body",
         onnx_pipeline: Optional[OnnxExportPipeline] = None,
         tensorrt_pipeline: Optional[TensorRTExportPipeline] = None,
     ) -> None:
-        self._bevfusion_deploy_cfg_path = bevfusion_deploy_cfg_path
         self._module = module
 
         super().__init__(
@@ -53,7 +51,6 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
 
         if self._onnx_pipeline is None:
             self._onnx_pipeline = BEVFusionONNXExportPipeline(
-                bevfusion_deploy_cfg_path=bevfusion_deploy_cfg_path,
                 module=module,
                 logger=self.logger,
             )

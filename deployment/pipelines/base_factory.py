@@ -6,7 +6,7 @@ Flattened from `deployment/pipelines/common/base_factory.py`.
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Iterable
 
 import torch
 
@@ -41,6 +41,7 @@ class BasePipelineFactory(ABC):
         pytorch_model: torch.nn.Module,
         device: DeviceSpec,
         components_cfg: ComponentsConfig,
+        tensorrt_plugin_libraries: Iterable[str] = (),
     ) -> BaseDeploymentPipeline:
         """Build and return a pipeline instance for the given model spec.
 
@@ -54,6 +55,7 @@ class BasePipelineFactory(ABC):
             pytorch_model: A loaded PyTorch model (used for PYTORCH backends).
             device: Optional device override (defaults to `model_spec.device`).
             components_cfg: Project-specific component configuration (e.g., file paths, IO specs).
+            tensorrt_plugin_libraries: Plugin .so paths from deploy_config.tensorrt_config.plugin_libraries.
         """
         raise NotImplementedError
 

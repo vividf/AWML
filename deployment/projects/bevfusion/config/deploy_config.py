@@ -22,7 +22,7 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="onnx",
+    mode="both",
     work_dir="work_dirs/bevfusion_deployment",
     onnx_path=None,
 )
@@ -60,9 +60,9 @@ components = dict(
         ),
         tensorrt_profile=dict(
             voxels=dict(
-                min_shape=[1, 10, 4],
-                opt_shape=[64000, 10, 4],
-                max_shape=[256000, 10, 4],
+                min_shape=[1, 10, 5],
+                opt_shape=[64000, 10, 5],
+                max_shape=[256000, 10, 5],
             ),
             coors=dict(
                 min_shape=[1, 3],
@@ -100,9 +100,16 @@ onnx_config = dict(
 # ============================================================================
 # TensorRT Build Settings
 # ============================================================================
+# BEVFusion ONNX uses ImplicitGemm / GetIndicePairsImplicitGemm (spconv). You must
+# provide the plugin .so and list it here, or TensorRT export will fail with
+# "Plugin not found". See: projects/BEVFusion/plugins/README.md
 tensorrt_config = dict(
     precision_policy="auto",
     max_workspace_size=1 << 32,
+    # Set this after placing libautoware_tensorrt_plugins.so in the image (e.g. under
+    # /opt/plugins/). Alternatively set env DEPLOY_TENSORRT_PLUGIN_LIBS.
+    plugin_libraries=["/opt/plugins/libautoware_tensorrt_plugins.so"],
+    # plugin_libraries=["/opt/plugins/libautoware_tensorrt_plugins.so"]
 )
 
 # ============================================================================
@@ -123,7 +130,7 @@ evaluation = dict(
             model_dir=_ONNX_DIR,
         ),
         tensorrt=dict(
-            enabled=False,
+            enabled=True,
             device=devices["cuda"],
             engine_dir=_TENSORRT_DIR,
         ),
