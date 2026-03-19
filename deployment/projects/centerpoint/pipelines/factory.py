@@ -6,7 +6,7 @@ via `deployment.pipelines.factory.PipelineFactory`.
 """
 
 import logging
-from typing import Mapping, Optional
+from typing import Iterable, Mapping
 
 import torch
 from typing_extensions import override
@@ -47,6 +47,7 @@ class CenterPointPipelineFactory(BasePipelineFactory):
         pytorch_model: torch.nn.Module,
         device: DeviceSpec,
         components_cfg: ComponentsConfig,
+        tensorrt_plugin_libraries: Iterable[str] = (),
     ) -> BaseDeploymentPipeline:
         """Create a CenterPoint pipeline for the specified backend.
 
@@ -56,6 +57,7 @@ class CenterPointPipelineFactory(BasePipelineFactory):
             device: Override device (uses model_spec.device if None)
             components_cfg: Unified component configuration dict from deploy_config.
                            Used to configure component file paths.
+            tensorrt_plugin_libraries: TensorRT plugin paths from config (unused for CenterPoint).
 
         Returns:
             Pipeline instance for the specified backend

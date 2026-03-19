@@ -46,6 +46,7 @@ onnx_config = dict(
 tensorrt_config = dict(
     precision_policy="auto",
     max_workspace_size=1 << 30,
+    plugin_libraries=[],  # Optional custom TensorRT plugin .so paths
 )
 ```
 
@@ -123,6 +124,7 @@ onnx_config = dict(
 tensorrt_config = dict(
     precision_policy="auto",
     max_workspace_size=2 << 30,
+    plugin_libraries=[],  # Optional custom TensorRT plugin .so paths
 )
 ```
 
@@ -199,6 +201,7 @@ onnx_config = ONNXExportConfig(
 trt_config = TensorRTExportConfig(
     precision_policy="auto",
     max_workspace_size=1 << 30,
+    plugin_libraries=(),  # Optional custom TensorRT plugin .so paths
     model_inputs=(
         TensorRTModelInputConfig(
             input_shapes={

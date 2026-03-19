@@ -125,6 +125,8 @@ onnx_config = dict(
 tensorrt_config = dict(
     precision_policy="auto",
     max_workspace_size=2 << 30,
+    # Optional custom plugin libraries for TensorRT ONNX parsing/runtime.
+    plugin_libraries=[],
 )
 
 # ============================================================================

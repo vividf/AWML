@@ -140,12 +140,18 @@ class TensorRTExportConfig(BaseExporterConfig):
     precision_policy: str = "auto"
     policy_flags: Mapping[str, bool] = field(default_factory=dict)
     max_workspace_size: int = 1 << 30
+    plugin_libraries: Tuple[str, ...] = field(default_factory=tuple)
     model_inputs: Tuple[TensorRTModelInputConfig, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> TensorRTExportConfig:
         """Instantiate config from a plain mapping."""
         inputs_raw = data.get("model_inputs") or ()
+        plugin_libraries_raw = data.get("plugin_libraries") or ()
+        if isinstance(plugin_libraries_raw, str):
+            plugin_libraries = (plugin_libraries_raw,)
+        else:
+            plugin_libraries = tuple(str(path) for path in plugin_libraries_raw)
         parsed_inputs = tuple(
             entry if isinstance(entry, TensorRTModelInputConfig) else TensorRTModelInputConfig.from_dict(entry)
             for entry in inputs_raw
@@ -154,6 +160,7 @@ class TensorRTExportConfig(BaseExporterConfig):
             precision_policy=str(data.get("precision_policy", cls.precision_policy)),
             policy_flags=MappingProxyType(data.get("policy_flags", {})),
             max_workspace_size=int(data.get("max_workspace_size", cls.max_workspace_size)),
+            plugin_libraries=plugin_libraries,
             model_inputs=parsed_inputs,
         )
 
