@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import warnings
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -260,7 +261,14 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
                 pass
 
             with torch.no_grad():
-                torch.onnx.export(wrapper, model_inputs, output_path, **export_kw)
+                # Pip spconv dense()/scatter uses list indexing; PyTorch 2.x deprecates x[list] (use x[tuple(list)]).
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=".*non-tuple sequence for multidimensional indexing.*",
+                        category=UserWarning,
+                    )
+                    torch.onnx.export(wrapper, model_inputs, output_path, **export_kw)
         finally:
             if moved_for_trace:
                 try:

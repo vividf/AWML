@@ -1,4 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import logging
 from typing import Dict, List, Optional
 
 from mmdet3d.models.layers.sparse_block import SparseBasicBlock
@@ -16,6 +17,8 @@ import torch
 
 from .sparse_block_fx import SparseBasicBlockFX
 from .sparse_convmodule import make_sparse_convmodule
+
+logger = logging.getLogger(__name__)
 
 
 def _is_fx_proxy(t) -> bool:
@@ -52,7 +55,7 @@ def _in_torch_fx_prepare_trace() -> bool:
     return False
 
 
-def _conv_out_to_bev(out_tensor) -> torch.Tensor:
+def _conv_out_to_bev(out_tensor, output_channels: Optional[int] = None, target_z: int = 2) -> torch.Tensor:
     """Convert conv_out SparseConvTensor to BEV (N, C*Z, H, W).
 
     ``spconv.dense()`` returns ``[N, C, *spatial_shape]`` in the same axis order as
@@ -66,7 +69,17 @@ def _conv_out_to_bev(out_tensor) -> torch.Tensor:
     We pick the **smallest** spatial extent in ``spatial_shape`` as the depth axis to
     merge into channels (after ``conv_out`` it should be ~2; the BEV plane stays ~1440).
     This matches both ``(H,W,D)`` and ``(D,H,W)`` layouts without relying on a fixed permute.
+
+    FX INT8 / ONNX trace sometimes leaves the **full** z grid (e.g. 41) in ``spatial_shape``
+    so ``C * Z`` becomes 5248 instead of ``output_channels * target_z`` (256). In that case we
+    apply ``adaptive_avg_pool3d`` along Z to ``target_z`` so SECOND's ``in_channels=256`` matches.
+    This is an export-time fallback; for best fidelity fix spconv/FX so ``conv_out`` shrinks Z.
+
+    ``output_channels`` defaults to ``out_tensor.features.shape[1]`` so FX ``GraphModule`` calls
+    that only pass ``out_tensor`` (single arg) still work.
     """
+    if output_channels is None:
+        output_channels = int(out_tensor.features.shape[1])
     spatial_shape = [int(s) for s in out_tensor.spatial_shape]
     x = out_tensor.dense()
     n, c = x.shape[0], x.shape[1]
@@ -78,7 +91,22 @@ def _conv_out_to_bev(out_tensor) -> torch.Tensor:
     # y layout: N, C, H, W, Z (Z is smallest axis, typically 2 after conv_out)
     z = y.shape[4]
     h, w = y.shape[2], y.shape[3]
-    return y.view(n, c * z, h, w)
+    z_i = int(z) if not isinstance(z, int) else z
+    flat_c = int(c) * z_i
+    expected = int(output_channels) * int(target_z)
+    if int(c) == int(output_channels) and flat_c != expected and z_i > int(target_z):
+        logger.warning(
+            "BEVFusion _conv_out_to_bev: dense Z=%d gives %d channels (expected %d); "
+            "collapsing Z→%d via adaptive_avg_pool3d for ONNX/backbone compatibility.",
+            z_i,
+            flat_c,
+            expected,
+            target_z,
+        )
+        y5 = y.permute(0, 1, 4, 2, 3).contiguous()
+        y5 = torch.nn.functional.adaptive_avg_pool3d(y5, (int(target_z), int(h), int(w)))
+        return y5.reshape(n, int(c) * int(target_z), int(h), int(w))
+    return y.view(n, flat_c, h, w)
 
 
 # FX trace fails when control flow uses symbolic (traced) variables; dense() or shape/view can trigger that.
@@ -249,7 +277,7 @@ class BEVFusionSparseEncoder(SparseEncoder):
         # for detection head
         # [200, 176, 5] -> [200, 176, 2]; use wrapped op so FX does not trace dense()/shape/view (avoids "symbolically traced variables in control flow")
         out = self.conv_out(encode_features[-1])
-        spatial_features = _conv_out_to_bev(out)
+        spatial_features = _conv_out_to_bev(out, self.output_channels)
 
         if self.return_middle_feats:
             return spatial_features, encode_features

@@ -25,6 +25,25 @@ def _check_pytorch_quantization():
         )
 
 
+def _skip_fake_quant_for_export_trace() -> bool:
+    """True during torch.jit trace used by torch.onnx.export (and related).
+
+    ``torch.jit.is_tracing()`` is not always True inside every submodule during ONNX
+    export; also skip when ``torch.onnx.is_in_onnx_export`` is available.
+    TensorQuantizer's FB fake_quant uses Python control flow on shapes → TracerWarning
+    and bad graphs; we pass through raw input/weight for the traced conv.
+    """
+    if torch.jit.is_tracing():
+        return True
+    try:
+        is_onnx = getattr(torch.onnx, "is_in_onnx_export", None)
+        if callable(is_onnx) and is_onnx():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 class QuantConv2d(nn.Conv2d):
     """
     Quantized Conv2d with per-channel weight quantization.
@@ -72,14 +91,12 @@ class QuantConv2d(nn.Conv2d):
     def forward(self, x):
         """Forward with quantized input and weights."""
         if self._input_quantizer is not None and self._weight_quantizer is not None:
-            # torch.jit.trace / torch.onnx.export: TensorQuantizer's FB fake_quant path uses
-            # Python list.index on shapes and triggers TracerWarning; skip input fake_quant
-            # during trace so the graph records plain conv (still matches channel layout).
-            if torch.jit.is_tracing():
+            if _skip_fake_quant_for_export_trace():
                 quant_input = x
+                quant_weight = self.weight
             else:
                 quant_input = self._input_quantizer(x)
-            quant_weight = self._weight_quantizer(self.weight)
+                quant_weight = self._weight_quantizer(self.weight)
         else:
             quant_input = x
             quant_weight = self.weight
@@ -136,11 +153,12 @@ class QuantConvTranspose2d(nn.ConvTranspose2d):
     def forward(self, x, output_size=None):
         """Forward with quantized input and weights."""
         if self._input_quantizer is not None and self._weight_quantizer is not None:
-            if torch.jit.is_tracing():
+            if _skip_fake_quant_for_export_trace():
                 quant_input = x
+                quant_weight = self.weight
             else:
                 quant_input = self._input_quantizer(x)
-            quant_weight = self._weight_quantizer(self.weight)
+                quant_weight = self._weight_quantizer(self.weight)
         else:
             quant_input = x
             quant_weight = self.weight
