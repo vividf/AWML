@@ -58,6 +58,19 @@ def run(args: argparse.Namespace) -> int:
     logger.info("BEVFusion Deployment Pipeline (Unified CLI)")
     logger.info("=" * 80)
 
+    quantization_cfg = deploy_cfg.get("quantization", None)
+    if quantization_cfg and quantization_cfg.get("enabled", False):
+        logger.info("Quantization: ENABLED")
+        logger.info(f"  Mode: dense=pytorch_quantization, sparse={'spconv_int8' if quantization_cfg.get('spconv_int8') else 'fp32'}")
+        logger.info(f"  Fuse BN: {quantization_cfg.get('fuse_bn', True)}")
+        logger.info(f"  Quant backbone: {quantization_cfg.get('quant_backbone', True)}")
+        logger.info(f"  Quant neck: {quantization_cfg.get('quant_neck', True)}")
+        logger.info(f"  Quant head: {quantization_cfg.get('quant_head', True)}")
+        if quantization_cfg.get("spconv_int8"):
+            logger.info(f"  Calibration samples: {quantization_cfg.get('num_calibration_samples', 5)}")
+    else:
+        logger.info("Quantization: disabled")
+
     data_loader = BEVFusionDataLoader(
         info_file=config.runtime_config.info_file,
         model_cfg=model_cfg,

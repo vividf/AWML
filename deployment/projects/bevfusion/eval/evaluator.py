@@ -161,7 +161,11 @@ class BEVFusionEvaluator(BaseEvaluator):
                 print("\nStage-wise Latency Breakdown:")
                 for stage, stats in breakdown_dict.items():
                     stats_dict = stats.to_dict() if hasattr(stats, "to_dict") else stats
+                    mean_ms = stats_dict.get("mean_ms", 0.0)
+                    std_ms = stats_dict.get("std_ms", 0.0)
+                    if mean_ms == 0.0 and std_ms == 0.0:
+                        continue
                     stage_name = stage.replace("_ms", "").replace("_", " ").title()
-                    print(f"  {stage_name:18s}: {stats_dict['mean_ms']:.2f} ± {stats_dict['std_ms']:.2f} ms")
+                    print(f"  {stage_name:18s}: {mean_ms:.2f} ± {std_ms:.2f} ms")
 
         print(f"\nTotal Samples: {results['num_samples']}")

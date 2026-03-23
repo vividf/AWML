@@ -350,6 +350,7 @@ class EvaluationConfig:
 
     enabled: bool = False
     num_samples: int = 10
+    num_warmup_samples: int = 0
     verbose: bool = False
     backends: Mapping[Any, Mapping[str, Any]] = field(default_factory=_empty_mapping)
     models: Mapping[Any, Any] = field(default_factory=_empty_mapping)
@@ -381,6 +382,7 @@ class EvaluationConfig:
         return cls(
             enabled=config_dict.get("enabled", False),
             num_samples=config_dict.get("num_samples", 10),
+            num_warmup_samples=int(config_dict.get("num_warmup_samples", 0)),
             verbose=config_dict.get("verbose", False),
             backends=MappingProxyType(backends_frozen),
             models=MappingProxyType(dict(models_raw)),

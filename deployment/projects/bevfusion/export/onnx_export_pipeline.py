@@ -22,6 +22,7 @@ from deployment.configs import BaseDeploymentConfig
 from deployment.core.artifacts import Artifact
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.exporters.export_pipelines.base import OnnxExportPipeline
+from deployment.projects.bevfusion.io.model_loader import setup_quantization_for_onnx_export
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,9 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             f"ONNX config: opset={onnx_cfg['opset_version']}, inputs={onnx_cfg['input_names']}, outputs={onnx_cfg['output_names']}"
         )
 
+        # Use QuantizeLinear/DequantizeLinear in ONNX (same as CenterPoint). Without this,
+        # pytorch_quantization TensorQuantizer exports as primitive ops (Mul, Round, Clip, Div).
+        setup_quantization_for_onnx_export()
         self.logger.info("Running torch.onnx.export...")
         self._export_to_onnx(model, voxels, coors, num_points_per_voxel, str(temp_path), onnx_cfg)
 

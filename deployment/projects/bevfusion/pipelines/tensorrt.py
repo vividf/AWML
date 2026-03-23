@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os.path as osp
-import time
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -27,6 +26,68 @@ from deployment.pipelines.gpu_resource_mixin import (
 from deployment.projects.bevfusion.pipelines.bevfusion_pipeline import BEVFusionDeploymentPipeline
 
 logger = logging.getLogger(__name__)
+
+
+class _TRTLayerProfiler(trt.IProfiler):
+    """Collects per-layer execution times for TensorRT engine."""
+
+    def __init__(self) -> None:
+        try:
+            trt.IProfiler.__init__(self)
+        except Exception:
+            pass
+        self.layer_times: List[Tuple[str, float]] = []
+
+    def report_layer_time(self, layer_name: str, ms: float) -> None:
+        self.layer_times.append((str(layer_name), float(ms)))
+
+
+def _aggregate_trt_layers_to_stages(layer_times: List[Tuple[str, float]]) -> Dict[str, float]:
+    """Map TensorRT layer names to BEVFusion stages and sum times (ms).
+
+    Uses substring matching on layer names (e.g. from ONNX export).
+    Order of patterns matters: first match wins. Unmatched layers go to bevfusion_ms.
+    """
+    stage_sums: Dict[str, float] = {
+        "voxel_encoder_ms": 0.0,
+        "sparse_encoder_ms": 0.0,
+        "backbone_ms": 0.0,
+        "neck_ms": 0.0,
+        "head_ms": 0.0,
+        "post_scoring_ms": 0.0,
+        "bevfusion_ms": 0.0,
+    }
+    # Patterns (substring in layer name) -> stage key. Check in order.
+    stage_patterns: List[Tuple[str, str]] = [
+        ("pts_middle_encoder", "sparse_encoder_ms"),
+        ("middle_encoder", "sparse_encoder_ms"),
+        ("encoder_layer", "sparse_encoder_ms"),
+        ("conv_input", "sparse_encoder_ms"),
+        ("pts_backbone", "backbone_ms"),
+        ("backbone", "backbone_ms"),
+        ("blocks.", "backbone_ms"),
+        ("pts_neck", "neck_ms"),
+        ("neck", "neck_ms"),
+        ("deblocks", "neck_ms"),
+        ("bbox_head", "head_ms"),
+        ("heatmap", "head_ms"),
+        ("shared_conv", "head_ms"),
+        ("sigmoid", "post_scoring_ms"),
+        ("query_labels", "post_scoring_ms"),
+        ("post_scoring", "post_scoring_ms"),
+        ("voxel", "voxel_encoder_ms"),
+    ]
+    for layer_name, ms in layer_times:
+        name_lower = layer_name.lower()
+        assigned = False
+        for pattern, stage_key in stage_patterns:
+            if pattern.lower() in name_lower or (pattern in layer_name):
+                stage_sums[stage_key] += ms
+                assigned = True
+                break
+        if not assigned:
+            stage_sums["bevfusion_ms"] += ms
+    return stage_sums
 
 
 class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
@@ -113,6 +174,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         voxels: torch.Tensor,
         coors: torch.Tensor,
         num_points_per_voxel: torch.Tensor,
+        profiler: _TRTLayerProfiler | None = None,
     ) -> List[torch.Tensor]:
         engine = self._engine
         context = self._context
@@ -148,28 +210,38 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
                 arr = np.ascontiguousarray(arr)
             output_arrays[name] = arr
 
-        with TensorRTResourceManager() as mgr:
-            d_inputs = {name: mgr.allocate(arr.nbytes) for name, arr in input_map.items()}
-            d_outputs = {name: mgr.allocate(arr.nbytes) for name, arr in output_arrays.items()}
-            stream = mgr.stream
+        prev_profiler = None
+        if profiler is not None and hasattr(context, "profiler"):
+            prev_profiler = getattr(context, "profiler", None)
+            context.profiler = profiler
+            profiler.layer_times.clear()
 
-            for name, arr in input_map.items():
-                context.set_tensor_address(name, int(d_inputs[name]))
-                cuda.memcpy_htod_async(d_inputs[name], arr, stream)
+        try:
+            with TensorRTResourceManager() as mgr:
+                d_inputs = {name: mgr.allocate(arr.nbytes) for name, arr in input_map.items()}
+                d_outputs = {name: mgr.allocate(arr.nbytes) for name, arr in output_arrays.items()}
+                stream = mgr.stream
 
-            for name in output_names:
-                context.set_tensor_address(name, int(d_outputs[name]))
+                for name, arr in input_map.items():
+                    context.set_tensor_address(name, int(d_inputs[name]))
+                    cuda.memcpy_htod_async(d_inputs[name], arr, stream)
 
-            self._start_event.record(stream)
-            ok = context.execute_async_v3(stream_handle=stream.handle)
-            if not ok:
-                raise RuntimeError("TensorRT execute_async_v3 returned failure status.")
-            self._end_event.record(stream)
+                for name in output_names:
+                    context.set_tensor_address(name, int(d_outputs[name]))
 
-            for name in output_names:
-                cuda.memcpy_dtoh_async(output_arrays[name], d_outputs[name], stream)
+                self._start_event.record(stream)
+                ok = context.execute_async_v3(stream_handle=stream.handle)
+                if not ok:
+                    raise RuntimeError("TensorRT execute_async_v3 returned failure status.")
+                self._end_event.record(stream)
 
-            mgr.synchronize()
+                for name in output_names:
+                    cuda.memcpy_dtoh_async(output_arrays[name], d_outputs[name], stream)
+
+                mgr.synchronize()
+        finally:
+            if profiler is not None and hasattr(context, "profiler"):
+                context.profiler = prev_profiler
 
         # Keep output order consistent with config / ONNX export wrapper:
         # [bbox_pred, score, label_pred].
@@ -179,19 +251,41 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         ordered_names += [n for n in output_names if n not in ordered_names]
         return [torch.from_numpy(output_arrays[name]).to(self.torch_device) for name in ordered_names]
 
+    # Stage keys aligned with BEVFusionPyTorchPipeline for consistent Stage-wise Latency Breakdown.
+    BEVFUSION_STAGE_KEYS = (
+        "voxel_encoder_ms",
+        "sparse_encoder_ms",
+        "backbone_ms",
+        "neck_ms",
+        "head_ms",
+        "post_scoring_ms",
+        "bevfusion_ms",
+    )
+
     @override
     def run_model(self, preprocessed_input: Dict[str, torch.Tensor]) -> Tuple[List[torch.Tensor], Dict[str, float]]:
-        stage_latencies: Dict[str, float] = {}
+        stage_latencies: Dict[str, float] = {k: 0.0 for k in self.BEVFUSION_STAGE_KEYS}
 
+        profiler = _TRTLayerProfiler()
         outputs = self.run_bevfusion(
             preprocessed_input["voxels"],
             preprocessed_input["coors"],
             preprocessed_input["num_points_per_voxel"],
+            profiler=profiler,
         )
 
         self._end_event.synchronize()
         gpu_time_ms = self._end_event.time_since(self._start_event)
         stage_latencies["bevfusion_ms"] = gpu_time_ms
+
+        if profiler.layer_times:
+            aggregated = _aggregate_trt_layers_to_stages(profiler.layer_times)
+            for k in self.BEVFUSION_STAGE_KEYS:
+                if k == "bevfusion_ms":
+                    continue
+                if k in aggregated and aggregated[k] > 0:
+                    stage_latencies[k] = aggregated[k]
+        # bevfusion_ms stays total engine time; sub-stages from profiler when layer names are available
 
         return outputs, stage_latencies
 
