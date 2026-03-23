@@ -219,6 +219,7 @@ class BaseEvaluator(VerificationMixin, ABC):
         data_loader: BaseDataLoader,
         num_samples: int,
         verbose: bool = False,
+        num_warmup_samples: int = 0,
     ) -> EvalResultDict:
         """
         Run evaluation on the specified model.
@@ -228,6 +229,7 @@ class BaseEvaluator(VerificationMixin, ABC):
             data_loader: Data loader for samples
             num_samples: Number of samples to evaluate
             verbose: Whether to print progress
+            num_warmup_samples: Number of inference runs to execute before timing (excluded from latency stats).
 
         Returns:
             Evaluation results dictionary
@@ -243,6 +245,18 @@ class BaseEvaluator(VerificationMixin, ABC):
         latency_breakdowns = []
 
         actual_samples = min(num_samples, data_loader.num_samples)
+        warmup = max(0, min(num_warmup_samples, data_loader.num_samples))
+
+        if warmup > 0:
+            logger.info(f"Warm-up: running {warmup} inference(s) (excluded from latency)...")
+            for w in range(warmup):
+                sample_idx = w % data_loader.num_samples
+                sample = data_loader.load_sample(sample_idx)
+                inference_input = self._prepare_input(sample, data_loader, model.device)
+                _ = pipeline.infer(inference_input.data, metadata=inference_input.metadata)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            logger.info("Warm-up done.")
 
         for idx in range(actual_samples):
             if verbose and idx % EVALUATION_DEFAULTS.LOG_INTERVAL == 0:

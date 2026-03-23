@@ -94,6 +94,7 @@ class EvaluationOrchestrator:
                     data_loader=self.data_loader,
                     num_samples=num_samples,
                     verbose=verbose_mode,
+                    num_warmup_samples=getattr(eval_config, "num_warmup_samples", 0),
                 )
                 all_results[backend.value] = results
                 self.logger.info(f"\n{backend.value.upper()} Results:")
