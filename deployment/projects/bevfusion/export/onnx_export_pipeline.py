@@ -46,9 +46,14 @@ class BEVFusionMainBodyWrapper(nn.Module):
     ) -> tuple:
         import torch.nn.functional as F
 
+        # spconv requires int32 indices; float batch column (torch.zeros default) + int coors
+        # yields float tensor and can CUDA fault when SPCONV_FX_TRACE_MODE relaxes dtype checks.
+        # INT8 sparse path: quantize_per_tensor only accepts float; keep voxels FP32.
+        voxels = voxels.to(dtype=torch.float32)
+        coors = coors.to(dtype=torch.int32)
         if coors.shape[1] == 3:
             num_points = coors.shape[0]
-            batch_coors = torch.zeros(num_points, 1).to(coors.device)
+            batch_coors = torch.zeros(num_points, 1, dtype=torch.int32, device=coors.device)
             coors = torch.cat([batch_coors, coors], dim=1).contiguous()
 
         batch_inputs_dict = {
@@ -126,6 +131,13 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         # Use QuantizeLinear/DequantizeLinear in ONNX (same as CenterPoint). Without this,
         # pytorch_quantization TensorQuantizer exports as primitive ops (Mul, Round, Clip, Div).
         setup_quantization_for_onnx_export()
+        from deployment.projects.bevfusion.quantization.spconv_quantized_add_patch import (
+            ensure_spconv_quantize_per_tensor_float_activations,
+            retarget_graphmodule_quantize_per_tensor_calls,
+        )
+
+        ensure_spconv_quantize_per_tensor_float_activations()
+        retarget_graphmodule_quantize_per_tensor_calls(model)
         self.logger.info("Running torch.onnx.export...")
         self._export_to_onnx(model, voxels, coors, num_points_per_voxel, str(temp_path), onnx_cfg)
 
@@ -150,7 +162,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             else:
                 feats, coords = ret
                 sizes = torch.ones(feats.shape[0], device=device)
-            coords = coords[:, :]  # [M, 3] (z, y, x)
+            coords = coords[:, :].to(dtype=torch.int32)  # [M, 3] (z, y, x); spconv expects int32
 
         return feats, coords, sizes
 
@@ -168,9 +180,11 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
 
         onnx_settings = config.onnx_config
         opset_version = getattr(onnx_settings, "opset_version", 17)
-        # BEVFusion sparse encoder calls SparseConvTensor.dense() → huge dense grid; small GPUs OOM.
-        # Default trace on CPU (host RAM); override with onnx_config trace_device or BEVFUSION_ONNX_TRACE_DEVICE.
-        trace_device = onnx_settings.trace_device or os.environ.get("BEVFUSION_ONNX_TRACE_DEVICE", "cpu")
+        # Default "auto" = trace on the same device as the model (usually CUDA). CUDA-built spconv
+        # implicit_gemm runs GPU kernels: indices/features on CPU + those kernels => cudaErrorIllegalAddress.
+        # If you lack GPU memory for dense(), set trace_device=cpu only with a CPU spconv build, or export
+        # on another machine; see README_SPCONV_INT8_實作歷程.md.
+        trace_device = onnx_settings.trace_device or os.environ.get("BEVFUSION_ONNX_TRACE_DEVICE", "auto")
 
         return {
             "input_names": input_names,
@@ -194,7 +208,21 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
     ) -> None:
         """Export the wrapped model to ONNX."""
         model_device = next(model.parameters()).device
-        trace_dev = torch.device(onnx_cfg.get("trace_device", "cpu"))
+        raw_td = onnx_cfg.get("trace_device") or "auto"
+        if raw_td in ("auto", "", None):
+            trace_dev = model_device
+        else:
+            trace_dev = torch.device(raw_td)
+
+        if model_device.type == "cuda" and trace_dev.type == "cpu":
+            self.logger.warning(
+                "trace_device=cpu while model is on %s: CUDA spconv implicit_gemm does not support "
+                "CPU indices (merge_sort illegal address). Tracing on %s instead. "
+                "For large dense() OOM, use a larger GPU or export elsewhere; do not use CPU trace with CUDA spconv.",
+                model_device,
+                model_device,
+            )
+            trace_dev = model_device
 
         moved_for_trace = trace_dev != model_device
         if moved_for_trace:
@@ -209,30 +237,45 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             wrapper = BEVFusionMainBodyWrapper(model)
             model_inputs = (
                 voxels.to(trace_dev),
-                coors.to(trace_dev),
+                coors.to(device=trace_dev, dtype=torch.int32),
                 num_points_per_voxel.to(trace_dev),
             )
             wrapper.eval()
             wrapper.to(trace_dev)
 
+            export_kw: Dict[str, Any] = dict(
+                export_params=onnx_cfg["export_params"],
+                input_names=onnx_cfg["input_names"],
+                output_names=onnx_cfg["output_names"],
+                opset_version=onnx_cfg["opset_version"],
+                dynamic_axes=onnx_cfg["dynamic_axes"],
+                keep_initializers_as_inputs=onnx_cfg["keep_initializers_as_inputs"],
+                verbose=onnx_cfg["verbose"],
+            )
+            try:
+                from torch.onnx import TrainingMode
+
+                export_kw["training"] = TrainingMode.EVAL
+            except Exception:
+                pass
+
             with torch.no_grad():
-                torch.onnx.export(
-                    wrapper,
-                    model_inputs,
-                    output_path,
-                    export_params=onnx_cfg["export_params"],
-                    input_names=onnx_cfg["input_names"],
-                    output_names=onnx_cfg["output_names"],
-                    opset_version=onnx_cfg["opset_version"],
-                    dynamic_axes=onnx_cfg["dynamic_axes"],
-                    keep_initializers_as_inputs=onnx_cfg["keep_initializers_as_inputs"],
-                    verbose=onnx_cfg["verbose"],
-                )
+                torch.onnx.export(wrapper, model_inputs, output_path, **export_kw)
         finally:
             if moved_for_trace:
-                model.to(model_device)
+                try:
+                    model.to(model_device)
+                except Exception as e:
+                    self.logger.warning(
+                        "Could not move model back to %s after ONNX export (GPU may be in error state): %s",
+                        model_device,
+                        e,
+                    )
                 if model_device.type == "cuda":
-                    torch.cuda.empty_cache()
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
 
         self.logger.info("Exported ONNX to %s", output_path)
 

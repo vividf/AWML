@@ -129,6 +129,24 @@ def _enable_spconv_fx_trace_mode() -> None:
         pass
 
 
+def _disable_spconv_fx_trace_mode() -> None:
+    """Turn off spconv FX trace mode (both modules that cache the flag).
+
+    Deployment sets ``SPCONV_FX_TRACE_MODE=1`` early for INT8 ONNX/spconv. That global relaxed mode can
+    interact badly with ``pytorch_quantization`` while inserting TensorQuantizers (torch.fx Proxy +
+    control-flow errors). Disable **only** for dense Q/DQ insertion; ``apply_spconv_int8_quantization``
+    calls ``_enable_spconv_fx_trace_mode()`` again before ``prepare_fx``.
+    """
+    try:
+        import spconv.constants as spconv_constants
+        import spconv.pytorch.core as spconv_core
+
+        spconv_constants.SPCONV_FX_TRACE_MODE = False
+        spconv_core.SPCONV_FX_TRACE_MODE = False
+    except Exception:
+        pass
+
+
 def apply_spconv_int8_quantization(
     sparse_encoder: nn.Module,
     device: torch.device,
@@ -148,6 +166,12 @@ def apply_spconv_int8_quantization(
         Prepared sparse encoder (with observers inserted, ready for calibration).
     """
     _enable_spconv_fx_trace_mode()
+    from deployment.projects.bevfusion.quantization.spconv_quantized_add_patch import (
+        ensure_spconv_quantize_per_tensor_float_activations,
+    )
+
+    ensure_spconv_quantize_per_tensor_float_activations()
+
     imports = _get_spconv_quantization_imports()
 
     imports["prepare_spconv_torch_inference"](with_linear=False)
@@ -206,9 +230,11 @@ def convert_spconv_int8(prepared_encoder: nn.Module) -> nn.Module:
         Quantized sparse encoder using cumm INT8 kernels.
     """
     from deployment.projects.bevfusion.quantization.spconv_quantized_add_patch import (
+        ensure_spconv_quantize_per_tensor_float_activations,
         ensure_spconv_quantized_add_sparse_support,
     )
 
+    ensure_spconv_quantize_per_tensor_float_activations()
     ensure_spconv_quantized_add_sparse_support()
 
     imports = _get_spconv_quantization_imports()

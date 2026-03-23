@@ -112,9 +112,13 @@ class SparseConvolution(SparseConvolutionBase):
             raise NotImplementedError
 
         indice_dict = input.indice_dict.copy()
-        # only support contiguous tensor for now
+        # only support contiguous tensor for now (indices non-contiguous → CUDA illegal access in merge_sort)
         if not _fx_tracing and not features.is_contiguous():
             features = features.contiguous()
+        if not _fx_tracing and not indices.is_contiguous():
+            indices = indices.contiguous()
+        if not _fx_tracing and indices.dtype != torch.int32:
+            indices = indices.to(dtype=torch.int32)
         algo = self.algo
         if self.indice_key is not None:
             data = input.find_indice_pair(self.indice_key)
@@ -302,11 +306,22 @@ class SparseConvolution(SparseConvolutionBase):
                                     )
                                 )
                             except Exception as e:
-                                msg = "[Exception|implicit_gemm_pair]"
-                                msg += f"indices={indices.shape}," "bs={batch_size}," "ss={spatial_shape},"
-                                msg += f"algo={algo}," "ksize={self.kernel_size}," "stride={self.stride},"
-                                msg += f"padding={self.padding}," "dilation={self.dilation}," "subm={self.subm},"
-                                msg += f"transpose={self.transposed}"
+
+                                def _idx_shape_str() -> str:
+                                    try:
+                                        return str(tuple(int(s) for s in indices.shape))
+                                    except Exception:
+                                        return str(indices.shape)
+
+                                msg = (
+                                    f"[Exception|implicit_gemm_pair]indices_shape={_idx_shape_str()},"
+                                    f"bs={batch_size},ss={spatial_shape},algo={algo},"
+                                    f"ksize={self.kernel_size},stride={self.stride},"
+                                    f"padding={self.padding},dilation={self.dilation},"
+                                    f"subm={self.subm},transpose={self.transposed},"
+                                    f"indices_dtype={getattr(indices, 'dtype', None)},"
+                                    f"indices_device={getattr(indices, 'device', None)}"
+                                )
                                 print(msg, file=sys.stderr)
                                 spconv_save_debug_data(indices)
                                 raise e

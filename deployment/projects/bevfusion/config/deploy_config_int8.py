@@ -24,7 +24,7 @@ Usage:
         --checkpoint work_dirs/bevfusion/epoch_30.pth \
         --deploy-cfg deployment/projects/bevfusion/config/deploy_config_int8.py \
         --calibrate-samples 256 --batch-size 1 --calib-seed 0 \
-        --output work_dirs/bevfusion/epoch_30_ptq.pth
+        --output work_dirs/bevfusion/epoch_30_ptq2.pth
 
     # Step 2: Deploy with PTQ checkpoint (use same _fx config)
     python -m deployment.cli.main bevfusion \

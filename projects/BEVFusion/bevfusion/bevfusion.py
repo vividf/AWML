@@ -212,13 +212,21 @@ class BEVFusion(Base3DDetector):
             with torch.cuda.amp.autocast(enabled=False):
                 # with torch.autocast('cuda', enabled=False):
 
-                # NOTE(knzo25): onnx demmands this
-                # batch_size = coords[-1, 0] + 1
-                batch_size = 1
-                print("Run onnx point_eSpConvst")
                 assert self.voxelize_reduce
                 if self.voxelize_reduce:
                     feats = feats.sum(dim=1, keepdim=False) / sizes.type_as(feats).view(-1, 1)
+
+                # spconv INT8 / torch.quantize_per_tensor requires float activations; voxel grids may be integer
+                feats = feats.to(dtype=torch.float32)
+                # spconv + torch.jit ONNX trace: avoid aliasing traced tensors; enforce int32 indices
+                feats = feats.contiguous()
+                coords = coords.contiguous().to(dtype=torch.int32)
+                if torch.jit.is_tracing():
+                    feats = feats.clone()
+                    coords = coords.clone()
+                # batch index column must match batch_size passed to SparseConvTensor (hardcoding 1 is wrong if coors hold larger batch ids)
+                batch_size = int(coords[:, 0].max().item()) + 1
+                batch_size = max(batch_size, 1)
         x = self.pts_middle_encoder(feats, coords, batch_size)
         return x
 

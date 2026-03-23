@@ -29,6 +29,11 @@ from typing import Any, Dict, Optional, Set, Tuple
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+# Before any import that loads spconv.constants (prepare_fx / sparse layers need relaxed asserts).
+import os
+
+os.environ.setdefault("SPCONV_FX_TRACE_MODE", "1")
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
