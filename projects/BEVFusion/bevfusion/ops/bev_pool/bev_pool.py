@@ -1,7 +1,17 @@
 import torch
 from torch.onnx.symbolic_helper import _get_tensor_dim_size, _get_tensor_sizes
 
-from . import bev_pool_ext
+_bev_pool_ext = None
+
+
+def _get_bev_pool_ext():
+    """Lazy import: top-level `from . import bev_pool_ext` races package __init__."""
+    global _bev_pool_ext
+    if _bev_pool_ext is None:
+        from . import bev_pool_ext as _ext
+
+        _bev_pool_ext = _ext
+    return _bev_pool_ext
 
 
 class QuickCumsum(torch.autograd.Function):
@@ -46,7 +56,7 @@ class QuickCumsumTrainingCuda(torch.autograd.Function):
         interval_lengths[-1] = x.shape[0] - interval_starts[-1]
         geom_feats = geom_feats.int()
 
-        out = bev_pool_ext.bev_pool_forward(
+        out = _get_bev_pool_ext().bev_pool_forward(
             x,
             geom_feats,
             interval_lengths,
@@ -67,7 +77,7 @@ class QuickCumsumTrainingCuda(torch.autograd.Function):
         B, D, H, W = ctx.saved_shapes
 
         out_grad = out_grad.contiguous()
-        x_grad = bev_pool_ext.bev_pool_backward(
+        x_grad = _get_bev_pool_ext().bev_pool_backward(
             out_grad,
             geom_feats,
             interval_lengths,
@@ -117,7 +127,7 @@ class QuickCumsumCuda(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, geom_feats, interval_lengths, interval_starts, B, D, H, W):
-        out = bev_pool_ext.bev_pool_forward(
+        out = _get_bev_pool_ext().bev_pool_forward(
             x,
             geom_feats,
             interval_lengths,
