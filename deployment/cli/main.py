@@ -7,6 +7,11 @@ Usage:
 
 from __future__ import annotations
 
+import os
+
+# spconv reads SPCONV_FX_TRACE_MODE from the environment when spconv.constants is first imported.
+os.environ.setdefault("SPCONV_FX_TRACE_MODE", "1")
+
 import argparse
 import importlib
 import pkgutil

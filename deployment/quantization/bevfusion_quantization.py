@@ -107,10 +107,11 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
 
 def _build_bevfusion_model(config_path: str, checkpoint_path: str, device: str):
     """Build BEVFusion model using mmdet3d init_model."""
-    import projects.BEVFusion.bevfusion  # noqa: F401
-    import projects.SparseConvolution  # noqa: F401
     from mmdet3d.apis import init_model
     from mmengine.registry import init_default_scope
+
+    import projects.BEVFusion.bevfusion  # noqa: F401
+    import projects.SparseConvolution  # noqa: F401
 
     init_default_scope("mmdet3d")
     model = init_model(config_path, checkpoint_path, device=device)
@@ -205,19 +206,20 @@ def _calibrate_dense(model, dataloader, num_batches, method="mse"):
     return calibrator
 
 
-def _calibrate_spconv(model, dataloader, num_samples, device, output_path):
-    """Run spconv INT8 calibration for sparse encoder.
+def _calibrate_spconv(model, dataloader, num_samples, device, output_path, quant_cfg):
+    """Run spconv INT8 for sparse encoder via FX path (prepare_fx → calibrate → convert_fx).
 
-    Collects voxelized inputs, runs calibration to compute activation scales,
-    and saves scales to a separate file. Does NOT wrap the encoder (wrapping
-    is done at deployment time by the runner) to keep the state_dict keys
-    consistent with the original model structure.
+    Requires pts_middle_encoder to be FX-traceable (use config with
+    block_type='basicblock_fx', e.g. bevfusion_*_120m_fx.py). Replaces
+    model.pts_middle_encoder with the quantized module so the saved PTQ
+    checkpoint contains the INT8 sparse encoder.
     """
     import torch
 
     from deployment.projects.bevfusion.quantization.spconv_int8 import (
-        _fuse_spconv_bn_in_encoder,
+        apply_spconv_int8_quantization,
         calibrate_spconv_model,
+        convert_spconv_int8,
     )
 
     sparse_encoder = getattr(model, "pts_middle_encoder", None)
@@ -255,9 +257,7 @@ def _calibrate_spconv(model, dataloader, num_samples, device, output_path):
                         feats, coords = ret
                         sizes = None
 
-                    batch_coors = torch.zeros(
-                        coords.shape[0], 1, device=device, dtype=coords.dtype
-                    )
+                    batch_coors = torch.zeros(coords.shape[0], 1, device=device, dtype=coords.dtype)
                     coords = torch.cat([batch_coors, coords], dim=1).contiguous()
 
                     if sizes is not None and getattr(model, "voxelize_reduce", True):
@@ -276,13 +276,20 @@ def _calibrate_spconv(model, dataloader, num_samples, device, output_path):
 
     print(f"  Collected {len(calibration_data)} samples")
 
-    scales = calibrate_spconv_model(sparse_encoder, calibration_data)
+    in_channels = getattr(sparse_encoder, "in_channels", 5)
+    try:
+        print("  Applying spconv FX path: prepare_fx → calibrate → convert_fx → transform_qdq")
+        prepared = apply_spconv_int8_quantization(sparse_encoder, torch.device(device), in_channels=in_channels)
+        calibrate_spconv_model(prepared, calibration_data)
+        converted = convert_spconv_int8(prepared)
+        model.pts_middle_encoder = converted
+        print("  Sparse encoder replaced with INT8 quantized module (FX path)")
+    except Exception as e:
+        print(f"  Spconv FX INT8 failed: {e}")
+        print("  Ensure config uses block_type='basicblock_fx' (e.g. bevfusion_*_120m_fx.py)")
+        import traceback
 
-    from pathlib import Path
-    scales_path = Path(output_path).with_suffix(".spconv_scales")
-    torch.save(scales, scales_path)
-    print(f"  Spconv activation scales saved to {scales_path}")
-    print(f"  {len(scales)} layer scales computed")
+        traceback.print_exc()
 
 
 def _disable_sensitive_layers(model, skip_layers):
@@ -346,9 +353,7 @@ def run_ptq(args):
     cfg = Config.fromfile(args.config)
     if isinstance(cfg.val_dataloader, dict):
         cfg.val_dataloader["batch_size"] = args.batch_size
-        cfg.val_dataloader["num_workers"] = min(
-            cfg.val_dataloader.get("num_workers", 4), 4
-        )
+        cfg.val_dataloader["num_workers"] = min(cfg.val_dataloader.get("num_workers", 4), 4)
         cfg.val_dataloader["persistent_workers"] = False
 
         if args.calib_seed is not None:
@@ -380,27 +385,29 @@ def run_ptq(args):
         print(f"\n  Disabling {len(skip_layers)} sensitive layers...")
         _disable_sensitive_layers(model, skip_layers)
 
-    # [5b/6] Spconv INT8 calibration (optional)
+    # [5b/6] Spconv INT8 (FX path: prepare_fx → calibrate → convert_fx → replace encoder)
     if not args.skip_spconv_int8:
         quant_cfg, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
         if quant_cfg.get("spconv_int8", False):
-            print("\n[5b/6] Calibrating spconv INT8 for sparse encoder...")
+            print("\n[5b/6] Spconv INT8 for sparse encoder (FX path)...")
             spconv_samples = quant_cfg.get("num_calibration_samples", args.calibrate_samples)
             try:
-                _calibrate_spconv(model, dataloader, spconv_samples, args.device, args.output)
+                _calibrate_spconv(model, dataloader, spconv_samples, args.device, args.output, quant_cfg)
             except Exception as e:
-                print(f"  Spconv INT8 calibration failed: {e}")
+                print(f"  Spconv INT8 failed: {e}")
                 print("  Sparse encoder will remain FP32 in the PTQ checkpoint")
                 import traceback
+
                 traceback.print_exc()
     else:
-        print("\n[5b/6] Skipping spconv INT8 calibration (--skip-spconv-int8)")
+        print("\n[5b/6] Skipping spconv INT8 (--skip-spconv-int8)")
 
     # [6/6] Print status and save
     print("\n[6/6] Saving PTQ checkpoint...")
 
     try:
         from deployment.quantization import print_quantizer_status
+
         print("\nQuantizer Status:")
         print_quantizer_status(model)
     except Exception:
@@ -423,7 +430,7 @@ def run_ptq(args):
         print(f"Calibration cache saved to: {calib_path}")
     print("=" * 80)
     print("\nTo use this PTQ checkpoint for deployment:")
-    print(f"  1. Set checkpoint_path = \"{args.output}\" in your deploy config")
+    print(f'  1. Set checkpoint_path = "{args.output}" in your deploy config')
     print(f"  2. Set quantization.ptq_checkpoint = True")
     print(f"  3. Run:")
     print(f"     python -m deployment.cli.main bevfusion \\")
@@ -436,6 +443,7 @@ def main():
 
     try:
         from absl import logging as quant_logging
+
         quant_logging.set_verbosity(quant_logging.ERROR)
     except ImportError:
         pass

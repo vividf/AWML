@@ -1,20 +1,15 @@
 """Spconv INT8 quantization for BEVFusion sparse encoder.
 
-Uses a manual calibration + quantization approach (no FX tracing)
-to avoid issues with SparseConvTensor control flow in FX.
+Uses spconv's torch.ao.quantization FX graph mode to quantize
+the sparse encoder with real INT8 (cumm kernels).
 
-The approach:
-1. Fuse BatchNorm into sparse conv layers
-2. Collect activation statistics (min/max) during calibration
-3. Compute per-tensor activation scales
-4. Wrap the encoder to quantize features before each conv layer
-   so that spconv's implicit_gemm uses cumm INT8 kernels.
+Flow: prepare_fx → calibrate → convert_fx → transform_qdq → remove_conv_add_dq
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -22,227 +17,217 @@ import torch.nn as nn
 logger = logging.getLogger(__name__)
 
 
-def _fuse_spconv_bn_in_encoder(encoder: nn.Module) -> int:
-    """Fuse BatchNorm1d into preceding SparseConvolution layers in the encoder.
+def _fuse_spconv_bn_in_encoder(sparse_encoder: nn.Module) -> int:
+    """Fuse BatchNorm into sparse convolutions inside the given sparse encoder.
 
-    Walks the module tree looking for (SparseConvolution, BatchNorm1d) pairs
-    inside SparseSequential containers. Uses spconv's fuse_spconv_bn_eval
-    which handles weight permutation correctly for sparse convolutions.
-
-    Returns:
-        Number of fused pairs.
+    Used by PTQ (before prepare_fx) and by deployment model_loader so that
+    state_dict keys match. Returns the number of fused Conv-BN pairs.
     """
     try:
         from spconv.pytorch.quantization.utils import fuse_spconv_bn_eval
     except ImportError:
-        logger.warning("spconv quantization utils not available; skipping BN fusion")
+        logger.warning("spconv quantization utils not available")
         return 0
 
     from spconv.pytorch.conv import SparseConvolution
 
-    encoder.eval()
+    sparse_encoder.eval()
     fused_count = 0
 
-    for name, module in encoder.named_modules():
+    for module in sparse_encoder.modules():
         children = list(module._modules.items())
         for i in range(len(children) - 1):
             left_name, left_mod = children[i]
             right_name, right_mod = children[i + 1]
-
-            if (isinstance(left_mod, SparseConvolution) and
-                    isinstance(right_mod, nn.BatchNorm1d)):
+            if isinstance(left_mod, SparseConvolution) and isinstance(right_mod, torch.nn.BatchNorm1d):
                 fused_conv = fuse_spconv_bn_eval(left_mod, right_mod)
                 setattr(module, left_name, fused_conv)
-                setattr(module, right_name, nn.Identity())
+                setattr(module, right_name, torch.nn.Identity())
                 fused_count += 1
 
-    logger.info(f"Fused {fused_count} SparseConv-BN pairs")
     return fused_count
 
 
-class _ActivationObserver:
-    """Collects min/max activation statistics for quantization scale computation."""
+def _get_spconv_quantization_imports():
+    """Lazily import spconv quantization utilities."""
+    from spconv.pytorch.quantization import (
+        get_default_spconv_qconfig_mapping,
+        get_spconv_backend_config,
+        get_spconv_convert_custom_config,
+        get_spconv_prepare_custom_config,
+        prepare_spconv_torch_inference,
+        remove_conv_add_dq,
+        transform_qdq,
+    )
+    from torch.ao.quantization.quantize_fx import convert_fx, prepare_fx
 
-    def __init__(self):
-        self.min_val: Optional[float] = None
-        self.max_val: Optional[float] = None
-
-    def observe(self, features: torch.Tensor) -> None:
-        with torch.no_grad():
-            fmin = features.min().item()
-            fmax = features.max().item()
-            if self.min_val is None:
-                self.min_val = fmin
-                self.max_val = fmax
-            else:
-                self.min_val = min(self.min_val, fmin)
-                self.max_val = max(self.max_val, fmax)
-
-    def compute_scale(self) -> float:
-        """Compute symmetric per-tensor scale for qint8 (-128 to 127)."""
-        if self.min_val is None:
-            return 1.0
-        abs_max = max(abs(self.min_val), abs(self.max_val), 1e-12)
-        return abs_max / 127.0
-
-
-def _attach_observers(encoder: nn.Module) -> Dict[str, _ActivationObserver]:
-    """Attach activation observers as forward hooks to collect statistics."""
-    from spconv.pytorch.conv import SparseConvolution
-
-    observers: Dict[str, _ActivationObserver] = {}
-    hooks = []
-
-    for name, module in encoder.named_modules():
-        if isinstance(module, SparseConvolution):
-            obs = _ActivationObserver()
-            observers[name] = obs
-
-            def make_hook(observer):
-                def hook_fn(mod, input, output):
-                    if hasattr(output, 'features'):
-                        observer.observe(output.features)
-                    elif isinstance(output, torch.Tensor):
-                        observer.observe(output)
-                return hook_fn
-
-            h = module.register_forward_hook(make_hook(obs))
-            hooks.append(h)
-
-    input_obs = _ActivationObserver()
-    observers["__input__"] = input_obs
-
-    def input_hook(mod, input, output=None):
-        if len(input) > 0:
-            feat = input[0]
-            if hasattr(feat, 'features'):
-                input_obs.observe(feat.features)
-            elif isinstance(feat, torch.Tensor):
-                input_obs.observe(feat)
-
-    from spconv.pytorch.modules import SparseSequential
-    for name, module in encoder.named_modules():
-        if name == "conv_input" and isinstance(module, SparseSequential):
-            h = module.register_forward_pre_hook(input_hook)
-            hooks.append(h)
-            break
-
-    return observers, hooks
+    return {
+        "prepare_fx": prepare_fx,
+        "convert_fx": convert_fx,
+        "get_default_spconv_qconfig_mapping": get_default_spconv_qconfig_mapping,
+        "get_spconv_backend_config": get_spconv_backend_config,
+        "get_spconv_convert_custom_config": get_spconv_convert_custom_config,
+        "get_spconv_prepare_custom_config": get_spconv_prepare_custom_config,
+        "prepare_spconv_torch_inference": prepare_spconv_torch_inference,
+        "remove_conv_add_dq": remove_conv_add_dq,
+        "transform_qdq": transform_qdq,
+    }
 
 
-def calibrate_spconv_model(
-    encoder: nn.Module,
-    calibration_data: List[Tuple[torch.Tensor, torch.Tensor, int]],
-) -> Dict[str, float]:
-    """Run calibration data through the sparse encoder and compute scales.
+def _ensure_torch_device(device: Union[torch.device, str]) -> torch.device:
+    if isinstance(device, torch.device):
+        return device
+    if isinstance(device, str):
+        return torch.device(device)
+    raise TypeError(f"Expected torch.device or str for device, got {type(device)!r}")
+
+
+def _create_example_inputs(
+    model: nn.Module,
+    device: torch.device,
+    in_channels: int = 5,
+    num_voxels: int = 1000,
+) -> Tuple[torch.Tensor, torch.Tensor, int]:
+    """Create example inputs for FX tracing of the sparse encoder.
 
     Args:
-        encoder: The sparse encoder module.
-        calibration_data: List of (voxel_features, coors, batch_size) tuples.
+        model: The sparse encoder module.
+        device: Target device.
+        in_channels: Number of input channels for voxel features.
+        num_voxels: Number of example voxels.
 
     Returns:
-        Dictionary mapping layer names to their activation scales.
+        Tuple of (voxel_features, coors, batch_size).
     """
-    observers, hooks = _attach_observers(encoder)
-    encoder.eval()
+    dev = _ensure_torch_device(device)
+    sparse_shape = getattr(model, "sparse_shape", [41, 1440, 1440])
 
-    logger.info(f"Calibrating sparse encoder with {len(calibration_data)} samples...")
-    with torch.no_grad():
-        for i, (voxel_features, coors, batch_size) in enumerate(calibration_data):
-            try:
-                encoder(voxel_features, coors, batch_size)
-            except Exception as e:
-                logger.warning(f"Calibration sample {i} failed: {e}")
+    voxel_features = torch.randn((num_voxels, in_channels), device=dev)
+    coors = torch.zeros((num_voxels, 4), dtype=torch.int32, device=dev)
+    for i in range(num_voxels):
+        coors[i, 0] = 0
+        coors[i, 1] = i % sparse_shape[0]
+        coors[i, 2] = i % sparse_shape[1]
+        coors[i, 3] = i % sparse_shape[2]
 
-    for h in hooks:
-        h.remove()
+    return voxel_features, coors, 1
 
-    scales = {}
-    for name, obs in observers.items():
-        scale = obs.compute_scale()
-        scales[name] = scale
-        if obs.min_val is not None:
-            logger.debug(f"  {name}: min={obs.min_val:.4f}, max={obs.max_val:.4f}, scale={scale:.6f}")
 
-    logger.info(f"Computed scales for {len(scales)} layers")
-    return scales
+def _enable_spconv_fx_trace_mode() -> None:
+    """Spconv requires FX trace mode during prepare_fx (see spconv example/mnist, SPCONV_FX_TRACE_MODE).
+
+    Disables strict SparseConvTensor __init__ checks and avoids trace failures from symbolic tensors.
+    Must update both ``spconv.constants`` (source of truth) and ``spconv.pytorch.core`` (imported name).
+    """
+    try:
+        import spconv.constants as spconv_constants
+        import spconv.pytorch.core as spconv_core
+
+        spconv_constants.SPCONV_FX_TRACE_MODE = True
+        spconv_core.SPCONV_FX_TRACE_MODE = True
+    except Exception:
+        pass
 
 
 def apply_spconv_int8_quantization(
-    encoder: nn.Module,
-    calibration_data: List[Tuple[torch.Tensor, torch.Tensor, int]],
+    sparse_encoder: nn.Module,
     device: torch.device,
+    in_channels: int = 5,
 ) -> nn.Module:
-    """Apply spconv INT8 quantization to the sparse encoder.
+    """Apply spconv INT8 quantization to the sparse encoder using FX graph mode.
 
-    Flow:
-    1. Fuse BatchNorm into sparse conv layers
-    2. Calibrate to collect activation statistics
-    3. Wrap encoder with quantization-aware forward
+    This performs: prepare_fx → returns prepared model ready for calibration.
+    After calibration, call convert_spconv_int8() to finalize.
 
     Args:
-        encoder: The BEVFusionSparseEncoder module.
-        calibration_data: Calibration data for computing scales.
+        sparse_encoder: The BEVFusionSparseEncoder module.
         device: Target device.
+        in_channels: Number of voxel feature channels.
 
     Returns:
-        Quantized sparse encoder wrapper.
+        Prepared sparse encoder (with observers inserted, ready for calibration).
     """
-    _fuse_spconv_bn_in_encoder(encoder)
+    _enable_spconv_fx_trace_mode()
+    imports = _get_spconv_quantization_imports()
 
-    scales = calibrate_spconv_model(encoder, calibration_data)
+    imports["prepare_spconv_torch_inference"](with_linear=False)
 
-    wrapped = SpconvInt8EncoderWrapper(encoder, scales)
-    logger.info("Spconv INT8 quantization applied (manual calibration + quantized inference)")
-    return wrapped
+    qconfig_mapping = imports["get_default_spconv_qconfig_mapping"](is_qat=False)
+    backend_config = imports["get_spconv_backend_config"]()
+    prepare_custom_config = imports["get_spconv_prepare_custom_config"]()
+
+    example_inputs = _create_example_inputs(sparse_encoder, device, in_channels=in_channels)
+
+    sparse_encoder.eval()
+    logger.info("Running prepare_fx on sparse encoder for INT8 quantization...")
+    prepared = imports["prepare_fx"](
+        sparse_encoder,
+        qconfig_mapping,
+        example_inputs,
+        backend_config=backend_config,
+        prepare_custom_config=prepare_custom_config,
+    )
+
+    logger.info("Sparse encoder prepared for INT8 calibration")
+    return prepared
 
 
-class SpconvInt8EncoderWrapper(nn.Module):
-    """Wrapper that enables INT8 inference through spconv's implicit_gemm.
+def calibrate_spconv_model(
+    prepared_encoder: nn.Module,
+    calibration_data: List[Tuple[torch.Tensor, torch.Tensor, int]],
+) -> None:
+    """Run calibration data through the prepared sparse encoder.
 
-    After calibration, this wrapper quantizes input features to qint8
-    before passing to the sparse encoder. The spconv implicit_gemm kernel
-    detects quantized input and uses cumm INT8 kernels.
-
-    For layers where the overhead of quantize/dequantize is too high,
-    we can selectively apply INT8 only to certain layers. Currently
-    applies to the entire encoder input.
+    Args:
+        prepared_encoder: Prepared (with observers) sparse encoder.
+        calibration_data: List of (voxel_features, coors, batch_size) tuples.
     """
+    prepared_encoder.eval()
+    logger.info(f"Calibrating sparse encoder with {len(calibration_data)} samples...")
 
-    def __init__(self, encoder: nn.Module, scales: Dict[str, float]):
-        super().__init__()
-        self.encoder = encoder
-        self.scales = scales
-        self._input_scale = scales.get("__input__", 1.0)
-        self._quantize_input = True
+    with torch.no_grad():
+        for i, (voxel_features, coors, batch_size) in enumerate(calibration_data):
+            try:
+                prepared_encoder(voxel_features, coors, batch_size)
+                logger.debug(f"  Calibration sample {i + 1}/{len(calibration_data)}")
+            except Exception as e:
+                logger.warning(f"  Calibration sample {i + 1} failed: {e}")
 
-        self._quantize_weights(encoder)
+    logger.info("Sparse encoder calibration complete")
 
-    def _quantize_weights(self, encoder: nn.Module) -> None:
-        """Pre-quantize conv weights for INT8 inference."""
-        from spconv.pytorch.conv import SparseConvolution
 
-        for name, module in encoder.named_modules():
-            if isinstance(module, SparseConvolution) and hasattr(module, 'weight'):
-                weight = module.weight.data
-                w_abs_max = weight.abs().amax(dim=list(range(weight.ndim - 1)), keepdim=True).clamp(min=1e-12)
-                w_scale = w_abs_max / 127.0
-                module._weight_scale = w_scale.squeeze()
-                logger.debug(f"  Weight scale for {name}: mean={w_scale.mean().item():.6f}")
+def convert_spconv_int8(prepared_encoder: nn.Module) -> nn.Module:
+    """Convert a calibrated prepared model to quantized INT8.
 
-    def forward(self, voxel_features: torch.Tensor, coors: torch.Tensor, batch_size: int) -> torch.Tensor:
-        return self.encoder(voxel_features, coors, batch_size)
+    Args:
+        prepared_encoder: Calibrated prepared sparse encoder.
 
-    @property
-    def sparse_shape(self):
-        return self.encoder.sparse_shape
+    Returns:
+        Quantized sparse encoder using cumm INT8 kernels.
+    """
+    from deployment.projects.bevfusion.quantization.spconv_quantized_add_patch import (
+        ensure_spconv_quantized_add_sparse_support,
+    )
 
-    @property
-    def in_channels(self):
-        return self.encoder.in_channels
+    ensure_spconv_quantized_add_sparse_support()
 
-    def __getattr__(self, name: str):
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self.encoder, name)
+    imports = _get_spconv_quantization_imports()
+
+    backend_config = imports["get_spconv_backend_config"]()
+    convert_custom_config = imports["get_spconv_convert_custom_config"]()
+
+    logger.info("Converting sparse encoder to INT8...")
+    converted = imports["convert_fx"](
+        prepared_encoder,
+        convert_custom_config=convert_custom_config,
+        backend_config=backend_config,
+    )
+
+    logger.info("Applying transform_qdq...")
+    converted = imports["transform_qdq"](converted)
+
+    logger.info("Applying remove_conv_add_dq...")
+    converted = imports["remove_conv_add_dq"](converted)
+
+    logger.info("Sparse encoder INT8 conversion complete")
+    return converted

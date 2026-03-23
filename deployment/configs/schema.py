@@ -136,6 +136,8 @@ class OnnxConfig:
     export_params: bool = True
     keep_initializers_as_inputs: bool = False
     simplify: bool = False
+    # Device for torch.onnx.export tracing (e.g. "cpu", "cuda:0"). None = pipeline default.
+    trace_device: Optional[str] = None
 
     @classmethod
     def from_dict(cls, raw: Optional[Mapping[str, Any]]) -> OnnxConfig:
@@ -144,12 +146,15 @@ class OnnxConfig:
             return cls()
         if not isinstance(raw, Mapping):
             raise TypeError(f"onnx_config must be a mapping, got {type(raw).__name__}")
+        trace_raw = raw.get("trace_device")
+        trace_device = str(trace_raw) if trace_raw is not None else None
         return cls(
             opset_version=int(raw.get("opset_version", 17)),
             do_constant_folding=bool(raw.get("do_constant_folding", True)),
             export_params=bool(raw.get("export_params", True)),
             keep_initializers_as_inputs=bool(raw.get("keep_initializers_as_inputs", False)),
             simplify=bool(raw.get("simplify", False)),
+            trace_device=trace_device,
         )
 
 

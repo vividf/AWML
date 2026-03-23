@@ -6,6 +6,7 @@ import logging
 from typing import List, Optional, Tuple
 
 import torch
+import torch.fx
 from mmengine.config import Config
 
 from deployment.configs import BaseDeploymentConfig
@@ -69,8 +70,7 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
         cuda_device = self.config.devices.cuda
         if cuda_device is None:
             raise RuntimeError(
-                "BEVFusion requires a CUDA device for sparse convolution. "
-                "Set devices.cuda in deploy config."
+                "BEVFusion requires a CUDA device for sparse convolution. " "Set devices.cuda in deploy config."
             )
 
         quantization = self.config.deploy_cfg.get("quantization", None)
@@ -121,6 +121,15 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
 
         torch_device = device.to_torch_device()
 
+        # PTQ load already replaced pts_middle_encoder with a converted FX GraphModule; do not
+        # call prepare_fx again (and avoid passing calibration_data as `device` by mistake).
+        if isinstance(sparse_encoder, torch.fx.GraphModule):
+            logger.info(
+                "pts_middle_encoder is already an FX GraphModule (PTQ / model_loader path); "
+                "skipping runner prepare_fx + calibrate + convert."
+            )
+            return model
+
         num_calib_samples = quantization.get("num_calibration_samples", 5)
         calibration_data = self._collect_calibration_data(model, num_calib_samples, torch_device)
 
@@ -129,9 +138,15 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
             return model
 
         try:
-            quantized_encoder = apply_spconv_int8_quantization(
-                sparse_encoder, calibration_data, torch_device,
+            from deployment.projects.bevfusion.quantization.spconv_int8 import (
+                calibrate_spconv_model,
+                convert_spconv_int8,
             )
+
+            in_channels = getattr(sparse_encoder, "in_channels", 5)
+            prepared = apply_spconv_int8_quantization(sparse_encoder, torch_device, in_channels=in_channels)
+            calibrate_spconv_model(prepared, calibration_data)
+            quantized_encoder = convert_spconv_int8(prepared)
             model.pts_middle_encoder = quantized_encoder
             logger.info("Spconv INT8 quantization applied to pts_middle_encoder")
 
@@ -139,6 +154,7 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
             logger.error(f"Spconv INT8 quantization failed: {e}")
             logger.info("Falling back to FP32 sparse encoder")
             import traceback
+
             traceback.print_exc()
 
         return model
@@ -178,9 +194,7 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
                         feats, coords = ret
                         sizes = None
 
-                    batch_coors = torch.zeros(
-                        coords.shape[0], 1, device=device, dtype=coords.dtype
-                    )
+                    batch_coors = torch.zeros(coords.shape[0], 1, device=device, dtype=coords.dtype)
                     coords = torch.cat([batch_coors, coords], dim=1).contiguous()
 
                     if sizes is not None and getattr(model, "voxelize_reduce", True):

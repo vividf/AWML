@@ -1,16 +1,35 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-from mmdet3d.models.layers import make_sparse_convmodule
+from typing import Dict, List, Optional
+
+from mmdet3d.models.layers.sparse_block import SparseBasicBlock
 from mmdet3d.models.layers.spconv import IS_SPCONV2_AVAILABLE
 from mmdet3d.models.middle_encoders import SparseEncoder
 from mmdet3d.registry import MODELS
 
 if IS_SPCONV2_AVAILABLE:
-    from spconv.pytorch import SparseConvTensor
+    from spconv.pytorch import SparseConvTensor, SparseSequential
 else:
-    from mmcv.ops import SparseConvTensor
+    from mmcv.ops import SparseConvTensor, SparseSequential
 
 import numpy as np
 import torch
+
+from .sparse_block_fx import SparseBasicBlockFX
+from .sparse_convmodule import make_sparse_convmodule
+
+
+def _conv_out_to_bev(out_tensor) -> torch.Tensor:
+    """Convert conv_out SparseConvTensor to BEV (N, C*D, H, W). Single wrapped op so FX does not trace dense()/shape/view (avoids 'symbolically traced variables in control flow')."""
+    spatial_features_5d = out_tensor.dense()
+    N, C, H, W, D = spatial_features_5d.shape
+    x = spatial_features_5d.permute(0, 1, 4, 2, 3).contiguous()
+    return x.view(N, C * D, H, W)
+
+
+# FX trace fails when control flow uses symbolic (traced) variables; dense() or shape/view can trigger that.
+# Wrapping makes this a single non-traced call so prepare_fx succeeds.
+if hasattr(torch.fx, "wrap"):
+    _conv_out_to_bev = torch.fx.wrap(_conv_out_to_bev)
 
 
 @MODELS.register_module()
@@ -61,7 +80,7 @@ class BEVFusionSparseEncoder(SparseEncoder):
         return_middle_feats=False,
     ):
         super(SparseEncoder, self).__init__()
-        assert block_type in ["conv_module", "basicblock"]
+        assert block_type in ["conv_module", "basicblock", "basicblock_fx"]
         self.sparse_shape = sparse_shape
         self.in_channels = in_channels
         self.register_buffer("aug_features_min_values", torch.tensor(aug_features_min_values))
@@ -160,15 +179,84 @@ class BEVFusionSparseEncoder(SparseEncoder):
             encode_features.append(x)
 
         # for detection head
-        # [200, 176, 5] -> [200, 176, 2]
+        # [200, 176, 5] -> [200, 176, 2]; use wrapped op so FX does not trace dense()/shape/view (avoids "symbolically traced variables in control flow")
         out = self.conv_out(encode_features[-1])
-        spatial_features = out.dense()
-
-        N, C, H, W, D = spatial_features.shape
-        spatial_features = spatial_features.permute(0, 1, 4, 2, 3).contiguous()
-        spatial_features = spatial_features.view(N, C * D, H, W)
+        spatial_features = _conv_out_to_bev(out)
 
         if self.return_middle_feats:
             return spatial_features, encode_features
         else:
             return spatial_features
+
+    def make_encoder_layers(
+        self,
+        make_block,
+        norm_cfg: Dict,
+        in_channels: int,
+        block_type: Optional[str] = "conv_module",
+        conv_cfg: Optional[dict] = None,
+    ) -> int:
+        """Build encoder layers. Overridden to support basicblock_fx for torch.fx INT8."""
+        if conv_cfg is None:
+            conv_cfg = dict(type="SubMConv3d")
+        assert block_type in ["conv_module", "basicblock", "basicblock_fx"]
+        self.encoder_layers = SparseSequential()
+
+        for i, blocks in enumerate(self.encoder_channels):
+            blocks_list = []
+            for j, out_channels in enumerate(tuple(blocks)):
+                padding = tuple(self.encoder_paddings[i])[j]
+                if i != 0 and j == 0 and block_type == "conv_module":
+                    blocks_list.append(
+                        make_block(
+                            in_channels,
+                            out_channels,
+                            3,
+                            norm_cfg=norm_cfg,
+                            stride=2,
+                            padding=padding,
+                            indice_key=f"spconv{i + 1}",
+                            conv_type="SparseConv3d",
+                        )
+                    )
+                elif block_type in ("basicblock", "basicblock_fx"):
+                    if j == len(blocks) - 1 and i != len(self.encoder_channels) - 1:
+                        blocks_list.append(
+                            make_block(
+                                in_channels,
+                                out_channels,
+                                3,
+                                norm_cfg=norm_cfg,
+                                stride=2,
+                                padding=padding,
+                                indice_key=f"spconv{i + 1}",
+                                conv_type="SparseConv3d",
+                            )
+                        )
+                    else:
+                        block_cls = SparseBasicBlockFX if block_type == "basicblock_fx" else SparseBasicBlock
+                        blocks_list.append(
+                            block_cls(
+                                in_channels,
+                                out_channels,
+                                norm_cfg=norm_cfg,
+                                conv_cfg=conv_cfg,
+                            )
+                        )
+                else:
+                    blocks_list.append(
+                        make_block(
+                            in_channels,
+                            out_channels,
+                            3,
+                            norm_cfg=norm_cfg,
+                            padding=padding,
+                            indice_key=f"subm{i + 1}",
+                            conv_type="SubMConv3d",
+                        )
+                    )
+                in_channels = out_channels
+            stage_name = f"encoder_layer{i + 1}"
+            stage_layers = SparseSequential(*blocks_list)
+            self.encoder_layers.add_module(stage_name, stage_layers)
+        return out_channels
