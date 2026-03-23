@@ -100,7 +100,8 @@ def _create_example_inputs(
         Tuple of (voxel_features, coors, batch_size).
     """
     dev = _ensure_torch_device(device)
-    sparse_shape = getattr(model, "sparse_shape", [41, 1440, 1440])
+    # Match BEVFusion 120m lidar grid (see default_lidar_intensity_120m.grid_size).
+    sparse_shape = getattr(model, "sparse_shape", [1440, 1440, 41])
 
     voxel_features = torch.randn((num_voxels, in_channels), device=dev)
     coors = torch.zeros((num_voxels, 4), dtype=torch.int32, device=dev)
