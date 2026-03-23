@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import copy
 import logging
-from typing import Optional, Set
+from typing import Any, Dict, Optional, Set
 
 import torch
 from mmengine.config import Config
@@ -19,6 +19,23 @@ from mmengine.runner import load_checkpoint
 from deployment.core.device import DeviceSpec
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_module_prefix_state_dict(state_dict: dict, model: torch.nn.Module) -> dict:
+    """If checkpoint keys use ``module.`` prefix but the model does not, strip the prefix."""
+    if not state_dict:
+        return state_dict
+    model_keys = set(model.state_dict().keys())
+    ckpt_keys = list(state_dict.keys())
+    if not ckpt_keys:
+        return state_dict
+    prefixed = sum(1 for k in ckpt_keys if k.startswith("module."))
+    model_prefixed = any(k.startswith("module.") for k in model_keys)
+    if prefixed == len(ckpt_keys) and not model_prefixed:
+        out = {k[len("module.") :]: v for k, v in state_dict.items()}
+        logger.info("Stripped 'module.' prefix from %d checkpoint keys for load_state_dict", len(out))
+        return out
+    return state_dict
 
 
 def _fuse_spconv_bn(model: torch.nn.Module) -> None:
@@ -31,10 +48,115 @@ def _fuse_spconv_bn(model: torch.nn.Module) -> None:
         from deployment.projects.bevfusion.quantization.spconv_int8 import (
             _fuse_spconv_bn_in_encoder,
         )
+
         count = _fuse_spconv_bn_in_encoder(sparse_encoder)
         logger.info(f"Fused {count} SparseConv-BN pairs in pts_middle_encoder")
     except ImportError:
         logger.warning("spconv_int8 module not available; skipping sparse BN fusion")
+
+
+def _replace_encoder_with_fx_converted_structure(model: torch.nn.Module, device: torch.device) -> None:
+    """Replace pts_middle_encoder with FX-converted structure so PTQ state_dict loads.
+
+    PTQ with spconv_int8 saves the encoder after prepare_fx → calibrate → convert_fx.
+    When loading, we need the same GraphModule structure; we run prepare_fx and
+    convert_fx without calibration, then load_state_dict fills in weights/scales.
+    """
+    sparse_encoder = getattr(model, "pts_middle_encoder", None)
+    if sparse_encoder is None:
+        return
+    try:
+        from deployment.projects.bevfusion.quantization.spconv_int8 import (
+            apply_spconv_int8_quantization,
+            convert_spconv_int8,
+        )
+    except ImportError:
+        logger.warning("spconv_int8 not available; cannot recreate FX encoder structure")
+        return
+
+    in_channels = getattr(sparse_encoder, "in_channels", 5)
+    sparse_encoder.eval()
+    prepared = apply_spconv_int8_quantization(sparse_encoder, device, in_channels=in_channels)
+    converted = convert_spconv_int8(prepared)
+    model.pts_middle_encoder = converted
+    logger.info("Replaced pts_middle_encoder with FX-converted structure for PTQ load")
+
+
+def _permute_sparse_encoder_weights_to_match_model(
+    state_dict: dict,
+    model: torch.nn.Module,
+) -> None:
+    """Permute pts_middle_encoder 5D weights from (C_in, C_out, K, K, K) to (C_out, K, K, K, C_in) when checkpoint and model shapes differ.
+
+    PTQ may save sparse conv in one layout; the FX-converted model expects KRSC (out, k, k, k, in). Mutates state_dict in place.
+    """
+    model_sd = model.state_dict()
+    for key in list(state_dict.keys()):
+        if not key.startswith("pts_middle_encoder") or not key.endswith(".weight"):
+            continue
+        if key not in model_sd:
+            continue
+        v = state_dict[key]
+        m = model_sd[key]
+        if v.dim() != 5 or m.dim() != 5 or v.shape == m.shape:
+            continue
+        # Checkpoint (C_in, C_out, Kz, Ky, Kx) -> (C_out, Kz, Ky, Kx, C_in) to match KRSC
+        perm = v.permute(1, 2, 3, 4, 0)
+        if perm.shape == m.shape:
+            state_dict[key] = perm
+            logger.info(
+                "Permuted sparse encoder weight layout for %s: %s -> %s", key, tuple(v.shape), tuple(perm.shape)
+            )
+        else:
+            logger.warning(
+                "Cannot fix pts_middle_encoder weight %s: ckpt %s perm-> %s, model %s",
+                key,
+                tuple(v.shape),
+                tuple(perm.shape),
+                tuple(m.shape),
+            )
+
+
+def verify_spconv_int8_encoder(model: torch.nn.Module) -> Dict[str, Any]:
+    """Verify that pts_middle_encoder is the FX-converted INT8 quantized module.
+
+    Returns a dict with:
+        - is_int8: True if encoder looks like FX quantized (GraphModule + qint8 params)
+        - encoder_type: type name of pts_middle_encoder
+        - is_graph_module: True if encoder is torch.fx.GraphModule
+        - quantized_param_count: number of parameters with dtype qint8
+        - total_param_count: total parameters in encoder
+        - quantized_module_types: set of module class names that look quantized
+    """
+    enc = getattr(model, "pts_middle_encoder", None)
+    out: Dict[str, Any] = {
+        "is_int8": False,
+        "encoder_type": type(enc).__name__ if enc is not None else "None",
+        "is_graph_module": False,
+        "quantized_param_count": 0,
+        "total_param_count": 0,
+        "quantized_module_types": set(),
+    }
+    if enc is None:
+        return out
+
+    out["is_graph_module"] = type(enc).__name__ == "GraphModule"
+    if hasattr(torch.fx, "GraphModule") and isinstance(enc, torch.fx.GraphModule):
+        out["is_graph_module"] = True
+
+    quant_types: Set[str] = set()
+    for _name, mod in enc.named_modules():
+        mod_str = type(mod).__module__ + "." + type(mod).__name__
+        if "quantized" in mod_str or "quantization" in mod_str:
+            quant_types.add(mod_str)
+
+    out["total_param_count"] = sum(p.numel() for p in enc.parameters())
+    out["quantized_param_count"] = sum(
+        p.numel() for p in enc.parameters() if getattr(p, "is_quantized", False) or p.dtype == torch.qint8
+    )
+    out["quantized_module_types"] = quant_types
+    out["is_int8"] = out["is_graph_module"] and (out["quantized_param_count"] > 0 or len(quant_types) > 0)
+    return out
 
 
 def _register_bevfusion_modules() -> None:
@@ -47,6 +169,7 @@ def _import_tensor_quantizer():
     """Lazily import TensorQuantizer from pytorch_quantization."""
     try:
         from pytorch_quantization.nn import TensorQuantizer
+
         return TensorQuantizer
     except ImportError:
         return None
@@ -88,8 +211,20 @@ def build_bevfusion_model(
         try:
             model = _load_with_quantization(model, checkpoint_path, torch_device, quantization)
         except Exception as e:
-            logger.error(f"Quantization failed: {e}. Falling back to FP32 model.")
-            load_checkpoint(model, checkpoint_path, map_location=torch_device)
+            logger.error(f"Quantization failed: {e}. Falling back to FP32 model (loading only matching weights).")
+            ckpt = torch.load(checkpoint_path, map_location=torch_device)
+            state_dict = ckpt.get("state_dict", ckpt)
+            state_dict = _strip_module_prefix_state_dict(state_dict, model)
+            model_keys = set(model.state_dict().keys())
+            filtered = {k: v for k, v in state_dict.items() if k in model_keys}
+            # Always try sparse weight layout fix when shapes differ (PTQ / checkpoint may use ICOK vs KRSC).
+            _permute_sparse_encoder_weights_to_match_model(filtered, model)
+            model.load_state_dict(filtered, strict=False)
+            skipped = len(state_dict) - len(filtered)
+            if skipped:
+                logger.warning(
+                    f"Skipped {skipped} checkpoint keys (quantizer/sparse INT8) that do not match FP32 model."
+                )
     else:
         load_checkpoint(model, checkpoint_path, map_location=torch_device)
 
@@ -135,6 +270,11 @@ def _load_with_quantization(
             _fuse_dense_bn(model)
             _fuse_spconv_bn(model)
 
+        # PTQ with spconv_int8 saves pts_middle_encoder as FX-converted GraphModule.
+        # Recreate the same structure (prepare_fx + convert_fx, no calibration) so load_state_dict matches.
+        if quantization.get("spconv_int8", False):
+            _replace_encoder_with_fx_converted_structure(model, device)
+
         if quant_backbone or quant_neck or quant_head:
             _apply_dense_quantization(
                 model,
@@ -147,14 +287,22 @@ def _load_with_quantization(
 
         checkpoint = torch.load(checkpoint_path, map_location=device)
         state_dict = checkpoint.get("state_dict", checkpoint)
+        state_dict = _strip_module_prefix_state_dict(state_dict, model)
+
+        # PTQ checkpoint may have sparse conv weights in (C_in, C_out, K, K, K); FX-converted model expects (C_out, K, K, K, C_in). Permute to match.
+        if quantization.get("spconv_int8", False):
+            _permute_sparse_encoder_weights_to_match_model(state_dict, model)
+
         result = model.load_state_dict(state_dict, strict=False)
 
         if result.missing_keys:
             logger.warning(f"PTQ load: {len(result.missing_keys)} missing keys (first 10): {result.missing_keys[:10]}")
         if result.unexpected_keys:
-            logger.warning(f"PTQ load: {len(result.unexpected_keys)} unexpected keys (first 10): {result.unexpected_keys[:10]}")
+            logger.warning(
+                f"PTQ load: {len(result.unexpected_keys)} unexpected keys (first 10): {result.unexpected_keys[:10]}"
+            )
 
-        num_amax = sum(1 for k in state_dict if '_amax' in k)
+        num_amax = sum(1 for k in state_dict if "_amax" in k)
         logger.info(f"PTQ state_dict contains {num_amax} amax entries, {len(state_dict)} total keys")
 
         _move_quantizer_amax_to_device(model, device)
@@ -163,9 +311,35 @@ def _load_with_quantization(
         if tensor_quantizer_cls:
             loaded = 0
             for name, mod in model.named_modules():
-                if isinstance(mod, tensor_quantizer_cls) and hasattr(mod, '_amax') and mod._amax is not None:
+                if isinstance(mod, tensor_quantizer_cls) and hasattr(mod, "_amax") and mod._amax is not None:
                     loaded += 1
             logger.info(f"PTQ checkpoint loaded: {loaded} quantizers have calibrated amax values")
+
+        if quantization.get("spconv_int8", False):
+            from deployment.projects.bevfusion.quantization.spconv_quantized_add_patch import (
+                ensure_spconv_quantized_add_sparse_support,
+                retarget_graphmodule_quantized_add_calls,
+            )
+
+            ensure_spconv_quantized_add_sparse_support()
+            retarget_graphmodule_quantized_add_calls(model)
+
+            info = verify_spconv_int8_encoder(model)
+            if info["is_int8"]:
+                logger.info(
+                    f"Spconv INT8 encoder verified: GraphModule with {info['quantized_param_count']} qint8 params "
+                    f"(total {info['total_param_count']}), {len(info['quantized_module_types'])} quantized module types"
+                )
+            else:
+                qtypes = info.get("quantized_module_types") or set()
+                sample = sorted(qtypes)[:5]
+                logger.warning(
+                    f"Spconv INT8 encoder verification failed: encoder_type={info['encoder_type']} "
+                    f"is_graph_module={info['is_graph_module']} "
+                    f"quantized_params={info['quantized_param_count']} "
+                    f"quantized_module_types={len(qtypes)} sample={sample}. "
+                    "Sparse encoder may not be running INT8 (qint8 param count can be 0 if weights live in quantized submodules)."
+                )
 
     else:
         load_checkpoint(model, checkpoint_path, map_location=device)
@@ -199,10 +373,7 @@ def _fuse_dense_bn(model: torch.nn.Module) -> None:
     try:
         from deployment.quantization import fuse_model_bn
     except ImportError:
-        logger.warning(
-            "deployment.quantization.fuse_model_bn not available; "
-            "trying standalone BN fusion..."
-        )
+        logger.warning("deployment.quantization.fuse_model_bn not available; " "trying standalone BN fusion...")
         _fuse_dense_bn_standalone(model)
         return
 
@@ -233,7 +404,10 @@ def _apply_dense_quantization(
 
     logger.info(
         "Dense quantization flags: backbone=%s, neck=%s, head=%s, add=%s",
-        quant_backbone, quant_neck, quant_head, quant_add,
+        quant_backbone,
+        quant_neck,
+        quant_head,
+        quant_add,
     )
 
     try:

@@ -17,6 +17,12 @@ RUN python3 -m pip --no-cache-dir install \
 # Install traveller59 python package (requested)
 RUN python3 -m pip --no-cache-dir install spconv-cu120
 
+# PyTorch quantization (NVIDIA wheel index + PyPI for deps)
+RUN python3 -m pip --no-cache-dir install \
+  --index-url https://pypi.nvidia.com \
+  --extra-index-url https://pypi.org/simple \
+  pytorch-quantization==2.1.3
+
 # Build and install libspconv.so from spconv_cpp (for C++/TensorRT deployment path)
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   build-essential \

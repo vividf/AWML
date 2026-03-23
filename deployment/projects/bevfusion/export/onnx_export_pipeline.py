@@ -168,6 +168,9 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
 
         onnx_settings = config.onnx_config
         opset_version = getattr(onnx_settings, "opset_version", 17)
+        # BEVFusion sparse encoder calls SparseConvTensor.dense() → huge dense grid; small GPUs OOM.
+        # Default trace on CPU (host RAM); override with onnx_config trace_device or BEVFUSION_ONNX_TRACE_DEVICE.
+        trace_device = onnx_settings.trace_device or os.environ.get("BEVFUSION_ONNX_TRACE_DEVICE", "cpu")
 
         return {
             "input_names": input_names,
@@ -177,6 +180,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             "export_params": True,
             "keep_initializers_as_inputs": False,
             "verbose": False,
+            "trace_device": trace_device,
         }
 
     def _export_to_onnx(
@@ -189,25 +193,47 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         onnx_cfg: Dict[str, Any],
     ) -> None:
         """Export the wrapped model to ONNX."""
-        device = next(model.parameters()).device
-        wrapper = BEVFusionMainBodyWrapper(model)
-        model_inputs = (voxels.to(device), coors.to(device), num_points_per_voxel.to(device))
-        wrapper.eval()
-        wrapper.to(device)
+        model_device = next(model.parameters()).device
+        trace_dev = torch.device(onnx_cfg.get("trace_device", "cpu"))
 
-        with torch.no_grad():
-            torch.onnx.export(
-                wrapper,
-                model_inputs,
-                output_path,
-                export_params=onnx_cfg["export_params"],
-                input_names=onnx_cfg["input_names"],
-                output_names=onnx_cfg["output_names"],
-                opset_version=onnx_cfg["opset_version"],
-                dynamic_axes=onnx_cfg["dynamic_axes"],
-                keep_initializers_as_inputs=onnx_cfg["keep_initializers_as_inputs"],
-                verbose=onnx_cfg["verbose"],
+        moved_for_trace = trace_dev != model_device
+        if moved_for_trace:
+            self.logger.info(
+                "Moving model to %s for ONNX tracing (model was on %s; avoids GPU OOM from sparse dense()).",
+                trace_dev,
+                model_device,
             )
+            model.to(trace_dev)
+
+        try:
+            wrapper = BEVFusionMainBodyWrapper(model)
+            model_inputs = (
+                voxels.to(trace_dev),
+                coors.to(trace_dev),
+                num_points_per_voxel.to(trace_dev),
+            )
+            wrapper.eval()
+            wrapper.to(trace_dev)
+
+            with torch.no_grad():
+                torch.onnx.export(
+                    wrapper,
+                    model_inputs,
+                    output_path,
+                    export_params=onnx_cfg["export_params"],
+                    input_names=onnx_cfg["input_names"],
+                    output_names=onnx_cfg["output_names"],
+                    opset_version=onnx_cfg["opset_version"],
+                    dynamic_axes=onnx_cfg["dynamic_axes"],
+                    keep_initializers_as_inputs=onnx_cfg["keep_initializers_as_inputs"],
+                    verbose=onnx_cfg["verbose"],
+                )
+        finally:
+            if moved_for_trace:
+                model.to(model_device)
+                if model_device.type == "cuda":
+                    torch.cuda.empty_cache()
+
         self.logger.info("Exported ONNX to %s", output_path)
 
     def _get_num_proposals(self, model: torch.nn.Module) -> int:
