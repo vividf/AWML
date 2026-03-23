@@ -53,11 +53,32 @@ def _in_torch_fx_prepare_trace() -> bool:
 
 
 def _conv_out_to_bev(out_tensor) -> torch.Tensor:
-    """Convert conv_out SparseConvTensor to BEV (N, C*D, H, W). Single wrapped op so FX does not trace dense()/shape/view (avoids 'symbolically traced variables in control flow')."""
-    spatial_features_5d = out_tensor.dense()
-    N, C, H, W, D = spatial_features_5d.shape
-    x = spatial_features_5d.permute(0, 1, 4, 2, 3).contiguous()
-    return x.view(N, C * D, H, W)
+    """Convert conv_out SparseConvTensor to BEV (N, C*Z, H, W).
+
+    ``spconv.dense()`` returns ``[N, C, *spatial_shape]`` in the same axis order as
+    ``SparseConvTensor.spatial_shape``. Depth (collapsed z after ``conv_out``) may be
+    the **first** ``(D,H,W)`` **or** **last** ``(H,W,D)`` axis depending on how
+    ``sparse_shape`` / voxel indices are ordered. The legacy code assumed ``(H,W,D)``
+    and always permuted ``D`` to the channel-flatten axis; if the tensor is actually
+    ``[N,C,D,H,W]`` with small ``D`` (e.g. 2) and large ``H,W`` (e.g. 1440), that
+    permute yields a bogus channel count (e.g. ``128*1440``) instead of ``256``.
+
+    We pick the **smallest** spatial extent in ``spatial_shape`` as the depth axis to
+    merge into channels (after ``conv_out`` it should be ~2; the BEV plane stays ~1440).
+    This matches both ``(H,W,D)`` and ``(D,H,W)`` layouts without relying on a fixed permute.
+    """
+    spatial_shape = [int(s) for s in out_tensor.spatial_shape]
+    x = out_tensor.dense()
+    n, c = x.shape[0], x.shape[1]
+    # Map smallest logical axis -> depth to flatten with C (same as mmdet3d SparseEncoder when D is first).
+    zi = min(range(3), key=lambda i: spatial_shape[i])
+    order = [j for j in range(3) if j != zi] + [zi]
+    perm = (0, 1, 2 + order[0], 2 + order[1], 2 + order[2])
+    y = x.permute(*perm).contiguous()
+    # y layout: N, C, H, W, Z (Z is smallest axis, typically 2 after conv_out)
+    z = y.shape[4]
+    h, w = y.shape[2], y.shape[3]
+    return y.view(n, c * z, h, w)
 
 
 # FX trace fails when control flow uses symbolic (traced) variables; dense() or shape/view can trigger that.

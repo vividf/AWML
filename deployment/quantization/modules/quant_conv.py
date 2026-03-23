@@ -72,7 +72,13 @@ class QuantConv2d(nn.Conv2d):
     def forward(self, x):
         """Forward with quantized input and weights."""
         if self._input_quantizer is not None and self._weight_quantizer is not None:
-            quant_input = self._input_quantizer(x)
+            # torch.jit.trace / torch.onnx.export: TensorQuantizer's FB fake_quant path uses
+            # Python list.index on shapes and triggers TracerWarning; skip input fake_quant
+            # during trace so the graph records plain conv (still matches channel layout).
+            if torch.jit.is_tracing():
+                quant_input = x
+            else:
+                quant_input = self._input_quantizer(x)
             quant_weight = self._weight_quantizer(self.weight)
         else:
             quant_input = x
@@ -130,7 +136,10 @@ class QuantConvTranspose2d(nn.ConvTranspose2d):
     def forward(self, x, output_size=None):
         """Forward with quantized input and weights."""
         if self._input_quantizer is not None and self._weight_quantizer is not None:
-            quant_input = self._input_quantizer(x)
+            if torch.jit.is_tracing():
+                quant_input = x
+            else:
+                quant_input = self._input_quantizer(x)
             quant_weight = self._weight_quantizer(self.weight)
         else:
             quant_input = x
