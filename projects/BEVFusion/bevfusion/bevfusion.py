@@ -79,6 +79,45 @@ class BEVFusion(Base3DDetector):
 
         self.init_weights()
 
+    def _align_lidar_bev_to_head_grid(self, feats):
+        """Resize pts_backbone+neck BEV maps to match ``bbox_head.bev_pos`` resolution.
+
+        ``BEVFusionHead`` builds ``bev_pos`` from ``test_cfg['grid_size'] // out_size_factor``
+        (e.g. 1440//8 → 180). Heatmap/top-k indices assume ``H*W == len(bev_pos)``.
+
+        If the sparse tower exposes **full voxel resolution** (e.g. 1440×1440) into SECOND
+        (INT8/FX ``dense()`` / ``spatial_shape`` bugs), FPN output can be hundreds of pixels
+        per side while ``bev_pos`` stays 180×180 → ``gather`` uses out-of-range indices
+        (CUDA scatter/gather assert) and later ops may report missing backends.
+
+        Pooling here only runs when ``H,W`` differ from the head grid; normal training paths
+        keep the correct encoder stride and are unchanged.
+        """
+        head = getattr(self, "bbox_head", None)
+        if head is None or not hasattr(head, "test_cfg") or head.test_cfg is None:
+            return feats
+        try:
+            grid = head.test_cfg["grid_size"]
+            osf = int(head.test_cfg["out_size_factor"])
+            gh = int(grid[0] // osf)
+            gw = int(grid[1] // osf)
+        except Exception:
+            return feats
+
+        def _pool(t: Tensor) -> Tensor:
+            if t.dim() != 4:
+                return t
+            _, _, h, w = t.shape
+            if int(h) == gh and int(w) == gw:
+                return t
+            return F.adaptive_avg_pool2d(t, (gh, gw))
+
+        if isinstance(feats, Tensor):
+            return _pool(feats)
+        if isinstance(feats, (list, tuple)):
+            return type(feats)(_pool(t) if isinstance(t, Tensor) else t for t in feats)
+        return feats
+
     def _forward(
         self, batch_inputs_dict: Tensor, batch_data_samples: OptSampleList = [], using_image_features=False, **kwargs
     ):
@@ -383,6 +422,8 @@ class BEVFusion(Base3DDetector):
 
         if self.pts_neck is not None:
             x = self.pts_neck(x)
+
+        x = self._align_lidar_bev_to_head_grid(x)
 
         return x
 
