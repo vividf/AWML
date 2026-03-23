@@ -211,20 +211,29 @@ def build_bevfusion_model(
         try:
             model = _load_with_quantization(model, checkpoint_path, torch_device, quantization)
         except Exception as e:
-            logger.error(f"Quantization failed: {e}. Falling back to FP32 model (loading only matching weights).")
-            ckpt = torch.load(checkpoint_path, map_location=torch_device)
-            state_dict = ckpt.get("state_dict", ckpt)
-            state_dict = _strip_module_prefix_state_dict(state_dict, model)
-            model_keys = set(model.state_dict().keys())
-            filtered = {k: v for k, v in state_dict.items() if k in model_keys}
-            # Always try sparse weight layout fix when shapes differ (PTQ / checkpoint may use ICOK vs KRSC).
-            _permute_sparse_encoder_weights_to_match_model(filtered, model)
-            model.load_state_dict(filtered, strict=False)
-            skipped = len(state_dict) - len(filtered)
-            if skipped:
-                logger.warning(
-                    f"Skipped {skipped} checkpoint keys (quantizer/sparse INT8) that do not match FP32 model."
-                )
+            logger.exception(
+                "Quantization pipeline failed (full traceback above). Summary: %s",
+                e,
+            )
+            logger.error(
+                f"Quantization failed: {e}. " "See message below for whether a safe FP32 fallback is possible."
+            )
+            # PTQ checkpoints use FX GraphModule sparse encoder + QuantConv2d dense + scale/zero_point keys.
+            # load_checkpoint(strict) into a freshly built FP32 model will always explode (missing BN, etc.).
+            if quantization.get("ptq_checkpoint"):
+                raise RuntimeError(
+                    "PTQ checkpoint load failed; cannot fall back to plain FP32 load_checkpoint. "
+                    "Typical causes: (1) deploy PTQ load order must match bevfusion_quantization.py "
+                    "(dense Q/DQ before spconv FX replace). (2) SPCONV_FX_TRACE_MODE=1 before any spconv import. "
+                    "(3) Same *_fx.py model config as when the PTQ .pth was produced. "
+                    "Fix the error above or set quantization.enabled=False and use an FP32 checkpoint."
+                ) from e
+            # Non-PTQ quant failure: rebuild clean model and load FP32 checkpoint (mmengine + spconv BN hooks).
+            logger.info("Falling back to FP32: rebuilding model from config and load_checkpoint.")
+            model_config = copy.deepcopy(model_cfg.model)
+            model = MODELS.build(model_config)
+            model.to(torch_device)
+            load_checkpoint(model, checkpoint_path, map_location=torch_device)
     else:
         load_checkpoint(model, checkpoint_path, map_location=torch_device)
 
@@ -266,24 +275,54 @@ def _load_with_quantization(
     if is_ptq:
         logger.info("Loading PTQ checkpoint (pre-calibrated Q/DQ nodes)...")
 
+        # Match bevfusion_quantization.run_ptq order: fuse → dense Q/DQ → (calibrate in PTQ script) →
+        # spconv FX replace. Doing spconv replace *before* dense Q/DQ breaks quant_conv_module / tracing
+        # and triggers fallback + load_checkpoint, which cannot load a PTQ state_dict into a raw FP32 model.
+        #
+        # deploy_config_int8 + CLI set SPCONV_FX_TRACE_MODE=1 before spconv import. Leaving it on during
+        # pytorch_quantization module replacement can raise:
+        #   "symbolically traced variables cannot be used as inputs to control flow"
+        # Temporarily disable; apply_spconv_int8_quantization() re-enables before prepare_fx.
+        if quantization.get("spconv_int8", False):
+            try:
+                from deployment.projects.bevfusion.quantization.spconv_int8 import _disable_spconv_fx_trace_mode
+
+                _disable_spconv_fx_trace_mode()
+                logger.info(
+                    "Disabled spconv SPCONV_FX_TRACE_MODE for dense BN fuse + Q/DQ insert "
+                    "(re-enabled inside sparse encoder prepare_fx)."
+                )
+            except Exception:
+                pass
+
         if fuse_bn:
             _fuse_dense_bn(model)
             _fuse_spconv_bn(model)
 
-        # PTQ with spconv_int8 saves pts_middle_encoder as FX-converted GraphModule.
-        # Recreate the same structure (prepare_fx + convert_fx, no calibration) so load_state_dict matches.
-        if quantization.get("spconv_int8", False):
-            _replace_encoder_with_fx_converted_structure(model, device)
-
         if quant_backbone or quant_neck or quant_head:
-            _apply_dense_quantization(
-                model,
-                quant_backbone=quant_backbone,
-                quant_neck=quant_neck,
-                quant_head=quant_head,
-                quant_add=quant_add,
-                skip_names=sensitive_layers,
-            )
+            try:
+                _apply_dense_quantization(
+                    model,
+                    quant_backbone=quant_backbone,
+                    quant_neck=quant_neck,
+                    quant_head=quant_head,
+                    quant_add=quant_add,
+                    skip_names=sensitive_layers,
+                )
+            except Exception:
+                logger.exception("PTQ load: dense Q/DQ insertion (_apply_dense_quantization) failed")
+                raise
+
+        # After dense modules match the PTQ checkpoint, replace sparse encoder with the same FX graph
+        # produced by convert_fx (no calibration here; weights/scales load from checkpoint).
+        if quantization.get("spconv_int8", False):
+            try:
+                _replace_encoder_with_fx_converted_structure(model, device)
+            except Exception:
+                logger.exception(
+                    "PTQ load: sparse encoder FX recreate (_replace_encoder_with_fx_converted_structure) failed"
+                )
+                raise
 
         checkpoint = torch.load(checkpoint_path, map_location=device)
         state_dict = checkpoint.get("state_dict", checkpoint)
@@ -317,12 +356,16 @@ def _load_with_quantization(
 
         if quantization.get("spconv_int8", False):
             from deployment.projects.bevfusion.quantization.spconv_quantized_add_patch import (
+                ensure_spconv_quantize_per_tensor_float_activations,
                 ensure_spconv_quantized_add_sparse_support,
+                retarget_graphmodule_quantize_per_tensor_calls,
                 retarget_graphmodule_quantized_add_calls,
             )
 
+            ensure_spconv_quantize_per_tensor_float_activations()
             ensure_spconv_quantized_add_sparse_support()
             retarget_graphmodule_quantized_add_calls(model)
+            retarget_graphmodule_quantize_per_tensor_calls(model)
 
             info = verify_spconv_int8_encoder(model)
             if info["is_int8"]:

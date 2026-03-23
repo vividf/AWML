@@ -18,6 +18,40 @@ from .sparse_block_fx import SparseBasicBlockFX
 from .sparse_convmodule import make_sparse_convmodule
 
 
+def _is_fx_proxy(t) -> bool:
+    try:
+        from torch.fx import Proxy
+
+        return isinstance(t, Proxy)
+    except Exception:
+        return False
+
+
+def _in_torch_fx_prepare_trace() -> bool:
+    """Detect torch.fx symbolic_trace used by torch.ao.quantization.prepare_fx."""
+    try:
+        fn = getattr(torch.fx, "is_symbolic_trace", None)
+        if callable(fn) and fn():
+            return True
+    except Exception:
+        pass
+    try:
+        from torch.fx._symbolic_trace import is_tracing
+
+        if callable(is_tracing) and is_tracing():
+            return True
+    except Exception:
+        pass
+    try:
+        from torch.fx._symbolic_trace import _is_fx_tracing
+
+        if callable(_is_fx_tracing) and _is_fx_tracing():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _conv_out_to_bev(out_tensor) -> torch.Tensor:
     """Convert conv_out SparseConvTensor to BEV (N, C*D, H, W). Single wrapped op so FX does not trace dense()/shape/view (avoids 'symbolically traced variables in control flow')."""
     spatial_features_5d = out_tensor.dense()
@@ -169,7 +203,20 @@ class BEVFusionSparseEncoder(SparseEncoder):
             y = y.reshape(num_points, -1)
             voxel_features = torch.cat([torch.cos(y), torch.sin(y)], dim=1)
 
-        coors = coors.int()
+        # INT8 / quantize_per_tensor needs float32 features. Do not branch on is_floating_point() or dtype:
+        # under prepare_fx, voxel_features is a Proxy and those checks participate in control flow → TraceError.
+        voxel_features = voxel_features.contiguous().to(dtype=torch.float32)
+        # int32 + contiguous: spconv implicit_gemm merge_sort assumes int32 indices; non-contiguous → illegal access
+        coors = coors.to(dtype=torch.int32, device=voxel_features.device).contiguous()
+        # Do not compare symbolic shapes under FX (prepare_fx); see _in_torch_fx_prepare_trace docstring.
+        if (
+            not torch.jit.is_tracing()
+            and not _in_torch_fx_prepare_trace()
+            and not _is_fx_proxy(voxel_features)
+            and not _is_fx_proxy(coors)
+            and voxel_features.shape[0] != coors.shape[0]
+        ):
+            raise ValueError(f"voxel_features / coors row mismatch: {voxel_features.shape[0]} vs {coors.shape[0]}")
         input_sp_tensor = SparseConvTensor(voxel_features, coors, self.sparse_shape, batch_size)
         x = self.conv_input(input_sp_tensor)
 

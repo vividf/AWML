@@ -69,6 +69,86 @@ def _ensure_quant_descriptors_initialized():
     _quant_descriptors_initialized = True
 
 
+def _rebuild_conv2d_as_quant(conv: nn.Conv2d) -> QuantConv2d:
+    """Build QuantConv2d via ``__init__`` + weight copy (no ``__dict__`` transplant).
+
+    Copying ``vars(conv)`` onto a ``QuantConv2d`` shell can carry MMEngine/spconv hooks or
+    half-initialized state that interacts with torch.fx / fake tensors during
+    ``TensorQuantizer`` setup. PTQ deploy load uses this path for robustness.
+    """
+    _ensure_quant_descriptors_initialized()
+    q = QuantConv2d(
+        conv.in_channels,
+        conv.out_channels,
+        conv.kernel_size,
+        stride=conv.stride,
+        padding=conv.padding,
+        dilation=conv.dilation,
+        groups=conv.groups,
+        bias=conv.bias is not None,
+        padding_mode=conv.padding_mode,
+    )
+    q = q.to(device=conv.weight.device, dtype=conv.weight.dtype)
+    with torch.no_grad():
+        q.weight.copy_(conv.weight)
+        if conv.bias is not None:
+            q.bias.copy_(conv.bias)
+    q.init_quantizer(
+        QuantConv2d.default_quant_desc_input,
+        QuantConv2d.default_quant_desc_weight,
+    )
+    return q
+
+
+def _rebuild_conv_transpose2d_as_quant(conv: nn.ConvTranspose2d) -> QuantConvTranspose2d:
+    """Same as :func:`_rebuild_conv2d_as_quant` for transposed conv (FPN upsample)."""
+    _ensure_quant_descriptors_initialized()
+    q = QuantConvTranspose2d(
+        conv.in_channels,
+        conv.out_channels,
+        conv.kernel_size,
+        stride=conv.stride,
+        padding=conv.padding,
+        output_padding=conv.output_padding,
+        groups=conv.groups,
+        bias=conv.bias is not None,
+        dilation=conv.dilation,
+        padding_mode=conv.padding_mode,
+    )
+    q = q.to(device=conv.weight.device, dtype=conv.weight.dtype)
+    with torch.no_grad():
+        q.weight.copy_(conv.weight)
+        if conv.bias is not None:
+            q.bias.copy_(conv.bias)
+    q.init_quantizer(
+        QuantConvTranspose2d.default_quant_desc_input,
+        QuantConvTranspose2d.default_quant_desc_weight,
+    )
+    return q
+
+
+def _clear_module_hooks(module: nn.Module) -> None:
+    """Remove forward/backward/state_dict hooks copied from the original nn.Conv2d.
+
+    Rare third-party / registry hooks can interact badly with quantization init; hooks are not needed
+    on the quantized clone for deployment load.
+    """
+    for name in (
+        "_forward_hooks",
+        "_forward_hooks_with_kwargs",
+        "_forward_pre_hooks",
+        "_forward_pre_hooks_with_kwargs",
+        "_backward_hooks",
+        "_backward_pre_hooks",
+        "_state_dict_hooks",
+        "_load_state_dict_pre_hooks",
+        "_load_state_dict_post_hooks",
+    ):
+        d = getattr(module, name, None)
+        if d is not None and hasattr(d, "clear"):
+            d.clear()
+
+
 def transfer_to_quantization(nn_instance: nn.Module, quant_module: Type) -> nn.Module:
     """
     Transfer weights and attributes from original module to quantized version.
@@ -92,6 +172,8 @@ def transfer_to_quantization(nn_instance: nn.Module, quant_module: Type) -> nn.M
     # Copy all attributes from original module
     for k, val in vars(nn_instance).items():
         setattr(quant_instance, k, val)
+
+    _clear_module_hooks(quant_instance)
 
     # Initialize quantizers
     quant_instance.init_quantizer(
@@ -142,11 +224,11 @@ def quant_conv_module(model: nn.Module, skip_names: Optional[Set[str]] = None, p
 
         # Replace Conv2d with QuantConv2d
         if isinstance(submodule, nn.Conv2d) and not isinstance(submodule, QuantConv2d):
-            model._modules[name] = transfer_to_quantization(submodule, QuantConv2d)
+            model._modules[name] = _rebuild_conv2d_as_quant(submodule)
 
         # Replace ConvTranspose2d with QuantConvTranspose2d
         elif isinstance(submodule, nn.ConvTranspose2d) and not isinstance(submodule, QuantConvTranspose2d):
-            model._modules[name] = transfer_to_quantization(submodule, QuantConvTranspose2d)
+            model._modules[name] = _rebuild_conv_transpose2d_as_quant(submodule)
 
 
 def quant_linear_module(model: nn.Module, skip_names: Optional[Set[str]] = None, prefix: str = ""):
