@@ -11,10 +11,17 @@ from deployment.cli.args import setup_logging
 from deployment.configs import BaseDeploymentConfig
 from deployment.core.contexts import ExportContext
 from deployment.projects.bevfusion.eval.evaluator import BEVFusionEvaluator
+from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_components
 from deployment.projects.bevfusion.io.data_loader import BEVFusionDataLoader
 from deployment.projects.bevfusion.runner import BEVFusionDeploymentRunner
 
-_REQUIRED_COMPONENTS = ("bevfusion_main_body",)
+
+def _validate_bevfusion_components(config: BaseDeploymentConfig) -> None:
+    if is_split_bevfusion_components(config.components_cfg):
+        config.components_cfg.get_component("bevfusion_sparse")
+        config.components_cfg.get_component("bevfusion_dense")
+    else:
+        config.components_cfg.get_component("bevfusion_main_body")
 
 
 def _extract_metrics_config(model_cfg: Config, logger: logging.Logger):
@@ -51,8 +58,7 @@ def run(args: argparse.Namespace) -> int:
     model_cfg = Config.fromfile(args.model_cfg)
     config = BaseDeploymentConfig(deploy_cfg)
 
-    for comp_name in _REQUIRED_COMPONENTS:
-        config.components_cfg.get_component(comp_name)
+    _validate_bevfusion_components(config)
 
     logger.info("=" * 80)
     logger.info("BEVFusion Deployment Pipeline (Unified CLI)")
@@ -61,7 +67,9 @@ def run(args: argparse.Namespace) -> int:
     quantization_cfg = deploy_cfg.get("quantization", None)
     if quantization_cfg and quantization_cfg.get("enabled", False):
         logger.info("Quantization: ENABLED")
-        logger.info(f"  Mode: dense=pytorch_quantization, sparse={'spconv_int8' if quantization_cfg.get('spconv_int8') else 'fp32'}")
+        logger.info(
+            f"  Mode: dense=pytorch_quantization, sparse={'spconv_int8' if quantization_cfg.get('spconv_int8') else 'fp32'}"
+        )
         logger.info(f"  Fuse BN: {quantization_cfg.get('fuse_bn', True)}")
         logger.info(f"  Quant backbone: {quantization_cfg.get('quant_backbone', True)}")
         logger.info(f"  Quant neck: {quantization_cfg.get('quant_neck', True)}")

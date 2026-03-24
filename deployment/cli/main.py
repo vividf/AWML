@@ -16,7 +16,11 @@ import sys
 # and cause illegal memory access in implicit_gemm. Enable INT8 via deploy cfg filename,
 # AWML_SPCONV_INT8=1, or export SPCONV_FX_TRACE_MODE=1 before python.
 _argv_joined = " ".join(sys.argv).lower()
-if "deploy_config_int8" in _argv_joined or os.environ.get("AWML_SPCONV_INT8", "") == "1":
+if (
+    "deploy_config_int8" in _argv_joined
+    or "deploy_config_split_int8" in _argv_joined
+    or os.environ.get("AWML_SPCONV_INT8", "") == "1"
+):
     os.environ.setdefault("SPCONV_FX_TRACE_MODE", "1")
 
 import argparse

@@ -32,6 +32,9 @@ Usage:
         projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m_fx.py \
         --module main_body
 
+    # Optional: split sparse/dense ONNX + engines (route 1) with same PTQ checkpoint
+    #   → deployment/projects/bevfusion/config/deploy_config_split_int8.py
+
 Docker (awml-bevfusion:full): set FX trace before spconv import and install quant tools, e.g.:
     export SPCONV_FX_TRACE_MODE=1
     pip install --no-cache-dir --extra-index-url https://pypi.nvidia.com pytorch-quantization==2.1.3

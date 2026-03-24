@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os.path as osp
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import onnxruntime as ort
@@ -15,6 +15,7 @@ from deployment.configs import ComponentsConfig
 from deployment.core.artifacts import resolve_artifact_path
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
+from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_components
 from deployment.projects.bevfusion.pipelines.bevfusion_pipeline import BEVFusionDeploymentPipeline
 
 logger = logging.getLogger(__name__)
@@ -23,8 +24,9 @@ logger = logging.getLogger(__name__)
 class BEVFusionONNXPipeline(BEVFusionDeploymentPipeline):
     """ONNXRuntime-based BEVFusion pipeline.
 
-    Loads a single ONNX model that takes voxels/coors/num_points_per_voxel
-    and outputs bbox_pred/score/label_pred.
+    Single ONNX: voxels/coors/num_points → bbox_pred/score/label_pred.
+
+    Split ONNX: sparse session → ``lidar_bev``, then dense session → outputs.
     """
 
     def __init__(
@@ -38,10 +40,40 @@ class BEVFusionONNXPipeline(BEVFusionDeploymentPipeline):
 
         self.onnx_dir = onnx_dir
         self._components_cfg = components_cfg
+        self._split = is_split_bevfusion_components(components_cfg)
+        self.session: Optional[ort.InferenceSession] = None
+        self._session_sparse: Optional[ort.InferenceSession] = None
+        self._session_dense: Optional[ort.InferenceSession] = None
         self._load_onnx_model()
-        logger.info(f"BEVFusion ONNX pipeline initialized from: {onnx_dir}")
+        logger.info(f"BEVFusion ONNX pipeline initialized from: {onnx_dir} (split={self._split})")
 
     def _load_onnx_model(self) -> None:
+        so = ort.SessionOptions()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        providers = self.device.to_ort_provider()
+
+        if self._split:
+            sparse_path = resolve_artifact_path(
+                base_dir=self.onnx_dir,
+                components_cfg=self._components_cfg,
+                component_name="bevfusion_sparse",
+                file_key="onnx_file",
+            )
+            dense_path = resolve_artifact_path(
+                base_dir=self.onnx_dir,
+                components_cfg=self._components_cfg,
+                component_name="bevfusion_dense",
+                file_key="onnx_file",
+            )
+            if not osp.exists(sparse_path):
+                raise FileNotFoundError(f"Sparse ONNX not found: {sparse_path}")
+            if not osp.exists(dense_path):
+                raise FileNotFoundError(f"Dense ONNX not found: {dense_path}")
+            self._session_sparse = ort.InferenceSession(sparse_path, sess_options=so, providers=providers)
+            self._session_dense = ort.InferenceSession(dense_path, sess_options=so, providers=providers)
+            logger.info("Loaded split ONNX: %s , %s", sparse_path, dense_path)
+            return
+
         model_path = resolve_artifact_path(
             base_dir=self.onnx_dir,
             components_cfg=self._components_cfg,
@@ -50,10 +82,6 @@ class BEVFusionONNXPipeline(BEVFusionDeploymentPipeline):
         )
         if not osp.exists(model_path):
             raise FileNotFoundError(f"BEVFusion ONNX not found: {model_path}")
-
-        so = ort.SessionOptions()
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-        providers = self.device.to_ort_provider()
 
         self.session = ort.InferenceSession(model_path, sess_options=so, providers=providers)
         logger.info(f"Loaded BEVFusion ONNX: {model_path}")
@@ -65,6 +93,10 @@ class BEVFusionONNXPipeline(BEVFusionDeploymentPipeline):
         coors: torch.Tensor,
         num_points_per_voxel: torch.Tensor,
     ) -> List[torch.Tensor]:
+        if self._split:
+            return self._run_bevfusion_split(voxels, coors, num_points_per_voxel)
+
+        assert self.session is not None
         voxels_np = self.to_numpy(voxels, dtype=np.float32)
         coors_np = self.to_numpy(coors, dtype=np.int32)
         num_points_np = self.to_numpy(num_points_per_voxel, dtype=np.int32)
@@ -83,3 +115,40 @@ class BEVFusionONNXPipeline(BEVFusionDeploymentPipeline):
 
         outputs = self.session.run(output_names, feed_dict)
         return [torch.from_numpy(out).to(self.torch_device) for out in outputs]
+
+    def _run_bevfusion_split(
+        self,
+        voxels: torch.Tensor,
+        coors: torch.Tensor,
+        num_points_per_voxel: torch.Tensor,
+    ) -> List[torch.Tensor]:
+        assert self._session_sparse is not None and self._session_dense is not None
+
+        voxels_np = self.to_numpy(voxels, dtype=np.float32)
+        coors_np = self.to_numpy(coors, dtype=np.int32)
+        num_points_np = self.to_numpy(num_points_per_voxel, dtype=np.int32)
+
+        s_in = [inp.name for inp in self._session_sparse.get_inputs()]
+        s_out = [out.name for out in self._session_sparse.get_outputs()]
+
+        sparse_feed = {}
+        for name in s_in:
+            ln = name.lower()
+            if "voxel" in ln and "num" not in ln:
+                sparse_feed[name] = voxels_np
+            elif "coor" in ln:
+                sparse_feed[name] = coors_np
+            elif "num" in ln:
+                sparse_feed[name] = num_points_np
+
+        sparse_ort_outs = self._session_sparse.run(s_out, sparse_feed)
+        if len(sparse_ort_outs) != 1:
+            raise RuntimeError(f"Expected 1 sparse output, got {len(sparse_ort_outs)}")
+        lidar_bev_np = np.ascontiguousarray(sparse_ort_outs[0].astype(np.float32))
+
+        d_in = [inp.name for inp in self._session_dense.get_inputs()]
+        d_out = [out.name for out in self._session_dense.get_outputs()]
+        dense_feed = {d_in[0]: lidar_bev_np}
+
+        dense_ort_outs = self._session_dense.run(d_out, dense_feed)
+        return [torch.from_numpy(out).to(self.torch_device) for out in dense_ort_outs]
