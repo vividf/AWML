@@ -23,6 +23,7 @@ from deployment.core.device import DeviceSpec
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.pipelines.base_pipeline import BaseDeploymentPipeline
 from deployment.pipelines.factory import PipelineFactory
+from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_components
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,11 @@ class BEVFusionEvaluator(BaseEvaluator):
 
     @override
     def _get_output_names(self) -> Optional[List[str]]:
-        return [out.name for out in self._components_cfg.get_component("bevfusion_main_body").io.outputs]
+        if is_split_bevfusion_components(self._components_cfg):
+            comp = self._components_cfg.get_component("bevfusion_dense")
+        else:
+            comp = self._components_cfg.get_component("bevfusion_main_body")
+        return [out.name for out in comp.io.outputs]
 
     @override
     def _create_pipeline(self, model_spec: ModelSpec, device: DeviceSpec) -> BaseDeploymentPipeline:
