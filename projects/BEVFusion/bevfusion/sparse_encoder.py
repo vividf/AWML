@@ -55,6 +55,22 @@ def _in_torch_fx_prepare_trace() -> bool:
     return False
 
 
+def _collapse_depth_like_adaptive_avg_pool3d(x5: torch.Tensor, z_i: int, target_z: int) -> torch.Tensor:
+    """Reduce depth ``z_i`` → ``target_z`` with the same windows as ``adaptive_avg_pool3d(..., (target_z, H, W))``.
+
+    PyTorch ONNX export rejects ``adaptive_avg_pool3d`` when depth does not divide evenly; this uses the
+    official start/end index formula (integer floor/ceil) and segment means, which trace cleanly.
+    """
+    if z_i == target_z:
+        return x5
+    outs = []
+    for j in range(target_z):
+        start = (j * z_i) // target_z
+        end = ((j + 1) * z_i + target_z - 1) // target_z
+        outs.append(x5[:, :, start:end, :, :].mean(dim=2, keepdim=True))
+    return torch.cat(outs, dim=2)
+
+
 def _conv_out_to_bev(out_tensor, output_channels: Optional[int] = None, target_z: int = 2) -> torch.Tensor:
     """Convert conv_out SparseConvTensor to BEV (N, C*Z, H, W).
 
@@ -72,7 +88,7 @@ def _conv_out_to_bev(out_tensor, output_channels: Optional[int] = None, target_z
     - Else use the argmin-axis permute for **D-first** dense layouts (INT8 / some spconv orders).
 
     If ``C * Z`` still does not match ``output_channels * target_z`` (e.g. FX trace), collapse Z
-    with ``adaptive_avg_pool3d``.
+    with depth-wise segment means (same as ``adaptive_avg_pool3d``, ONNX-friendly).
     """
     if output_channels is None:
         output_channels = int(out_tensor.features.shape[1])
@@ -102,14 +118,14 @@ def _conv_out_to_bev(out_tensor, output_channels: Optional[int] = None, target_z
     if c == int(output_channels) and flat_c != expected and z_i > int(target_z):
         logger.warning(
             "BEVFusion _conv_out_to_bev: dense Z=%d gives %d channels (expected %d); "
-            "collapsing Z→%d via adaptive_avg_pool3d for ONNX/backbone compatibility.",
+            "collapsing Z→%d via depth-wise mean segments (same as adaptive_avg_pool3d; ONNX-exportable).",
             z_i,
             flat_c,
             expected,
             target_z,
         )
         y5 = flat.view(n, c, z_i, h, w)
-        y5 = torch.nn.functional.adaptive_avg_pool3d(y5, (int(target_z), h, w))
+        y5 = _collapse_depth_like_adaptive_avg_pool3d(y5, z_i, int(target_z))
         return y5.reshape(n, c * int(target_z), h, w)
     return flat
 

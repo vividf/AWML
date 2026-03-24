@@ -55,12 +55,22 @@ def _fuse_spconv_bn(model: torch.nn.Module) -> None:
         logger.warning("spconv_int8 module not available; skipping sparse BN fusion")
 
 
-def _replace_encoder_with_fx_converted_structure(model: torch.nn.Module, device: torch.device) -> None:
+def _replace_encoder_with_fx_converted_structure(
+    model: torch.nn.Module,
+    device: torch.device,
+    *,
+    upgrade_basicblock_to_fx: bool = True,
+) -> None:
     """Replace pts_middle_encoder with FX-converted structure so PTQ state_dict loads.
 
     PTQ with spconv_int8 saves the encoder after prepare_fx → calibrate → convert_fx.
     When loading, we need the same GraphModule structure; we run prepare_fx and
     convert_fx without calibration, then load_state_dict fills in weights/scales.
+
+    If ``upgrade_basicblock_to_fx`` is True (default), mmdet3d ``SparseBasicBlock`` modules
+    are swapped for ``SparseBasicBlockFX`` before ``prepare_fx`` so Q/DQ names match checkpoints
+    produced with ``block_type=basicblock_fx``. Set False only if the PTQ .pth used plain
+    ``basicblock`` sparse blocks.
     """
     sparse_encoder = getattr(model, "pts_middle_encoder", None)
     if sparse_encoder is None:
@@ -69,6 +79,7 @@ def _replace_encoder_with_fx_converted_structure(model: torch.nn.Module, device:
         from deployment.projects.bevfusion.quantization.spconv_int8 import (
             apply_spconv_int8_quantization,
             convert_spconv_int8,
+            upgrade_pts_middle_encoder_basicblocks_to_fx,
         )
     except ImportError:
         logger.warning("spconv_int8 not available; cannot recreate FX encoder structure")
@@ -76,8 +87,10 @@ def _replace_encoder_with_fx_converted_structure(model: torch.nn.Module, device:
 
     in_channels = getattr(sparse_encoder, "in_channels", 5)
     sparse_encoder.eval()
+    if upgrade_basicblock_to_fx:
+        upgrade_pts_middle_encoder_basicblocks_to_fx(sparse_encoder)
     prepared = apply_spconv_int8_quantization(sparse_encoder, device, in_channels=in_channels)
-    converted = convert_spconv_int8(prepared)
+    converted = convert_spconv_int8(prepared, attr_source=sparse_encoder)
     model.pts_middle_encoder = converted
     logger.info("Replaced pts_middle_encoder with FX-converted structure for PTQ load")
 
@@ -140,9 +153,7 @@ def verify_spconv_int8_encoder(model: torch.nn.Module) -> Dict[str, Any]:
     if enc is None:
         return out
 
-    out["is_graph_module"] = type(enc).__name__ == "GraphModule"
-    if hasattr(torch.fx, "GraphModule") and isinstance(enc, torch.fx.GraphModule):
-        out["is_graph_module"] = True
+    out["is_graph_module"] = hasattr(torch.fx, "GraphModule") and isinstance(enc, torch.fx.GraphModule)
 
     quant_types: Set[str] = set()
     for _name, mod in enc.named_modules():
@@ -155,7 +166,16 @@ def verify_spconv_int8_encoder(model: torch.nn.Module) -> Dict[str, Any]:
         p.numel() for p in enc.parameters() if getattr(p, "is_quantized", False) or p.dtype == torch.qint8
     )
     out["quantized_module_types"] = quant_types
-    out["is_int8"] = out["is_graph_module"] and (out["quantized_param_count"] > 0 or len(quant_types) > 0)
+    # FX + spconv often keep scales/zero_points as buffers, not qint8 Parameters.
+    q_buffer_keys = sum(
+        1
+        for name, _b in enc.named_buffers()
+        if "scale" in name or "zero_point" in name or "activation_post_process" in name
+    )
+    out["quant_activation_buffer_keys"] = q_buffer_keys
+    out["is_int8"] = out["is_graph_module"] and (
+        out["quantized_param_count"] > 0 or len(quant_types) > 0 or q_buffer_keys > 0
+    )
     return out
 
 
@@ -317,7 +337,11 @@ def _load_with_quantization(
         # produced by convert_fx (no calibration here; weights/scales load from checkpoint).
         if quantization.get("spconv_int8", False):
             try:
-                _replace_encoder_with_fx_converted_structure(model, device)
+                _replace_encoder_with_fx_converted_structure(
+                    model,
+                    device,
+                    upgrade_basicblock_to_fx=quantization.get("spconv_ptq_basicblock_fx", True),
+                )
             except Exception:
                 logger.exception(
                     "PTQ load: sparse encoder FX recreate (_replace_encoder_with_fx_converted_structure) failed"
@@ -340,6 +364,23 @@ def _load_with_quantization(
             logger.warning(
                 f"PTQ load: {len(result.unexpected_keys)} unexpected keys (first 10): {result.unexpected_keys[:10]}"
             )
+
+        if quantization.get("spconv_int8", False):
+            miss_sparse_bn = any(k.startswith("pts_middle_encoder") and ".bn" in k for k in result.missing_keys)
+            unexp_fx_obs = any(
+                k.startswith("pts_middle_encoder")
+                and ("_scale_" in k or "_zero_point_" in k or k.endswith("_scale_0") or k.endswith("_zero_point_0"))
+                for k in result.unexpected_keys
+            )
+            if miss_sparse_bn and unexp_fx_obs:
+                logger.error(
+                    "PTQ sparse tower key mismatch: checkpoint carries FX observer tensors "
+                    "(…_bn1_scale_0 / zero_point) but the loaded GraphModule still expects BN/Conv "
+                    "parameters (…bn1.weight). Fix one of: (1) Set quantization.spconv_ptq_basicblock_fx=False "
+                    "in deploy config when using *_base_120m.py (non-fx) and a PTQ .pth from the older "
+                    "quant script (this is the usual fix). (2) Or regenerate PTQ with current "
+                    "bevfusion_quantization.py and set spconv_ptq_basicblock_fx=True, ideally with *_120m_fx.py."
+                )
 
         num_amax = sum(1 for k in state_dict if "_amax" in k)
         logger.info(f"PTQ state_dict contains {num_amax} amax entries, {len(state_dict)} total keys")
@@ -370,8 +411,11 @@ def _load_with_quantization(
             info = verify_spconv_int8_encoder(model)
             if info["is_int8"]:
                 logger.info(
-                    f"Spconv INT8 encoder verified: GraphModule with {info['quantized_param_count']} qint8 params "
-                    f"(total {info['total_param_count']}), {len(info['quantized_module_types'])} quantized module types"
+                    "Spconv INT8 encoder verified: GraphModule, qint8_param_elems=%s, "
+                    "quant_activation_buffer_keys=%s, quant_module_types=%d",
+                    info["quantized_param_count"],
+                    info.get("quant_activation_buffer_keys", 0),
+                    len(info["quantized_module_types"]),
                 )
             else:
                 qtypes = info.get("quantized_module_types") or set()
@@ -380,8 +424,9 @@ def _load_with_quantization(
                     f"Spconv INT8 encoder verification failed: encoder_type={info['encoder_type']} "
                     f"is_graph_module={info['is_graph_module']} "
                     f"quantized_params={info['quantized_param_count']} "
+                    f"quant_activation_buffer_keys={info.get('quant_activation_buffer_keys', 0)} "
                     f"quantized_module_types={len(qtypes)} sample={sample}. "
-                    "Sparse encoder may not be running INT8 (qint8 param count can be 0 if weights live in quantized submodules)."
+                    "If the PTQ checkpoint did not load (BN vs scale_* keys), sparse weights are wrong → mAP≈0."
                 )
 
     else:

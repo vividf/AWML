@@ -64,7 +64,12 @@ quantization = dict(
     quant_add=False,
     # Sparse encoder (pts_middle_encoder): use spconv INT8 (cumm kernels)
     spconv_int8=True,
+    # PTQ script + deploy loader both upgrade SparseBasicBlock→SparseBasicBlockFX before prepare_fx.
+    # Set False only for legacy PTQ .pth files produced without that upgrade.
+    spconv_ptq_basicblock_fx=True,
     num_calibration_samples=5,
+    # Sparse FX calibration: per-frame voxel cap (implicit_gemm ~O(N^2) on GPU). CLI: --spconv-calib-max-voxels.
+    spconv_calib_max_voxels=4096,
     # Layers to skip quantization (prefix match)
     sensitive_layers=[],
 )

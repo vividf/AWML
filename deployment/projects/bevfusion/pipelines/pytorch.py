@@ -117,6 +117,14 @@ class BEVFusionPyTorchPipeline(BEVFusionDeploymentPipeline):
             if hasattr(model, "pts_neck") and model.pts_neck is not None:
                 neck_out = model.pts_neck(backbone_out)
 
+            # Match ``BEVFusion.extract_feat``: head ``bev_pos`` is built for
+            # ``grid_size // out_size_factor`` (e.g. 180×180) while SECOND/FPN can
+            # yield full voxel BEV (e.g. 1440×1440). Skipping this pools causes
+            # ``key`` vs ``key_pos`` length mismatch in the transformer decoder.
+            align_fn = getattr(model, "_align_lidar_bev_to_head_grid", None)
+            if callable(align_fn):
+                neck_out = align_fn(neck_out)
+
             torch.cuda.synchronize()
             stage_latencies["neck_ms"] = (time.perf_counter() - t3) * 1000
 
