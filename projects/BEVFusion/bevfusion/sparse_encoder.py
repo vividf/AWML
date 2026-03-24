@@ -58,43 +58,48 @@ def _in_torch_fx_prepare_trace() -> bool:
 def _conv_out_to_bev(out_tensor, output_channels: Optional[int] = None, target_z: int = 2) -> torch.Tensor:
     """Convert conv_out SparseConvTensor to BEV (N, C*Z, H, W).
 
-    ``spconv.dense()`` returns ``[N, C, *spatial_shape]`` in the same axis order as
-    ``SparseConvTensor.spatial_shape``. Depth (collapsed z after ``conv_out``) may be
-    the **first** ``(D,H,W)`` **or** **last** ``(H,W,D)`` axis depending on how
-    ``sparse_shape`` / voxel indices are ordered. The legacy code assumed ``(H,W,D)``
-    and always permuted ``D`` to the channel-flatten axis; if the tensor is actually
-    ``[N,C,D,H,W]`` with small ``D`` (e.g. 2) and large ``H,W`` (e.g. 1440), that
-    permute yields a bogus channel count (e.g. ``128*1440``) instead of ``256``.
+    BEVFusion uses ``sparse_shape`` / dense layout **(H, W, D)** with **D last** and, after
+    ``conv_out``, **D is the smallest** extent (~2). The pre-08ee70e96 code always merged that
+    last spatial dim and matched FP32 training.
 
-    We pick the **smallest** spatial extent in ``spatial_shape`` as the depth axis to
-    merge into channels (after ``conv_out`` it should be ~2; the BEV plane stays ~1440).
-    This matches both ``(H,W,D)`` and ``(D,H,W)`` layouts without relying on a fixed permute.
+    Commit 08ee70e96 always merged ``argmin(spatial_shape)``. When several sides tie for the
+    minimum (e.g. early strides), Python picks the **first** index — not necessarily the real
+    z axis — scrambling H/W/Z and driving **mAP to ~0**.
 
-    FX INT8 / ONNX trace sometimes leaves the **full** z grid (e.g. 41) in ``spatial_shape``
-    so ``C * Z`` becomes 5248 instead of ``output_channels * target_z`` (256). In that case we
-    apply ``adaptive_avg_pool3d`` along Z to ``target_z`` so SECOND's ``in_channels=256`` matches.
-    This is an export-time fallback; for best fidelity fix spconv/FX so ``conv_out`` shrinks Z.
+    Strategy:
+    - If ``spatial_shape[-1] == min(spatial_shape)``, use the **legacy** ``permute(0,1,4,2,3)``
+      path (D last).
+    - Else use the argmin-axis permute for **D-first** dense layouts (INT8 / some spconv orders).
 
-    ``output_channels`` defaults to ``out_tensor.features.shape[1]`` so FX ``GraphModule`` calls
-    that only pass ``out_tensor`` (single arg) still work.
+    If ``C * Z`` still does not match ``output_channels * target_z`` (e.g. FX trace), collapse Z
+    with ``adaptive_avg_pool3d``.
     """
     if output_channels is None:
         output_channels = int(out_tensor.features.shape[1])
     spatial_shape = [int(s) for s in out_tensor.spatial_shape]
     x = out_tensor.dense()
-    n, c = x.shape[0], x.shape[1]
-    # Map smallest logical axis -> depth to flatten with C (same as mmdet3d SparseEncoder when D is first).
-    zi = min(range(3), key=lambda i: spatial_shape[i])
-    order = [j for j in range(3) if j != zi] + [zi]
-    perm = (0, 1, 2 + order[0], 2 + order[1], 2 + order[2])
-    y = x.permute(*perm).contiguous()
-    # y layout: N, C, H, W, Z (Z is smallest axis, typically 2 after conv_out)
-    z = y.shape[4]
-    h, w = y.shape[2], y.shape[3]
-    z_i = int(z) if not isinstance(z, int) else z
-    flat_c = int(c) * z_i
+    n = int(x.shape[0])
+    c = int(x.shape[1])
+    mn = min(spatial_shape)
+
+    if spatial_shape[-1] == mn:
+        # Standard BEVFusion (H, W, D): D minimal and stored as last spatial dim.
+        _, _, h, w, d = x.shape
+        h, w, z_i = int(h), int(w), int(d)
+        t = x.permute(0, 1, 4, 2, 3).contiguous()
+        flat = t.view(n, c * z_i, h, w)
+    else:
+        zi = min(range(3), key=lambda i: spatial_shape[i])
+        order = [j for j in range(3) if j != zi] + [zi]
+        perm = (0, 1, 2 + order[0], 2 + order[1], 2 + order[2])
+        y = x.permute(*perm).contiguous()
+        z_i = int(y.shape[4])
+        h, w = int(y.shape[2]), int(y.shape[3])
+        flat = y.view(n, c * z_i, h, w)
+
+    flat_c = c * z_i
     expected = int(output_channels) * int(target_z)
-    if int(c) == int(output_channels) and flat_c != expected and z_i > int(target_z):
+    if c == int(output_channels) and flat_c != expected and z_i > int(target_z):
         logger.warning(
             "BEVFusion _conv_out_to_bev: dense Z=%d gives %d channels (expected %d); "
             "collapsing Z→%d via adaptive_avg_pool3d for ONNX/backbone compatibility.",
@@ -103,10 +108,10 @@ def _conv_out_to_bev(out_tensor, output_channels: Optional[int] = None, target_z
             expected,
             target_z,
         )
-        y5 = y.permute(0, 1, 4, 2, 3).contiguous()
-        y5 = torch.nn.functional.adaptive_avg_pool3d(y5, (int(target_z), int(h), int(w)))
-        return y5.reshape(n, int(c) * int(target_z), int(h), int(w))
-    return y.view(n, flat_c, h, w)
+        y5 = flat.view(n, c, z_i, h, w)
+        y5 = torch.nn.functional.adaptive_avg_pool3d(y5, (int(target_z), h, w))
+        return y5.reshape(n, c * int(target_z), h, w)
+    return flat
 
 
 # FX trace fails when control flow uses symbolic (traced) variables; dense() or shape/view can trigger that.

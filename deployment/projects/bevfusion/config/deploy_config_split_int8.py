@@ -122,15 +122,15 @@ components = dict(
                 dict(name="label_pred", dtype="int64"),
             ],
             dynamic_axes={
-                "lidar_bev": {0: "batch", 2: "bev_h", 3: "bev_w"},
+                "lidar_bev": {0: "batch"},
             },
         ),
-        # Channel dim must match ONNX static C (default LiDAR SECOND: pts_backbone.in_channels=256).
+        # H,W must match bbox_head BEV (grid_size // out_size_factor); see deploy_config_split.py header.
         tensorrt_profile=dict(
             lidar_bev=dict(
-                min_shape=[1, 256, 32, 32],
+                min_shape=[1, 256, 180, 180],
                 opt_shape=[1, 256, 180, 180],
-                max_shape=[1, 256, 2048, 2048],
+                max_shape=[1, 256, 180, 180],
             ),
         ),
     ),
