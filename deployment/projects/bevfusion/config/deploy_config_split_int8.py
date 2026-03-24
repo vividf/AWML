@@ -5,15 +5,27 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
   - **路線 1**：``bevfusion_sparse`` + ``bevfusion_dense`` 兩段 ONNX / 兩顆 engine（見 ``deploy_config_split.py``）
   - **INT8**：與 ``deploy_config_int8.py`` 相同的 ``quantization``，載入 **已 PTQ 的 checkpoint**（spconv 稀疏塔 INT8 + 稠密端 pytorch_quantization）
 
-**前置條件**
-  - 使用 **FX 可 trace** 的 model config（例如 ``*_120m_fx.py``，`block_type=basicblock_fx`），與 PTQ 產出時一致。
-  - ``checkpoint_path`` 指向 ``bevfusion_quantization.py ptq`` 等流程產生的 **.pth**。
-  - ``quantization.ptq_checkpoint=True``（本檔預設已開）。
+**隔離問題時怎麼想（與 ``deploy_config_split.py`` 無關）**
 
-**稀疏段 ONNX 注意**
-  - 若 ``pts_middle_encoder`` 已是 **convert_fx 後的 qint8 GraphModule**，``bevfusion_sparse.onnx`` 的
-    ``torch.onnx.export`` **可能仍失敗**（標準 ONNX 不支援 ``_empty_affine_quantized`` 等）。
-  - 此情況下：稠密 ``bevfusion_dense`` 仍可嘗試匯出／建 TRT；稀疏請改 **PyTorch 推理** 或 **libspconv / 自寫權重載入**。
+  同一條 CLI、同一個 ``*_120m_fx.py``、**仍用本檔**（split 路徑與 work_dir 不變），只把
+  ``checkpoint_path`` 改成 **訓練 FP32 .pth**，並設 ``quantization = dict(enabled=False)``。
+  若此時 **mAP 正常**，則 **split / voxel preprocess / eval 管線沒壞**；mAP 掉在 **PTQ .pth 或
+  quantization 載入**（含 dense Q/DQ、spconv INT8、key 與 mmconfig 是否一致）。
+  稀疏校準預設 **不裁 voxel**（與 Lidar AI Solution 一致）；僅在顯存不足時可選
+  ``spconv_calib_max_voxels`` / ``SPCONV_CALIB_MAX_VOXELS``。
+
+**前置條件**
+  - ``checkpoint_path`` 指向 ``bevfusion_quantization.py ptq`` 產生的 **.pth**；``quantization.ptq_checkpoint=True``（本檔預設已開）。
+  - **``spconv_ptq_basicblock_fx``** 必須與 **產生該 PTQ .pth 時** 的 sparse 圖一致，否則會出現 ``bn1.weight`` missing / ``bn1_scale_0`` unexpected、mAP≈0。
+
+    - **False**：legacy PTQ（``*_base_120m.py``、舊腳本、未做 block 升級）與 deploy 對齊時。
+    - **True**：``*_120m_fx.py`` 且已用 **目前** ``bevfusion_quantization.py`` 重跑 PTQ（腳本內會 ``SparseBasicBlock→FX``）時，建議與 PTQ 一致。
+
+**稀疏段 ONNX**
+  - ``convert_fx`` 後的 GraphModule 無法直接匯出（ONNX 不支援 ``_empty_affine_quantized``）。
+  - 匯出時 pipeline 會 **暫時**以重建的 **FP32 融合稀疏塔** 取代 GraphModule 僅供 trace，結束後還原；
+    產生的 ``bevfusion_sparse.onnx`` 為 **浮點稀疏圖**（與 Lidar ``*.scn.onnx`` + libspconv FP16/FP 路線同類），
+    **數值與 PTQ INT8 不完全相同**；真 INT8 稀疏推理請仍用 PyTorch 或依 spconv TENSORRT_INT8_GUIDE 餵權重給 plugin。
 
 **CLI**（需在含 pytorch-quantization 的環境；Docker 見 ``deploy_config_int8.py`` 註解）::
 
@@ -33,12 +45,13 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 """
 
 # ============================================================================
-# Checkpoint — 必須為 PTQ 產物（含校準後的 dense Q/DQ 與稀疏 FX 權重）
+# Checkpoint
 # ============================================================================
-checkpoint_path = "work_dirs/bevfusion/epoch_30_ptq2.pth"
+# PTQ：必須為 bevfusion_quantization.py 產物。FP32 對照：改為訓練 .pth 並改用下方 Preset B。
+checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq.pth"
 
 # ============================================================================
-# Quantization（與 deploy_config_int8.py 對齊；專用於已量化 checkpoint）
+# Quantization — Preset A：INT8 PTQ（預設）
 # ============================================================================
 quantization = dict(
     enabled=True,
@@ -49,9 +62,17 @@ quantization = dict(
     quant_head=True,
     quant_add=False,
     spconv_int8=True,
+    spconv_ptq_basicblock_fx=True,
     num_calibration_samples=5,
+    spconv_calib_max_voxels=4096,
     sensitive_layers=[],
 )
+
+# ============================================================================
+# Preset B：同 split_int8 路徑 + *_fx.py，僅 FP32 驗證 mAP / 管線（註解掉 Preset A 後啟用）
+# ============================================================================
+# checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30.pth"
+# quantization = dict(enabled=False)
 
 devices = dict(
     cpu="cpu",
@@ -59,7 +80,7 @@ devices = dict(
 )
 
 export = dict(
-    mode="both",
+    mode="onnx",
     work_dir="work_dirs/bevfusion_split_int8_deployment",
     onnx_path=None,
 )
@@ -171,7 +192,7 @@ evaluation = dict(
             model_dir=_ONNX_DIR,
         ),
         tensorrt=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
             engine_dir=_TENSORRT_DIR,
         ),

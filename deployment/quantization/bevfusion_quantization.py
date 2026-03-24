@@ -67,6 +67,16 @@ def parse_args():
         action="store_true",
         help="Skip spconv INT8 calibration for sparse encoder (only do dense Q/DQ).",
     )
+    ptq_parser.add_argument(
+        "--spconv-calib-max-voxels",
+        type=int,
+        default=None,
+        help=(
+            "Max voxels per frame during spconv FX calibration (implicit_gemm uses ~O(N^2) GPU memory). "
+            "Overrides deploy quantization.spconv_calib_max_voxels. If unset, uses deploy → "
+            "SPCONV_CALIB_MAX_VOXELS → default 4096."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -75,9 +85,50 @@ def _load_deploy_quantization_cfg(deploy_cfg_path: str) -> Tuple[Dict[str, Any],
     from mmengine.config import Config
 
     deploy_cfg = Config.fromfile(deploy_cfg_path)
-    quant = dict(getattr(deploy_cfg, "quantization", {}) or {})
-    ckpt = getattr(deploy_cfg, "checkpoint_path", None)
+    # MMEngine Config: prefer .get("quantization"); getattr() can miss keys on some Config wrappers.
+    quant_raw = deploy_cfg.get("quantization", None)
+    if quant_raw is None:
+        quant_raw = getattr(deploy_cfg, "quantization", None)
+    if quant_raw is None:
+        quant = {}
+    else:
+        try:
+            quant = {k: quant_raw[k] for k in quant_raw}
+        except Exception:
+            quant = dict(quant_raw)
+    ckpt = deploy_cfg.get("checkpoint_path", None)
+    if ckpt is None:
+        ckpt = getattr(deploy_cfg, "checkpoint_path", None)
     return quant, ckpt
+
+
+def _resolve_spconv_calib_voxel_cap(quant_cfg: Dict[str, Any], cli_cap: Optional[int]) -> int:
+    """Effective voxels/sample for spconv FX calibration (prepare_fx observers).
+
+    implicit_gemm / get_indice_pairs allocate buffers ~ O(N^2); full-scene N is not viable on GPU
+    for this PyTorch FX path (unlike libspconv in Lidar AI Solution).
+
+    Priority: CLI ``--spconv-calib-max-voxels`` > deploy ``spconv_calib_max_voxels`` >
+    env ``SPCONV_CALIB_MAX_VOXELS`` > library default.
+    Values ``<= 0`` fall back to the library default (never "unlimited" here — that OOMs).
+    """
+    from deployment.projects.bevfusion.quantization.spconv_int8 import _default_spconv_calib_max_voxels
+
+    def _positive_or_default(v: int) -> int:
+        return int(v) if int(v) > 0 else _default_spconv_calib_max_voxels()
+
+    if cli_cap is not None:
+        try:
+            return _positive_or_default(int(cli_cap))
+        except (TypeError, ValueError):
+            return _default_spconv_calib_max_voxels()
+    raw = quant_cfg.get("spconv_calib_max_voxels")
+    if raw is not None:
+        try:
+            return _positive_or_default(int(raw))
+        except (TypeError, ValueError):
+            return _default_spconv_calib_max_voxels()
+    return _default_spconv_calib_max_voxels()
 
 
 def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
@@ -211,7 +262,16 @@ def _calibrate_dense(model, dataloader, num_batches, method="mse"):
     return calibrator
 
 
-def _calibrate_spconv(model, dataloader, num_samples, device, output_path, quant_cfg):
+def _calibrate_spconv(
+    model,
+    dataloader,
+    num_samples,
+    device,
+    output_path,
+    quant_cfg,
+    *,
+    spconv_calib_max_voxels_cli: Optional[int] = None,
+):
     """Run spconv INT8 for sparse encoder via FX path (prepare_fx → calibrate → convert_fx).
 
     Requires pts_middle_encoder to be FX-traceable (use config with
@@ -281,12 +341,39 @@ def _calibrate_spconv(model, dataloader, num_samples, device, output_path, quant
 
     print(f"  Collected {len(calibration_data)} samples")
 
+    calib_cap = _resolve_spconv_calib_voxel_cap(quant_cfg, spconv_calib_max_voxels_cli)
+    print(
+        f"  Spconv FX calibration: max {calib_cap} voxels/sample "
+        "(implicit_gemm ~O(N^2); order: --spconv-calib-max-voxels > deploy "
+        "spconv_calib_max_voxels > SPCONV_CALIB_MAX_VOXELS > default)."
+    )
+
     in_channels = getattr(sparse_encoder, "in_channels", 5)
+    # Must match deployment ``_replace_encoder_with_fx_converted_structure`` (model_loader): deploy
+    # calls ``upgrade_pts_middle_encoder_basicblocks_to_fx`` before prepare_fx when
+    # ``spconv_ptq_basicblock_fx`` is True. Skipping here yields PTQ checkpoints whose state_dict
+    # keys (e.g. ``..._bn1_scale_0``) do not load into the deploy-rebuilt GraphModule (missing
+    # ``bn1.weight``, unexpected scale tensors) → mAP collapse and false INT8 verification.
+    use_fx_bb = bool(quant_cfg.get("spconv_ptq_basicblock_fx", True))
+    if use_fx_bb:
+        from deployment.projects.bevfusion.quantization.spconv_int8 import (
+            upgrade_pts_middle_encoder_basicblocks_to_fx,
+        )
+
+        n_bb = upgrade_pts_middle_encoder_basicblocks_to_fx(sparse_encoder)
+        if n_bb:
+            print(
+                f"  Upgraded {n_bb} SparseBasicBlock → SparseBasicBlockFX before spconv FX "
+                "(matches deploy loader; required unless checkpoint uses only basicblock_fx config)."
+            )
+    else:
+        print("  spconv_ptq_basicblock_fx=False: skipping SparseBasicBlock→FX upgrade (legacy checkpoint path)")
+
     try:
         print("  Applying spconv FX path: prepare_fx → calibrate → convert_fx → transform_qdq")
         prepared = apply_spconv_int8_quantization(sparse_encoder, torch.device(device), in_channels=in_channels)
-        calibrate_spconv_model(prepared, calibration_data)
-        converted = convert_spconv_int8(prepared)
+        calibrate_spconv_model(prepared, calibration_data, max_voxels_per_sample=calib_cap)
+        converted = convert_spconv_int8(prepared, attr_source=sparse_encoder)
         model.pts_middle_encoder = converted
         print("  Sparse encoder replaced with INT8 quantized module (FX path)")
     except Exception as e:
@@ -397,7 +484,15 @@ def run_ptq(args):
             print("\n[5b/6] Spconv INT8 for sparse encoder (FX path)...")
             spconv_samples = quant_cfg.get("num_calibration_samples", args.calibrate_samples)
             try:
-                _calibrate_spconv(model, dataloader, spconv_samples, args.device, args.output, quant_cfg)
+                _calibrate_spconv(
+                    model,
+                    dataloader,
+                    spconv_samples,
+                    args.device,
+                    args.output,
+                    quant_cfg,
+                    spconv_calib_max_voxels_cli=args.spconv_calib_max_voxels,
+                )
             except Exception as e:
                 print(f"  Spconv INT8 failed: {e}")
                 print("  Sparse encoder will remain FP32 in the PTQ checkpoint")

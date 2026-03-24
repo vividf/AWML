@@ -26,13 +26,24 @@ def _check_pytorch_quantization():
 
 
 def _skip_fake_quant_for_export_trace() -> bool:
-    """True during torch.jit trace used by torch.onnx.export (and related).
+    """Whether to bypass TensorQuantizer during JIT trace / ONNX export.
 
-    ``torch.jit.is_tracing()`` is not always True inside every submodule during ONNX
-    export; also skip when ``torch.onnx.is_in_onnx_export`` is available.
-    TensorQuantizer's FB fake_quant uses Python control flow on shapes → TracerWarning
-    and bad graphs; we pass through raw input/weight for the traced conv.
+    Legacy (non--FB) fake quant can break tracing; we used to skip all quantizers whenever
+    ``torch.jit.is_tracing()`` or ``torch.onnx.is_in_onnx_export()`` was true, which
+    produced **FP32-only** ONNX (no QuantizeLinear/DequantizeLinear) even after
+    ``setup_quantization_for_onnx_export()`` sets ``TensorQuantizer.use_fb_fake_quant = True``.
+
+    When ``use_fb_fake_quant`` is True, NVIDIA's TensorQuantizer is intended to trace as
+    Q/DQ ops; in that case we must **not** skip, or dense ONNX loses all QDQ nodes.
     """
+    try:
+        from pytorch_quantization.nn import TensorQuantizer
+
+        if getattr(TensorQuantizer, "use_fb_fake_quant", False):
+            return False
+    except Exception:
+        pass
+
     if torch.jit.is_tracing():
         return True
     try:

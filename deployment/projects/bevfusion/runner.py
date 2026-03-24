@@ -145,8 +145,13 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
 
             in_channels = getattr(sparse_encoder, "in_channels", 5)
             prepared = apply_spconv_int8_quantization(sparse_encoder, torch_device, in_channels=in_channels)
-            calibrate_spconv_model(prepared, calibration_data)
-            quantized_encoder = convert_spconv_int8(prepared)
+            max_vox = quantization.get("spconv_calib_max_voxels")
+            calibrate_spconv_model(
+                prepared,
+                calibration_data,
+                max_voxels_per_sample=max_vox,
+            )
+            quantized_encoder = convert_spconv_int8(prepared, attr_source=sparse_encoder)
             model.pts_middle_encoder = quantized_encoder
             logger.info("Spconv INT8 quantization applied to pts_middle_encoder")
 

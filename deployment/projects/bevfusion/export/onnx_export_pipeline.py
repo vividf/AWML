@@ -459,7 +459,42 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             )
             model.to(trace_dev)
 
+        orig_sparse_encoder: Optional[nn.Module] = None
         try:
+            enc = getattr(model, "pts_middle_encoder", None)
+            if enc is not None:
+                from deployment.projects.bevfusion.export.sparse_encoder_float_shadow import (
+                    build_float_sparse_encoder_shadow,
+                    resolve_sparse_onnx_shadow,
+                )
+
+                gm_src, cfg_ov = resolve_sparse_onnx_shadow(enc, model)
+                if gm_src is not None:
+                    self.logger.info(
+                        "Sparse tower uses FX GraphModule (spconv INT8 path): using a fused FP32 "
+                        "shadow encoder only for torch.onnx.export (ONNX cannot represent "
+                        "aten::_empty_affine_quantized; same idea as Lidar exptool exporting a float "
+                        "graph). PyTorch PTQ inference is unchanged after export. See "
+                        "README_BEVFUSION_ONNX_TRT_SPCONV_INT8.md §3 / §十-A."
+                    )
+                    if cfg_ov:
+                        self.logger.info(
+                            "Shadow rebuild merges %d attribute(s) from model.cfg pts_middle_encoder.",
+                            len(cfg_ov),
+                        )
+                    if gm_src is not enc:
+                        self.logger.info(
+                            "Using nested GraphModule for shadow weights (type(enc)=%s, gm=%s).",
+                            type(enc).__name__,
+                            type(gm_src).__name__,
+                        )
+                    orig_sparse_encoder = enc
+                    model.pts_middle_encoder = build_float_sparse_encoder_shadow(
+                        gm_src,
+                        trace_dev,
+                        cfg_overrides=cfg_ov if cfg_ov else None,
+                    )
+
             if wrapper == "sparse":
                 wrapper_mod: nn.Module = BEVFusionSparseWrapper(model)
             elif wrapper == "main":
@@ -491,6 +526,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             except Exception:
                 pass
 
+            unsupported_onnx_op = getattr(getattr(torch.onnx, "errors", None), "UnsupportedOperatorError", None)
             with torch.no_grad():
                 # Pip spconv dense()/scatter uses list indexing; PyTorch 2.x deprecates x[list] (use x[tuple(list)]).
                 with warnings.catch_warnings():
@@ -499,8 +535,25 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
                         message=".*non-tuple sequence for multidimensional indexing.*",
                         category=UserWarning,
                     )
-                    torch.onnx.export(wrapper_mod, model_inputs, output_path, **export_kw)
+                    try:
+                        torch.onnx.export(wrapper_mod, model_inputs, output_path, **export_kw)
+                    except Exception as e:
+                        if (
+                            unsupported_onnx_op is not None
+                            and isinstance(e, unsupported_onnx_op)
+                            and "_empty_affine_quantized" in str(e)
+                        ):
+                            raise RuntimeError(
+                                "torch.onnx.export failed on quantized tensors (aten::_empty_affine_quantized). "
+                                "Expected fix: FX GraphModule under pts_middle_encoder with "
+                                "sparse_encoder_float_shadow.SPARSE_ENCODER_SHADOW_ATTRS so the exporter "
+                                "swaps in an FP32 BEVFusionSparseEncoder for tracing only. "
+                                "If your encoder is wrapped, ensure a child GraphModule exposes those attributes."
+                            ) from e
+                        raise
         finally:
+            if orig_sparse_encoder is not None:
+                model.pts_middle_encoder = orig_sparse_encoder
             if moved_for_trace:
                 try:
                     model.to(model_device)

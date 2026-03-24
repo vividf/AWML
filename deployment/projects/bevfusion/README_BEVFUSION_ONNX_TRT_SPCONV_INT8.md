@@ -10,6 +10,16 @@
 更貼近程式修改的實作紀錄另見：  
 [README_SPCONV_INT8_實作歷程.md](./README_SPCONV_INT8_實作歷程.md)。
 
+**Split + PTQ INT8 進度、除錯時間線、明日接續點**：  
+[README_BEVFUSION_SPLIT_PTQ_INT8_PROGRESS.md](./README_BEVFUSION_SPLIT_PTQ_INT8_PROGRESS.md)。
+
+---
+
+## 〇、與 Lidar AI Solution 對齊（原則與路線）
+
+- **校準資料**：**Lidar AI Solution / libspconv** 可在 C++ 路徑處理大 N；**本 repo 的 spconv FX PTQ（`prepare_fx` → observers）在 GPU 上對 N 是 ~O(N²) 記憶體**，全場景幾乎必炸，與「校準 sample 數」無關。因此 **AWML 預設對每幀做 voxel 子採樣**（deploy / env / 預設 4096），並提供 **`bevfusion_quantization.py --spconv-calib-max-voxels`** 覆寫。Deploy 的 `quantization` 請用 **`deploy_cfg.get("quantization")`** 讀取（舊版僅 `getattr` 可能讀不到 MMEngine `Config` 裡的鍵，導致 cap 未生效而 OOM）。
+- **ONNX 匯出**：長期應逐步靠攏 **Lidar AI Solution** 形態——**稀疏專用 ONNX + libspconv（或同等 plugin）**、稠密段標準 ONNX/QDQ；目前 AWML 仍以 **torch.onnx.export + FP32 sparse shadow** 等過渡手段為主，見進度 README。
+
 ---
 
 ## 一、三句話結論（先看這裡）
@@ -42,7 +52,7 @@
 
 - **FP32 全網**：稀疏塔仍是 **特殊實作**，但較少 **`_empty_affine_quantized`**；有時仍會因 **spconv / JIT / 動態 shape** 踩雷，但和 INT8 相比門檻較低。
 - **PTQ + `convert_fx` 稀疏塔**：圖中大量 **量化原語**；ONNX exporter **沒有**對應 symbolic → **匯出失敗**或圖無效。
-- **稠密端若用 pytorch_quantization**：`torch.onnx.export` 還牽涉 **fake quant / QDQ**；需 **關閉 trace 時 fake quant** 或改 **export 策略**（見 AWML `quant_conv.py` 等）。
+- **稠密端若用 pytorch_quantization**：`torch.onnx.export` 牽涉 **fake quant / QDQ**；需 **`TensorQuantizer.use_fb_fake_quant`** 與 **`quant_conv.py`** 在 trace 時仍走 quantizer（見進度 README §5.7）。
 
 因此：**「正確」若定義為「一檔 `.onnx` 用 `trtexec` 直接吃滿 BEVFusion + spconv 真 INT8」—— 實務上 **通常不成立**；應改問 **「哪一段用 ONNX/TRT，哪一段用 libspconv / PyTorch」**。
 
@@ -159,7 +169,8 @@
 
 1. **ONNX**：`BEVFusionONNXExportPipeline` 會寫入同一個 `onnx/` 目錄下的  
    - `bevfusion_sparse.onnx`：voxels / coors / num_points → `lidar_bev`  
-   - `bevfusion_dense.onnx`：`lidar_bev` → `bbox_pred` / `score` / `label_pred`（含與單檔相同的 TopK 修復）
+   - `bevfusion_dense.onnx`：`lidar_bev` → `bbox_pred` / `score` / `label_pred`（含與單檔相同的 TopK 修復）  
+   - **PTQ 且 `pts_middle_encoder` 為 `convert_fx` GraphModule 時**：匯出前會 **暫時**換成重建的 **FP32 融合稀疏塔** 再 `torch.onnx.export`，結束後還原 GraphModule；稀疏 ONNX 為 **浮點圖**（對齊 Lidar `*.scn.onnx` + libspconv 以 FP16/FP 解析的思路），**不等於** PyTorch 內真 INT8 稀疏推理。
 2. **TensorRT**：`BEVFusionTensorRTExportPipeline` 會掃描目錄內多個 `.onnx`，依各 component 的 `engine_file` 產生 **兩顆 engine**。
 3. **推理**：`BEVFusionONNXPipeline` / `BEVFusionTensorRTPipeline` 會自動 **先跑稀疏再跑稠密**（無須改 CLI 子命令）。
 
