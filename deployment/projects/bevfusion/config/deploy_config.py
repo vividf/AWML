@@ -8,7 +8,7 @@ Adapt checkpoint_path, info_file, and shape profiles to your model.
 # ============================================================================
 # Checkpoint Path
 # ============================================================================
-checkpoint_path = "work_dirs/bevfusion/epoch_30.pth"
+checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30.pth"
 
 # ============================================================================
 # Device settings
@@ -22,7 +22,7 @@ devices = dict(
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="both",
+    mode="onnx",
     work_dir="work_dirs/bevfusion_deployment",
     onnx_path=None,
 )
@@ -139,8 +139,8 @@ evaluation = dict(
             device=devices["cuda"],
             model_dir=_ONNX_DIR,
         ),
-        tensorrt=dict(
-            enabled=True,
+        tensorrt=dict[str, bool | str](
+            enabled=False,
             device=devices["cuda"],
             engine_dir=_TENSORRT_DIR,
         ),

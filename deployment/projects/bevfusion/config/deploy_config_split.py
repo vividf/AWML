@@ -9,8 +9,12 @@ Use this instead of ``deploy_config.py`` when you want:
 
 **Requirements**
   - LiDAR-only model: ``fusion_layer is None`` and ``img_backbone is None``.
-  - Adjust ``tensorrt_profile`` for ``lidar_bev`` channel count / BEV size to match your checkpoint
-    (defaults assume ``C=256``, ``H=W=180`` at neck output before head align).
+
+  - Set ``bevfusion_dense.tensorrt_profile.lidar_bev`` **H,W** to ``grid_size[0:2] // out_size_factor``
+    (e.g. 1440/8 → **180×180**). Do **not** use a wide H/W range: ``bbox_head`` uses fixed ``bev_pos``
+    and heatmap length ``H*W``; TRT profiles like 32×32 or 2048×2048 break ``Reshape``/``Gather``
+    consistency and yield garbage mAP.
+  - Adjust channel **C** (default ``256``) to match ``pts_backbone.in_channels`` / sparse tower output.
 
 **PTQ / spconv INT8 checkpoint** 請改用：``deploy_config_split_int8.py``（含 ``quantization`` 區塊）。
 
@@ -24,7 +28,7 @@ CLI::
 # ============================================================================
 # Checkpoint Path
 # ============================================================================
-checkpoint_path = "work_dirs/bevfusion/epoch_30.pth"
+checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30.pth"
 
 devices = dict(
     cpu="cpu",
@@ -94,23 +98,24 @@ components = dict(
                 dict(name="score", dtype="float32"),
                 dict(name="label_pred", dtype="int64"),
             ],
+            # Spatial dims must stay at head BEV resolution; see module docstring.
             dynamic_axes={
-                "lidar_bev": {0: "batch", 2: "bev_h", 3: "bev_w"},
+                "lidar_bev": {0: "batch"},
             },
         ),
-        # Channel (axis 1) is STATIC in ONNX (= sparse encoder output = SECOND in_channels).
-        # TRT requires min==opt==max for static dims; only H/W may use a range.
+        # H,W fixed to head grid (grid_size // out_size_factor). Widen only batch dim if needed.
         tensorrt_profile=dict(
             lidar_bev=dict(
-                min_shape=[1, 256, 32, 32],
+                min_shape=[1, 256, 180, 180],
                 opt_shape=[1, 256, 180, 180],
-                max_shape=[1, 256, 2048, 2048],
+                max_shape=[1, 256, 180, 180],
             ),
         ),
     ),
 )
 
 runtime_io = dict(
+    # info_file="info/kokseang_2_5_experiment/t4dataset_j6gen2_base_infos_test.pkl",
     info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=0,
 )
