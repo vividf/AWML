@@ -25,6 +25,8 @@ def _ensure_float_lidar_bev(x: Tensor) -> Tensor:
     """
     if not isinstance(x, torch.Tensor):
         return x
+    if getattr(x, "is_quantized", False):
+        return x.dequantize()
     if x.is_floating_point():
         return x
     try:
@@ -33,6 +35,19 @@ def _ensure_float_lidar_bev(x: Tensor) -> Tensor:
     except (AttributeError, RuntimeError, TypeError):
         pass
     return x.float()
+
+
+def _ensure_float_for_pts_pipeline(x: Tensor) -> Tensor:
+    """Float BEV before dense calib/QDQ; skip TorchScript trace and FX Proxy tensors."""
+    if not isinstance(x, torch.Tensor):
+        return x
+    if torch.jit.is_tracing():
+        return x
+    from .sparse_encoder import _is_fx_proxy
+
+    if _is_fx_proxy(x):
+        return x
+    return _ensure_float_lidar_bev(x)
 
 
 @MODELS.register_module()
@@ -287,11 +302,8 @@ class BEVFusion(Base3DDetector):
                 batch_size = max(batch_size, 1)
         x = self.pts_middle_encoder(feats, coords, batch_size)
         # INT8 sparse tower → dense BEV may be qint*/int; dense Q/DQ and calibrators need float.
-        if not torch.jit.is_tracing():
-            from .sparse_encoder import _in_torch_fx_prepare_trace, _is_fx_proxy
-
-            if not _in_torch_fx_prepare_trace() and not _is_fx_proxy(x):
-                x = _ensure_float_lidar_bev(x)
+        # Do not gate on _in_torch_fx_prepare_trace(): it can stay True after spconv FX in the same process.
+        x = _ensure_float_for_pts_pipeline(x)
         return x
 
     @torch.no_grad()
@@ -443,6 +455,7 @@ class BEVFusion(Base3DDetector):
             x = features[0]
 
         if self.pts_backbone is not None:
+            x = _ensure_float_for_pts_pipeline(x)
             x = self.pts_backbone(x)
 
         if self.pts_neck is not None:
