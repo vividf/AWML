@@ -15,6 +15,7 @@ from typing import Iterator, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -375,15 +376,17 @@ def calibrate_spconv_model(
     else:
         cap = _default_spconv_calib_max_voxels()
     cap_desc = "unlimited (full voxels)" if cap <= 0 else str(cap)
+    n_samples = len(calibration_data)
     logger.info(
         "Calibrating sparse encoder with %d samples (max_voxels_per_sample=%s; set positive "
         "SPCONV_CALIB_MAX_VOXELS or quantization.spconv_calib_max_voxels if OOM)",
-        len(calibration_data),
+        n_samples,
         cap_desc,
     )
 
     with torch.no_grad():
-        for i, (voxel_features, coors, batch_size) in enumerate(calibration_data):
+        pbar = tqdm(calibration_data, total=n_samples, desc="Calibrating spconv", leave=True)
+        for i, (voxel_features, coors, batch_size) in enumerate(pbar):
             n0 = int(voxel_features.shape[0])
             voxel_features, coors = cap_voxels_for_spconv_calibration(voxel_features, coors, cap)
             if cap > 0 and n0 > cap:
@@ -395,7 +398,7 @@ def calibrate_spconv_model(
                 )
             try:
                 prepared_encoder(voxel_features, coors, batch_size)
-                logger.debug(f"  Calibration sample {i + 1}/{len(calibration_data)}")
+                logger.debug("  Calibration sample %d/%d", i + 1, n_samples)
             except torch.cuda.OutOfMemoryError:
                 logger.error(
                     "CUDA OOM during spconv sparse calibration (cap=%s). "
@@ -405,7 +408,7 @@ def calibrate_spconv_model(
                 )
                 raise
             except Exception as e:
-                logger.warning(f"  Calibration sample {i + 1} failed: {e}")
+                pbar.write(f"  Warning: spconv calib sample {i + 1}/{n_samples} failed: {e}")
 
     logger.info("Sparse encoder calibration complete")
 
