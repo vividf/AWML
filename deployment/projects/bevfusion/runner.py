@@ -130,7 +130,8 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
             )
             return model
 
-        num_calib_samples = quantization.get("num_calibration_samples", 5)
+        # Optional deploy override; PTQ checkpoints already carry an FX GraphModule (skipped above).
+        num_calib_samples = int(quantization.get("num_calibration_samples", 40))
         calibration_data = self._collect_calibration_data(model, num_calib_samples, torch_device)
 
         if not calibration_data:

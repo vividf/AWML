@@ -75,7 +75,11 @@ def run(args: argparse.Namespace) -> int:
         logger.info(f"  Quant neck: {quantization_cfg.get('quant_neck', True)}")
         logger.info(f"  Quant head: {quantization_cfg.get('quant_head', True)}")
         if quantization_cfg.get("spconv_int8"):
-            logger.info(f"  Calibration samples: {quantization_cfg.get('num_calibration_samples', 5)}")
+            nsparse = quantization_cfg.get("num_calibration_samples")
+            if nsparse is not None:
+                logger.info(f"  Runner sparse calib frames (optional): {nsparse}")
+            else:
+                logger.info("  Runner sparse calib: default frame count (see BEVFusionDeploymentRunner); PTQ uses CLI")
     else:
         logger.info("Quantization: disabled")
 

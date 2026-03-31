@@ -67,9 +67,7 @@ quantization = dict(
     # PTQ script + deploy loader both upgrade SparseBasicBlock→SparseBasicBlockFX before prepare_fx.
     # Set False only for legacy PTQ .pth files produced without that upgrade.
     spconv_ptq_basicblock_fx=True,
-    # PTQ: effective spconv frames = max(--calibrate-samples, this); was 5 and starved FX observers.
-    num_calibration_samples=40,
-    # Sparse FX calibration: per-frame voxel cap (implicit_gemm ~O(N^2) on GPU). CLI: --spconv-calib-max-voxels.
+    # Sparse FX: per-frame voxel cap for non-PTQ runner path / docs. PTQ sample count: CLI only.
     spconv_calib_max_voxels=4096,
     # Layers to skip quantization (prefix match)
     sensitive_layers=[],

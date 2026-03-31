@@ -400,7 +400,7 @@ def calibrate_spconv_model(
                 logger.error(
                     "CUDA OOM during spconv sparse calibration (cap=%s). "
                     "Set a positive voxel cap (e.g. quantization.spconv_calib_max_voxels=4096 or "
-                    "export SPCONV_CALIB_MAX_VOXELS=4096), reduce num_calibration_samples, or free GPU memory.",
+                    "export SPCONV_CALIB_MAX_VOXELS=4096), reduce PTQ --calibrate-samples, or free GPU memory.",
                     cap_desc,
                 )
                 raise
