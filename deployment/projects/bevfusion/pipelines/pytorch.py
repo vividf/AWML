@@ -13,6 +13,7 @@ from typing_extensions import override
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
 from deployment.projects.bevfusion.pipelines.bevfusion_pipeline import BEVFusionDeploymentPipeline
+from projects.BEVFusion.bevfusion.bevfusion import _ensure_float_lidar_bev
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,7 @@ class BEVFusionPyTorchPipeline(BEVFusionDeploymentPipeline):
             t1 = time.perf_counter()
 
             spatial_features = model.pts_middle_encoder(voxel_features, coors, batch_size=1)
+            spatial_features = _ensure_float_lidar_bev(spatial_features)
 
             torch.cuda.synchronize()
             stage_latencies["sparse_encoder_ms"] = (time.perf_counter() - t1) * 1000
