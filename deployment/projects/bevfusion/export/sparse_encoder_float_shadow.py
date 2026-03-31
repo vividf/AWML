@@ -366,3 +366,103 @@ def build_float_sparse_encoder_shadow(
     )
 
     return enc
+
+
+def _expected_conv_out_last_spatial_dim(
+    z_in: int,
+    *,
+    kernel_z: int = 3,
+    stride_z: int = 2,
+    padding_z: int = 0,
+) -> int:
+    """Output Z size for ``BEVFusionSparseEncoder.conv_out`` (kernel (1,1,3), stride (1,1,2), pad 0)."""
+    return max((z_in + 2 * padding_z - kernel_z) // stride_z + 1, 1)
+
+
+def attach_fp32_conv_out_fallback_for_int8_graph(model: nn.Module, device: torch.device) -> bool:
+    """Detect broken Z downsampling in spconv INT8 ``conv_out`` and replace with FP32 ``conv_out``.
+
+    Some ``convert_fx`` INT8 graphs report ``spatial_shape[-1]`` unchanged after ``conv_out`` (e.g. still
+    41 instead of ~2). :func:`_conv_out_to_bev` then mean-pools 41→2, which is **not** equivalent to the
+    trained sparse ``conv_out`` and drives mAP≈0. This builds a fused FP32 encoder shadow (dequantized
+    weights from the GraphModule), hooks ``conv_out``, and re-runs the last sparse conv in FP32 when the
+    output Z dimension does not match the expected downsampling formula.
+
+    Returns:
+        True if forward hooks were registered on an INT8 ``conv_out`` submodule.
+    """
+    gm = getattr(model, "pts_middle_encoder", None)
+    if gm is None:
+        return False
+    gm_cls = getattr(torch.fx, "GraphModule", None)
+    if gm_cls is None or not isinstance(gm, gm_cls):
+        return False
+
+    try:
+        shadow_enc = build_float_sparse_encoder_shadow(
+            gm,
+            device,
+            cfg_overrides=encoder_cfg_overrides_from_bevfusion_model(model),
+        )
+    except Exception as e:
+        logger.warning("FP32 conv_out fallback: build_float_sparse_encoder_shadow failed: %s", e)
+        return False
+
+    try:
+        fp32_conv = copy.deepcopy(shadow_enc.conv_out)
+        fp32_conv.eval()
+        fp32_conv.to(device)
+        del shadow_enc
+    except Exception:
+        fp32_conv = shadow_enc.conv_out
+        fp32_conv.eval()
+        fp32_conv.to(device)
+        model.register_module("_awml_keepalive_sparse_shadow_for_conv_out", shadow_enc)
+
+    try:
+        int8_conv = gm.get_submodule("conv_out")
+    except AttributeError:
+        int8_conv = None
+        for name, mod in gm.named_modules():
+            if name == "conv_out":
+                int8_conv = mod
+                break
+    if int8_conv is None:
+        logger.warning("FP32 conv_out fallback: GraphModule has no submodule 'conv_out'")
+        return False
+
+    storage: Dict[str, Any] = {"last_in": None}
+
+    def _pre(_m: nn.Module, inp: Any) -> None:
+        storage["last_in"] = inp[0] if inp else None
+
+    def _post(_m: nn.Module, inp: Any, out: Any) -> Any:
+        x_in = storage["last_in"]
+        if x_in is None or not hasattr(x_in, "spatial_shape"):
+            return out
+        try:
+            z_in = int(x_in.spatial_shape[-1])
+            z_exp = _expected_conv_out_last_spatial_dim(z_in)
+            z_got = int(out.spatial_shape[-1])
+        except Exception:
+            return out
+        if z_got == z_exp:
+            return out
+        try:
+            with torch.no_grad():
+                fixed = fp32_conv(x_in)
+        except Exception as ex:
+            logger.warning("FP32 conv_out fallback: forward failed, keeping INT8 output: %s", ex)
+            return out
+        logger.warning(
+            "INT8 conv_out Z mismatch: output spatial_shape[-1]=%d, expected %d (input Z=%d). "
+            "Replacing with FP32 conv_out (dequant shadow weights).",
+            z_got,
+            z_exp,
+            z_in,
+        )
+        return fixed
+
+    int8_conv.register_forward_pre_hook(_pre)
+    int8_conv.register_forward_hook(_post)
+    return True

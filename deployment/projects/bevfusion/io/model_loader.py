@@ -426,6 +426,18 @@ def _load_with_quantization(
             retarget_graphmodule_quantized_add_calls(model)
             retarget_graphmodule_quantize_per_tensor_calls(model)
 
+            try:
+                from deployment.projects.bevfusion.export.sparse_encoder_float_shadow import (
+                    attach_fp32_conv_out_fallback_for_int8_graph,
+                )
+
+                if attach_fp32_conv_out_fallback_for_int8_graph(model, device):
+                    logger.info(
+                        "Attached FP32 conv_out fallback on INT8 GraphModule (fixes spconv Z-downsample bug → mAP collapse)."
+                    )
+            except Exception as e:
+                logger.debug("FP32 conv_out fallback not attached: %s", e)
+
             info = verify_spconv_int8_encoder(model)
             if info["is_int8"]:
                 logger.info(
