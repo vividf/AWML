@@ -295,8 +295,10 @@ def _load_with_quantization(
     if is_ptq:
         logger.info("Loading PTQ checkpoint (pre-calibrated Q/DQ nodes)...")
 
-        # Match bevfusion_quantization.run_ptq order: fuse → dense Q/DQ → (calibrate in PTQ script) →
-        # spconv FX replace. Doing spconv replace *before* dense Q/DQ breaks quant_conv_module / tracing
+        # Match bevfusion_quantization.run_ptq *structure* order: fuse → dense Q/DQ insert →
+        # spconv FX replace, then load_state_dict. (PTQ script calibrates sparse before dense stats so
+        # TensorQuantizer amax matches INT8 BEV.) Doing spconv replace *before* dense Q/DQ breaks
+        # quant_conv_module / tracing
         # and triggers fallback + load_checkpoint, which cannot load a PTQ state_dict into a raw FP32 model.
         #
         # deploy_config_int8 + CLI set SPCONV_FX_TRACE_MODE=1 before spconv import. Leaving it on during
