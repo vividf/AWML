@@ -112,7 +112,7 @@
 
 ### Step 7：文件與範例 config
 
-- **README**：更新 `README_SPCONV_INT8_DEPLOY.md`，說明：  
+- **README**：更新 `docs/2_spconv_int8_deploy.md`（本專案 `projects/bevfusion/docs/`），說明：  
   - CenterPoint 與 BEVFusion 共用「deploy_config.quantization + model_loader + PTQ 腳本」架構。  
   - BEVFusion 兩種模式：`pytorch_quantization`（TensorRT INT8）、`spconv_ptq`（PyTorch 推論、真正 spconv INT8）。  
   - 使用步驟：撰寫/選用 `deploy_config_int8_*.py` → 執行 PTQ 腳本產出 .pth → 同一 deploy_cfg 跑 deployment。  

@@ -109,7 +109,7 @@ onnx_config = dict(
 #   if required). Sparse conv ops are custom plugins; they use FP16/FP32 unless the
 #   plugin implements INT8. So this is "TensorRT INT8", not necessarily "spconv INT8".
 # - Spconv INT8 (cumm kernels): use PyTorch backend with a PTQ-quantized checkpoint.
-#   See README_SPCONV_INT8_DEPLOY.md in this project for the recommended flow.
+#   See docs/2_spconv_int8_deploy.md (under this project) for the recommended flow.
 tensorrt_config = dict(
     precision_policy="fp16",
     max_workspace_size=1 << 32,

@@ -341,7 +341,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         # Default "auto" = trace on the same device as the model (usually CUDA). CUDA-built spconv
         # implicit_gemm runs GPU kernels: indices/features on CPU + those kernels => cudaErrorIllegalAddress.
         # If you lack GPU memory for dense(), set trace_device=cpu only with a CPU spconv build, or export
-        # on another machine; see README_SPCONV_INT8_實作歷程.md.
+        # on another machine; see docs/4_spconv_int8_implementation_history_zh.md (this project).
         trace_device = onnx_settings.trace_device or os.environ.get("BEVFUSION_ONNX_TRACE_DEVICE", "auto")
 
         return {
@@ -475,7 +475,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
                         "shadow encoder only for torch.onnx.export (ONNX cannot represent "
                         "aten::_empty_affine_quantized; same idea as Lidar exptool exporting a float "
                         "graph). PyTorch PTQ inference is unchanged after export. See "
-                        "README_BEVFUSION_ONNX_TRT_SPCONV_INT8.md §3 / §十-A."
+                        "docs/5_bevfusion_onnx_trt_spconv_int8.md (bevfusion project) §3 / §十-A."
                     )
                     if cfg_ov:
                         self.logger.info(

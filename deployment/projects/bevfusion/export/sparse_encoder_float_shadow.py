@@ -2,7 +2,7 @@
 
 ``convert_fx`` + spconv INT8 yields ``aten::_empty_affine_quantized`` and related ops that the
 standard ONNX exporter does not support. Lidar AI Solution / libspconv sparse ONNX is produced
-from **float** (or engine-specific) graphs — see ``README_BEVFUSION_ONNX_TRT_SPCONV_INT8.md``.
+from **float** (or engine-specific) graphs — see ``docs/5_bevfusion_onnx_trt_spconv_int8.md`` (bevfusion project).
 
 This module rebuilds ``BEVFusionSparseEncoder`` from attributes preserved on the GraphModule,
 fuses sparse Conv+BN like the PTQ deploy path, and copies overlapping **floating-point** weights
@@ -189,7 +189,7 @@ def build_float_sparse_encoder_shadow(
             "Cannot rebuild FP32 sparse encoder for ONNX: GraphModule + overrides missing: "
             f"{missing}. Ensure convert_spconv_int8 copies attrs from the pre-FX encoder, or pass "
             f"a BEVFusion model with model.cfg.model.pts_middle_encoder. See "
-            f"README_BEVFUSION_ONNX_TRT_SPCONV_INT8.md."
+            f"docs/5_bevfusion_onnx_trt_spconv_int8.md (bevfusion project)."
         )
 
     def _buf_to_list(buf: torch.Tensor) -> list:

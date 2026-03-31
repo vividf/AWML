@@ -4,8 +4,8 @@
 
 更廣的架構說明與業界對照仍見：
 
-- [README_BEVFUSION_ONNX_TRT_SPCONV_INT8.md](./README_BEVFUSION_ONNX_TRT_SPCONV_INT8.md)
-- [README_SPCONV_INT8_實作歷程.md](./README_SPCONV_INT8_實作歷程.md)
+- [5_bevfusion_onnx_trt_spconv_int8.md](./5_bevfusion_onnx_trt_spconv_int8.md)
+- [4_spconv_int8_implementation_history_zh.md](./4_spconv_int8_implementation_history_zh.md)
 
 ---
 
