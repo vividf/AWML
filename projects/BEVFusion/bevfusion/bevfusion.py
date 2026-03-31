@@ -1,6 +1,7 @@
+import types
 from collections import OrderedDict
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -40,35 +41,32 @@ def _ensure_float_lidar_bev(x: Tensor) -> Tensor:
 def register_pts_middle_encoder_float_input_hook(encoder: Optional[torch.nn.Module]) -> None:
     """Ensure voxel feature tensor is FP32 before sparse encoder forward.
 
-    After spconv ``convert_fx``, the GraphModule may apply ``quantize_per_tensor`` on the
-    raw forward argument before any inlined ``to(float32)`` from Python ``forward`` runs,
-    which raises when voxel features are integer (common from voxelization).
-    A forward pre-hook runs at the module boundary and fixes dtypes reliably.
+    After spconv ``convert_fx``, the traced ``GraphModule`` can run ``quantize_per_tensor``
+    on the forward argument before any inlined ``to(float32)`` node, so integer voxel
+    features raise ``RuntimeError: ... got Int``.
+
+    ``forward_pre_hook`` is not reliably invoked for this path (including some PyTorch /
+    FX ``call_wrapped`` paths), so we **wrap instance ``forward``**: the wrapper runs first
+    and then calls the original FX ``forward`` with FP32 ``feats``.
     """
     if encoder is None:
         return
-    if getattr(encoder, "_awml_float_voxel_feat_hook_registered", False):
+    if getattr(encoder, "_awml_float_voxel_feat_patched", False):
         return
 
-    def _hook(_mod: torch.nn.Module, inputs: Tuple[Any, ...]) -> Union[None, Tuple[Any, ...]]:
-        if not inputs:
-            return None
-        feats = inputs[0]
-        if not isinstance(feats, torch.Tensor):
-            return None
-        if feats.is_floating_point() and feats.dtype == torch.float32 and feats.is_contiguous():
-            return None
-        if not feats.is_floating_point():
-            feats = feats.float()
-        else:
-            feats = feats.to(dtype=torch.float32)
-        feats = feats.contiguous()
-        if len(inputs) == 1:
-            return (feats,)
-        return (feats,) + tuple(inputs[1:])
+    orig_forward = encoder.forward
 
-    encoder.register_forward_pre_hook(_hook)
-    encoder._awml_float_voxel_feat_hook_registered = True
+    def forward_with_float_voxel_feats(self, feats, coords, batch_size):
+        if isinstance(feats, torch.Tensor):
+            if not feats.is_floating_point():
+                feats = feats.float()
+            else:
+                feats = feats.to(dtype=torch.float32)
+            feats = feats.contiguous()
+        return orig_forward(feats, coords, batch_size)
+
+    encoder.forward = types.MethodType(forward_with_float_voxel_feats, encoder)
+    encoder._awml_float_voxel_feat_patched = True
 
 
 def _ensure_float_for_pts_pipeline(x: Tensor) -> Tensor:
