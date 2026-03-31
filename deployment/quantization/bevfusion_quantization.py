@@ -77,6 +77,16 @@ def parse_args():
             "SPCONV_CALIB_MAX_VOXELS → default 4096."
         ),
     )
+    ptq_parser.add_argument(
+        "--spconv-calibration-samples",
+        type=int,
+        default=None,
+        help=(
+            "Number of voxelized frames for spconv FX calibration only. "
+            "If unset: max(--calibrate-samples, deploy quantization.num_calibration_samples). "
+            "Use this when you need more sparse-tower stats without increasing dense calib batches."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -482,7 +492,18 @@ def run_ptq(args):
         quant_cfg, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
         if quant_cfg.get("spconv_int8", False):
             print("\n[5b/6] Spconv INT8 for sparse encoder (FX path)...")
-            spconv_samples = quant_cfg.get("num_calibration_samples", args.calibrate_samples)
+            if args.spconv_calibration_samples is not None:
+                spconv_samples = min(total_ds, int(args.spconv_calibration_samples))
+            else:
+                deploy_calib_n = quant_cfg.get("num_calibration_samples")
+                deploy_calib_n = int(deploy_calib_n) if deploy_calib_n is not None else 0
+                # Previously deploy often set num_calibration_samples=5, which overwrote --calibrate-samples
+                # and starved spconv observers. Take max with CLI so PTQ sparse+dense stay consistent by default.
+                spconv_samples = min(total_ds, max(int(args.calibrate_samples), deploy_calib_n))
+            print(
+                f"  Spconv calibration frames: {spconv_samples} "
+                f"(dataset size {total_ds}; dense calib used --calibrate-samples {args.calibrate_samples})"
+            )
             try:
                 _calibrate_spconv(
                     model,
