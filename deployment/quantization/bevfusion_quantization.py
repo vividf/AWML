@@ -256,8 +256,52 @@ def _calibrate_dense(model, dataloader, num_batches, method="mse"):
     """Run calibration for dense Q/DQ nodes using CalibrationManager."""
     from deployment.quantization import CalibrationManager
 
+    def _force_float_voxel_inputs(batch):
+        """Best-effort dtype normalization before test_step during calibration.
+
+        Some dataloader/preprocessor paths may provide integer voxel features.
+        When sparse encoder is already FX INT8-converted, quantize ops inside that
+        graph require float activations and can raise:
+        "Quantize only works on Float Tensor, got Int".
+        """
+        if not isinstance(batch, dict):
+            return batch
+        inputs = batch.get("inputs", None)
+        if not isinstance(inputs, dict):
+            return batch
+
+        vox = inputs.get("voxels", None)
+        if isinstance(vox, dict):
+            v = vox.get("voxels", None)
+            if isinstance(v, torch.Tensor) and not v.is_floating_point():
+                vox["voxels"] = v.to(dtype=torch.float32).contiguous()
+
+        points = inputs.get("points", None)
+        if isinstance(points, (list, tuple)):
+            normalized = []
+            changed = False
+            for p in points:
+                if isinstance(p, torch.Tensor) and not p.is_floating_point():
+                    normalized.append(p.to(dtype=torch.float32))
+                    changed = True
+                else:
+                    normalized.append(p)
+            if changed:
+                inputs["points"] = type(points)(normalized) if isinstance(points, tuple) else normalized
+        return batch
+
+    def _forward_for_calibration(m, batch):
+        batch = _force_float_voxel_inputs(batch)
+        if hasattr(m, "test_step"):
+            return m.test_step(batch)
+        if isinstance(batch, dict):
+            return m(**batch)
+        if isinstance(batch, (list, tuple)):
+            return m(*batch)
+        return m(batch)
+
     calibrator = CalibrationManager(model)
-    calibrator.calibrate(dataloader, num_batches=num_batches, method=method)
+    calibrator.calibrate(dataloader, num_batches=num_batches, method=method, forward_fn=_forward_for_calibration)
     return calibrator
 
 

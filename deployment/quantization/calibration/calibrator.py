@@ -1,6 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 """Calibration manager for PTQ."""
 
+import traceback
 from typing import Any, Callable, Optional
 
 import torch
@@ -113,6 +114,7 @@ class CalibrationManager:
         """
         self.model.eval()
         self._enable_calibration_mode()
+        first_exception_reported = False
 
         with torch.no_grad():
             pbar = tqdm(enumerate(dataloader), total=num_batches, desc="Calibrating")
@@ -138,6 +140,10 @@ class CalibrationManager:
                         raise ValueError("Cannot determine how to call the model")
                 except Exception as e:
                     pbar.write(f"Warning: Batch {i} failed with error: {e}")
+                    if not first_exception_reported:
+                        pbar.write("First calibration failure traceback:")
+                        pbar.write(traceback.format_exc())
+                        first_exception_reported = True
                     continue
 
         self._disable_calibration_mode()
