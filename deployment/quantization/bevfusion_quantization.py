@@ -254,6 +254,8 @@ def _insert_dense_qdq(model, quant_flags, skip_layers):
 
 def _calibrate_dense(model, dataloader, num_batches, method="mse"):
     """Run calibration for dense Q/DQ nodes using CalibrationManager."""
+    import torch
+
     from deployment.quantization import CalibrationManager
 
     def _force_float_voxel_inputs(batch):
