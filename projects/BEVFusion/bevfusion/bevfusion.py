@@ -16,6 +16,25 @@ from torch.nn import functional as F
 from .ops import Voxelization
 
 
+def _ensure_float_lidar_bev(x: Tensor) -> Tensor:
+    """BEV tensor for ``pts_backbone`` / pytorch_quantization must be float.
+
+    After spconv FX INT8 ``convert_fx``, ``pts_middle_encoder`` can return a
+    quantized-per-channel/tensor or integer dense map; ``TensorQuantizer`` then
+    raises "Quantize only works on Float Tensor, got Int".
+    """
+    if not isinstance(x, torch.Tensor):
+        return x
+    if x.is_floating_point():
+        return x
+    try:
+        if x.dtype in (torch.qint8, torch.quint8, torch.qint32):
+            return x.dequantize()
+    except (AttributeError, RuntimeError, TypeError):
+        pass
+    return x.float()
+
+
 @MODELS.register_module()
 class BEVFusion(Base3DDetector):
 
@@ -267,6 +286,12 @@ class BEVFusion(Base3DDetector):
                 batch_size = int(coords[:, 0].max().item()) + 1
                 batch_size = max(batch_size, 1)
         x = self.pts_middle_encoder(feats, coords, batch_size)
+        # INT8 sparse tower → dense BEV may be qint*/int; dense Q/DQ and calibrators need float.
+        if not torch.jit.is_tracing():
+            from .sparse_encoder import _in_torch_fx_prepare_trace, _is_fx_proxy
+
+            if not _in_torch_fx_prepare_trace() and not _is_fx_proxy(x):
+                x = _ensure_float_lidar_bev(x)
         return x
 
     @torch.no_grad()
