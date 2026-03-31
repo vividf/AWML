@@ -468,19 +468,14 @@ def run_ptq(args):
     print(f"  Dataset size: {total_ds}")
     print(f"  Calibration: {num_batches} batches x {args.batch_size} = {actual_samples} samples")
 
-    print(f"\n[5/6] Calibrating dense Q/DQ nodes ({num_batches} batches, method=mse)...")
-    calibrator = _calibrate_dense(model, dataloader, num_batches, method="mse")
-
-    # Disable sensitive layers
-    if skip_layers:
-        print(f"\n  Disabling {len(skip_layers)} sensitive layers...")
-        _disable_sensitive_layers(model, skip_layers)
-
-    # [5b/6] Spconv INT8 (FX path: prepare_fx → calibrate → convert_fx → replace encoder)
+    # Spconv INT8 *before* dense CalibrationManager stats. If dense is calibrated while sparse is still
+    # FP32, TensorQuantizer amax matches the wrong BEV distribution → inference (INT8 sparse → dense)
+    # gets OOD activations and mAP can collapse (~0) no matter how many spconv voxel caps you use.
+    quant_cfg_for_sparse: Dict[str, Any] = {}
     if not args.skip_spconv_int8:
-        quant_cfg, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
-        if quant_cfg.get("spconv_int8", False):
-            print("\n[5b/6] Spconv INT8 for sparse encoder (FX path)...")
+        quant_cfg_for_sparse, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
+        if quant_cfg_for_sparse.get("spconv_int8", False):
+            print("\n[4b/6] Spconv INT8 for sparse encoder (FX path, runs before dense PTQ calib)...")
             spconv_samples = min(total_ds, int(args.calibrate_samples))
             print(
                 f"  Spconv calibration frames: {spconv_samples} "
@@ -493,7 +488,7 @@ def run_ptq(args):
                     spconv_samples,
                     args.device,
                     args.output,
-                    quant_cfg,
+                    quant_cfg_for_sparse,
                     spconv_calib_max_voxels_cli=args.spconv_calib_max_voxels,
                 )
             except Exception as e:
@@ -502,8 +497,20 @@ def run_ptq(args):
                 import traceback
 
                 traceback.print_exc()
+        else:
+            print("\n[4b/6] Spconv INT8 off in deploy config (spconv_int8=False); dense calib uses FP32 sparse.")
     else:
-        print("\n[5b/6] Skipping spconv INT8 (--skip-spconv-int8)")
+        print("\n[4b/6] Skipping spconv INT8 (--skip-spconv-int8); dense calib uses FP32 sparse.")
+
+    print(
+        f"\n[5/6] Calibrating dense Q/DQ nodes ({num_batches} batches, method=mse) "
+        f"with current sparse encoder (INT8 if step 4b succeeded)..."
+    )
+    calibrator = _calibrate_dense(model, dataloader, num_batches, method="mse")
+
+    if skip_layers:
+        print(f"\n  Disabling {len(skip_layers)} sensitive layers...")
+        _disable_sensitive_layers(model, skip_layers)
 
     # [6/6] Print status and save
     print("\n[6/6] Saving PTQ checkpoint...")

@@ -64,7 +64,7 @@ quantization = dict(
     spconv_int8=True,
     spconv_ptq_basicblock_fx=True,
     # Sparse FX voxel cap (PTQ: bevfusion_quantization.py uses CLI --calibrate-samples only).
-    spconv_calib_max_voxels=4096,
+    spconv_calib_max_voxels=10000,
     sensitive_layers=[],
 )
 
