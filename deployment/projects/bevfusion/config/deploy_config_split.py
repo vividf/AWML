@@ -36,7 +36,7 @@ devices = dict(
 )
 
 export = dict(
-    mode="both",
+    mode="none",
     work_dir="work_dirs/bevfusion_deployment_split",
     onnx_path=None,
 )

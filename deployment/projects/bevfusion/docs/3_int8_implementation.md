@@ -15,7 +15,7 @@
 | **`deployment/quantization/bevfusion_quantization.py`** | (1) **Spconv INT8 走 FX 流程**：PTQ 時若 `quantization.spconv_int8=True`，執行 **prepare_fx → calibrate → convert_fx → transform_qdq**，並將 `model.pts_middle_encoder` 替換為轉換後的 quantized 模組後存檔；sparse 在 PyTorch 端即為 quantized 模組，可正確讀取與融合。<br>(2) **Config 要求**：sparse encoder 須為 **FX 可追蹤**，請使用 **`block_type='basicblock_fx'`** 的 config（例如 `bevfusion_*_120m_fx.py`），否則 prepare_fx 會因 `replace_feature`/control flow 失敗。<br>(3) **DataLoader**：校準用 dataloader 設定 `num_workers=min(原值, 4)`、`persistent_workers=False`。 |
 | **`deployment/projects/bevfusion/io/model_loader.py`** | (1) **PTQ 載入前先 fuse 稀疏 BN**：載入 PTQ checkpoint 時，除 dense BN fusion 外，**先對 `pts_middle_encoder` 做 spconv BN fusion**（`_fuse_spconv_bn(model)`），再（若 `spconv_int8`）**重建 FX 轉換結構**（prepare_fx + convert_fx，不校準），再 `load_state_dict`，使 state_dict key 對齊。<br>(2) **`_fuse_spconv_bn`**：呼叫 `spconv_int8._fuse_spconv_bn_in_encoder`。<br>(3) **`_replace_encoder_with_fx_converted_structure`**：PTQ + spconv_int8 時，先將 encoder 換成 FX 轉換後的結構再載入權重。 |
 | **`deployment/projects/bevfusion/config/deploy_config_int8.py`** | **Export 模式**：`export.mode` 設為 `"none"`（僅 PyTorch 推論、不導出 ONNX/TRT），方便驗證 PTQ 載入與 mAP。 |
-| **`README_INT8_IMPLEMENTATION.md`** | 新增「本次更動摘要」、Docker 範例加入 `--shm-size=8g` 與 `pytorch-quantization` 安裝步驟、補充 4.6 / 4.7 問題與解法。 |
+| **`3_int8_implementation.md`** | 新增「本次更動摘要」、Docker 範例加入 `--shm-size=8g` 與 `pytorch-quantization` 安裝步驟、補充 4.6 / 4.7 問題與解法。 |
 
 ### 驗證步驟（Docker 內）
 

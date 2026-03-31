@@ -1,7 +1,7 @@
 # BEVFusion Spconv INT8 實作歷程（中文）
 
 本文記錄 **spconv 稀疏編碼器 INT8** 在 AWML BEVFusion 部署／PTQ 路線上的**實作思路、踩過的坑與對應解法**，並對齊 commit **`b0ad1b1027efa8f49ef6733283f61eeb31c9d25d`**（`chore: testing spconv int8`）所涵蓋的變更。  
-更完整的指令與設定欄位說明請見同目錄 **[README_INT8_IMPLEMENTATION.md](./README_INT8_IMPLEMENTATION.md)**。
+更完整的指令與設定欄位說明請見同目錄 **[3_int8_implementation.md](./3_int8_implementation.md)**。
 
 ---
 
@@ -104,7 +104,7 @@
 
 ### 3.7 Docker / 依賴
 
-**作法**：**`projects/BEVFusion/Dockerfile`** 等補上與量化／FX 相關的環境說明；實際 **`pytorch-quantization`** 安裝指令仍以 **README_INT8_IMPLEMENTATION.md** 為準（含 NVIDIA PyPI index）。
+**作法**：**`projects/BEVFusion/Dockerfile`** 等補上與量化／FX 相關的環境說明；實際 **`pytorch-quantization`** 安裝指令仍以 **3_int8_implementation.md** 為準（含 NVIDIA PyPI index）。
 
 ---
 
@@ -125,7 +125,7 @@
 | 模型 | `sparse_block_fx.py`、`sparse_convmodule.py`、`sparse_encoder.py`、`bevfusion/__init__.py` | FX 友善 sparse 結構 |
 | Config | `bevfusion_*_120m_fx.py` | `block_type=basicblock_fx` |
 | 底層 | `SparseConvolution/sparse_conv.py`、`sparse_functional.py` | FX trace 守衛 |
-| 文件 | `README_INT8_IMPLEMENTATION.md` | 與本歷程互補的操作說明 |
+| 文件 | `3_int8_implementation.md` | 與本歷程互補的操作說明 |
 
 ---
 
@@ -152,9 +152,9 @@
 
 | 文件 | 內容 |
 |------|------|
-| **README_INT8_IMPLEMENTATION.md** | 指令、參數表、Docker、常見錯誤編號 |
-| **README_SPCONV_INT8_實作歷程.md**（本文件） | **為什麼這樣改**、**b0ad1b1 脈絡**、**困難與對策** |
-| **README_SPCONV_INT8.md**（若存在） | spconv 官方路徑與 API 對照 |
+| **3_int8_implementation.md** | 指令、參數表、Docker、常見錯誤編號 |
+| **4_spconv_int8_implementation_history_zh.md**（本文件） | **為什麼這樣改**、**b0ad1b1 脈絡**、**困難與對策** |
+| **1_spconv_int8.md** | spconv 官方路徑與 API 對照 |
 
 ---
 

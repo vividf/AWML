@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, Iterable, List, Mapping, Optional
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 from mmengine.config import Config
@@ -26,6 +26,42 @@ from deployment.pipelines.factory import PipelineFactory
 from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_components
 
 logger = logging.getLogger(__name__)
+
+# (stage_key, indent_level): indent 0 = top-level; each +1 adds one leading space before the label.
+_BEVFUSION_LATENCY_STAGE_LAYOUT: Tuple[Tuple[str, int], ...] = (
+    ("preprocessing_ms", 0),
+    ("model_ms", 0),
+    ("bevfusion_ms", 0),
+    ("sparse_encoder_ms", 1),
+    ("dense_engine_ms", 1),
+    ("voxel_encoder_ms", 1),
+    ("backbone_ms", 2),
+    ("neck_ms", 2),
+    ("head_ms", 2),
+    ("post_scoring_ms", 2),
+    ("postprocessing_ms", 0),
+)
+
+_BEVFUSION_STAGE_DISPLAY_NAME: Dict[str, str] = {
+    "preprocessing_ms": "Preprocessing",
+    "model_ms": "Model",
+    "postprocessing_ms": "Postprocessing",
+    "bevfusion_ms": "Bevfusion",
+    "sparse_encoder_ms": "Sparse Encoder",
+    "dense_engine_ms": "Dense Engine",
+    "voxel_encoder_ms": "Voxel Encoder",
+    "backbone_ms": "Backbone",
+    "neck_ms": "Neck",
+    "head_ms": "Head",
+    "post_scoring_ms": "Post Scoring",
+}
+
+
+def _bevfusion_stage_display_name(stage_key: str) -> str:
+    return _BEVFUSION_STAGE_DISPLAY_NAME.get(
+        stage_key,
+        stage_key.replace("_ms", "").replace("_", " ").title(),
+    )
 
 
 class BEVFusionEvaluator(BaseEvaluator):
@@ -164,13 +200,30 @@ class BEVFusionEvaluator(BaseEvaluator):
             breakdown_dict = breakdown.to_dict() if hasattr(breakdown, "to_dict") else breakdown
             if breakdown_dict:
                 print("\nStage-wise Latency Breakdown:")
-                for stage, stats in breakdown_dict.items():
+                printed: set[str] = set()
+                for stage_key, indent_level in _BEVFUSION_LATENCY_STAGE_LAYOUT:
+                    if stage_key not in breakdown_dict:
+                        continue
+                    stats = breakdown_dict[stage_key]
                     stats_dict = stats.to_dict() if hasattr(stats, "to_dict") else stats
                     mean_ms = stats_dict.get("mean_ms", 0.0)
                     std_ms = stats_dict.get("std_ms", 0.0)
                     if mean_ms == 0.0 and std_ms == 0.0:
                         continue
-                    stage_name = stage.replace("_ms", "").replace("_", " ").title()
-                    print(f"  {stage_name:18s}: {mean_ms:.2f} ± {std_ms:.2f} ms")
+                    printed.add(stage_key)
+                    prefix = " " * (2 + indent_level)
+                    label = _bevfusion_stage_display_name(stage_key)
+                    print(f"{prefix}{label:18s}: {mean_ms:.2f} ± {std_ms:.2f} ms")
+
+                extra_keys = sorted(k for k in breakdown_dict if k not in printed)
+                for stage_key in extra_keys:
+                    stats = breakdown_dict[stage_key]
+                    stats_dict = stats.to_dict() if hasattr(stats, "to_dict") else stats
+                    mean_ms = stats_dict.get("mean_ms", 0.0)
+                    std_ms = stats_dict.get("std_ms", 0.0)
+                    if mean_ms == 0.0 and std_ms == 0.0:
+                        continue
+                    label = _bevfusion_stage_display_name(stage_key)
+                    print(f"  {label:18s}: {mean_ms:.2f} ± {std_ms:.2f} ms")
 
         print(f"\nTotal Samples: {results['num_samples']}")

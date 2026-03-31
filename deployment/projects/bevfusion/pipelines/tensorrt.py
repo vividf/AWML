@@ -59,9 +59,15 @@ def _aggregate_trt_layers_to_stages(layer_times: List[Tuple[str, float]]) -> Dic
         "bevfusion_ms": 0.0,
     }
     # Patterns (substring in layer name) -> stage key. Check in order.
+    # Spconv / plugin-heavy names first (single full-graph engines often omit pts_middle_encoder).
     stage_patterns: List[Tuple[str, str]] = [
         ("pts_middle_encoder", "sparse_encoder_ms"),
         ("middle_encoder", "sparse_encoder_ms"),
+        ("spconv", "sparse_encoder_ms"),
+        ("sparse_conv", "sparse_encoder_ms"),
+        ("subm", "sparse_encoder_ms"),
+        ("implicitgemm", "sparse_encoder_ms"),
+        ("scatternd", "sparse_encoder_ms"),
         ("encoder_layer", "sparse_encoder_ms"),
         ("conv_input", "sparse_encoder_ms"),
         ("pts_backbone", "backbone_ms"),
@@ -121,6 +127,13 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
 
         self._start_event = cuda.Event()
         self._end_event = cuda.Event()
+        # Split-engine GPU intervals (same stream as each TRT execute, excludes D2H).
+        self._sparse_ev_s = cuda.Event()
+        self._sparse_ev_e = cuda.Event()
+        self._dense_ev_s = cuda.Event()
+        self._dense_ev_e = cuda.Event()
+        self._last_split_sparse_gpu_ms: float = 0.0
+        self._last_split_dense_gpu_ms: float = 0.0
 
         self._load_tensorrt_engine()
         logger.info(f"BEVFusion TensorRT pipeline initialized from: {tensorrt_dir} (split={self._split})")
@@ -214,7 +227,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         coors_np: np.ndarray,
         num_points_np: np.ndarray,
         profiler: Optional[_TRTLayerProfiler],
-        record_cuda_events: bool,
+        gpu_interval_events: Optional[Tuple[cuda.Event, cuda.Event]],
     ) -> Dict[str, np.ndarray]:
         input_map: Dict[str, np.ndarray] = {}
         output_names: List[str] = []
@@ -230,7 +243,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
                     input_map[name] = num_points_np
             else:
                 output_names.append(name)
-        return self._trt_infer_bound(engine, context, input_map, output_names, profiler, record_cuda_events)
+        return self._trt_infer_bound(engine, context, input_map, output_names, profiler, gpu_interval_events)
 
     def _trt_infer_named_input(
         self,
@@ -238,14 +251,14 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         context: trt.IExecutionContext,
         input_map: Dict[str, np.ndarray],
         profiler: Optional[_TRTLayerProfiler],
-        record_cuda_events: bool,
+        gpu_interval_events: Optional[Tuple[cuda.Event, cuda.Event]],
     ) -> Dict[str, np.ndarray]:
         output_names: List[str] = []
         for i in range(engine.num_io_tensors):
             name = engine.get_tensor_name(i)
             if engine.get_tensor_mode(name) == trt.TensorIOMode.OUTPUT:
                 output_names.append(name)
-        return self._trt_infer_bound(engine, context, input_map, output_names, profiler, record_cuda_events)
+        return self._trt_infer_bound(engine, context, input_map, output_names, profiler, gpu_interval_events)
 
     def _trt_infer_bound(
         self,
@@ -254,7 +267,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         input_map: Dict[str, np.ndarray],
         output_names: List[str],
         profiler: Optional[_TRTLayerProfiler],
-        record_cuda_events: bool,
+        gpu_interval_events: Optional[Tuple[cuda.Event, cuda.Event]],
     ) -> Dict[str, np.ndarray]:
         for name, arr in input_map.items():
             context.set_input_shape(name, arr.shape)
@@ -288,13 +301,13 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
                 for name in output_names:
                     context.set_tensor_address(name, int(d_outputs[name]))
 
-                if record_cuda_events:
-                    self._start_event.record(stream)
+                if gpu_interval_events is not None:
+                    gpu_interval_events[0].record(stream)
                 ok = context.execute_async_v3(stream_handle=stream.handle)
                 if not ok:
                     raise RuntimeError("TensorRT execute_async_v3 returned failure status.")
-                if record_cuda_events:
-                    self._end_event.record(stream)
+                if gpu_interval_events is not None:
+                    gpu_interval_events[1].record(stream)
 
                 for name in output_names:
                     cuda.memcpy_dtoh_async(output_arrays[name], d_outputs[name], stream)
@@ -322,15 +335,15 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
             assert self._engine_sparse is not None and self._context_sparse is not None
             assert self._engine_dense is not None and self._context_dense is not None
 
-            self._start_event.record()
+            # Sparse (spconv) engine: CUDA-timed separately; do not attach profiler here (dense pass clears it).
             sparse_out = self._trt_infer_voxel_inputs(
                 self._engine_sparse,
                 self._context_sparse,
                 voxels_np,
                 coors_np,
                 num_points_np,
-                profiler,
-                record_cuda_events=False,
+                profiler=None,
+                gpu_interval_events=(self._sparse_ev_s, self._sparse_ev_e),
             )
             if len(sparse_out) != 1:
                 raise RuntimeError(f"Sparse engine: expected 1 output, got {list(sparse_out.keys())}")
@@ -351,9 +364,13 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
                 self._context_dense,
                 {dense_in_name: bev_arr},
                 profiler,
-                record_cuda_events=False,
+                gpu_interval_events=(self._dense_ev_s, self._dense_ev_e),
             )
-            self._end_event.record()
+
+            self._sparse_ev_e.synchronize()
+            self._dense_ev_e.synchronize()
+            self._last_split_sparse_gpu_ms = float(self._sparse_ev_e.time_since(self._sparse_ev_s))
+            self._last_split_dense_gpu_ms = float(self._dense_ev_e.time_since(self._dense_ev_s))
 
             component_cfg = self._components_cfg.get_component("bevfusion_dense")
             expected_output_names = [out.name for out in component_cfg.io.outputs]
@@ -367,7 +384,13 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         assert engine is not None and context is not None
 
         output_arrays = self._trt_infer_voxel_inputs(
-            engine, context, voxels_np, coors_np, num_points_np, profiler, record_cuda_events=True
+            engine,
+            context,
+            voxels_np,
+            coors_np,
+            num_points_np,
+            profiler,
+            gpu_interval_events=(self._start_event, self._end_event),
         )
         output_names = list(output_arrays.keys())
 
@@ -378,9 +401,11 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         return [torch.from_numpy(output_arrays[name]).to(self.torch_device) for name in ordered_names]
 
     # Stage keys aligned with BEVFusionPyTorchPipeline for consistent Stage-wise Latency Breakdown.
+    # ``dense_engine_ms`` is TensorRT split-mode only (backbone+neck+head graph GPU time).
     BEVFUSION_STAGE_KEYS = (
         "voxel_encoder_ms",
         "sparse_encoder_ms",
+        "dense_engine_ms",
         "backbone_ms",
         "neck_ms",
         "head_ms",
@@ -400,23 +425,38 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
             profiler=profiler,
         )
 
-        self._end_event.synchronize()
-        gpu_time_ms = self._end_event.time_since(self._start_event)
-        stage_latencies["bevfusion_ms"] = gpu_time_ms
+        if self._split:
+            sparse_ms = self._last_split_sparse_gpu_ms
+            dense_ms = self._last_split_dense_gpu_ms
+            stage_latencies["sparse_encoder_ms"] = sparse_ms
+            stage_latencies["dense_engine_ms"] = dense_ms
+            stage_latencies["bevfusion_ms"] = sparse_ms + dense_ms
+        else:
+            self._end_event.synchronize()
+            stage_latencies["bevfusion_ms"] = float(self._end_event.time_since(self._start_event))
 
         if profiler.layer_times:
             aggregated = _aggregate_trt_layers_to_stages(profiler.layer_times)
             for k in self.BEVFUSION_STAGE_KEYS:
-                if k == "bevfusion_ms":
+                if k in ("bevfusion_ms", "dense_engine_ms"):
+                    continue
+                if self._split and k == "sparse_encoder_ms":
                     continue
                 if k in aggregated and aggregated[k] > 0:
                     stage_latencies[k] = aggregated[k]
-        # bevfusion_ms stays total engine time; sub-stages from profiler when layer names are available
+        # bevfusion_ms: total TRT GPU (split = sparse + dense). Sub-stages from profiler when names match.
 
         return outputs, stage_latencies
 
     def _release_gpu_resources(self) -> None:
-        for attr in ("_start_event", "_end_event"):
+        for attr in (
+            "_start_event",
+            "_end_event",
+            "_sparse_ev_s",
+            "_sparse_ev_e",
+            "_dense_ev_s",
+            "_dense_ev_e",
+        ):
             if hasattr(self, attr):
                 try:
                     delattr(self, attr)

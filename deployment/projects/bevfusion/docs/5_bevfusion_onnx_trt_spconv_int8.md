@@ -8,10 +8,10 @@
 - **是否應像 Lidar AI Solution 一樣拆成多個 ONNX？**
 
 更貼近程式修改的實作紀錄另見：  
-[README_SPCONV_INT8_實作歷程.md](./README_SPCONV_INT8_實作歷程.md)。
+[4_spconv_int8_implementation_history_zh.md](./4_spconv_int8_implementation_history_zh.md)。
 
 **Split + PTQ INT8 進度、除錯時間線、明日接續點**：  
-[README_BEVFUSION_SPLIT_PTQ_INT8_PROGRESS.md](./README_BEVFUSION_SPLIT_PTQ_INT8_PROGRESS.md)。
+[6_bevfusion_split_ptq_int8_progress.md](./6_bevfusion_split_ptq_int8_progress.md)。
 
 ---
 
@@ -223,4 +223,4 @@ python -m deployment.cli.main bevfusion \
 
 ---
 
-*本文件為架構說明；實作細節與 commit 對照仍以 `README_SPCONV_INT8_實作歷程.md` 為準。*
+*本文件為架構說明；實作細節與 commit 對照仍以 `4_spconv_int8_implementation_history_zh.md` 為準。*
