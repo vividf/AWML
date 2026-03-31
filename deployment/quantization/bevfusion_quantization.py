@@ -479,6 +479,12 @@ def run_ptq(args):
     print("\n[1/6] Loading BEVFusion model...")
     model = _build_bevfusion_model(args.config, args.checkpoint, args.device)
 
+    from deployment.projects.bevfusion.quantization.spconv_int8 import (
+        install_spconv_quantize_per_tensor_float_input_guard,
+    )
+
+    install_spconv_quantize_per_tensor_float_input_guard()
+
     # [2/6] Fuse BN
     if fuse_bn:
         print("\n[2/6] Fusing BatchNorm layers...")

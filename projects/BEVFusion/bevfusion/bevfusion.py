@@ -312,7 +312,8 @@ class BEVFusion(Base3DDetector):
             with torch.amp.autocast("cuda", enabled=False):
                 points = [point.float() for point in points]
                 feats, coords, sizes = self.voxelize(points)
-                batch_size = coords[-1, 0] + 1
+                # Python int matches FX example_inputs (``batch_size=1``); 0-dim int tensor can confuse traced graphs.
+                batch_size = max(int((coords[-1, 0] + 1).item()), 1)
         else:
             # NOTE(knzo25): onnx inference. Voxelization happens outside the graph
             with torch.amp.autocast("cuda", enabled=False):

@@ -19,6 +19,49 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
+
+def install_spconv_quantize_per_tensor_float_input_guard() -> None:
+    """Monkey-patch spconv's ``quantize_per_tensor`` so integer activations are cast to float.
+
+    FX-traced INT8 sparse graphs can call ``torch.quantize_per_tensor`` on tensors that are
+    still integral (e.g. ``SparseConvTensor.features`` or intermediates), which raises
+    ``RuntimeError: Quantize only works on Float Tensor, got Int``. Coercion at BEVFusion
+    inputs is not always enough because quantization may apply to feature tensors produced
+    inside the graph. Idempotent: safe to call multiple times.
+    """
+    try:
+        import spconv.pytorch.quantization.core as spconv_qcore
+        from spconv.pytorch.core import SparseConvTensor
+    except Exception as e:
+        logger.debug("spconv quantize input guard not installed: %s", e)
+        return
+
+    if getattr(spconv_qcore, "_awml_quantize_input_coercion_installed", False):
+        return
+
+    _orig = spconv_qcore.quantize_per_tensor
+
+    def _coerce(ten):
+        if isinstance(ten, torch.Tensor):
+            return ten.float() if not ten.is_floating_point() else ten
+        if isinstance(ten, SparseConvTensor):
+            f = ten.features
+            if isinstance(f, torch.Tensor) and not f.is_floating_point():
+                return ten.replace_feature(f.float())
+            return ten
+        if isinstance(ten, (list, tuple)):
+            ctor = type(ten)
+            return ctor(_coerce(v) for v in ten)
+        return ten
+
+    def quantize_per_tensor_guarded(ten, scale, zero_point, dtype):
+        return _orig(_coerce(ten), scale, zero_point, dtype)
+
+    spconv_qcore.quantize_per_tensor = quantize_per_tensor_guarded
+    spconv_qcore._awml_quantize_input_coercion_installed = True
+    logger.info("Installed spconv quantize_per_tensor float-input guard (int/integral features → float).")
+
+
 # Spconv implicit_gemm / get_indice_pairs allocate ~ O(kernel_volume * N^2) int32 for N voxels.
 # **PyTorch FX prepare_fx + calibrate on GPU** cannot use full-scene N (often 50k–120k): that is
 # hundreds of GiB. Lidar AI Solution avoids this by **libspconv / C++ runtime**, not this path.
