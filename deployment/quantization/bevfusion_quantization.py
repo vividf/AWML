@@ -420,6 +420,12 @@ def _calibrate_spconv(
         calibrate_spconv_model(prepared, calibration_data, max_voxels_per_sample=calib_cap)
         converted = convert_spconv_int8(prepared, attr_source=sparse_encoder)
         model.pts_middle_encoder = converted
+        try:
+            from projects.BEVFusion.bevfusion.bevfusion import register_pts_middle_encoder_float_input_hook
+
+            register_pts_middle_encoder_float_input_hook(model.pts_middle_encoder)
+        except Exception:
+            pass
         print("  Sparse encoder replaced with INT8 quantized module (FX path)")
     except Exception as e:
         print(f"  Spconv FX INT8 failed: {e}")

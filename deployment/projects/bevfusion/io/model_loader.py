@@ -92,6 +92,12 @@ def _replace_encoder_with_fx_converted_structure(
     prepared = apply_spconv_int8_quantization(sparse_encoder, device, in_channels=in_channels)
     converted = convert_spconv_int8(prepared, attr_source=sparse_encoder)
     model.pts_middle_encoder = converted
+    try:
+        from projects.BEVFusion.bevfusion.bevfusion import register_pts_middle_encoder_float_input_hook
+
+        register_pts_middle_encoder_float_input_hook(model.pts_middle_encoder)
+    except Exception:
+        pass
     logger.info("Replaced pts_middle_encoder with FX-converted structure for PTQ load")
 
 

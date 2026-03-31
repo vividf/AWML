@@ -154,6 +154,12 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
             )
             quantized_encoder = convert_spconv_int8(prepared, attr_source=sparse_encoder)
             model.pts_middle_encoder = quantized_encoder
+            try:
+                from projects.BEVFusion.bevfusion.bevfusion import register_pts_middle_encoder_float_input_hook
+
+                register_pts_middle_encoder_float_input_hook(model.pts_middle_encoder)
+            except Exception:
+                pass
             logger.info("Spconv INT8 quantization applied to pts_middle_encoder")
 
         except Exception as e:
