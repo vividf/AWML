@@ -21,25 +21,48 @@ logger = logging.getLogger(__name__)
 
 
 def install_spconv_quantize_per_tensor_float_input_guard() -> None:
-    """Monkey-patch spconv's ``quantize_per_tensor`` so integer activations are cast to float.
+    """Force floating-point activations before ``torch.quantize_per_tensor``.
 
-    FX-traced INT8 sparse graphs can call ``torch.quantize_per_tensor`` on tensors that are
-    still integral (e.g. ``SparseConvTensor.features`` or intermediates), which raises
-    ``RuntimeError: Quantize only works on Float Tensor, got Int``. Coercion at BEVFusion
-    inputs is not always enough because quantization may apply to feature tensors produced
-    inside the graph. Idempotent: safe to call multiple times.
+    ``convert_fx`` GraphModule forward **binds the spconv ``quantize_per_tensor`` function
+    object** at export time. Monkey-patching ``spconv.pytorch.quantization.core.quantize_per_tensor``
+    **afterwards does not change** that closed-over reference—the graph still runs the old
+    callable, which then calls ``torch.quantize_per_tensor(int_tensor)`` and raises
+    ``RuntimeError: Quantize only works on Float Tensor, got Int``.
+
+    Patching ``torch.quantize_per_tensor`` fixes every caller (including the captured spconv
+    wrapper) because ``torch`` is resolved at call time inside that wrapper's bytecode.
+
+    We still patch spconv's module attribute so dynamic imports see a guarded wrapper.
+    Idempotent.
     """
+    if getattr(torch, "_awml_quantize_per_tensor_float_guard", False):
+        return
+
+    _orig_torch_qpt = torch.quantize_per_tensor
+
+    def torch_quantize_per_tensor_float_input(*args, **kwargs):
+        if args and isinstance(args[0], torch.Tensor):
+            t = args[0]
+            if not getattr(t, "is_quantized", False) and not t.is_floating_point():
+                args = (t.float(),) + args[1:]
+        return _orig_torch_qpt(*args, **kwargs)
+
+    torch.quantize_per_tensor = torch_quantize_per_tensor_float_input
+    torch._awml_quantize_per_tensor_float_guard = True
+
     try:
         import spconv.pytorch.quantization.core as spconv_qcore
         from spconv.pytorch.core import SparseConvTensor
     except Exception as e:
-        logger.debug("spconv quantize input guard not installed: %s", e)
+        logger.debug("spconv quantize module guard skipped: %s", e)
+        logger.info("Installed torch.quantize_per_tensor float-input guard (FX INT8 sparse).")
         return
 
     if getattr(spconv_qcore, "_awml_quantize_input_coercion_installed", False):
+        logger.info("Installed torch.quantize_per_tensor float-input guard (FX INT8 sparse).")
         return
 
-    _orig = spconv_qcore.quantize_per_tensor
+    _orig_spconv = spconv_qcore.quantize_per_tensor
 
     def _coerce(ten):
         if isinstance(ten, torch.Tensor):
@@ -54,12 +77,12 @@ def install_spconv_quantize_per_tensor_float_input_guard() -> None:
             return ctor(_coerce(v) for v in ten)
         return ten
 
-    def quantize_per_tensor_guarded(ten, scale, zero_point, dtype):
-        return _orig(_coerce(ten), scale, zero_point, dtype)
+    def spconv_quantize_per_tensor_guarded(ten, scale, zero_point, dtype):
+        return _orig_spconv(_coerce(ten), scale, zero_point, dtype)
 
-    spconv_qcore.quantize_per_tensor = quantize_per_tensor_guarded
+    spconv_qcore.quantize_per_tensor = spconv_quantize_per_tensor_guarded
     spconv_qcore._awml_quantize_input_coercion_installed = True
-    logger.info("Installed spconv quantize_per_tensor float-input guard (int/integral features → float).")
+    logger.info("Installed torch.quantize_per_tensor + spconv.core quantize_per_tensor float-input guards.")
 
 
 # Spconv implicit_gemm / get_indice_pairs allocate ~ O(kernel_volume * N^2) int32 for N voxels.
