@@ -411,6 +411,8 @@ def _load_with_quantization(
                     loaded += 1
             logger.info(f"PTQ checkpoint loaded: {loaded} quantizers have calibrated amax values")
 
+        _set_tensor_quantizers_inference_mode(model)
+
         if quantization.get("spconv_int8", False):
             from deployment.projects.bevfusion.quantization.spconv_quantized_add_patch import (
                 ensure_spconv_quantize_per_tensor_float_activations,
@@ -629,6 +631,35 @@ def _move_quantizer_amax_to_device(model: torch.nn.Module, device: torch.device)
 
     if moved_count > 0:
         logger.info(f"Moved {moved_count} quantizer amax tensors to {device}")
+
+
+def _set_tensor_quantizers_inference_mode(model: torch.nn.Module) -> int:
+    """Match ``CalibrationManager._disable_calibration_mode`` after PTQ ``load_state_dict``.
+
+    Newly inserted ``TensorQuantizer`` modules may still have calibration defaults
+    (fake-quant off, stats on). That yields a different dense branch than the PTQ
+    script after ``calibrator.calibrate`` and can drive mAP/near-zero despite a
+    valid ``state_dict``.
+    """
+    tensor_quantizer_cls = _import_tensor_quantizer()
+    if tensor_quantizer_cls is None:
+        return 0
+    n = 0
+    for module in model.modules():
+        if not isinstance(module, tensor_quantizer_cls):
+            continue
+        try:
+            if getattr(module, "_calibrator", None) is not None:
+                module.enable_quant()
+                module.disable_calib()
+            else:
+                module.enable()
+            n += 1
+        except Exception as ex:
+            logger.debug("TensorQuantizer inference mode skip: %s", ex)
+    if n:
+        logger.info("Set %d TensorQuantizer modules to inference mode (post PTQ load)", n)
+    return n
 
 
 def setup_quantization_for_onnx_export() -> None:
