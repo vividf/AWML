@@ -1,6 +1,6 @@
 from collections import OrderedDict
 from copy import deepcopy
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -35,6 +35,40 @@ def _ensure_float_lidar_bev(x: Tensor) -> Tensor:
     except (AttributeError, RuntimeError, TypeError):
         pass
     return x.float()
+
+
+def register_pts_middle_encoder_float_input_hook(encoder: Optional[torch.nn.Module]) -> None:
+    """Ensure voxel feature tensor is FP32 before sparse encoder forward.
+
+    After spconv ``convert_fx``, the GraphModule may apply ``quantize_per_tensor`` on the
+    raw forward argument before any inlined ``to(float32)`` from Python ``forward`` runs,
+    which raises when voxel features are integer (common from voxelization).
+    A forward pre-hook runs at the module boundary and fixes dtypes reliably.
+    """
+    if encoder is None:
+        return
+    if getattr(encoder, "_awml_float_voxel_feat_hook_registered", False):
+        return
+
+    def _hook(_mod: torch.nn.Module, inputs: Tuple[Any, ...]) -> Union[None, Tuple[Any, ...]]:
+        if not inputs:
+            return None
+        feats = inputs[0]
+        if not isinstance(feats, torch.Tensor):
+            return None
+        if feats.is_floating_point() and feats.dtype == torch.float32 and feats.is_contiguous():
+            return None
+        if not feats.is_floating_point():
+            feats = feats.float()
+        else:
+            feats = feats.to(dtype=torch.float32)
+        feats = feats.contiguous()
+        if len(inputs) == 1:
+            return (feats,)
+        return (feats,) + tuple(inputs[1:])
+
+    encoder.register_forward_pre_hook(_hook)
+    encoder._awml_float_voxel_feat_hook_registered = True
 
 
 def _ensure_float_for_pts_pipeline(x: Tensor) -> Tensor:
@@ -114,6 +148,7 @@ class BEVFusion(Base3DDetector):
         self.bbox_head = MODELS.build(bbox_head)
 
         self.init_weights()
+        register_pts_middle_encoder_float_input_hook(self.pts_middle_encoder)
 
     def _align_lidar_bev_to_head_grid(self, feats):
         """Resize pts_backbone+neck BEV maps to match ``bbox_head.bev_pos`` resolution.
@@ -256,8 +291,7 @@ class BEVFusion(Base3DDetector):
         if not using_image_features:
             x = self.get_image_backbone_features(x)
 
-        with torch.cuda.amp.autocast(enabled=False):
-            # with torch.autocast(device_type='cuda', dtype=torch.float32):
+        with torch.amp.autocast("cuda", enabled=False):
             x = self.view_transform(
                 x,
                 points,
@@ -277,16 +311,13 @@ class BEVFusion(Base3DDetector):
     def extract_pts_feat(self, feats, coords, sizes, points=None) -> torch.Tensor:
         if points is not None:
             # NOTE(knzo25): training and normal inference
-            with torch.cuda.amp.autocast(enabled=False):
-                # with torch.autocast('cuda', enabled=False):
+            with torch.amp.autocast("cuda", enabled=False):
                 points = [point.float() for point in points]
                 feats, coords, sizes = self.voxelize(points)
                 batch_size = coords[-1, 0] + 1
         else:
             # NOTE(knzo25): onnx inference. Voxelization happens outside the graph
-            with torch.cuda.amp.autocast(enabled=False):
-                # with torch.autocast('cuda', enabled=False):
-
+            with torch.amp.autocast("cuda", enabled=False):
                 assert self.voxelize_reduce
                 if self.voxelize_reduce:
                     feats = feats.sum(dim=1, keepdim=False) / sizes.type_as(feats).view(-1, 1)
@@ -335,6 +366,9 @@ class BEVFusion(Base3DDetector):
             if self.voxelize_reduce:
                 feats = feats.sum(dim=1, keepdim=False) / sizes.type_as(feats).view(-1, 1)
                 feats = feats.contiguous()
+
+        if isinstance(feats, torch.Tensor) and not feats.is_floating_point():
+            feats = feats.float()
 
         return feats, coords, sizes
 
