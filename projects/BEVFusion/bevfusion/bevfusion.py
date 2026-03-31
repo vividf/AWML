@@ -38,10 +38,12 @@ def _ensure_float_lidar_bev(x: Tensor) -> Tensor:
 
 
 def _ensure_float_for_pts_pipeline(x: Tensor) -> Tensor:
-    """Float BEV before dense calib/QDQ; skip TorchScript trace and FX Proxy tensors."""
+    """Float BEV before dense calib/QDQ; skip FX Proxy tensors only.
+
+    Do not skip on ``torch.jit.is_tracing()``: some runners leave tracing flags set in ways
+    that would bypass conversion and leave INT8 BEV hitting ``TensorQuantizer``.
+    """
     if not isinstance(x, torch.Tensor):
-        return x
-    if torch.jit.is_tracing():
         return x
     from .sparse_encoder import _is_fx_proxy
 
@@ -300,6 +302,9 @@ class BEVFusion(Base3DDetector):
                 # batch index column must match batch_size passed to SparseConvTensor (hardcoding 1 is wrong if coors hold larger batch ids)
                 batch_size = int(coords[:, 0].max().item()) + 1
                 batch_size = max(batch_size, 1)
+        # FX INT8 sparse graph uses torch quantize nodes on features; integer voxel grids →
+        # "Quantize only works on Float Tensor, got Int" inside pts_middle_encoder (not only dense QDQ).
+        feats = feats.to(dtype=torch.float32)
         x = self.pts_middle_encoder(feats, coords, batch_size)
         # INT8 sparse tower → dense BEV may be qint*/int; dense Q/DQ and calibrators need float.
         # Do not gate on _in_torch_fx_prepare_trace(): it can stay True after spconv FX in the same process.
