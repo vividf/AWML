@@ -10,5 +10,6 @@ Numbered filenames follow **creation time** (filesystem birth time, with mtime t
 | 4 | [`4_spconv_int8_implementation_history_zh.md`](./4_spconv_int8_implementation_history_zh.md) | Implementation history (ZH), pitfalls |
 | 5 | [`5_bevfusion_onnx_trt_spconv_int8.md`](./5_bevfusion_onnx_trt_spconv_int8.md) | ONNX / TensorRT / spconv INT8 overview |
 | 6 | [`6_bevfusion_split_ptq_int8_progress.md`](./6_bevfusion_split_ptq_int8_progress.md) | Split ONNX + PTQ INT8 progress log |
+| 7 | [`7_bevfusion_int8_eval_fixes_and_progress.md`](./7_bevfusion_int8_eval_fixes_and_progress.md) | INT8 eval 修復總覽、mAP≈0 根因、程式更動與進度表 |
 
 Python entrypoints, configs, and pipelines live in the parent directory (`deployment/projects/bevfusion/`), alongside this `docs/` folder.
