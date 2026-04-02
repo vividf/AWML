@@ -18,6 +18,18 @@ from projects.BEVFusion.bevfusion.bevfusion import _ensure_float_for_pts_pipelin
 logger = logging.getLogger(__name__)
 
 
+def _tensor_stats(t: torch.Tensor, name: str) -> str:
+    """Return a compact string with tensor statistics for debugging."""
+    t_f = t.float()
+    return (
+        f"{name}: shape={tuple(t.shape)} dtype={t.dtype} "
+        f"min={t_f.min().item():.4f} max={t_f.max().item():.4f} "
+        f"mean={t_f.mean().item():.4f} std={t_f.std().item():.4f} "
+        f"abs_mean={t_f.abs().mean().item():.4f} "
+        f"nonzero={t_f.count_nonzero().item()}/{t_f.numel()}"
+    )
+
+
 class BEVFusionPyTorchPipeline(BEVFusionDeploymentPipeline):
     """PyTorch-based BEVFusion pipeline with per-block latency breakdown.
 
@@ -29,6 +41,8 @@ class BEVFusionPyTorchPipeline(BEVFusionDeploymentPipeline):
     - neck_ms: pts_neck (SECONDFPN)
     - head_ms: bbox_head + postprocess scoring
     """
+
+    _debug_frame_count = 0
 
     def __init__(self, pytorch_model: torch.nn.Module, device: DeviceSpec) -> None:
         super().__init__(pytorch_model=pytorch_model, backend_type=Backend.PYTORCH, device=device)
@@ -83,7 +97,8 @@ class BEVFusionPyTorchPipeline(BEVFusionDeploymentPipeline):
                 coors = torch.cat([batch_coors, coors], dim=1).contiguous()
 
             if getattr(model, "voxelize_reduce", True):
-                voxel_features = voxels.sum(dim=1, keepdim=False) / num_points_per_voxel.type_as(voxels).view(-1, 1)
+                npt = num_points_per_voxel.type_as(voxels).view(-1, 1).clamp(min=1.0)
+                voxel_features = voxels.sum(dim=1, keepdim=False) / npt
             else:
                 voxel_features = voxels
 
@@ -94,8 +109,16 @@ class BEVFusionPyTorchPipeline(BEVFusionDeploymentPipeline):
             torch.cuda.synchronize()
             t1 = time.perf_counter()
 
+            _dbg = BEVFusionPyTorchPipeline._debug_frame_count < 2
+            BEVFusionPyTorchPipeline._debug_frame_count += 1
+            if _dbg:
+                print(f"[debug] {_tensor_stats(voxel_features, 'voxel_features_input')}")
+
             spatial_features = model.pts_middle_encoder(voxel_features, coors, batch_size=1)
             spatial_features = _ensure_float_for_pts_pipeline(spatial_features)
+
+            if _dbg:
+                print(f"[debug] {_tensor_stats(spatial_features, 'sparse_encoder_output')}")
 
             torch.cuda.synchronize()
             stage_latencies["sparse_encoder_ms"] = (time.perf_counter() - t1) * 1000
@@ -107,6 +130,13 @@ class BEVFusionPyTorchPipeline(BEVFusionDeploymentPipeline):
             backbone_out = spatial_features
             if hasattr(model, "pts_backbone") and model.pts_backbone is not None:
                 backbone_out = model.pts_backbone(_ensure_float_for_pts_pipeline(spatial_features))
+
+            if _dbg:
+                if isinstance(backbone_out, (list, tuple)):
+                    for bi, bo in enumerate(backbone_out):
+                        print(f"[debug] {_tensor_stats(bo, f'backbone_out[{bi}]')}")
+                else:
+                    print(f"[debug] {_tensor_stats(backbone_out, 'backbone_out')}")
 
             torch.cuda.synchronize()
             stage_latencies["backbone_ms"] = (time.perf_counter() - t2) * 1000
@@ -127,6 +157,13 @@ class BEVFusionPyTorchPipeline(BEVFusionDeploymentPipeline):
             if callable(align_fn):
                 neck_out = align_fn(neck_out)
 
+            if _dbg:
+                if isinstance(neck_out, (list, tuple)):
+                    for ni, no in enumerate(neck_out):
+                        print(f"[debug] {_tensor_stats(no, f'neck_out[{ni}]')}")
+                else:
+                    print(f"[debug] {_tensor_stats(neck_out, 'neck_out')}")
+
             torch.cuda.synchronize()
             stage_latencies["neck_ms"] = (time.perf_counter() - t3) * 1000
 
@@ -144,6 +181,11 @@ class BEVFusionPyTorchPipeline(BEVFusionDeploymentPipeline):
             t5 = time.perf_counter()
 
             preds = preds[0][0]
+
+            if _dbg:
+                print(f"[debug] {_tensor_stats(preds['heatmap'], 'head_heatmap_raw')}")
+                print(f"[debug] {_tensor_stats(preds['center'][0], 'head_center')}")
+                print(f"[debug] {_tensor_stats(preds['dim'][0], 'head_dim')}")
 
             score = preds["heatmap"].sigmoid()
             one_hot = F.one_hot(preds["query_labels"], num_classes=score.size(1)).permute(0, 2, 1)

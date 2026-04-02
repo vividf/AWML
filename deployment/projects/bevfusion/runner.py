@@ -121,12 +121,21 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
 
         torch_device = device.to_torch_device()
 
-        # PTQ load already replaced pts_middle_encoder with a converted FX GraphModule; do not
-        # call prepare_fx again (and avoid passing calibration_data as `device` by mistake).
+        # PTQ load already set up the encoder (FX GraphModule or NVIDIA TensorQuantizer).
         if isinstance(sparse_encoder, torch.fx.GraphModule):
             logger.info(
                 "pts_middle_encoder is already an FX GraphModule (PTQ / model_loader path); "
                 "skipping runner prepare_fx + calibrate + convert."
+            )
+            return model
+
+        has_nvidia_quantizers = any(
+            hasattr(m, "_input_quantizer") for m in sparse_encoder.modules()
+        )
+        if has_nvidia_quantizers:
+            logger.info(
+                "pts_middle_encoder already has NVIDIA TensorQuantizer (PTQ / model_loader path); "
+                "skipping runner FX calibrate + convert."
             )
             return model
 
@@ -146,12 +155,7 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
 
             in_channels = getattr(sparse_encoder, "in_channels", 5)
             prepared = apply_spconv_int8_quantization(sparse_encoder, torch_device, in_channels=in_channels)
-            max_vox = quantization.get("spconv_calib_max_voxels")
-            calibrate_spconv_model(
-                prepared,
-                calibration_data,
-                max_voxels_per_sample=max_vox,
-            )
+            calibrate_spconv_model(prepared, calibration_data)
             quantized_encoder = convert_spconv_int8(prepared, attr_source=sparse_encoder)
             model.pts_middle_encoder = quantized_encoder
             try:

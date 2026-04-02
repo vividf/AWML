@@ -88,10 +88,9 @@ class SparseConvolution(SparseConvolutionBase):
             raise NotImplementedError
 
         if not self.subm:
-            if _fx_tracing:
-                # get_conv_output_size uses len(spatial_shape); spatial_shape can be a Proxy list during FX.
-                out_spatial_shape = spatial_shape
-            elif self.transposed:
+            # spatial_shape is always a concrete Python list (from SparseConvTensor),
+            # never a Proxy, so get_conv_output_size works in all tracing modes.
+            if self.transposed:
                 out_spatial_shape = ops.get_deconv_output_size(
                     spatial_shape, self.kernel_size, self.stride, self.padding, self.dilation, self.output_padding
                 )

@@ -5,7 +5,7 @@
 *.bin
 *.onnx
 *.engine
-
+deployment/projects/bevfusion/cpp/int8_plugin/build/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

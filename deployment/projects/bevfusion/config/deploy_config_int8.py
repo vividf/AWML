@@ -1,7 +1,8 @@
 """
 BEVFusion INT8 Deployment Configuration
 
-Uses spconv INT8 for sparse encoder and pytorch_quantization for dense parts.
+Uses spconv INT8 for the sparse encoder backbone; the last ``conv_out`` block stays FP32.
+Dense parts use pytorch_quantization. Re-run PTQ after this policy change so checkpoints match.
 
 Two deployment modes:
 A) With PTQ checkpoint (recommended):
@@ -67,8 +68,6 @@ quantization = dict(
     # PTQ script + deploy loader both upgrade SparseBasicBlock→SparseBasicBlockFX before prepare_fx.
     # Set False only for legacy PTQ .pth files produced without that upgrade.
     spconv_ptq_basicblock_fx=True,
-    # Sparse FX: per-frame voxel cap for non-PTQ runner path / docs. PTQ sample count: CLI only.
-    spconv_calib_max_voxels=4096,
     # Layers to skip quantization (prefix match)
     sensitive_layers=[],
 )
