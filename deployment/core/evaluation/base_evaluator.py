@@ -221,7 +221,11 @@ class BaseEvaluator(ABC):
         Raises:
             KeyError: If a loaded sample lacks ``\"ground_truth\"``.
         """
-        logger.info("\nEvaluating %s model: %s", model.backend.value, model.artifact.path)
+        logger.info(
+            "Starting sample loop for backend=%s (artifact path: %s)",
+            model.backend.value,
+            model.path,
+        )
         logger.info("Number of samples: %s", num_samples)
 
         self._ensure_model_on_device(model.device)

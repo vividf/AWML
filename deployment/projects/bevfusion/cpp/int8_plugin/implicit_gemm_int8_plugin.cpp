@@ -24,14 +24,24 @@
 #include <spconvlib/spconv/csrc/sparse/convops/SimpleExternalSpconvMatmul.h>
 #include <spconvlib/spconv/csrc/sparse/convops/spops/ConvGemmOps.h>
 
+#include <cuda_fp16.h>
+#include <cuda_runtime_api.h>
+
 #include <cassert>
+#include <cerrno>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include <algorithm>
+#include <atomic>
 
 // Safe assertion for noexcept TRT plugin methods — calls abort() instead of throw.
 #ifndef PLUGIN_ASSERT
@@ -54,6 +64,105 @@ namespace
 void caughtError(std::exception const & e)
 {
   std::fprintf(stderr, "[ImplicitGemmInt8Plugin] %s\n", e.what());
+}
+
+bool int8_gemm_debug_env_enabled() noexcept
+{
+  char const * v = std::getenv("BEVFUSION_INT8_GEMM_DEBUG");
+  if (v == nullptr || v[0] == '\0') {
+    return false;
+  }
+  char c = v[0];
+  return c == '1' || c == 'y' || c == 'Y' || c == 't' || c == 'T';
+}
+
+int int8_gemm_debug_max_logs() noexcept
+{
+  char const * v = std::getenv("BEVFUSION_INT8_GEMM_DEBUG_MAX");
+  if (v == nullptr || v[0] == '\0') {
+    return 60;
+  }
+  char * end = nullptr;
+  errno = 0;
+  long n = std::strtol(v, &end, 10);
+  if (errno != 0 || end == v || n <= 0) {
+    return 60;
+  }
+  return static_cast<int>(n);
+}
+
+std::atomic<int> g_int8_gemm_debug_seq{0};
+
+// D2H copy + host stats (debug only). Syncs `stream` so TRT enqueue ordering stays defined.
+void int8_gemm_debug_dump_fp16_output(
+  void const * d_ptr, std::int64_t n_elements, std::string const & layer_name,
+  std::int64_t num_act_out, std::int64_t c_out, int seq, float input_scale, float output_scale,
+  cudaStream_t stream) noexcept
+{
+  if (d_ptr == nullptr || n_elements <= 0) {
+    return;
+  }
+  try {
+    std::vector<__half> host(static_cast<std::size_t>(n_elements));
+    cudaError_t st = cudaMemcpyAsync(
+      host.data(), d_ptr, static_cast<std::size_t>(n_elements) * sizeof(__half),
+      cudaMemcpyDeviceToHost, stream);
+    if (st != cudaSuccess) {
+      std::fprintf(
+        stderr, "[BEVFUSION_INT8_GEMM_DEBUG] seq=%d layer=%s cudaMemcpyAsync failed: %s\n", seq,
+        layer_name.c_str(), cudaGetErrorString(st));
+      return;
+    }
+    st = cudaStreamSynchronize(stream);
+    if (st != cudaSuccess) {
+      std::fprintf(
+        stderr, "[BEVFUSION_INT8_GEMM_DEBUG] seq=%d layer=%s cudaStreamSynchronize failed: %s\n", seq,
+        layer_name.c_str(), cudaGetErrorString(st));
+      return;
+    }
+
+    float vmin = std::numeric_limits<float>::infinity();
+    float vmax = -std::numeric_limits<float>::infinity();
+    double sum = 0.0;
+    double sum_abs = 0.0;
+    std::int64_t nonzero = 0;
+    std::int64_t nan_count = 0;
+    std::int64_t inf_count = 0;
+    for (std::int64_t i = 0; i < n_elements; ++i) {
+      float const f = __half2float(host[static_cast<std::size_t>(i)]);
+      if (std::isnan(f)) {
+        ++nan_count;
+        continue;
+      }
+      if (std::isinf(f)) {
+        ++inf_count;
+        continue;
+      }
+      vmin = std::min(vmin, f);
+      vmax = std::max(vmax, f);
+      sum += static_cast<double>(f);
+      sum_abs += static_cast<double>(std::fabs(f));
+      if (f != 0.0f) {
+        ++nonzero;
+      }
+    }
+    std::int64_t const finite = n_elements - nan_count - inf_count;
+    double const mean = finite > 0 ? sum / static_cast<double>(finite) : 0.0;
+    double const abs_mean = finite > 0 ? sum_abs / static_cast<double>(finite) : 0.0;
+
+    std::fprintf(
+      stderr,
+      "[BEVFUSION_INT8_GEMM_DEBUG] seq=%d layer=%s out_shape=[%ld,%ld] n=%ld "
+      "input_scale=%.6f output_scale=%.6f min=%.6f max=%.6f mean=%.6f abs_mean=%.6f "
+      "nonzero=%ld/%ld nan=%ld inf=%ld\n",
+      seq, layer_name.c_str(), static_cast<long>(num_act_out), static_cast<long>(c_out),
+      static_cast<long>(n_elements), input_scale, output_scale, vmin, vmax, mean, abs_mean,
+      static_cast<long>(nonzero), static_cast<long>(n_elements), static_cast<long>(nan_count),
+      static_cast<long>(inf_count));
+  } catch (...) {
+    std::fprintf(stderr, "[BEVFUSION_INT8_GEMM_DEBUG] seq=%d layer=%s stats: host alloc failed\n", seq,
+      layer_name.c_str());
+  }
 }
 }  // namespace
 
@@ -258,6 +367,7 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
   std::int64_t feat_int8_bytes = num_act_in * c_in;
   std::int64_t weight_int8_bytes = c_out * k_vol * c_in;
   std::int64_t w_scales_bytes = c_out * sizeof(float);
+  std::int64_t gemm_bias_bytes = c_out * sizeof(float);
 
   // Align each allocation to 256 bytes.
   auto align = [](std::int64_t x) -> std::int64_t { return (x + 255) & ~255LL; };
@@ -266,6 +376,8 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
   std::int8_t * weight_int8_ptr =
     reinterpret_cast<std::int8_t *>(
       reinterpret_cast<std::int8_t *>(w_scales_ptr) + align(w_scales_bytes));
+  float * gemm_bias_ptr =
+    reinterpret_cast<float *>(weight_int8_ptr + align(weight_int8_bytes));
 
   // --- 1. Compute per-channel weight scales from channel_scale ---
   // w_scale[c] = channel_scale[c] * output_scale / input_scale
@@ -282,6 +394,13 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
   launch_quantize_weights_per_channel(
     reinterpret_cast<const __half *>(inputs[IN_FILTERS]), weight_int8_ptr,
     w_scales_ptr, c_out, k_vol * c_in, stream);
+
+  // s8s8f16 Int8Inference epilogue applies (scale * int32_acc + bias) only; `alpha` (output_scale)
+  // from ConvGemmOps is not used. Fold output dequant into scale/bias and pass output_scale=1.
+  launch_fuse_output_scale_into_gemm_scale_bias(
+    reinterpret_cast<const float *>(inputs[IN_CHANNEL_SCALE]),
+    reinterpret_cast<const float *>(inputs[IN_BIAS_SCALED]), params_.output_scale, w_scales_ptr,
+    gemm_bias_ptr, c_out, stream);
 
   // --- 4. Build tv::Tensors for implicit_gemm ---
   tv::Tensor features_tv = tv::from_blob(feat_int8_ptr, {num_act_in, c_in}, tv::int8, 0);
@@ -307,11 +426,8 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
   tv::Tensor mask_tensor = tv::zeros({1}, tv::uint32, -1);
   mask_tensor.data_ptr<uint32_t>()[0] = 0xffffffff;
 
-  // Scale and bias for the GEMM kernel
-  tv::Tensor channel_scale_tv = tv::from_blob(
-    inputs[IN_CHANNEL_SCALE], {c_out}, tv::float32, 0);
-  tv::Tensor bias_scaled_tv = tv::from_blob(
-    inputs[IN_BIAS_SCALED], {c_out}, tv::float32, 0);
+  tv::Tensor channel_scale_tv = tv::from_blob(w_scales_ptr, {c_out}, tv::float32, 0);
+  tv::Tensor bias_scaled_tv = tv::from_blob(gemm_bias_ptr, {c_out}, tv::float32, 0);
 
   std::vector<tv::Tensor> pair_mask_splits{pair_mask_fwd};
   std::vector<tv::Tensor> mask_argsort_splits{mask_argsort_fwd};
@@ -323,11 +439,6 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
     {SPCONV_ALLOC_OUT_FEATURES, out_features}};
   StaticAllocator alloc(tensor_dict);
 
-  // --- 5. Call ConvGemmOps::implicit_gemm with INT8 ---
-  // The tuner detects int8 features/weights → selects INT8 kernels.
-  // alpha = output_scale, channel_scale applied internally.
-  // bias already divided by output_scale from Python export.
-  // output_dtype = float16 → dequantized FP16 output.
   ConvGemmOps::implicit_gemm(
     alloc, *tuner_int8_ptr_, features_tv, weights_tv, pair_fwd,
     pair_mask_splits, mask_argsort_splits, static_cast<int>(num_act_out),
@@ -340,11 +451,21 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
     /*act_beta=*/params_.act_beta,
     /*act_type=*/tv::gemm::Activation::kNone,
     /*use_tf32=*/false,
-    /*output_scale=*/params_.output_scale,
+    /*output_scale=*/1.0f,
     /*scale=*/channel_scale_tv,
     /*output_add=*/tv::Tensor(),
     /*output_add_scale=*/0.0f,
     /*output_dtype=*/static_cast<int>(tv::float16));
+
+  if (int8_gemm_debug_env_enabled()) {
+    int const seq = g_int8_gemm_debug_seq.fetch_add(1, std::memory_order_relaxed);
+    if (seq < int8_gemm_debug_max_logs()) {
+      std::int64_t const n_el = num_act_out * c_out;
+      int8_gemm_debug_dump_fp16_output(
+        outputs[0], n_el, layer_name_, num_act_out, c_out, seq, params_.input_scale,
+        params_.output_scale, stream);
+    }
+  }
 
   return 0;
 }
@@ -373,7 +494,7 @@ std::size_t ImplicitGemmInt8Plugin::getWorkspaceSize(
   [[maybe_unused]] DynamicPluginTensorDesc const * outputs,
   [[maybe_unused]] std::int32_t num_outputs) const noexcept
 {
-  // Workspace for INT8 quantized copies of features and weights + w_scales.
+  // INT8 feature/weight buffers, w_scales (then fused GEMM channel scale), GEMM bias scratch.
   auto align = [](std::int64_t x) -> std::int64_t { return (x + 255) & ~255LL; };
 
   std::int64_t max_n = inputs[IN_FEATURES].max.d[0];
@@ -385,8 +506,9 @@ std::size_t ImplicitGemmInt8Plugin::getWorkspaceSize(
   std::int64_t feat_bytes = align(max_n * c_in);
   std::int64_t w_scales_bytes = align(c_out * static_cast<std::int64_t>(sizeof(float)));
   std::int64_t weight_bytes = align(c_out * k_vol * c_in);
+  std::int64_t gemm_bias_bytes = align(c_out * static_cast<std::int64_t>(sizeof(float)));
 
-  return static_cast<std::size_t>(feat_bytes + w_scales_bytes + weight_bytes);
+  return static_cast<std::size_t>(feat_bytes + w_scales_bytes + weight_bytes + gemm_bias_bytes);
 }
 
 }  // namespace nvinfer1::plugin
