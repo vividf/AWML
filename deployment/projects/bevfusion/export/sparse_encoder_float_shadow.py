@@ -1,12 +1,15 @@
-"""FP32 sparse-encoder shadow for ``torch.onnx.export`` when ``pts_middle_encoder`` is a quantized FX GraphModule.
+"""FP32 sparse-encoder shadow for ``torch.onnx.export``.
 
-``convert_fx`` + spconv INT8 yields ``aten::_empty_affine_quantized`` and related ops that the
-standard ONNX exporter does not support. Lidar AI Solution / libspconv sparse ONNX is produced
-from **float** (or engine-specific) graphs — see ``docs/5_bevfusion_onnx_trt_spconv_int8.md`` (bevfusion project).
+**FX GraphModule:** ``convert_fx`` + spconv INT8 yields ``aten::_empty_affine_quantized``; the
+exporter swaps in a fused FP32 ``BEVFusionSparseEncoder`` and copies float weights from the GM.
 
-This module rebuilds ``BEVFusionSparseEncoder`` from attributes preserved on the GraphModule,
-fuses sparse Conv+BN like the PTQ deploy path, and copies overlapping **floating-point** weights
-from the GraphModule state_dict so traced ONNX matches the fused FP topology.
+**NVIDIA TensorQuantizer (scheme A):** PTQ loads a plain ``BEVFusionSparseEncoder`` with
+``_input_quantizer`` / ``_weight_quantizer`` on sparse convs — not a ``GraphModule``. Without shadow,
+``torch.onnx.export`` traces Q/DQ into sparse ONNX. When ``encoder_has_nvidia_tensor_quantizers``
+holds, we use the same shadow rebuild and copy **float** weights from the live encoder's
+``state_dict`` (quantizer buffers are skipped), producing a Q/DQ-free sparse ONNX.
+
+See ``docs/11_int8_pathb_autoware_plugin.md`` (scheme A) and ``docs/12_int8_sparse_pipeline_ptq_onnx_trt.md``.
 """
 
 from __future__ import annotations
@@ -37,6 +40,23 @@ SPARSE_ENCODER_SHADOW_ATTRS: tuple[str, ...] = (
 def has_sparse_encoder_shadow_attributes(module: nn.Module) -> bool:
     """True if ``module`` carries the config fields needed by ``build_float_sparse_encoder_shadow``."""
     return all(hasattr(module, name) for name in SPARSE_ENCODER_SHADOW_ATTRS)
+
+
+def encoder_has_nvidia_tensor_quantizers(encoder: nn.Module) -> bool:
+    """True if sparse tower uses NVIDIA-style quantizers on conv modules (PTQ deploy path).
+
+    ``apply_nvidia_spconv_int8`` adds ``_input_quantizer`` and ``_weight_quantizer`` to each
+    quantized ``SparseConvolution``. Used to decide ONNX FP32 shadow (scheme A).
+    """
+    for m in encoder.modules():
+        if m is encoder:
+            continue
+        if getattr(m, "_input_quantizer", None) is None:
+            continue
+        if getattr(m, "_weight_quantizer", None) is None:
+            continue
+        return True
+    return False
 
 
 def copy_sparse_encoder_public_attrs(src: nn.Module, dst: nn.Module) -> None:
@@ -120,6 +140,34 @@ def resolve_sparse_onnx_shadow(
             first_gm = m
             break
     if first_gm is None:
+        # Scheme A: NVIDIA TensorQuantizer on a normal BEVFusionSparseEncoder (no nested GraphModule).
+        if encoder_has_nvidia_tensor_quantizers(pts_middle_encoder):
+            overrides_nv = encoder_cfg_overrides_from_bevfusion_model(bevfusion)
+            if has_sparse_encoder_shadow_attributes(pts_middle_encoder):
+                if overrides_nv:
+                    logger.info(
+                        "Sparse ONNX shadow (NVIDIA TensorQuantizer path): encoder has shadow attrs; "
+                        "%d optional cfg key(s) from model.cfg.",
+                        len(overrides_nv),
+                    )
+                return pts_middle_encoder, overrides_nv
+            can_nv = all(
+                hasattr(pts_middle_encoder, name) or (name in overrides_nv)
+                for name in SPARSE_ENCODER_SHADOW_ATTRS
+            )
+            if can_nv:
+                if overrides_nv:
+                    logger.info(
+                        "Sparse ONNX shadow (NVIDIA TensorQuantizer path): merging %d key(s) from "
+                        "model.cfg pts_middle_encoder.",
+                        len(overrides_nv),
+                    )
+                return pts_middle_encoder, overrides_nv
+            logger.warning(
+                "pts_middle_encoder has NVIDIA TensorQuantizers but lacks SPARSE_ENCODER_SHADOW_ATTRS "
+                "and model.cfg.model.pts_middle_encoder is incomplete; ONNX FP32 shadow skipped "
+                "(sparse ONNX may contain Q/DQ)."
+            )
         return None, {}
 
     overrides = encoder_cfg_overrides_from_bevfusion_model(bevfusion)
@@ -169,7 +217,10 @@ def build_float_sparse_encoder_shadow(
 ) -> nn.Module:
     """Construct a fused FP32 ``BEVFusionSparseEncoder`` and load weights from ``gm`` state_dict.
 
-    ``cfg_overrides`` supplies fields missing on the FX ``GraphModule`` (from ``model.cfg``), e.g. after
+    ``gm`` may be an FX ``GraphModule`` **or** a ``BEVFusionSparseEncoder`` with NVIDIA
+    ``TensorQuantizer`` children; only floating conv/BN parameters are copied, not ``_amax``.
+
+    ``cfg_overrides`` supplies fields missing on the source module (from ``model.cfg``), e.g. after
     ``convert_fx`` stripped ``sparse_shape`` / ``encoder_channels``.
     """
     from mmengine.registry import MODELS, init_default_scope
@@ -359,110 +410,10 @@ def build_float_sparse_encoder_shadow(
             n_copied += 1
 
     logger.info(
-        "Sparse ONNX float shadow: copied %d / %d state entries from GraphModule via in-place copy "
+        "Sparse ONNX float shadow: copied %d / %d state entries from source encoder via in-place copy "
         "(bypasses spconv load_state_dict hooks).",
         n_copied,
         len(enc_sd),
     )
 
     return enc
-
-
-def _expected_conv_out_last_spatial_dim(
-    z_in: int,
-    *,
-    kernel_z: int = 3,
-    stride_z: int = 2,
-    padding_z: int = 0,
-) -> int:
-    """Output Z size for ``BEVFusionSparseEncoder.conv_out`` (kernel (1,1,3), stride (1,1,2), pad 0)."""
-    return max((z_in + 2 * padding_z - kernel_z) // stride_z + 1, 1)
-
-
-def attach_fp32_conv_out_fallback_for_int8_graph(model: nn.Module, device: torch.device) -> bool:
-    """Detect broken Z downsampling in spconv INT8 ``conv_out`` and replace with FP32 ``conv_out``.
-
-    Some ``convert_fx`` INT8 graphs report ``spatial_shape[-1]`` unchanged after ``conv_out`` (e.g. still
-    41 instead of ~2). :func:`_conv_out_to_bev` then mean-pools 41→2, which is **not** equivalent to the
-    trained sparse ``conv_out`` and drives mAP≈0. This builds a fused FP32 encoder shadow (dequantized
-    weights from the GraphModule), hooks ``conv_out``, and re-runs the last sparse conv in FP32 when the
-    output Z dimension does not match the expected downsampling formula.
-
-    Returns:
-        True if forward hooks were registered on an INT8 ``conv_out`` submodule.
-    """
-    gm = getattr(model, "pts_middle_encoder", None)
-    if gm is None:
-        return False
-    gm_cls = getattr(torch.fx, "GraphModule", None)
-    if gm_cls is None or not isinstance(gm, gm_cls):
-        return False
-
-    try:
-        shadow_enc = build_float_sparse_encoder_shadow(
-            gm,
-            device,
-            cfg_overrides=encoder_cfg_overrides_from_bevfusion_model(model),
-        )
-    except Exception as e:
-        logger.warning("FP32 conv_out fallback: build_float_sparse_encoder_shadow failed: %s", e)
-        return False
-
-    try:
-        fp32_conv = copy.deepcopy(shadow_enc.conv_out)
-        fp32_conv.eval()
-        fp32_conv.to(device)
-        del shadow_enc
-    except Exception:
-        fp32_conv = shadow_enc.conv_out
-        fp32_conv.eval()
-        fp32_conv.to(device)
-        model.register_module("_awml_keepalive_sparse_shadow_for_conv_out", shadow_enc)
-
-    try:
-        int8_conv = gm.get_submodule("conv_out")
-    except AttributeError:
-        int8_conv = None
-        for name, mod in gm.named_modules():
-            if name == "conv_out":
-                int8_conv = mod
-                break
-    if int8_conv is None:
-        logger.warning("FP32 conv_out fallback: GraphModule has no submodule 'conv_out'")
-        return False
-
-    storage: Dict[str, Any] = {"last_in": None}
-
-    def _pre(_m: nn.Module, inp: Any) -> None:
-        storage["last_in"] = inp[0] if inp else None
-
-    def _post(_m: nn.Module, inp: Any, out: Any) -> Any:
-        x_in = storage["last_in"]
-        if x_in is None or not hasattr(x_in, "spatial_shape"):
-            return out
-        try:
-            z_in = int(x_in.spatial_shape[-1])
-            z_exp = _expected_conv_out_last_spatial_dim(z_in)
-            z_got = int(out.spatial_shape[-1])
-        except Exception:
-            return out
-        if z_got == z_exp:
-            return out
-        try:
-            with torch.no_grad():
-                fixed = fp32_conv(x_in)
-        except Exception as ex:
-            logger.warning("FP32 conv_out fallback: forward failed, keeping INT8 output: %s", ex)
-            return out
-        logger.warning(
-            "INT8 conv_out Z mismatch: output spatial_shape[-1]=%d, expected %d (input Z=%d). "
-            "Replacing with FP32 conv_out (dequant shadow weights).",
-            z_got,
-            z_exp,
-            z_in,
-        )
-        return fixed
-
-    int8_conv.register_forward_pre_hook(_pre)
-    int8_conv.register_forward_hook(_post)
-    return True

@@ -11,11 +11,11 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
   ``checkpoint_path`` 改成 **訓練 FP32 .pth**，並設 ``quantization = dict(enabled=False)``。
   若此時 **mAP 正常**，則 **split / voxel preprocess / eval 管線沒壞**；mAP 掉在 **PTQ .pth 或
   quantization 載入**（含 dense Q/DQ、spconv INT8、key 與 mmconfig 是否一致）。
-  稀疏校準預設 **不裁 voxel**（與 Lidar AI Solution 一致）；僅在顯存不足時可選
-  ``spconv_calib_max_voxels`` / ``SPCONV_CALIB_MAX_VOXELS``。
+  稀疏校準使用 **完整 voxel** 不裁切（與 Lidar AI Solution 一致）。
 
 **前置條件**
   - ``checkpoint_path`` 指向 ``bevfusion_quantization.py ptq`` 產生的 **.pth**；``quantization.ptq_checkpoint=True``（本檔預設已開）。
+  - 稀疏塔預設：**主幹 INT8、最後 ``conv_out``（SparseSequential）FP32**（``bevfusion_spconv_qconfig_mapping``）。舊的「含 INT8 conv_out」PTQ .pth 與現有 GraphModule **鍵/結構不同**，請用目前腳本 **重跑 PTQ**。
   - **``spconv_ptq_basicblock_fx``** 必須與 **產生該 PTQ .pth 時** 的 sparse 圖一致，否則會出現 ``bn1.weight`` missing / ``bn1_scale_0`` unexpected、mAP≈0。
 
     - **False**：legacy PTQ（``*_base_120m.py``、舊腳本、未做 block 升級）與 deploy 對齊時。
@@ -48,25 +48,23 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 # Checkpoint
 # ============================================================================
 # PTQ：必須為 bevfusion_quantization.py 產物。FP32 對照：改為訓練 .pth 並改用下方 Preset B。
-checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq.pth"
+# checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq.pth"
 
 # ============================================================================
 # Quantization — Preset A：INT8 PTQ（預設）
 # ============================================================================
-quantization = dict(
-    enabled=True,
-    ptq_checkpoint=True,
-    fuse_bn=True,
-    quant_backbone=True,
-    quant_neck=True,
-    quant_head=True,
-    quant_add=False,
-    spconv_int8=True,
-    spconv_ptq_basicblock_fx=True,
-    # Sparse FX voxel cap (PTQ: bevfusion_quantization.py uses CLI --calibrate-samples only).
-    spconv_calib_max_voxels=10000,
-    sensitive_layers=[],
-)
+# quantization = dict(
+#     enabled=True,
+#     ptq_checkpoint=True,
+#     fuse_bn=True,
+#     quant_backbone=True,
+#     quant_neck=True,
+#     quant_head=True,
+#     quant_add=False,
+#     spconv_int8=True,
+#     spconv_ptq_basicblock_fx=True,
+#     sensitive_layers=[],
+# )
 
 # ============================================================================
 # Preset B：同 split_int8 路徑 + *_fx.py，僅 FP32 驗證 mAP / 管線（註解掉 Preset A 後啟用）
@@ -74,15 +72,46 @@ quantization = dict(
 # checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30.pth"
 # quantization = dict(enabled=False)
 
+# ============================================================================
+# Preset C：僅稀疏塔 INT8（隔離 dense Q/DQ 是否導致 mAP≈0）
+#
+# PTQ（需 deploy 內 spconv_int8=True，並加 --sparse-int8-only）::
+#
+#   python deployment/quantization/bevfusion_quantization.py ptq \\
+#       --config .../bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m_fx.py \\
+#       --checkpoint work_dirs/bevfusion/bevfusion_epoch_30.pth \\
+#       --deploy-cfg deployment/projects/bevfusion/config/deploy_config_split_int8.py \\
+#       --sparse-int8-only \\
+#       --calibrate-samples 256 --batch-size 1 --calib-seed 0 \\
+#       --output work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only.pth
+#
+# 評測：註解 Preset A，改為下方三項（checkpoint 指向上列 output；dense 三關必須 False 與 PTQ 一致）
+# ============================================================================
+checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only2.pth"
+quantization = dict(
+    enabled=True,
+    ptq_checkpoint=True,
+    fuse_bn=True,
+    quant_backbone=False,
+    quant_neck=False,
+    quant_head=False,
+    quant_add=False,
+    spconv_int8=True,
+    spconv_ptq_basicblock_fx=True,
+    sensitive_layers=[],
+)
+
 devices = dict(
     cpu="cpu",
     cuda="cuda:0",
 )
 
 export = dict(
-    mode="onnx",
+    # "tensorrt" = build TRT engines from existing ONNX (don't re-export ONNX).
+    # Use "both" only when you need a fresh ONNX export + TRT build.
+    mode="trt",
     work_dir="work_dirs/bevfusion_split_int8_deployment",
-    onnx_path=None,
+    onnx_path="work_dirs/bevfusion_split_int8_deployment/onnx",
 )
 
 _WORK_DIR = str(export["work_dir"]).rstrip("/")
@@ -173,7 +202,10 @@ onnx_config = dict(
 tensorrt_config = dict(
     precision_policy="fp16",
     max_workspace_size=1 << 32,
-    plugin_libraries=["/opt/plugins/libautoware_tensorrt_plugins.so"],
+    plugin_libraries=[
+        "/opt/plugins/libautoware_tensorrt_plugins.so",
+        "/workspace/deployment/projects/bevfusion/cpp/int8_plugin/build/libimplicit_gemm_int8_plugin.so",
+    ],
 )
 
 evaluation = dict(
@@ -192,7 +224,7 @@ evaluation = dict(
             model_dir=_ONNX_DIR,
         ),
         tensorrt=dict(
-            enabled=False,
+            enabled=True,
             device=devices["cuda"],
             engine_dir=_TENSORRT_DIR,
         ),

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import os.path as osp
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pycuda.autoinit  # noqa: F401
@@ -27,6 +28,64 @@ from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_
 from deployment.projects.bevfusion.pipelines.bevfusion_pipeline import BEVFusionDeploymentPipeline
 
 logger = logging.getLogger(__name__)
+
+
+def _env_truthy(key: str) -> bool:
+    return os.environ.get(key, "").strip().lower() in ("1", "true", "yes")
+
+
+def _env_int(key: str, default: int) -> int:
+    try:
+        return int(os.environ.get(key, str(default)).strip())
+    except ValueError:
+        return default
+
+
+_TRT_DEBUG_SPLIT = _env_truthy("BEVFUSION_TRT_DEBUG_SPLIT")
+_TRT_LOG_IO = _env_truthy("BEVFUSION_TRT_LOG_IO")
+
+
+def _list_trt_io_names(engine: trt.ICudaEngine) -> Tuple[List[str], List[str]]:
+    """Return (input_names, output_names) in TensorRT tensor index order."""
+    inputs: List[str] = []
+    outputs: List[str] = []
+    for i in range(engine.num_io_tensors):
+        name = engine.get_tensor_name(i)
+        if engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+            inputs.append(name)
+        else:
+            outputs.append(name)
+    return inputs, outputs
+
+
+def _pick_bound_input_name(engine: trt.ICudaEngine, expected_in_order: Sequence[str]) -> str:
+    """Match deploy_cfg input names to the engine; avoid relying on arbitrary TRT ordering."""
+    found, _out = _list_trt_io_names(engine)
+    for want in expected_in_order:
+        if want in found:
+            return want
+    if len(found) == 1:
+        if expected_in_order and found[0] != expected_in_order[0]:
+            logger.warning(
+                "TensorRT dense engine input is %r but deploy_cfg expects %r — using engine binding. "
+                "If mAP=0, verify ONNX export names match deploy components.bevfusion_dense.io.inputs.",
+                found[0],
+                expected_in_order[0],
+            )
+        return found[0]
+    raise RuntimeError(
+        f"Could not map deploy_cfg inputs {list(expected_in_order)} to engine inputs {found}"
+    )
+
+
+def _log_engine_schema(tag: str, engine: trt.ICudaEngine) -> None:
+    ins, outs = _list_trt_io_names(engine)
+    lines = [f"[trt-io] {tag} inputs={ins} outputs={outs}"]
+    for name in ins + outs:
+        shp = engine.get_tensor_shape(name)
+        dt = engine.get_tensor_dtype(name)
+        lines.append(f"[trt-io]   {name}: shape={shp} dtype={dt}")
+    logger.warning("\n".join(lines))
 
 
 class _TRTLayerProfiler(trt.IProfiler):
@@ -134,6 +193,8 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         self._dense_ev_e = cuda.Event()
         self._last_split_sparse_gpu_ms: float = 0.0
         self._last_split_dense_gpu_ms: float = 0.0
+        self._split_debug_frames_done: int = 0
+        self._split_debug_max: int = max(0, _env_int("BEVFUSION_TRT_DEBUG_SPLIT_FRAMES", 2))
 
         self._load_tensorrt_engine()
         logger.info(f"BEVFusion TensorRT pipeline initialized from: {tensorrt_dir} (split={self._split})")
@@ -173,6 +234,10 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
             if self._context_sparse is None or self._context_dense is None:
                 raise RuntimeError("Failed to create TensorRT contexts for split engines")
             logger.info("Loaded split TensorRT engines: %s , %s", sparse_path, dense_path)
+            if _TRT_LOG_IO:
+                assert self._engine_sparse is not None and self._engine_dense is not None
+                _log_engine_schema("bevfusion_sparse", self._engine_sparse)
+                _log_engine_schema("bevfusion_dense", self._engine_dense)
             return
 
         engine_path = resolve_artifact_path(
@@ -314,7 +379,8 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
 
                 mgr.synchronize()
         finally:
-            if profiler is not None and hasattr(context, "profiler"):
+            # TensorRT rejects setProfiler(nullptr); only restore when a previous profiler existed.
+            if profiler is not None and hasattr(context, "profiler") and prev_profiler is not None:
                 context.profiler = prev_profiler
 
         return output_arrays
@@ -330,10 +396,17 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         voxels_np = self.to_numpy(voxels, dtype=np.float32)
         coors_np = self.to_numpy(coors, dtype=np.int32)
         num_points_np = self.to_numpy(num_points_per_voxel, dtype=np.int32)
+        # Match ``extract_pts_feat`` / PTQ: mean-pool must not divide by zero (NaN BEV → dense NaN).
+        num_points_np = np.maximum(num_points_np, 1)
 
         if self._split:
             assert self._engine_sparse is not None and self._context_sparse is not None
             assert self._engine_dense is not None and self._context_dense is not None
+
+            sparse_cfg = self._components_cfg.get_component("bevfusion_sparse")
+            dense_cfg = self._components_cfg.get_component("bevfusion_dense")
+            exp_sparse_out = [o.name for o in sparse_cfg.io.outputs]
+            exp_dense_in = [i.name for i in dense_cfg.io.inputs]
 
             # Sparse (spconv) engine: CUDA-timed separately; do not attach profiler here (dense pass clears it).
             sparse_out = self._trt_infer_voxel_inputs(
@@ -348,16 +421,56 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
             if len(sparse_out) != 1:
                 raise RuntimeError(f"Sparse engine: expected 1 output, got {list(sparse_out.keys())}")
             bev_name = next(iter(sparse_out))
+            if exp_sparse_out and bev_name not in exp_sparse_out:
+                logger.warning(
+                    "[trt-split] sparse engine output tensor is %r but deploy_cfg bevfusion_sparse.io.outputs "
+                    "names=%s — check ONNX export / TRT binding names.",
+                    bev_name,
+                    exp_sparse_out,
+                )
             bev_arr = np.ascontiguousarray(sparse_out[bev_name].astype(np.float32))
 
-            dense_in_name = None
-            for i in range(self._engine_dense.num_io_tensors):
-                n = self._engine_dense.get_tensor_name(i)
-                if self._engine_dense.get_tensor_mode(n) == trt.TensorIOMode.INPUT:
-                    dense_in_name = n
-                    break
-            if dense_in_name is None:
-                raise RuntimeError("Dense engine has no input tensor")
+            do_split_dbg = _TRT_DEBUG_SPLIT and self._split_debug_frames_done < self._split_debug_max
+            if do_split_dbg:
+                self._split_debug_frames_done += 1
+                bn = bev_arr.reshape(-1)
+                logger.warning(
+                    "[debug-trt-split] frame=%d/%d sparse->dense %s: shape=%s dtype=%s min=%.6f max=%.6f "
+                    "mean=%.6f std=%.6f abs_mean=%.6f nan=%s inf=%s",
+                    self._split_debug_frames_done,
+                    self._split_debug_max,
+                    bev_name,
+                    bev_arr.shape,
+                    bev_arr.dtype,
+                    float(bn.min()),
+                    float(bn.max()),
+                    float(bn.mean()),
+                    float(bn.std()),
+                    float(np.mean(np.abs(bn))),
+                    bool(np.isnan(bn).any()),
+                    bool(np.isinf(bn).any()),
+                )
+
+            dense_in_name = _pick_bound_input_name(self._engine_dense, exp_dense_in)
+
+            if do_split_dbg:
+                ctx = self._context_dense
+                exp_shape = tuple(ctx.get_tensor_shape(dense_in_name))
+                logger.warning(
+                    "[debug-trt-split] dense input %r engine_expected_shape=%s feed_shape=%s "
+                    "deploy_cfg_inputs=%s",
+                    dense_in_name,
+                    exp_shape,
+                    bev_arr.shape,
+                    exp_dense_in,
+                )
+                if tuple(bev_arr.shape) != exp_shape and not any(d < 0 for d in exp_shape):
+                    logger.warning(
+                        "[debug-trt-split] SHAPE MISMATCH: lidar_bev numpy shape %s vs TRT context %s — "
+                        "dense engine will error or broadcast wrong; common cause: H×W vs export grid.",
+                        bev_arr.shape,
+                        exp_shape,
+                    )
 
             dense_out = self._trt_infer_named_input(
                 self._engine_dense,
@@ -372,12 +485,38 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
             self._last_split_sparse_gpu_ms = float(self._sparse_ev_e.time_since(self._sparse_ev_s))
             self._last_split_dense_gpu_ms = float(self._dense_ev_e.time_since(self._dense_ev_s))
 
-            component_cfg = self._components_cfg.get_component("bevfusion_dense")
-            expected_output_names = [out.name for out in component_cfg.io.outputs]
+            expected_output_names = [out.name for out in dense_cfg.io.outputs]
             out_keys = list(dense_out.keys())
             ordered_names = [n for n in expected_output_names if n in dense_out]
             ordered_names += [n for n in out_keys if n not in ordered_names]
-            return [torch.from_numpy(dense_out[name]).to(self.torch_device) for name in ordered_names]
+            tensors = [torch.from_numpy(dense_out[name]).to(self.torch_device) for name in ordered_names]
+            if do_split_dbg and tensors:
+                for i, name in enumerate(ordered_names):
+                    t = tensors[i].detach()
+                    t_f = t.float().reshape(-1)
+                    extra = ""
+                    if name == "bbox_pred" and t.ndim >= 2 and t.shape[0] >= 2:
+                        cx = t[0].float().reshape(-1)
+                        cy = t[1].float().reshape(-1)
+                        extra = f" center_x[min,max]=({float(cx.min())},{float(cx.max())}) center_y[min,max]=({float(cy.min())},{float(cy.max())})"
+                    if name == "label_pred":
+                        lp = t.reshape(-1).long()
+                        uniq = torch.unique(lp)
+                        extra = f" label_unique_count={int(uniq.numel())} label_min={int(lp.min())} label_max={int(lp.max())}"
+                    if name == "score":
+                        extra = f" score>0.1_count={int((t_f > 0.1).sum())} score>0.5_count={int((t_f > 0.5).sum())}"
+                    logger.warning(
+                        "[debug-trt-split] dense_out[%s] %s: shape=%s dtype=%s min=%.6f max=%.6f mean=%.6f%s",
+                        i,
+                        name,
+                        tuple(t.shape),
+                        t.dtype,
+                        float(t_f.min().item()),
+                        float(t_f.max().item()),
+                        float(t_f.mean().item()),
+                        extra,
+                    )
+            return tensors
 
         engine = self._engine
         context = self._context

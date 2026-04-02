@@ -19,6 +19,12 @@ Usage:
         --batch-size 1 \
         --calib-seed 0 \
         --output work_dirs/bevfusion/epoch_30_ptq.pth
+
+    # PTQ sparse encoder only (spconv INT8; dense stays FP32). Deploy eval must set
+    # quant_backbone/neck/head=False. Use deploy cfg with spconv_int8=True.
+    python deployment/quantization/bevfusion_quantization.py ptq ... \
+        --deploy-cfg deployment/projects/bevfusion/config/deploy_config_split_int8.py \
+        --sparse-int8-only --output work_dirs/bevfusion/epoch_30_ptq_sparse_only.pth
 """
 
 import argparse
@@ -68,13 +74,12 @@ def parse_args():
         help="Skip spconv INT8 calibration for sparse encoder (only do dense Q/DQ).",
     )
     ptq_parser.add_argument(
-        "--spconv-calib-max-voxels",
-        type=int,
-        default=None,
+        "--sparse-int8-only",
+        action="store_true",
         help=(
-            "Max voxels per frame during spconv FX calibration (implicit_gemm uses ~O(N^2) GPU memory). "
-            "Overrides deploy quantization.spconv_calib_max_voxels. If unset, uses deploy → "
-            "SPCONV_CALIB_MAX_VOXELS → default 4096."
+            "PTQ only pts_middle_encoder (spconv INT8). Skips dense pytorch_quantization Q/DQ "
+            "(no QuantConv2d). Deploy eval must set quant_backbone/neck/head=False (and ptq_checkpoint=True, "
+            "spconv_int8=True) to load this checkpoint. Requires quantization.spconv_int8=True in deploy cfg."
         ),
     )
     return parser.parse_args()
@@ -101,33 +106,44 @@ def _load_deploy_quantization_cfg(deploy_cfg_path: str) -> Tuple[Dict[str, Any],
     return quant, ckpt
 
 
-def _resolve_spconv_calib_voxel_cap(quant_cfg: Dict[str, Any], cli_cap: Optional[int]) -> int:
-    """Effective voxels/sample for spconv FX calibration (prepare_fx observers).
+def _report_converted_scale_buffers(converted_encoder) -> None:
+    """After convert_fx, report scale/zero_point buffers saved in the encoder."""
+    import torch
 
-    implicit_gemm / get_indice_pairs allocate buffers ~ O(N^2); full-scene N is not viable on GPU
-    for this PyTorch FX path (unlike libspconv in Lidar AI Solution).
+    scale_bufs = {}
+    zp_bufs = {}
+    for name, buf in converted_encoder.named_buffers():
+        if "scale" in name:
+            scale_bufs[name] = buf
+        if "zero_point" in name:
+            zp_bufs[name] = buf
 
-    Priority: CLI ``--spconv-calib-max-voxels`` > deploy ``spconv_calib_max_voxels`` >
-    env ``SPCONV_CALIB_MAX_VOXELS`` > library default.
-    Values ``<= 0`` fall back to the library default (never "unlimited" here — that OOMs).
-    """
-    from deployment.projects.bevfusion.quantization.spconv_int8 import _default_spconv_calib_max_voxels
+    print(f"  [ptq-scale-check] Converted encoder has {len(scale_bufs)} scale buffers, "
+          f"{len(zp_bufs)} zero_point buffers")
 
-    def _positive_or_default(v: int) -> int:
-        return int(v) if int(v) > 0 else _default_spconv_calib_max_voxels()
+    n_valid = 0
+    n_default = 0
+    for name, buf in scale_bufs.items():
+        val = float(buf.flatten()[0]) if buf.numel() > 0 else -1.0
+        if abs(val - 1.0) < 1e-6 or val <= 0:
+            n_default += 1
+            print(f"    WARNING: {name} = {val:.6f} (looks uncalibrated!)")
+        else:
+            n_valid += 1
+            if n_valid <= 5:
+                print(f"    {name} = {val:.6f}")
 
-    if cli_cap is not None:
-        try:
-            return _positive_or_default(int(cli_cap))
-        except (TypeError, ValueError):
-            return _default_spconv_calib_max_voxels()
-    raw = quant_cfg.get("spconv_calib_max_voxels")
-    if raw is not None:
-        try:
-            return _positive_or_default(int(raw))
-        except (TypeError, ValueError):
-            return _default_spconv_calib_max_voxels()
-    return _default_spconv_calib_max_voxels()
+    print(f"  [ptq-scale-check] {n_valid} valid scales, {n_default} uncalibrated (=1.0)")
+
+    total_params = sum(p.numel() for p in converted_encoder.parameters())
+    total_bufs = sum(b.numel() for b in converted_encoder.buffers())
+    print(f"  [ptq-model-check] params={total_params}, buffers={total_bufs}")
+
+    sd = converted_encoder.state_dict()
+    sparse_scale_keys = [k for k in sd if "scale" in k or "zero_point" in k]
+    print(f"  [ptq-model-check] state_dict has {len(sd)} keys, {len(sparse_scale_keys)} are scale/zp")
+    if sparse_scale_keys:
+        print(f"  [ptq-model-check] sample scale/zp keys: {sparse_scale_keys[:5]}")
 
 
 def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
@@ -157,7 +173,22 @@ def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
 
         skip_layers |= set(quant_cfg.get("sensitive_layers", []) or [])
 
+    if getattr(args, "sparse_int8_only", False):
+        quant_flags["quant_backbone"] = False
+        quant_flags["quant_neck"] = False
+        quant_flags["quant_head"] = False
+        quant_flags["quant_add"] = False
+
     return fuse_bn, skip_layers, quant_flags
+
+
+def _dense_quant_enabled(quant_flags: Dict[str, bool]) -> bool:
+    return bool(
+        quant_flags.get("quant_backbone")
+        or quant_flags.get("quant_neck")
+        or quant_flags.get("quant_head")
+        or quant_flags.get("quant_add")
+    )
 
 
 def _build_bevfusion_model(config_path: str, checkpoint_path: str, device: str):
@@ -314,23 +345,14 @@ def _calibrate_spconv(
     device,
     output_path,
     quant_cfg,
-    *,
-    spconv_calib_max_voxels_cli: Optional[int] = None,
 ):
-    """Run spconv INT8 for sparse encoder via FX path (prepare_fx → calibrate → convert_fx).
+    """Run spconv INT8 for sparse encoder using NVIDIA TensorQuantizer (histogram + MSE).
 
-    Requires pts_middle_encoder to be FX-traceable (use config with
-    block_type='basicblock_fx', e.g. bevfusion_*_120m_fx.py). Replaces
-    model.pts_middle_encoder with the quantized module so the saved PTQ
-    checkpoint contains the INT8 sparse encoder.
+    Adapted from CUDA-BEVFusion: each SparseConvolution gets ``_input_quantizer``
+    and ``_weight_quantizer`` (NVIDIA TensorQuantizer). Calibration collects
+    histograms, then ``compute_amax(method=mse)`` picks the optimal clipping.
     """
     import torch
-
-    from deployment.projects.bevfusion.quantization.spconv_int8 import (
-        apply_spconv_int8_quantization,
-        calibrate_spconv_model,
-        convert_spconv_int8,
-    )
 
     sparse_encoder = getattr(model, "pts_middle_encoder", None)
     if sparse_encoder is None:
@@ -371,68 +393,48 @@ def _calibrate_spconv(
                     coords = torch.cat([batch_coors, coords], dim=1).contiguous()
 
                     if sizes is not None and getattr(model, "voxelize_reduce", True):
-                        feats = feats.sum(dim=1, keepdim=False) / sizes.type_as(feats).view(-1, 1)
+                        sz = sizes.type_as(feats).view(-1, 1).clamp(min=1.0)
+                        feats = feats.sum(dim=1, keepdim=False) / sz
                         feats = feats.contiguous()
 
+                    n_vox = int(feats.shape[0])
+                    print(f"  [voxel-stats] Sample {len(calibration_data)+1}: {n_vox} voxels, "
+                          f"feats shape={tuple(feats.shape)}, coords shape={tuple(coords.shape)}")
                     calibration_data.append((feats, coords.int(), 1))
 
         except Exception as e:
-            print(f"  Warning: batch {i} failed: {e}")
-            continue
+            raise RuntimeError(
+                f"spconv INT8 calibration: batch {i} failed while collecting voxel samples"
+            ) from e
 
     if not calibration_data:
-        print("  No calibration data for spconv; skipping")
-        return
-
-    print(f"  Collected {len(calibration_data)} samples")
-
-    calib_cap = _resolve_spconv_calib_voxel_cap(quant_cfg, spconv_calib_max_voxels_cli)
-    print(
-        f"  Spconv FX calibration: max {calib_cap} voxels/sample "
-        "(implicit_gemm ~O(N^2); order: --spconv-calib-max-voxels > deploy "
-        "spconv_calib_max_voxels > SPCONV_CALIB_MAX_VOXELS > default)."
-    )
-
-    in_channels = getattr(sparse_encoder, "in_channels", 5)
-    # Must match deployment ``_replace_encoder_with_fx_converted_structure`` (model_loader): deploy
-    # calls ``upgrade_pts_middle_encoder_basicblocks_to_fx`` before prepare_fx when
-    # ``spconv_ptq_basicblock_fx`` is True. Skipping here yields PTQ checkpoints whose state_dict
-    # keys (e.g. ``..._bn1_scale_0``) do not load into the deploy-rebuilt GraphModule (missing
-    # ``bn1.weight``, unexpected scale tensors) → mAP collapse and false INT8 verification.
-    use_fx_bb = bool(quant_cfg.get("spconv_ptq_basicblock_fx", True))
-    if use_fx_bb:
-        from deployment.projects.bevfusion.quantization.spconv_int8 import (
-            upgrade_pts_middle_encoder_basicblocks_to_fx,
+        raise RuntimeError(
+            "spconv INT8 calibration: no voxel samples collected (check dataloader / points inputs)."
         )
 
-        n_bb = upgrade_pts_middle_encoder_basicblocks_to_fx(sparse_encoder)
-        if n_bb:
-            print(
-                f"  Upgraded {n_bb} SparseBasicBlock → SparseBasicBlockFX before spconv FX "
-                "(matches deploy loader; required unless checkpoint uses only basicblock_fx config)."
-            )
-    else:
-        print("  spconv_ptq_basicblock_fx=False: skipping SparseBasicBlock→FX upgrade (legacy checkpoint path)")
+    voxel_counts = [int(f.shape[0]) for f, _, _ in calibration_data]
+    print(f"  Collected {len(calibration_data)} samples")
+    print(f"  [voxel-stats] Voxel counts: min={min(voxel_counts)}, max={max(voxel_counts)}, "
+          f"mean={sum(voxel_counts)/len(voxel_counts):.0f}, median={sorted(voxel_counts)[len(voxel_counts)//2]}")
 
-    try:
-        print("  Applying spconv FX path: prepare_fx → calibrate → convert_fx → transform_qdq")
-        prepared = apply_spconv_int8_quantization(sparse_encoder, torch.device(device), in_channels=in_channels)
-        calibrate_spconv_model(prepared, calibration_data, max_voxels_per_sample=calib_cap)
-        converted = convert_spconv_int8(prepared, attr_source=sparse_encoder)
-        model.pts_middle_encoder = converted
-        try:
-            from projects.BEVFusion.bevfusion.bevfusion import register_pts_middle_encoder_float_input_hook
+    from deployment.projects.bevfusion.quantization.spconv_int8 import (
+        apply_nvidia_spconv_int8,
+        calibrate_spconv_nvidia,
+    )
 
-            register_pts_middle_encoder_float_input_hook(model.pts_middle_encoder)
-        except Exception:
-            pass
-        print("  Sparse encoder replaced with INT8 quantized module (FX path)")
-    except Exception as e:
-        print(f"  Spconv FX INT8 failed: {e}")
-        print("  Ensure config uses block_type='basicblock_fx' (e.g. bevfusion_*_120m_fx.py)")
-        import traceback
+    print("  Applying NVIDIA TensorQuantizer path (histogram + MSE, adapted from CUDA-BEVFusion)")
+    apply_nvidia_spconv_int8(sparse_encoder, exclude_conv_out=True)
+    calibrate_spconv_nvidia(sparse_encoder, calibration_data)
 
-        traceback.print_exc()
+    amax_keys = [k for k in sparse_encoder.state_dict() if "_amax" in k]
+    print(f"  [save-check] {len(amax_keys)} _amax keys in sparse encoder state_dict")
+    if amax_keys:
+        sd = sparse_encoder.state_dict()
+        for k in amax_keys[:5]:
+            v = sd[k]
+            print(f"    {k} = {v.flatten().tolist()[:3]}")
+
+    print("  Sparse encoder calibrated with NVIDIA approach (histogram + MSE)")
 
 
 def _disable_sensitive_layers(model, skip_layers):
@@ -468,12 +470,26 @@ def run_ptq(args):
     print(f"Calibration: {args.calibrate_samples} samples -> {num_batches} batches x {args.batch_size}")
     print(f"Actual calibration samples: {actual_samples}")
     print(f"Skip spconv INT8: {args.skip_spconv_int8}")
+    print(f"Sparse INT8 only (no dense Q/DQ): {getattr(args, 'sparse_int8_only', False)}")
     if args.calib_seed is not None:
         print(f"Calibration seed: {args.calib_seed}")
     print(f"Output: {args.output}")
     print("=" * 80)
 
     fuse_bn, skip_layers, quant_flags = _build_ptq_quant_settings(args)
+    dense_on = _dense_quant_enabled(quant_flags)
+
+    if getattr(args, "sparse_int8_only", False):
+        print("\n  --sparse-int8-only: dense backbone/neck/head will stay FP32 (no QuantConv2d in .pth).")
+    if getattr(args, "sparse_int8_only", False) and args.skip_spconv_int8:
+        print("  Warning: --sparse-int8-only with --skip-spconv-int8 → no INT8 path is calibrated.")
+    if getattr(args, "sparse_int8_only", False):
+        qwarn, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
+        if not qwarn.get("spconv_int8", False):
+            print(
+                "  Warning: deploy quantization.spconv_int8=False; spconv INT8 step will be skipped. "
+                "Use a deploy cfg with spconv_int8=True for sparse-only PTQ."
+            )
 
     # [1/6] Load model
     print("\n[1/6] Loading BEVFusion model...")
@@ -494,10 +510,13 @@ def run_ptq(args):
         print("\n[2/6] Skipping BatchNorm fusion")
 
     # [3/6] Insert Q/DQ nodes for dense parts
-    print("\n[3/6] Inserting Q/DQ nodes (dense parts)...")
-    _insert_dense_qdq(model, quant_flags, skip_layers)
+    if dense_on:
+        print("\n[3/6] Inserting Q/DQ nodes (dense parts)...")
+        _insert_dense_qdq(model, quant_flags, skip_layers)
+    else:
+        print("\n[3/6] Skipping dense Q/DQ insertion (sparse INT8 only or all quant_* False in deploy).")
 
-    # [4/6] Build dataloader + calibrate dense Q/DQ
+    # [4/6] Build dataloader (spconv calib + optional dense calib)
     print("\n[4/6] Building calibration dataloader...")
     cfg = Config.fromfile(args.config)
     if isinstance(cfg.val_dataloader, dict):
@@ -528,7 +547,7 @@ def run_ptq(args):
 
     # Spconv INT8 *before* dense CalibrationManager stats. If dense is calibrated while sparse is still
     # FP32, TensorQuantizer amax matches the wrong BEV distribution → inference (INT8 sparse → dense)
-    # gets OOD activations and mAP can collapse (~0) no matter how many spconv voxel caps you use.
+    # gets OOD activations and mAP can collapse (~0).
     quant_cfg_for_sparse: Dict[str, Any] = {}
     if not args.skip_spconv_int8:
         quant_cfg_for_sparse, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
@@ -547,7 +566,6 @@ def run_ptq(args):
                     args.device,
                     args.output,
                     quant_cfg_for_sparse,
-                    spconv_calib_max_voxels_cli=args.spconv_calib_max_voxels,
                 )
             except Exception as e:
                 print(f"  Spconv INT8 failed: {e}")
@@ -560,13 +578,17 @@ def run_ptq(args):
     else:
         print("\n[4b/6] Skipping spconv INT8 (--skip-spconv-int8); dense calib uses FP32 sparse.")
 
-    print(
-        f"\n[5/6] Calibrating dense Q/DQ nodes ({num_batches} batches, method=mse) "
-        f"with current sparse encoder (INT8 if step 4b succeeded)..."
-    )
-    calibrator = _calibrate_dense(model, dataloader, num_batches, method="mse")
+    if dense_on:
+        print(
+            f"\n[5/6] Calibrating dense Q/DQ nodes ({num_batches} batches, method=mse) "
+            f"with current sparse encoder (INT8 if step 4b succeeded)..."
+        )
+        calibrator = _calibrate_dense(model, dataloader, num_batches, method="mse")
+    else:
+        print("\n[5/6] Skipping dense calibration (no dense TensorQuantizer modules).")
+        calibrator = None
 
-    if skip_layers:
+    if skip_layers and dense_on:
         print(f"\n  Disabling {len(skip_layers)} sensitive layers...")
         _disable_sensitive_layers(model, skip_layers)
 
@@ -583,23 +605,65 @@ def run_ptq(args):
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": model.state_dict()}, output_path)
+    save_sd = model.state_dict()
+    torch.save({"state_dict": save_sd}, output_path)
+
+    sparse_keys = [k for k in save_sd if k.startswith("pts_middle_encoder.")]
+    amax_keys = [k for k in sparse_keys if "_amax" in k]
+    scale_keys = [k for k in sparse_keys if "scale" in k or "zero_point" in k]
+    quant_keys = amax_keys or scale_keys
+    tag = "_amax" if amax_keys else "scale/zp"
+    print(f"\n  [save-check] Saved {len(save_sd)} total keys, "
+          f"{len(sparse_keys)} pts_middle_encoder keys, {len(quant_keys)} {tag} keys")
+    _pathb = "pts_middle_encoder._pathb_sparse_tail_absmax"
+    _pathb_m = "module.pts_middle_encoder._pathb_sparse_tail_absmax"
+    if _pathb in save_sd or _pathb_m in save_sd:
+        k = _pathb if _pathb in save_sd else _pathb_m
+        v = float(save_sd[k].float().reshape(-1)[0].cpu().item())
+        print(f"  [save-check] Path-B conv_out-input tail amax: {k} = {v:.6f}")
+    else:
+        print(
+            "  [save-check] Path-B: no pts_middle_encoder._pathb_sparse_tail_absmax in state_dict "
+            "(optional; ONNX transform prefers _pathb_last_int8_conv_output_absmax for terminal scale)."
+        )
+    _li = "pts_middle_encoder._pathb_last_int8_conv_output_absmax"
+    _li_m = "module.pts_middle_encoder._pathb_last_int8_conv_output_absmax"
+    if _li in save_sd or _li_m in save_sd:
+        k2 = _li if _li in save_sd else _li_m
+        v2 = float(save_sd[k2].float().reshape(-1)[0].cpu().item())
+        print(f"  [save-check] Path-B last INT8 conv output amax (preferred for TRT): {k2} = {v2:.6f}")
+    else:
+        print(
+            "  [save-check] Path-B: no pts_middle_encoder._pathb_last_int8_conv_output_absmax — "
+            "re-run sparse PTQ with current AWML for best split-TRT terminal output_scale."
+        )
+    if quant_keys:
+        print(f"  [save-check] sample {tag} keys: {quant_keys[:5]}")
+        for k in quant_keys[:5]:
+            v = save_sd[k]
+            print(f"    {k} = {v.flatten().tolist()[:3]}")
 
     calib_path = output_path.with_suffix(".calib")
-    try:
-        calibrator.save_calib_cache(str(calib_path))
-    except Exception as e:
-        print(f"  Warning: could not save calib cache: {e}")
+    if calibrator is not None:
+        try:
+            calibrator.save_calib_cache(str(calib_path))
+        except Exception as e:
+            print(f"  Warning: could not save calib cache: {e}")
+    else:
+        print("  No dense calib cache (sparse-int8-only checkpoint).")
 
     print("\n" + "=" * 80)
     print("BEVFusion PTQ Complete!")
     print(f"Model saved to: {output_path}")
-    if calib_path.exists():
+    if calibrator is not None and calib_path.exists():
         print(f"Calibration cache saved to: {calib_path}")
     print("=" * 80)
     print("\nTo use this PTQ checkpoint for deployment:")
     print(f'  1. Set checkpoint_path = "{args.output}" in your deploy config')
     print(f"  2. Set quantization.ptq_checkpoint = True")
+    if not dense_on:
+        print("  2b. Sparse-only: also set quant_backbone=False, quant_neck=False, quant_head=False "
+              "(must match this checkpoint; else load_state_dict / mAP will be wrong).")
     print(f"  3. Run:")
     print(f"     python -m deployment.cli.main bevfusion \\")
     print(f"       deployment/projects/bevfusion/config/deploy_config_int8.py \\")

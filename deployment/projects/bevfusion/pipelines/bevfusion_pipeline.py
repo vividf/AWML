@@ -7,6 +7,7 @@ shared by PyTorch, ONNX, and TensorRT backend implementations.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from abc import abstractmethod
 from copy import deepcopy
@@ -23,6 +24,17 @@ from deployment.core.device import DeviceSpec
 from deployment.pipelines.base_pipeline import BaseDeploymentPipeline
 
 logger = logging.getLogger(__name__)
+
+_DEBUG_POSTPROCESS = os.environ.get("BEVFUSION_DEBUG_POSTPROCESS", "").strip().lower() in ("1", "true", "yes")
+_DEBUG_POSTPROCESS_MAX = 2
+_postprocess_debug_count = 0
+
+
+def _env_int_pp(key: str, default: int) -> int:
+    try:
+        return int(os.environ.get(key, str(default)).strip())
+    except ValueError:
+        return default
 
 
 class BEVFusionDeploymentPipeline(BaseDeploymentPipeline):
@@ -180,6 +192,40 @@ class BEVFusionDeploymentPipeline(BaseDeploymentPipeline):
         if num_proposals == 0:
             return []
 
+        global _postprocess_debug_count
+        dbg_max = max(0, _env_int_pp("BEVFUSION_DEBUG_POSTPROCESS_FRAMES", _DEBUG_POSTPROCESS_MAX))
+        did_pp_dbg = False
+        if _DEBUG_POSTPROCESS and _postprocess_debug_count < dbg_max:
+            _postprocess_debug_count += 1
+            did_pp_dbg = True
+            sc = score[:num_proposals].float()
+            lb = label_pred[:num_proposals].long()
+            cx = bbox_pred[0, :num_proposals].float()
+            cy = bbox_pred[1, :num_proposals].float()
+            uniq_l = torch.unique(lb)
+            logger.warning(
+                "[debug-postprocess] frame=%d/%d backend=%s num_proposals=%d "
+                "score[min,max,mean]=[%.6f,%.6f,%.6f] score>0.1:%d score>0.5:%d "
+                "label[min,max]=[%d,%d] label_unique=%s "
+                "center_feat_x[min,max]=[%.4f,%.4f] center_feat_y[min,max]=[%.4f,%.4f]",
+                _postprocess_debug_count,
+                dbg_max,
+                str(self.backend_type),
+                int(num_proposals),
+                float(sc.min().item()),
+                float(sc.max().item()),
+                float(sc.mean().item()),
+                int((sc > 0.1).sum().item()),
+                int((sc > 0.5).sum().item()),
+                int(lb.min().item()),
+                int(lb.max().item()),
+                str(uniq_l.detach().cpu().tolist()),
+                float(cx.min().item()),
+                float(cx.max().item()),
+                float(cy.min().item()),
+                float(cy.max().item()),
+            )
+
         # Decode via BEVFusion's own bbox_coder to avoid convention drift.
         bbox_coder = getattr(self.pytorch_model.bbox_head, "bbox_coder", None)
         if bbox_coder is None:
@@ -228,6 +274,21 @@ class BEVFusionDeploymentPipeline(BaseDeploymentPipeline):
                     "score": s,
                     "label": int(decoded_labels[i].item()),
                 }
+            )
+
+        if did_pp_dbg and decoded_boxes.shape[0] > 0:
+            b = decoded_boxes[:, :3].detach().float()
+            logger.warning(
+                "[debug-postprocess] decoded metric centers N=%d "
+                "x[min,max]=[%.2f,%.2f] y[min,max]=[%.2f,%.2f] z[min,max]=[%.2f,%.2f] "
+                "(compare to point_cloud_range / GT — wild ranges → mAP 0 with many preds)",
+                int(decoded_boxes.shape[0]),
+                float(b[:, 0].min().item()),
+                float(b[:, 0].max().item()),
+                float(b[:, 1].min().item()),
+                float(b[:, 1].max().item()),
+                float(b[:, 2].min().item()),
+                float(b[:, 2].max().item()),
             )
 
         return results

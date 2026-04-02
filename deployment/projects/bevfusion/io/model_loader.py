@@ -2,7 +2,7 @@
 
 Supports optional quantization:
 - Dense parts (backbone, neck, head): pytorch_quantization (TensorQuantizer Q/DQ)
-- Sparse encoder (pts_middle_encoder): spconv INT8 (cumm kernels via FX graph mode)
+- Sparse encoder (pts_middle_encoder): spconv INT8 (FX); last ``conv_out`` block stays FP32 by qconfig
 """
 
 from __future__ import annotations
@@ -55,6 +55,45 @@ def _fuse_spconv_bn(model: torch.nn.Module) -> None:
         logger.warning("spconv_int8 module not available; skipping sparse BN fusion")
 
 
+def _prepare_encoder_for_nvidia_int8(
+    model: torch.nn.Module,
+) -> None:
+    """Add NVIDIA ``TensorQuantizer`` to sparse encoder so PTQ checkpoint ``_amax`` keys load.
+
+    The NVIDIA approach (adapted from CUDA-BEVFusion) stores per-module ``_amax``
+    values in the checkpoint.  At evaluation time we recreate the same module
+    structure by adding ``_input_quantizer`` and ``_weight_quantizer`` submodules
+    to each ``SparseConvolution``, then ``load_state_dict`` fills in the calibrated
+    ``_amax``.  No FX tracing or graph transformation needed.
+    """
+    sparse_encoder = getattr(model, "pts_middle_encoder", None)
+    if sparse_encoder is None:
+        return
+    try:
+        from deployment.projects.bevfusion.quantization.spconv_int8 import (
+            apply_nvidia_spconv_int8,
+        )
+    except ImportError:
+        logger.warning("spconv_int8 not available; cannot add NVIDIA quantizers")
+        return
+
+    sparse_encoder.eval()
+    apply_nvidia_spconv_int8(sparse_encoder, exclude_conv_out=True)
+    # PTQ saves these Path-B buffers; register so load_state_dict(strict=False) loads them instead
+    # of reporting unexpected_keys (and so inspection / future export see checkpoint values).
+    if not hasattr(sparse_encoder, "_pathb_sparse_tail_absmax"):
+        sparse_encoder.register_buffer(
+            "_pathb_sparse_tail_absmax",
+            torch.tensor(0.0, dtype=torch.float32),
+        )
+    if not hasattr(sparse_encoder, "_pathb_last_int8_conv_output_absmax"):
+        sparse_encoder.register_buffer(
+            "_pathb_last_int8_conv_output_absmax",
+            torch.tensor(0.0, dtype=torch.float32),
+        )
+    logger.info("Added NVIDIA TensorQuantizer to pts_middle_encoder (amax loaded from checkpoint)")
+
+
 def _replace_encoder_with_fx_converted_structure(
     model: torch.nn.Module,
     device: torch.device,
@@ -63,14 +102,8 @@ def _replace_encoder_with_fx_converted_structure(
 ) -> None:
     """Replace pts_middle_encoder with FX-converted structure so PTQ state_dict loads.
 
-    PTQ with spconv_int8 saves the encoder after prepare_fx → calibrate → convert_fx.
-    When loading, we need the same GraphModule structure; we run prepare_fx and
-    convert_fx without calibration, then load_state_dict fills in weights/scales.
-
-    If ``upgrade_basicblock_to_fx`` is True (default), mmdet3d ``SparseBasicBlock`` modules
-    are swapped for ``SparseBasicBlockFX`` before ``prepare_fx`` so Q/DQ names match checkpoints
-    produced with ``block_type=basicblock_fx``. Set False only if the PTQ .pth used plain
-    ``basicblock`` sparse blocks.
+    **Legacy FX path** — kept for backward compatibility with FX-based PTQ checkpoints.
+    New checkpoints use the NVIDIA path (``_prepare_encoder_for_nvidia_int8``).
     """
     sparse_encoder = getattr(model, "pts_middle_encoder", None)
     if sparse_encoder is None:
@@ -191,6 +224,45 @@ def verify_spconv_int8_encoder(model: torch.nn.Module) -> Dict[str, Any]:
         out["quantized_param_count"] > 0 or len(quant_types) > 0 or q_buffer_keys > 0
     )
     return out
+
+
+def _verify_spconv_scale_buffers(model: torch.nn.Module, ckpt_state_dict: dict) -> None:
+    """Verify that spconv INT8 quantization params were loaded from checkpoint.
+
+    Handles both NVIDIA approach (_amax keys) and legacy FX approach (scale/zero_point).
+    """
+    enc = getattr(model, "pts_middle_encoder", None)
+    if enc is None:
+        print("[spconv-quant-check] NO pts_middle_encoder found!")
+        return
+
+    ckpt_sparse_keys = [k for k in ckpt_state_dict if k.startswith("pts_middle_encoder.")]
+    ckpt_amax_keys = [k for k in ckpt_sparse_keys if "_amax" in k]
+    ckpt_scale_keys = [k for k in ckpt_sparse_keys if "scale" in k or "zero_point" in k]
+
+    if ckpt_amax_keys:
+        print(f"[spconv-quant-check] NVIDIA approach: checkpoint has {len(ckpt_amax_keys)} _amax keys")
+        for k in ckpt_amax_keys[:5]:
+            v = ckpt_state_dict[k]
+            vals = v.flatten().tolist()[:3]
+            print(f"  {k} = {vals}")
+    elif ckpt_scale_keys:
+        print(f"[spconv-quant-check] FX approach: checkpoint has {len(ckpt_scale_keys)} scale/zp keys")
+        for k in ckpt_scale_keys[:5]:
+            v = ckpt_state_dict[k]
+            vals = v.flatten().tolist()[:3]
+            print(f"  {k} = {vals}")
+    else:
+        print(f"[spconv-quant-check] WARNING: no _amax or scale/zp keys in checkpoint "
+              f"(has {len(ckpt_sparse_keys)} pts_middle_encoder keys total)")
+    if ckpt_scale_keys:
+        print(f"[spconv-scale-check] ckpt scale/zp keys sample: {ckpt_scale_keys[:5]}")
+
+    model_all_keys = [f"pts_middle_encoder.{k}" for k in dict(enc.named_parameters())]
+    model_all_keys += [f"pts_middle_encoder.{k}" for k in dict(enc.named_buffers())]
+    model_scale_keys = [k for k in model_all_keys if "scale" in k or "zero_point" in k]
+    if model_scale_keys:
+        print(f"[spconv-scale-check] model scale/zp keys sample: {model_scale_keys[:5]}")
 
 
 def _register_bevfusion_modules() -> None:
@@ -349,18 +421,13 @@ def _load_with_quantization(
                 logger.exception("PTQ load: dense Q/DQ insertion (_apply_dense_quantization) failed")
                 raise
 
-        # After dense modules match the PTQ checkpoint, replace sparse encoder with the same FX graph
-        # produced by convert_fx (no calibration here; weights/scales load from checkpoint).
+        # Add NVIDIA TensorQuantizer to sparse encoder so PTQ _amax keys load correctly.
         if quantization.get("spconv_int8", False):
             try:
-                _replace_encoder_with_fx_converted_structure(
-                    model,
-                    device,
-                    upgrade_basicblock_to_fx=quantization.get("spconv_ptq_basicblock_fx", True),
-                )
+                _prepare_encoder_for_nvidia_int8(model)
             except Exception:
                 logger.exception(
-                    "PTQ load: sparse encoder FX recreate (_replace_encoder_with_fx_converted_structure) failed"
+                    "PTQ load: NVIDIA sparse encoder quantizer setup failed"
                 )
                 raise
 
@@ -374,14 +441,27 @@ def _load_with_quantization(
 
         result = model.load_state_dict(state_dict, strict=False)
 
+        print(f"[load-state-dict] missing={len(result.missing_keys)}, "
+              f"unexpected={len(result.unexpected_keys)}")
         if result.missing_keys:
-            logger.warning(f"PTQ load: {len(result.missing_keys)} missing keys (first 10): {result.missing_keys[:10]}")
+            sparse_miss = [k for k in result.missing_keys if k.startswith("pts_middle_encoder")]
+            other_miss = [k for k in result.missing_keys if not k.startswith("pts_middle_encoder")]
+            print(f"[load-state-dict] sparse missing={len(sparse_miss)}, other missing={len(other_miss)}")
+            if sparse_miss:
+                print(f"[load-state-dict] sparse missing sample: {sparse_miss[:10]}")
+            if other_miss:
+                print(f"[load-state-dict] other missing sample: {other_miss[:10]}")
         if result.unexpected_keys:
-            logger.warning(
-                f"PTQ load: {len(result.unexpected_keys)} unexpected keys (first 10): {result.unexpected_keys[:10]}"
-            )
+            sparse_unexp = [k for k in result.unexpected_keys if k.startswith("pts_middle_encoder")]
+            other_unexp = [k for k in result.unexpected_keys if not k.startswith("pts_middle_encoder")]
+            print(f"[load-state-dict] sparse unexpected={len(sparse_unexp)}, other unexpected={len(other_unexp)}")
+            if sparse_unexp:
+                print(f"[load-state-dict] sparse unexpected sample: {sparse_unexp[:10]}")
+            if other_unexp:
+                print(f"[load-state-dict] other unexpected sample: {other_unexp[:10]}")
 
         if quantization.get("spconv_int8", False):
+            _verify_spconv_scale_buffers(model, state_dict)
             miss_sparse_bn = any(k.startswith("pts_middle_encoder") and ".bn" in k for k in result.missing_keys)
             unexp_fx_obs = any(
                 k.startswith("pts_middle_encoder")
@@ -425,18 +505,6 @@ def _load_with_quantization(
             ensure_spconv_quantized_add_sparse_support()
             retarget_graphmodule_quantized_add_calls(model)
             retarget_graphmodule_quantize_per_tensor_calls(model)
-
-            try:
-                from deployment.projects.bevfusion.export.sparse_encoder_float_shadow import (
-                    attach_fp32_conv_out_fallback_for_int8_graph,
-                )
-
-                if attach_fp32_conv_out_fallback_for_int8_graph(model, device):
-                    logger.info(
-                        "Attached FP32 conv_out fallback on INT8 GraphModule (fixes spconv Z-downsample bug → mAP collapse)."
-                    )
-            except Exception as e:
-                logger.debug("FP32 conv_out fallback not attached: %s", e)
 
             info = verify_spconv_int8_encoder(model)
             if info["is_int8"]:

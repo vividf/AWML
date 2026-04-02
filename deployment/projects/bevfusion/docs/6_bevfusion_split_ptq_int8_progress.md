@@ -79,6 +79,12 @@
 **事實**：`implicit_gemm` / `get_indice_pairs` 在 **N** 個 voxel 上可配置 **~O(N²)** 的 int32 buffer；**N≈9e4** 時可達 **~866 GiB** 量級，與 `--calibrate-samples 1` 無關。**Lidar AI Solution** 走 **libspconv**，與 **PyTorch FX + GPU** 上跑 `prepare_fx` 校準不是同一條記憶體模型。
 
 **AWML 作法**：預設 **`spconv_calib_max_voxels`（及 env）預設 4096**；`bevfusion_quantization.py` 支援 **`--spconv-calib-max-voxels`**，且已修正 **`_load_deploy_quantization_cfg`**：用 **`deploy_cfg.get("quantization")`** 取量化 dict，避免 **`getattr(deploy_cfg, "quantization")`** 在 MMEngine `Config` 上讀不到鍵 → **`spconv_calib_max_voxels` 被忽略** → 日誌顯示無 cap → OOM。
+**與 eval**：eval 仍吃整場景 voxel；mAP≈0 時應優先查 **權重／結構與 ckpt 對齊**。
+
+### 5.3.1 稀疏 FX 校準：不再需要裁 voxel
+**舊問題**：FX 過去會 trace **進入** 自定義 `SparseConvolution._conv_forward` 內部，為每個中間 tensor 附加 observer，導致 GPU 記憶體爆炸（~O(N²)）——因此需要 `spconv_calib_max_voxels` 裁切。
+**修正後**：自定義 `SparseConv3d` / `SubMConv3d` / `SparseConvolution` 已註冊為 `non_traceable_module_classes`，FX 僅在 module 邊界放 observer，不深入 `_conv_forward`。記憶體消耗與正常推理相當，完整場景 voxel（50k–120k）校準不再 OOM。`spconv_calib_max_voxels` 及相關環境變數已移除。
+
 
 **與 eval**：eval 仍吃整場景 voxel；mAP≈0 時應優先查 **權重／結構與 ckpt 對齊**。
 

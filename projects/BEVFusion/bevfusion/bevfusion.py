@@ -319,7 +319,9 @@ class BEVFusion(Base3DDetector):
             with torch.amp.autocast("cuda", enabled=False):
                 assert self.voxelize_reduce
                 if self.voxelize_reduce:
-                    feats = feats.sum(dim=1, keepdim=False) / sizes.type_as(feats).view(-1, 1)
+                    # Avoid 0/0 → NaN in TRT / ONNX if any voxel reports num_points==0 (rare but possible).
+                    sz = sizes.type_as(feats).view(-1, 1).clamp(min=1.0)
+                    feats = feats.sum(dim=1, keepdim=False) / sz
 
                 # spconv INT8 / torch.quantize_per_tensor requires float activations; voxel grids may be integer
                 feats = feats.to(dtype=torch.float32)
@@ -363,7 +365,8 @@ class BEVFusion(Base3DDetector):
         if len(sizes) > 0:
             sizes = torch.cat(sizes, dim=0)
             if self.voxelize_reduce:
-                feats = feats.sum(dim=1, keepdim=False) / sizes.type_as(feats).view(-1, 1)
+                sz = sizes.type_as(feats).view(-1, 1).clamp(min=1.0)
+                feats = feats.sum(dim=1, keepdim=False) / sz
                 feats = feats.contiguous()
 
         if isinstance(feats, torch.Tensor) and not feats.is_floating_point():

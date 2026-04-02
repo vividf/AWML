@@ -465,18 +465,34 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             if enc is not None:
                 from deployment.projects.bevfusion.export.sparse_encoder_float_shadow import (
                     build_float_sparse_encoder_shadow,
+                    encoder_has_nvidia_tensor_quantizers,
                     resolve_sparse_onnx_shadow,
                 )
 
                 gm_src, cfg_ov = resolve_sparse_onnx_shadow(enc, model)
                 if gm_src is not None:
-                    self.logger.info(
-                        "Sparse tower uses FX GraphModule (spconv INT8 path): using a fused FP32 "
-                        "shadow encoder only for torch.onnx.export (ONNX cannot represent "
-                        "aten::_empty_affine_quantized; same idea as Lidar exptool exporting a float "
-                        "graph). PyTorch PTQ inference is unchanged after export. See "
-                        "docs/5_bevfusion_onnx_trt_spconv_int8.md (bevfusion project) §3 / §十-A."
-                    )
+                    gm_cls = getattr(torch.fx, "GraphModule", None)
+                    nvidia_shadow = gm_src is enc and encoder_has_nvidia_tensor_quantizers(enc)
+                    if nvidia_shadow:
+                        self.logger.info(
+                            "Sparse tower (NVIDIA TensorQuantizer path, scheme A): using a fused FP32 "
+                            "shadow encoder for torch.onnx.export so sparse ONNX has no Q/DQ around "
+                            "ImplicitGemm. PTQ _amax stay in checkpoint for Path B transform. See "
+                            "docs/11_int8_pathb_autoware_plugin.md §8-4."
+                        )
+                    elif gm_cls is not None and isinstance(gm_src, gm_cls):
+                        self.logger.info(
+                            "Sparse tower uses FX GraphModule (spconv INT8 path): using a fused FP32 "
+                            "shadow encoder only for torch.onnx.export (ONNX cannot represent "
+                            "aten::_empty_affine_quantized; same idea as Lidar exptool exporting a float "
+                            "graph). PyTorch PTQ inference is unchanged after export. See "
+                            "docs/5_bevfusion_onnx_trt_spconv_int8.md (bevfusion project) §3 / §十-A."
+                        )
+                    else:
+                        self.logger.info(
+                            "Sparse tower: using fused FP32 shadow encoder for ONNX export "
+                            "(weights from nested GraphModule)."
+                        )
                     if cfg_ov:
                         self.logger.info(
                             "Shadow rebuild merges %d attribute(s) from model.cfg pts_middle_encoder.",
