@@ -87,7 +87,25 @@ class EvaluationOrchestrator:
             backend_device = self._normalize_device_for_backend(backend, spec.device)
             normalized_spec = ModelSpec(backend=backend, device=backend_device, artifact=spec.artifact)
 
-            self.logger.info(f"\nEvaluating {backend.value} on {backend_device}...")
+            self.logger.info("")
+            self.logger.info("=" * 80)
+            self.logger.info(
+                "BEVFUSION EVALUATION — backend=%s  device=%s",
+                backend.value.upper(),
+                backend_device,
+            )
+            if backend.value == "pytorch":
+                self.logger.info(
+                    "  Inference: native PyTorch (voxel reduce → pts_middle_encoder → backbone → neck → head)."
+                )
+            elif backend.value == "tensorrt":
+                self.logger.info(
+                    "  Inference: TensorRT engine(s). Split deploy: sparse engine (lidar_bev) + dense engine."
+                )
+            elif backend.value == "onnx":
+                self.logger.info("  Inference: ONNX Runtime.")
+            self.logger.info("  Metrics below apply only to this backend unless stated otherwise.")
+            self.logger.info("=" * 80)
             try:
                 results = self.evaluator.evaluate(
                     model=normalized_spec,

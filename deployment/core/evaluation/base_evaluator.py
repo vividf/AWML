@@ -234,8 +234,12 @@ class BaseEvaluator(VerificationMixin, ABC):
         Returns:
             Evaluation results dictionary
         """
-        logger.info(f"\nEvaluating {model.backend.value} model: {model.path}")
-        logger.info(f"Number of samples: {num_samples}")
+        logger.info(
+            "Starting sample loop for backend=%s (artifact path: %s)",
+            model.backend.value,
+            model.path,
+        )
+        logger.info("Number of samples: %s", num_samples)
 
         self._ensure_model_on_device(model.device)
         pipeline = self._create_pipeline(model, model.device)

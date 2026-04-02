@@ -83,3 +83,24 @@ void launch_compute_w_scales(
   compute_w_scales_kernel<<<grid, kBlockSize, 0, stream>>>(
     channel_scale, w_scales, output_scale, input_scale, c_out);
 }
+
+__global__ void fuse_output_scale_into_gemm_scale_bias_kernel(
+  const float * __restrict__ channel_scale, const float * __restrict__ bias_scaled,
+  float output_scale, float * __restrict__ gemm_channel_scale_out,
+  float * __restrict__ gemm_bias_out, std::int64_t c_out)
+{
+  std::int64_t idx = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (idx < c_out) {
+    gemm_channel_scale_out[idx] = channel_scale[idx] * output_scale;
+    gemm_bias_out[idx] = bias_scaled[idx] * output_scale;
+  }
+}
+
+void launch_fuse_output_scale_into_gemm_scale_bias(
+  const float * channel_scale, const float * bias_scaled, float output_scale,
+  float * gemm_channel_scale_out, float * gemm_bias_out, std::int64_t c_out, cudaStream_t stream)
+{
+  int grid = static_cast<int>((c_out + kBlockSize - 1) / kBlockSize);
+  fuse_output_scale_into_gemm_scale_bias_kernel<<<grid, kBlockSize, 0, stream>>>(
+    channel_scale, bias_scaled, output_scale, gemm_channel_scale_out, gemm_bias_out, c_out);
+}

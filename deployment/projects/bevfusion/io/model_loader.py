@@ -244,17 +244,19 @@ def _verify_spconv_scale_buffers(model: torch.nn.Module, ckpt_state_dict: dict) 
         print(f"[spconv-quant-check] NVIDIA approach: checkpoint has {len(ckpt_amax_keys)} _amax keys")
         for k in ckpt_amax_keys[:5]:
             v = ckpt_state_dict[k]
-            vals = v.flatten().tolist()[:3]
-            print(f"  {k} = {vals}")
+            t = v.flatten().tolist()[:3]
+            print(f"  {k} shape={tuple(v.shape)} first3={t}")
     elif ckpt_scale_keys:
         print(f"[spconv-quant-check] FX approach: checkpoint has {len(ckpt_scale_keys)} scale/zp keys")
         for k in ckpt_scale_keys[:5]:
             v = ckpt_state_dict[k]
-            vals = v.flatten().tolist()[:3]
-            print(f"  {k} = {vals}")
+            t = v.flatten().tolist()[:3]
+            print(f"  {k} shape={tuple(v.shape)} first3={t}")
     else:
-        print(f"[spconv-quant-check] WARNING: no _amax or scale/zp keys in checkpoint "
-              f"(has {len(ckpt_sparse_keys)} pts_middle_encoder keys total)")
+        print(
+            f"[spconv-quant-check] WARNING: no _amax or scale/zp keys in checkpoint "
+            f"(has {len(ckpt_sparse_keys)} pts_middle_encoder keys total)"
+        )
     if ckpt_scale_keys:
         print(f"[spconv-scale-check] ckpt scale/zp keys sample: {ckpt_scale_keys[:5]}")
 
@@ -426,9 +428,7 @@ def _load_with_quantization(
             try:
                 _prepare_encoder_for_nvidia_int8(model)
             except Exception:
-                logger.exception(
-                    "PTQ load: NVIDIA sparse encoder quantizer setup failed"
-                )
+                logger.exception("PTQ load: NVIDIA sparse encoder quantizer setup failed")
                 raise
 
         checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -441,8 +441,7 @@ def _load_with_quantization(
 
         result = model.load_state_dict(state_dict, strict=False)
 
-        print(f"[load-state-dict] missing={len(result.missing_keys)}, "
-              f"unexpected={len(result.unexpected_keys)}")
+        print(f"[load-state-dict] missing={len(result.missing_keys)}, " f"unexpected={len(result.unexpected_keys)}")
         if result.missing_keys:
             sparse_miss = [k for k in result.missing_keys if k.startswith("pts_middle_encoder")]
             other_miss = [k for k in result.missing_keys if not k.startswith("pts_middle_encoder")]
@@ -519,12 +518,14 @@ def _load_with_quantization(
                 qtypes = info.get("quantized_module_types") or set()
                 sample = sorted(qtypes)[:5]
                 logger.warning(
-                    f"Spconv INT8 encoder verification failed: encoder_type={info['encoder_type']} "
-                    f"is_graph_module={info['is_graph_module']} "
+                    f"Spconv INT8 encoder heuristic check did not match FX/qint8 pattern: "
+                    f"encoder_type={info['encoder_type']} is_graph_module={info['is_graph_module']} "
                     f"quantized_params={info['quantized_param_count']} "
                     f"quant_activation_buffer_keys={info.get('quant_activation_buffer_keys', 0)} "
                     f"quantized_module_types={len(qtypes)} sample={sample}. "
-                    "If the PTQ checkpoint did not load (BN vs scale_* keys), sparse weights are wrong → mAP≈0."
+                    "NVIDIA TensorQuantizer + _amax checkpoints often trigger this as a false alarm; "
+                    "trust load_state_dict missing=0 and compare sparse_encoder_output stats "
+                    "(PyTorch vs TensorRT). If BN vs scale_* keys mismatch, sparse weights can be wrong → mAP≈0."
                 )
 
     else:

@@ -32,4 +32,9 @@ void launch_compute_w_scales(
   const float * channel_scale, float * w_scales, float output_scale, float input_scale,
   std::int64_t c_out, cudaStream_t stream);
 
+// Fold output dequant into per-channel scale/bias for the s8s8f16 epilogue (alpha unused there).
+void launch_fuse_output_scale_into_gemm_scale_bias(
+  const float * channel_scale, const float * bias_scaled, float output_scale,
+  float * gemm_channel_scale_out, float * gemm_bias_out, std::int64_t c_out, cudaStream_t stream);
+
 #endif  // QUANTIZE_FEATURES_CUH_

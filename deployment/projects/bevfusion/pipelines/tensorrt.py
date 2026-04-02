@@ -43,6 +43,30 @@ def _env_int(key: str, default: int) -> int:
 
 _TRT_DEBUG_SPLIT = _env_truthy("BEVFUSION_TRT_DEBUG_SPLIT")
 _TRT_LOG_IO = _env_truthy("BEVFUSION_TRT_LOG_IO")
+# ImplicitGemmInt8 TRT plugin (C++): per-layer FP16 output stats to stderr after each enqueue.
+#   BEVFUSION_INT8_GEMM_DEBUG=1
+#   BEVFUSION_INT8_GEMM_DEBUG_MAX=60   # max layer-dumps (default 60 ≈ 3 sparse passes × 20 layers)
+# Rebuild: deployment/projects/bevfusion/cpp/int8_plugin/
+#
+# PyTorch sparse conv hooks (align seq with TRT): BEVFUSION_SPARSE_ENCODER_HOOK_DEBUG=1
+#   BEVFUSION_SPARSE_ENCODER_HOOK_MAX_PASSES=2   # full pts_middle_encoder forwards (default 2)
+# See deployment/projects/bevfusion/debug/sparse_encoder_hooks.py
+# First N eval frames: print pooled-voxel + lidar_bev stats to stdout (align with PyTorch pipeline).
+_TRT_TENSOR_LOG_FRAMES = max(0, _env_int("BEVFUSION_TRT_TENSOR_LOG_FRAMES", 2))
+_TRT_TENSOR_LOG_PREFIX = "[BEVFUSION][TensorRT][tensors]"
+
+
+def _np_tensor_stats(arr: np.ndarray, name: str) -> str:
+    """Compact numpy stats for debug lines (matches PyTorch _tensor_stats fields)."""
+    a = np.asarray(arr, dtype=np.float64).ravel()
+    nz = int(np.count_nonzero(a))
+    return (
+        f"{_TRT_TENSOR_LOG_PREFIX} {name}: shape={arr.shape} dtype={arr.dtype} "
+        f"min={float(a.min()):.4f} max={float(a.max()):.4f} "
+        f"mean={float(a.mean()):.4f} std={float(a.std()):.4f} "
+        f"abs_mean={float(np.mean(np.abs(a))):.4f} "
+        f"nonzero={nz}/{a.size}"
+    )
 
 
 def _list_trt_io_names(engine: trt.ICudaEngine) -> Tuple[List[str], List[str]]:
@@ -73,9 +97,7 @@ def _pick_bound_input_name(engine: trt.ICudaEngine, expected_in_order: Sequence[
                 expected_in_order[0],
             )
         return found[0]
-    raise RuntimeError(
-        f"Could not map deploy_cfg inputs {list(expected_in_order)} to engine inputs {found}"
-    )
+    raise RuntimeError(f"Could not map deploy_cfg inputs {list(expected_in_order)} to engine inputs {found}")
 
 
 def _log_engine_schema(tag: str, engine: trt.ICudaEngine) -> None:
@@ -86,6 +108,32 @@ def _log_engine_schema(tag: str, engine: trt.ICudaEngine) -> None:
         dt = engine.get_tensor_dtype(name)
         lines.append(f"[trt-io]   {name}: shape={shp} dtype={dt}")
     logger.warning("\n".join(lines))
+
+
+def _log_engine_input_dtypes_line(tag: str, engine: trt.ICudaEngine) -> None:
+    """Log binding dtypes (P1: FP32 vs FP16 voxels for split sparse engines).
+
+    HALF voxel bindings are supported via ``_host_buffer_for_engine_tensor``; this line makes
+    the contract visible without enabling ``BEVFUSION_TRT_LOG_IO=1``.
+    """
+    parts: List[str] = []
+    for i in range(engine.num_io_tensors):
+        name = engine.get_tensor_name(i)
+        if engine.get_tensor_mode(name) != trt.TensorIOMode.INPUT:
+            continue
+        dt = engine.get_tensor_dtype(name)
+        parts.append(f"{name}={dt}")
+        ln = name.lower()
+        if "voxel" in ln and "num" not in ln and dt == trt.DataType.HALF:
+            logger.warning(
+                "[trt-io] %s: voxel-like input %r is HALF — host numpy is cast before "
+                "``set_tensor_address`` (see INFO ``casting host buffer`` on first infer). "
+                "If that cast is missing, ImplicitGemmInt8 inputs corrupt (lidar_bev explodes).",
+                tag,
+                name,
+            )
+    if parts:
+        logger.info("[trt-io] %s engine INPUT dtypes: %s", tag, ", ".join(parts))
 
 
 class _TRTLayerProfiler(trt.IProfiler):
@@ -195,6 +243,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         self._last_split_dense_gpu_ms: float = 0.0
         self._split_debug_frames_done: int = 0
         self._split_debug_max: int = max(0, _env_int("BEVFUSION_TRT_DEBUG_SPLIT_FRAMES", 2))
+        self._split_tensor_log_frames_done: int = 0
 
         self._load_tensorrt_engine()
         logger.info(f"BEVFusion TensorRT pipeline initialized from: {tensorrt_dir} (split={self._split})")
@@ -234,8 +283,10 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
             if self._context_sparse is None or self._context_dense is None:
                 raise RuntimeError("Failed to create TensorRT contexts for split engines")
             logger.info("Loaded split TensorRT engines: %s , %s", sparse_path, dense_path)
+            assert self._engine_sparse is not None and self._engine_dense is not None
+            _log_engine_input_dtypes_line("bevfusion_sparse", self._engine_sparse)
+            _log_engine_input_dtypes_line("bevfusion_dense", self._engine_dense)
             if _TRT_LOG_IO:
-                assert self._engine_sparse is not None and self._engine_dense is not None
                 _log_engine_schema("bevfusion_sparse", self._engine_sparse)
                 _log_engine_schema("bevfusion_dense", self._engine_dense)
             return
@@ -283,6 +334,29 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
                 if dt is not None:
                     mapping[dt] = npdt
             return np.dtype(mapping.get(trt_dtype, np.float32))
+
+    def _host_buffer_for_engine_tensor(self, engine: trt.ICudaEngine, tensor_name: str, arr: np.ndarray) -> np.ndarray:
+        """Cast / layout host memory to match *engine* binding dtype (critical for FP16 engines).
+
+        Split sparse ONNX is often traced with FP32 voxels, but TensorRT ``fp16`` builds may bind
+        ``voxels`` as ``HALF``. Feeding float32 nbytes into a HALF binding misaligns the GPU
+        buffer and corrupts the first ImplicitGemmInt8 inputs (lidar_bev explosion while numpy
+        voxel stats still look sane).
+        """
+        trt_dtype = engine.get_tensor_dtype(tensor_name)
+        want = self._trt_dtype_to_numpy(trt_dtype)
+        if arr.dtype != want:
+            logger.info(
+                "[trt-io] casting host buffer for tensor %r: numpy %s → %s (engine binding %s)",
+                tensor_name,
+                arr.dtype,
+                want,
+                trt_dtype,
+            )
+            arr = np.asarray(arr, dtype=want)
+        if not arr.flags["C_CONTIGUOUS"]:
+            arr = np.ascontiguousarray(arr)
+        return arr
 
     def _trt_infer_voxel_inputs(
         self,
@@ -334,6 +408,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         profiler: Optional[_TRTLayerProfiler],
         gpu_interval_events: Optional[Tuple[cuda.Event, cuda.Event]],
     ) -> Dict[str, np.ndarray]:
+        input_map = {name: self._host_buffer_for_engine_tensor(engine, name, arr) for name, arr in input_map.items()}
         for name, arr in input_map.items():
             context.set_input_shape(name, arr.shape)
 
@@ -408,6 +483,33 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
             exp_sparse_out = [o.name for o in sparse_cfg.io.outputs]
             exp_dense_in = [i.name for i in dense_cfg.io.inputs]
 
+            do_tensor_log = _TRT_TENSOR_LOG_FRAMES > 0 and self._split_tensor_log_frames_done < _TRT_TENSOR_LOG_FRAMES
+            if do_tensor_log:
+                self._split_tensor_log_frames_done += 1
+                fi = self._split_tensor_log_frames_done
+                print(
+                    f"{_TRT_TENSOR_LOG_PREFIX} frame={fi}/{_TRT_TENSOR_LOG_FRAMES} "
+                    f"(sparse TRT engine → lidar_bev → dense TRT engine → bbox/score/label)"
+                )
+                voxelize_reduce = getattr(self.pytorch_model, "voxelize_reduce", True)
+                if voxelize_reduce and voxels_np.ndim == 3:
+                    # Match pytorch.py: [N,P,C].sum(1) / npt with npt [N,1] → [N,C] (not [N] / [N,C]).
+                    npt = np.maximum(num_points_np.astype(np.float32).reshape(-1, 1), 1.0)
+                    voxel_feat_np = voxels_np.sum(axis=1, keepdims=False) / npt
+                    print(_np_tensor_stats(voxel_feat_np, "voxel_features_input (numpy mean-pool, same as PyTorch)"))
+                elif voxels_np.ndim == 2:
+                    print(
+                        _np_tensor_stats(
+                            voxels_np,
+                            "voxel_features_input (already [N,C], no per-point dim — same as fed to TRT)",
+                        )
+                    )
+                else:
+                    print(
+                        f"{_TRT_TENSOR_LOG_PREFIX} voxel_features_input: skipped "
+                        f"(voxelize_reduce={voxelize_reduce}, voxels_ndim={voxels_np.ndim})"
+                    )
+
             # Sparse (spconv) engine: CUDA-timed separately; do not attach profiler here (dense pass clears it).
             sparse_out = self._trt_infer_voxel_inputs(
                 self._engine_sparse,
@@ -430,26 +532,36 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
                 )
             bev_arr = np.ascontiguousarray(sparse_out[bev_name].astype(np.float32))
 
+            if do_tensor_log:
+                bn = bev_arr.reshape(-1)
+                print(_np_tensor_stats(bev_arr, f"sparse_encoder_output ({bev_name}, TRT sparse engine)"))
+                if bool(np.isnan(bn).any()) or bool(np.isinf(bn).any()):
+                    print(
+                        f"{_TRT_TENSOR_LOG_PREFIX} WARNING: lidar_bev has nan={bool(np.isnan(bn).any())} "
+                        f"inf={bool(np.isinf(bn).any())}"
+                    )
+
             do_split_dbg = _TRT_DEBUG_SPLIT and self._split_debug_frames_done < self._split_debug_max
             if do_split_dbg:
                 self._split_debug_frames_done += 1
-                bn = bev_arr.reshape(-1)
-                logger.warning(
-                    "[debug-trt-split] frame=%d/%d sparse->dense %s: shape=%s dtype=%s min=%.6f max=%.6f "
-                    "mean=%.6f std=%.6f abs_mean=%.6f nan=%s inf=%s",
-                    self._split_debug_frames_done,
-                    self._split_debug_max,
-                    bev_name,
-                    bev_arr.shape,
-                    bev_arr.dtype,
-                    float(bn.min()),
-                    float(bn.max()),
-                    float(bn.mean()),
-                    float(bn.std()),
-                    float(np.mean(np.abs(bn))),
-                    bool(np.isnan(bn).any()),
-                    bool(np.isinf(bn).any()),
-                )
+                if not do_tensor_log:
+                    bn = bev_arr.reshape(-1)
+                    logger.warning(
+                        "[BEVFUSION][TensorRT][debug-split] frame=%d/%d sparse->dense %s: shape=%s dtype=%s "
+                        "min=%.6f max=%.6f mean=%.6f std=%.6f abs_mean=%.6f nan=%s inf=%s",
+                        self._split_debug_frames_done,
+                        self._split_debug_max,
+                        bev_name,
+                        bev_arr.shape,
+                        bev_arr.dtype,
+                        float(bn.min()),
+                        float(bn.max()),
+                        float(bn.mean()),
+                        float(bn.std()),
+                        float(np.mean(np.abs(bn))),
+                        bool(np.isnan(bn).any()),
+                        bool(np.isinf(bn).any()),
+                    )
 
             dense_in_name = _pick_bound_input_name(self._engine_dense, exp_dense_in)
 
@@ -457,7 +569,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
                 ctx = self._context_dense
                 exp_shape = tuple(ctx.get_tensor_shape(dense_in_name))
                 logger.warning(
-                    "[debug-trt-split] dense input %r engine_expected_shape=%s feed_shape=%s "
+                    "[BEVFUSION][TensorRT][debug-split] dense input %r engine_expected_shape=%s feed_shape=%s "
                     "deploy_cfg_inputs=%s",
                     dense_in_name,
                     exp_shape,
@@ -466,7 +578,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
                 )
                 if tuple(bev_arr.shape) != exp_shape and not any(d < 0 for d in exp_shape):
                     logger.warning(
-                        "[debug-trt-split] SHAPE MISMATCH: lidar_bev numpy shape %s vs TRT context %s — "
+                        "[BEVFUSION][TensorRT][debug-split] SHAPE MISMATCH: lidar_bev numpy shape %s vs TRT context %s — "
                         "dense engine will error or broadcast wrong; common cause: H×W vs export grid.",
                         bev_arr.shape,
                         exp_shape,
@@ -490,7 +602,36 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
             ordered_names = [n for n in expected_output_names if n in dense_out]
             ordered_names += [n for n in out_keys if n not in ordered_names]
             tensors = [torch.from_numpy(dense_out[name]).to(self.torch_device) for name in ordered_names]
-            if do_split_dbg and tensors:
+            if do_tensor_log and tensors:
+                for i, name in enumerate(ordered_names):
+                    t = tensors[i].detach()
+                    t_f = t.float().reshape(-1)
+                    extra = ""
+                    if name == "bbox_pred" and t.ndim >= 2 and t.shape[0] >= 2:
+                        cx = t[0].float().reshape(-1)
+                        cy = t[1].float().reshape(-1)
+                        extra = (
+                            f" center_x[min,max]=({float(cx.min()):.4f},{float(cx.max()):.4f}) "
+                            f"center_y[min,max]=({float(cy.min()):.4f},{float(cy.max()):.4f})"
+                        )
+                    if name == "label_pred":
+                        lp = t.reshape(-1).long()
+                        uniq = torch.unique(lp)
+                        extra = (
+                            f" label_unique_count={int(uniq.numel())} label_min={int(lp.min())} "
+                            f"label_max={int(lp.max())}"
+                        )
+                    if name == "score":
+                        extra = (
+                            f" score>0.1_count={int((t_f > 0.1).sum())} " f"score>0.5_count={int((t_f > 0.5).sum())}"
+                        )
+                    print(
+                        f"{_TRT_TENSOR_LOG_PREFIX} dense_out[{i}] {name} (TRT dense engine): "
+                        f"shape={tuple(t.shape)} dtype={t.dtype} "
+                        f"min={float(t_f.min().item()):.4f} max={float(t_f.max().item()):.4f} "
+                        f"mean={float(t_f.mean().item()):.4f}{extra}"
+                    )
+            elif do_split_dbg and tensors:
                 for i, name in enumerate(ordered_names):
                     t = tensors[i].detach()
                     t_f = t.float().reshape(-1)
@@ -506,7 +647,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
                     if name == "score":
                         extra = f" score>0.1_count={int((t_f > 0.1).sum())} score>0.5_count={int((t_f > 0.5).sum())}"
                     logger.warning(
-                        "[debug-trt-split] dense_out[%s] %s: shape=%s dtype=%s min=%.6f max=%.6f mean=%.6f%s",
+                        "[BEVFUSION][TensorRT][debug-split] dense_out[%s] %s: shape=%s dtype=%s min=%.6f max=%.6f mean=%.6f%s",
                         i,
                         name,
                         tuple(t.shape),

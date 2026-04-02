@@ -27,7 +27,7 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
     產生的 ``bevfusion_sparse.onnx`` 為 **浮點稀疏圖**（與 Lidar ``*.scn.onnx`` + libspconv FP16/FP 路線同類），
     **數值與 PTQ INT8 不完全相同**；真 INT8 稀疏推理請仍用 PyTorch 或依 spconv TENSORRT_INT8_GUIDE 餵權重給 plugin。
 
-**CLI**（需在含 pytorch-quantization 的環境；Docker 見 ``deploy_config_int8.py`` 註解）::
+**CLI**（需在含 pytorch-quantization 的環境；Docker 內用 ``pip install --no-cache-dir --index-url https://pypi.nvidia.com --extra-index-url https://pypi.org/simple pytorch-quantization==2.1.3``，詳見 ``deploy_config_int8.py`` 註解）::
 
     python -m deployment.cli.main bevfusion \\
         deployment/projects/bevfusion/config/deploy_config_split_int8.py \\
@@ -87,7 +87,7 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 #
 # 評測：註解 Preset A，改為下方三項（checkpoint 指向上列 output；dense 三關必須 False 與 PTQ 一致）
 # ============================================================================
-checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only2.pth"
+checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only.pth"
 quantization = dict(
     enabled=True,
     ptq_checkpoint=True,
@@ -109,7 +109,7 @@ devices = dict(
 export = dict(
     # "tensorrt" = build TRT engines from existing ONNX (don't re-export ONNX).
     # Use "both" only when you need a fresh ONNX export + TRT build.
-    mode="trt",
+    mode="none",
     work_dir="work_dirs/bevfusion_split_int8_deployment",
     onnx_path="work_dirs/bevfusion_split_int8_deployment/onnx",
 )

@@ -36,10 +36,14 @@ Usage:
     # Optional: split sparse/dense ONNX + engines (route 1) with same PTQ checkpoint
     #   → deployment/projects/bevfusion/config/deploy_config_split_int8.py
 
-Docker (awml-bevfusion:full): set FX trace before spconv import and install quant tools, e.g.:
+Docker (awml-bevfusion:full): set FX trace before spconv import and install NVIDIA quant wheels, e.g.:
     export SPCONV_FX_TRACE_MODE=1
-    pip install --no-cache-dir --extra-index-url https://pypi.nvidia.com pytorch-quantization==2.1.3
-    # (use --extra-index-url for NVIDIA PyPI; do not pass two --index-url)
+    pip install --no-cache-dir \\
+        --index-url https://pypi.nvidia.com \\
+        --extra-index-url https://pypi.org/simple \\
+        pytorch-quantization==2.1.3
+    # Same pattern as ``projects/BEVFusion/Dockerfile``: NVIDIA index for the wheel, PyPI for deps.
+    # Do not pass two ``--index-url`` flags (only the last applies).
 """
 
 # ============================================================================

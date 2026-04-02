@@ -14,21 +14,30 @@ Usage::
         --output work_dirs/bevfusion/sparse_encoder_int8_pathb.onnx
 
 The output ONNX can be loaded by TensorRT with the ImplicitGemmInt8Plugin.
+
+Debugging / scale audit::
+
+    # Per-layer JSON (matched ONNX node ↔ PTQ stem, input/output scales, channel_scale stats)
+    python -m deployment.projects.bevfusion.export.sparse_int8_onnx_transform ... --audit-report int8_layers.json
+
+    # Read-only dump of an already-transformed INT8 ONNX (no checkpoint)
+    python -m deployment.projects.bevfusion.export.sparse_int8_onnx_audit --onnx sparse_int8.onnx
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import json
 import os
 import re
 from collections import OrderedDict
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import onnx
-from onnx import TensorProto, helper, numpy_helper
 import torch
+from onnx import TensorProto, helper, numpy_helper
 
 
 def _load_amax_from_checkpoint(
@@ -67,8 +76,7 @@ def _build_layer_scale_map(
     layers = OrderedDict()
 
     pattern = re.compile(
-        r"^(?:module\.)?(?P<prefix>pts_middle_encoder\.)"
-        r"(?P<stem>.+?)\._(?P<kind>input|weight)_quantizer\._amax$"
+        r"^(?:module\.)?(?P<prefix>pts_middle_encoder\.)" r"(?P<stem>.+?)\._(?P<kind>input|weight)_quantizer\._amax$"
     )
 
     for key, val in sorted(amax_dict.items()):
@@ -195,9 +203,7 @@ def _resolve_int8_output_amax(
                 "cli_override": "--pathb-terminal-absmax",
                 "conv_out_input_quantizer": "conv_out._input_quantizer._amax",
             }.get(terminal_src, terminal_src)
-            print(
-                f"  [int8-output-scale] {stem}: terminal layer → {terminal_src} ({hint})"
-            )
+            print(f"  [int8-output-scale] {stem}: terminal layer → {terminal_src} ({hint})")
         return terminal_boundary_np, terminal_src
 
     raise ValueError(
@@ -275,9 +281,7 @@ def _successor_stem_for_int8_output_scale(stem: str, topo: List[str]) -> Optiona
     is_downsample = ".downsample" in tail
     # Stride block named encoder_layerS.B.0 (no conv/downsample in tail) — same skip rule as conv2.
     is_stride_tail = bool(
-        re.match(r"^encoder_layer\d+\.\d+\.\d+$", tail)
-        and "conv" not in tail
-        and "downsample" not in tail
+        re.match(r"^encoder_layer\d+\.\d+\.\d+$", tail) and "conv" not in tail and "downsample" not in tail
     )
     if pb is not None and (is_conv2 or is_downsample or is_stride_tail):
         stage, block = pb
@@ -419,9 +423,7 @@ def _implicit_gemm_filter_c_out_c_in(
     return int(w.shape[0]), int(w.shape[4])
 
 
-def _conv_weight_shape_from_state_dict(
-    encoder_sd: Dict[str, torch.Tensor], stem: str
-) -> Optional[Tuple[int, int]]:
+def _conv_weight_shape_from_state_dict(encoder_sd: Dict[str, torch.Tensor], stem: str) -> Optional[Tuple[int, int]]:
     """``(C_out, C_in)`` for ``pts_middle_encoder.{stem}.weight`` if present."""
     for prefix in ("pts_middle_encoder.", "module.pts_middle_encoder."):
         k = f"{prefix}{stem}.weight"
@@ -470,8 +472,7 @@ def _weight_amax_per_cout_vector(
     ):
         raise ValueError(
             f"{stem}: weight _amax shape {tuple(w.shape)} matches **C_in={c_in}** calibration "
-            f"(legacy axis=4). INT8 Path B needs **C_out={c_out}** per-output scales. "
-            + _LEGACY_W_AMAX_PTQ
+            f"(legacy axis=4). INT8 Path B needs **C_out={c_out}** per-output scales. " + _LEGACY_W_AMAX_PTQ
         )
 
     raise ValueError(
@@ -563,16 +564,8 @@ def _match_onnx_node_to_layer(
     if not candidates:
         return None
 
-    if (
-        encoder_sd
-        and c_out is not None
-        and c_in is not None
-    ):
-        ok_sd = [
-            s
-            for s in candidates
-            if _conv_weight_shape_from_state_dict(encoder_sd, s) == (c_out, c_in)
-        ]
+    if encoder_sd and c_out is not None and c_in is not None:
+        ok_sd = [s for s in candidates if _conv_weight_shape_from_state_dict(encoder_sd, s) == (c_out, c_in)]
         if len(ok_sd) == 1:
             return ok_sd[0]
         if len(ok_sd) > 1:
@@ -587,18 +580,14 @@ def _match_onnx_node_to_layer(
         ok = [
             s
             for s in candidates
-            if _weight_amax_matches_cout_layout(
-                layer_scales.get(s, {}).get("weight_amax"), c_out, c_in
-            )
+            if _weight_amax_matches_cout_layout(layer_scales.get(s, {}).get("weight_amax"), c_out, c_in)
         ]
         if len(ok) == 1:
             return ok[0]
         if len(ok) > 1:
             return max(ok, key=len)
         if verbose:
-            print(
-                f"  [debug-match] no stem with _amax compatible with C_out={c_out} C_in={c_in}."
-            )
+            print(f"  [debug-match] no stem with _amax compatible with C_out={c_out} C_in={c_in}.")
         return None
 
     return max(candidates, key=len)
@@ -662,6 +651,7 @@ def _append_implicit_gemm_int8_plugin_attributes(
     attrs: Dict[str, object],
 ) -> None:
     """Set plugin fields exactly as TensorRT ``ImplicitGemmInt8PluginCreator`` expects (no ``_f`` names)."""
+
     def _f(key: str, default: float) -> float:
         v = attrs.get(key, default)
         return float(v) if v is not None else default
@@ -699,6 +689,7 @@ def transform_onnx_int8(
     verbose: bool = False,
     amax_dict: Optional[Dict[str, torch.Tensor]] = None,
     override_terminal_absmax: Optional[float] = None,
+    audit_records: Optional[List[Dict[str, Any]]] = None,
 ) -> onnx.ModelProto:
     """Replace ImplicitGemm nodes with ImplicitGemmInt8 nodes.
 
@@ -711,6 +702,8 @@ def transform_onnx_int8(
             Used for terminal ``output_scale`` via ``conv_out.*._input_quantizer._amax`` when Path-B
             buffers are absent. Prefer ``encoder_sd['_pathb_last_int8_conv_output_absmax']`` from sparse
             PTQ, or pass ``--pathb-terminal-absmax``.
+        audit_records: If provided, append one JSON-serializable dict per converted
+            ``ImplicitGemmInt8`` (for ``--audit-report`` or custom tooling).
 
     Returns:
         Modified ONNX model with autoware::ImplicitGemmInt8 nodes.
@@ -771,9 +764,7 @@ def transform_onnx_int8(
                 "fix sparse PTQ / _build_layer_scale_map."
             )
 
-        output_amax, oa_tag = _resolve_int8_output_amax(
-            stem, layer_scales, topo_stems, term_np, term_src, verbose
-        )
+        output_amax, oa_tag = _resolve_int8_output_amax(stem, layer_scales, topo_stems, term_np, term_src, verbose)
 
         # Try to get bias from state_dict.
         bias = None
@@ -791,13 +782,9 @@ def transform_onnx_int8(
                 f"{stem}: no pts_middle_encoder.{stem}.weight (5D) in checkpoint; "
                 "cannot validate weight _amax. " + _LEGACY_W_AMAX_PTQ
             )
-        w_for_scale = _weight_amax_per_cout_vector(
-            weight_amax, sh_w[0], sh_w[1], stem
-        )
+        w_for_scale = _weight_amax_per_cout_vector(weight_amax, sh_w[0], sh_w[1], stem)
 
-        scale_info[stem] = _compute_int8_scales(
-            input_amax, w_for_scale, output_amax, bias
-        )
+        scale_info[stem] = _compute_int8_scales(input_amax, w_for_scale, output_amax, bias)
         if verbose:
             print(
                 f"  [debug-scale] {stem}: w_amax.shape={np.shape(weight_amax)} "
@@ -807,14 +794,13 @@ def transform_onnx_int8(
     n_expected_int8 = sum(
         1
         for n in graph.node
-        if n.op_type == "ImplicitGemm"
-        and n.domain == "autoware"
-        and not _implicit_gemm_is_conv_out(n)
+        if n.op_type == "ImplicitGemm" and n.domain == "autoware" and not _implicit_gemm_is_conv_out(n)
     )
 
     # Replace nodes.
     new_nodes = []
     transform_count = 0
+    stem_assigned_to_node: Dict[str, str] = {}
 
     for node in graph.node:
         if node.op_type != "ImplicitGemm" or node.domain != "autoware":
@@ -822,10 +808,7 @@ def transform_onnx_int8(
             continue
 
         if _implicit_gemm_is_conv_out(node):
-            print(
-                "  [int8] Keep FP32 ImplicitGemm for conv_out (PTQ): "
-                f"name={node.name!r}"
-            )
+            print("  [int8] Keep FP32 ImplicitGemm for conv_out (PTQ): " f"name={node.name!r}")
             new_nodes.append(node)
             continue
 
@@ -843,6 +826,16 @@ def transform_onnx_int8(
                 f"or scales were not built for it: name={node.name!r} inputs={list(node.input)}. "
                 "Use --verbose on sparse_int8_onnx_transform to debug stem matching."
             )
+
+        prev = stem_assigned_to_node.get(stem)
+        if prev is not None:
+            raise ValueError(
+                "Path B ONNX transform: duplicate PTQ stem assignment — two ImplicitGemm nodes "
+                f"matched the same stem {stem!r} (first={prev!r}, second={node.name!r}). "
+                "This usually means substring-based matching is ambiguous; run with --verbose "
+                "and fix ONNX tensor naming or matching heuristics."
+            )
+        stem_assigned_to_node[stem] = node.name or f"<unnamed_{transform_count}>"
 
         si = scale_info[stem]
         c_scale = len(si["channel_scale"])
@@ -887,9 +880,33 @@ def transform_onnx_int8(
 
         new_nodes.append(int8_node)
         transform_count += 1
-        print(f"  [int8] {stem}: input_scale={si['input_scale']:.6f} "
-              f"output_scale={si['output_scale']:.6f} "
-              f"channel_scale_shape={si['channel_scale'].shape}")
+        print(
+            f"  [int8] {stem}: input_scale={si['input_scale']:.6f} "
+            f"output_scale={si['output_scale']:.6f} "
+            f"channel_scale_shape={si['channel_scale'].shape}"
+        )
+
+        if audit_records is not None:
+            cs = si["channel_scale"].reshape(-1).astype(np.float64)
+            c_out_i, c_in_i = _implicit_gemm_filter_c_out_c_in(model, node)
+            audit_records.append(
+                {
+                    "implicit_gemm_node_name": node.name or "",
+                    "implicit_gemm_int8_node_name": int8_node.name or "",
+                    "matched_stem": stem,
+                    "filter_input": node.input[1] if len(node.input) > 1 else "",
+                    "c_out": int(c_out_i) if c_out_i is not None else None,
+                    "c_in": int(c_in_i) if c_in_i is not None else None,
+                    "input_scale": float(si["input_scale"]),
+                    "output_scale": float(si["output_scale"]),
+                    "channel_scale_len": int(cs.size),
+                    "channel_scale_min": float(cs.min()) if cs.size else None,
+                    "channel_scale_max": float(cs.max()) if cs.size else None,
+                    "channel_scale_mean": float(cs.mean()) if cs.size else None,
+                    "channel_scale_initializer": cs_name,
+                    "bias_scaled_initializer": bs_name,
+                }
+            )
 
     # Replace nodes in graph.
     del graph.node[:]
@@ -902,22 +919,30 @@ def transform_onnx_int8(
             "Graph/calibration mismatch."
         )
 
+    unused_stems = set(scale_info.keys()) - set(stem_assigned_to_node.keys())
+    if unused_stems:
+        print(
+            "\n  [int8-audit] WARNING: calibrated stems with no matched ImplicitGemm node "
+            f"(count={len(unused_stems)}): {sorted(unused_stems)[:12]}"
+            f"{'...' if len(unused_stems) > 12 else ''}"
+        )
+
     print(f"\nTransformed {transform_count} ImplicitGemm → ImplicitGemmInt8 nodes")
     return model
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Transform ONNX ImplicitGemm nodes to ImplicitGemmInt8"
-    )
+    parser = argparse.ArgumentParser(description="Transform ONNX ImplicitGemm nodes to ImplicitGemmInt8")
     parser.add_argument("--onnx", required=True, help="Input ONNX model path")
     parser.add_argument(
-        "--checkpoint", required=True,
+        "--checkpoint",
+        required=True,
         help="PTQ checkpoint with NVIDIA _amax calibration values",
     )
     parser.add_argument("--output", required=True, help="Output ONNX path")
     parser.add_argument(
-        "--config", default=None,
+        "--config",
+        default=None,
         help="MMEngine config (optional, for bias extraction from fresh model)",
     )
     parser.add_argument(
@@ -931,6 +956,11 @@ def main():
         default=None,
         help="Override scalar amax for the last INT8 layer output_scale (= absmax/127). "
         "Use if the checkpoint lacks Path-B buffers or you need a one-off fix.",
+    )
+    parser.add_argument(
+        "--audit-report",
+        default=None,
+        help="Write JSON array of per-layer INT8 scale summaries (matched stem, scales, channel_scale stats).",
     )
     args = parser.parse_args()
 
@@ -964,6 +994,7 @@ def main():
 
     # Transform.
     print(f"\nTransforming ImplicitGemm → ImplicitGemmInt8...")
+    audit_records: List[Dict[str, Any]] = []
     model = transform_onnx_int8(
         model,
         layer_scales,
@@ -971,7 +1002,24 @@ def main():
         verbose=args.verbose,
         amax_dict=amax_dict,
         override_terminal_absmax=args.pathb_terminal_absmax,
+        audit_records=audit_records if args.audit_report else None,
     )
+
+    if args.audit_report:
+        path = args.audit_report
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "terminal": {
+                        "note": "See print log [int8-output-scale] for terminal amax source",
+                    },
+                    "layers": audit_records,
+                },
+                f,
+                indent=2,
+            )
+        print(f"\n  [int8-audit] Wrote {len(audit_records)} layer entries to {path!r}")
 
     # Save (save_model avoids some TRT edge cases with large graphs).
     onnx.save_model(model, args.output)

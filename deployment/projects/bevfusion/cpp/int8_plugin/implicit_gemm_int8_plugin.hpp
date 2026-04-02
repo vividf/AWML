@@ -62,6 +62,9 @@ struct ImplicitGemmInt8Parameters
 // Internally quantizes FP16 features/weights to INT8, calls
 // ConvGemmOps::implicit_gemm with INT8 tensors + scale/bias,
 // outputs FP16 via output_dtype.
+//
+// Debug (stderr): set BEVFUSION_INT8_GEMM_DEBUG=1 to print FP16 output min/max/mean per layer
+// (first BEVFUSION_INT8_GEMM_DEBUG_MAX enqueues, default 60). Rebuild this shared library after changes.
 class ImplicitGemmInt8Plugin : public IPluginV3,
                                public IPluginV3OneCore,
                                public IPluginV3OneBuild,
