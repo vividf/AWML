@@ -1,3 +1,11 @@
+# TensorRT ImplicitGemmInt8 plugin (links pip/conda spconv + cumm via find_package).
+#
+# Build from **this directory** only:
+#   mkdir -p build && cd build && cmake .. [-DCMAKE_PREFIX_PATH=/path/to/spconv/prefix] && make
+#
+# Do not confuse with ../CMakeLists.txt — that optional project builds libspconv_trt_bridge
+# against Lidar_AI_Solution prebuilt libspconv when -DLIBSPCONV_ROOT=... is set.
+
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 project(implicit_gemm_int8_plugin LANGUAGES CXX CUDA)
 

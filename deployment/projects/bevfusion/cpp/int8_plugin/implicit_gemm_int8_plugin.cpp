@@ -143,7 +143,7 @@ std::int32_t ImplicitGemmInt8Plugin::getNbOutputs() const noexcept
 
 std::int32_t ImplicitGemmInt8Plugin::configurePlugin(
   DynamicPluginTensorDesc const * in, std::int32_t num_inputs,
-  [[maybe_unused]] DynamicPluginTensorDesc const * out, std::int32_t num_outputs) noexcept
+  DynamicPluginTensorDesc const * out, std::int32_t num_outputs) noexcept
 {
   PLUGIN_ASSERT(num_inputs == NUM_INPUTS);
   PLUGIN_ASSERT(num_outputs == NUM_OUTPUTS);
@@ -170,6 +170,14 @@ std::int32_t ImplicitGemmInt8Plugin::configurePlugin(
   PLUGIN_ASSERT(
     in[IN_BIAS_SCALED].desc.dims.d[0] == in[IN_FILTERS].desc.dims.d[0]);
 
+  // Same index tensor relations as autoware::ImplicitGemmPlugin::configurePlugin.
+  PLUGIN_ASSERT(
+    in[IN_PAIR_MASK_FWD].desc.dims.d[0] == in[IN_PAIR_FWD].desc.dims.d[1]);
+  PLUGIN_ASSERT(in[IN_PAIR_MASK_FWD].desc.dims.d[1] == 1);
+  PLUGIN_ASSERT(
+    in[IN_MASK_ARGSORT_FWD].desc.dims.d[0] == in[IN_PAIR_FWD].desc.dims.d[1]);
+  PLUGIN_ASSERT(out[0].desc.dims.nbDims == 2);
+
   return 0;
 }
 
@@ -180,14 +188,16 @@ bool ImplicitGemmInt8Plugin::supportsFormatCombination(
   bool supported = in_out[pos].desc.format == nvinfer1::TensorFormat::kLINEAR;
 
   switch (pos) {
-    // Features: FP16 only (quantized to INT8 inside enqueue)
+    // Features: FP16 (quantized to INT8 inside enqueue)
     case IN_FEATURES:
       supported &= in_out[pos].desc.type == nvinfer1::DataType::kHALF;
       break;
-    // Filters: same type as features (FP16)
+    // Filters: FP32 ONNX constants (integer-valued; cast to int8 in enqueue for spconv)
     case IN_FILTERS:
+      supported &= in_out[pos].desc.type == nvinfer1::DataType::kFLOAT;
+      break;
     case OUT_FEATURES:
-      supported &= in_out[pos].desc.type == in_out[IN_FEATURES].desc.type;
+      supported &= in_out[pos].desc.type == nvinfer1::DataType::kHALF;
       break;
     // Index tensors: INT32
     case IN_PAIR_FWD:
@@ -253,40 +263,30 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
   std::int64_t k_vol = k1 * k2 * k3;
   std::int64_t num_act_out = input_desc[IN_PAIR_FWD].dims.d[1];
 
-  // --- workspace layout ---
-  auto * ws = reinterpret_cast<std::int8_t *>(workspace);
-  std::int64_t feat_int8_bytes = num_act_in * c_in;
-  std::int64_t weight_int8_bytes = c_out * k_vol * c_in;
-  std::int64_t w_scales_bytes = c_out * sizeof(float);
+  PLUGIN_ASSERT(
+    input_desc[IN_PAIR_FWD].dims.d[1] ==
+    input_desc[IN_MASK_ARGSORT_FWD].dims.d[0]);
+  PLUGIN_ASSERT(input_desc[IN_MASK_ARGSORT_FWD].dims.nbDims == 1);
+  PLUGIN_ASSERT(input_desc[IN_FILTERS].type == nvinfer1::DataType::kFLOAT);
 
-  // Align each allocation to 256 bytes.
-  auto align = [](std::int64_t x) -> std::int64_t { return (x + 255) & ~255LL; };
-  std::int8_t * feat_int8_ptr = ws;
-  float * w_scales_ptr = reinterpret_cast<float *>(ws + align(feat_int8_bytes));
-  std::int8_t * weight_int8_ptr =
-    reinterpret_cast<std::int8_t *>(
-      reinterpret_cast<std::int8_t *>(w_scales_ptr) + align(w_scales_bytes));
+  auto align256 = [](std::int64_t x) -> std::int64_t { return (x + 255) & ~255LL; };
+  std::int64_t const w_count = c_out * k1 * k2 * k3 * c_in;
+  std::int64_t const w_region = align256(w_count);
+  auto * ws_base = reinterpret_cast<std::int8_t *>(workspace);
+  std::int8_t * weights_int8_ptr = ws_base;
+  std::int8_t * feat_int8_ptr = ws_base + w_region;
 
-  // --- 1. Compute per-channel weight scales from channel_scale ---
-  // w_scale[c] = channel_scale[c] * output_scale / input_scale
-  launch_compute_w_scales(
-    reinterpret_cast<const float *>(inputs[IN_CHANNEL_SCALE]), w_scales_ptr,
-    params_.output_scale, params_.input_scale, c_out, stream);
+  launch_cast_float_weights_to_int8(
+    reinterpret_cast<const float *>(inputs[IN_FILTERS]), weights_int8_ptr, w_count, stream);
 
-  // --- 2. Quantize FP16 features → INT8 ---
   launch_quantize_features(
     reinterpret_cast<const __half *>(inputs[IN_FEATURES]), feat_int8_ptr,
     params_.input_scale, num_act_in * c_in, stream);
 
-  // --- 3. Quantize FP16 weights → INT8 (per-channel) ---
-  launch_quantize_weights_per_channel(
-    reinterpret_cast<const __half *>(inputs[IN_FILTERS]), weight_int8_ptr,
-    w_scales_ptr, c_out, k_vol * c_in, stream);
-
-  // --- 4. Build tv::Tensors for implicit_gemm ---
   tv::Tensor features_tv = tv::from_blob(feat_int8_ptr, {num_act_in, c_in}, tv::int8, 0);
 
-  tv::Tensor weights_tv = tv::from_blob(weight_int8_ptr, {c_out, k1, k2, k3, c_in}, tv::int8, 0);
+  tv::Tensor weights_tv = tv::from_blob(
+    weights_int8_ptr, {c_out, k1, k2, k3, c_in}, tv::int8, 0);
 
   tv::Tensor pair_fwd = tv::from_blob(
     inputs[IN_PAIR_FWD],
@@ -323,7 +323,7 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
     {SPCONV_ALLOC_OUT_FEATURES, out_features}};
   StaticAllocator alloc(tensor_dict);
 
-  // --- 5. Call ConvGemmOps::implicit_gemm with INT8 ---
+  // Call ConvGemmOps::implicit_gemm with INT8 features + INT8 baked weights.
   // The tuner detects int8 features/weights → selects INT8 kernels.
   // alpha = output_scale, channel_scale applied internally.
   // bias already divided by output_scale from Python export.
@@ -373,20 +373,19 @@ std::size_t ImplicitGemmInt8Plugin::getWorkspaceSize(
   [[maybe_unused]] DynamicPluginTensorDesc const * outputs,
   [[maybe_unused]] std::int32_t num_outputs) const noexcept
 {
-  // Workspace for INT8 quantized copies of features and weights + w_scales.
   auto align = [](std::int64_t x) -> std::int64_t { return (x + 255) & ~255LL; };
+
+  std::int64_t w_elems = 1;
+  for (int i = 0; i < inputs[IN_FILTERS].max.nbDims; ++i) {
+    w_elems *= inputs[IN_FILTERS].max.d[i];
+  }
+  std::int64_t const w_bytes = align(w_elems);
 
   std::int64_t max_n = inputs[IN_FEATURES].max.d[0];
   std::int64_t c_in = inputs[IN_FEATURES].max.d[1];
-  std::int64_t c_out = inputs[IN_FILTERS].max.d[0];
-  std::int64_t k_vol = inputs[IN_FILTERS].max.d[1] * inputs[IN_FILTERS].max.d[2] *
-                        inputs[IN_FILTERS].max.d[3];
+  std::int64_t const feat_bytes = align(max_n * c_in);
 
-  std::int64_t feat_bytes = align(max_n * c_in);
-  std::int64_t w_scales_bytes = align(c_out * static_cast<std::int64_t>(sizeof(float)));
-  std::int64_t weight_bytes = align(c_out * k_vol * c_in);
-
-  return static_cast<std::size_t>(feat_bytes + w_scales_bytes + weight_bytes);
+  return static_cast<std::size_t>(w_bytes + feat_bytes);
 }
 
 }  // namespace nvinfer1::plugin

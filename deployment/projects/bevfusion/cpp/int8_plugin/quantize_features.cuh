@@ -32,4 +32,9 @@ void launch_compute_w_scales(
   const float * channel_scale, float * w_scales, float output_scale, float input_scale,
   std::int64_t c_out, cudaStream_t stream);
 
+// ONNX stores baked quantized weights as FP32 (exact integers in [-128,127]) for TensorRT FP16
+// engines; cast to int8 in the plugin enqueue.
+void launch_cast_float_weights_to_int8(
+  const float * input, std::int8_t * output, std::int64_t total_elements, cudaStream_t stream);
+
 #endif  // QUANTIZE_FEATURES_CUH_

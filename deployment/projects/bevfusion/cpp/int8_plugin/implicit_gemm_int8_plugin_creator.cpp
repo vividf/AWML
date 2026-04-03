@@ -80,7 +80,7 @@ IPluginV3 * ImplicitGemmInt8PluginCreator::createPlugin(
 
       std::fprintf(
         stderr,
-        "[ImplicitGemmInt8] %s: is_subm=%ld output_scale=%.6f input_scale=%.6f\n",
+        "[ImplicitGemmInt8] %s: v3 FP32_weight_constants is_subm=%ld output_scale=%.6f input_scale=%.6f\n",
         name, params.is_subm, params.output_scale, params.input_scale);
 
       return new ImplicitGemmInt8Plugin{std::string(name), params};

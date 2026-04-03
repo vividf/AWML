@@ -30,7 +30,8 @@
 #include <vector>
 
 constexpr char const * const kIMPLICIT_GEMM_INT8_PLUGIN_NAME{"ImplicitGemmInt8"};
-constexpr char const * const kIMPLICIT_GEMM_INT8_PLUGIN_VERSION{"1"};
+// v3: filter input is FP32 ONNX constants holding exact int8 values (avoids TRT INT8 calib / format issues).
+constexpr char const * const kIMPLICIT_GEMM_INT8_PLUGIN_VERSION{"3"};
 constexpr char const * const kIMPLICIT_GEMM_INT8_PLUGIN_NAMESPACE{""};
 
 namespace nvinfer1::plugin
@@ -45,11 +46,11 @@ struct ImplicitGemmInt8Parameters
   float input_scale;   // input_amax / 127.0 for feature quantization
 };
 
-// ImplicitGemmInt8Plugin: FP16 I/O with internal INT8 GEMM using cumm kernels.
+// ImplicitGemmInt8Plugin: FP16 activations in/out; INT8 weights; internal INT8 GEMM (cumm).
 //
 // Inputs (7):
-//   0: features         FP16 [N, C_in]
-//   1: filters          FP16 [C_out, K1, K2, K3, C_in]
+//   0: features         FP16 [N, C_in]  (quantized to INT8 inside enqueue)
+//   1: filters          FP32 [C_out, K1, K2, K3, C_in]  (baked int8 values as float; cast in enqueue)
 //   2: pair_fwd         INT32 [K_vol, num_act_out]
 //   3: pair_mask_fwd    INT32 [num_act_out, 1]
 //   4: mask_argsort_fwd INT32 [num_act_out]
@@ -59,9 +60,9 @@ struct ImplicitGemmInt8Parameters
 // Output (1):
 //   0: out_features     FP16 [num_act_out, C_out]
 //
-// Internally quantizes FP16 features/weights to INT8, calls
-// ConvGemmOps::implicit_gemm with INT8 tensors + scale/bias,
-// outputs FP16 via output_dtype.
+// Per-channel weight quant uses w_scale[c] = channel_scale[c] * output_scale / input_scale
+// (same as previous in-plugin path); ONNX transform bakes int8 weights so enqueue skips
+// per-inference weight quantization.
 class ImplicitGemmInt8Plugin : public IPluginV3,
                                public IPluginV3OneCore,
                                public IPluginV3OneBuild,

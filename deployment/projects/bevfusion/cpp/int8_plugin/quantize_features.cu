@@ -83,3 +83,27 @@ void launch_compute_w_scales(
   compute_w_scales_kernel<<<grid, kBlockSize, 0, stream>>>(
     channel_scale, w_scales, output_scale, input_scale, c_out);
 }
+
+__global__ void cast_float_weights_to_int8_kernel(
+  const float * __restrict__ input, std::int8_t * __restrict__ output, std::int64_t total_elements)
+{
+  std::int64_t idx = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (idx < total_elements) {
+    int r = __float2int_rn(input[idx]);
+    if (r > 127) {
+      r = 127;
+    }
+    if (r < -128) {
+      r = -128;
+    }
+    output[idx] = static_cast<std::int8_t>(r);
+  }
+}
+
+void launch_cast_float_weights_to_int8(
+  const float * input, std::int8_t * output, std::int64_t total_elements, cudaStream_t stream)
+{
+  int grid = static_cast<int>((total_elements + kBlockSize - 1) / kBlockSize);
+  cast_float_weights_to_int8_kernel<<<grid, kBlockSize, 0, stream>>>(
+    input, output, total_elements);
+}

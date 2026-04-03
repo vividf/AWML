@@ -4,6 +4,9 @@ Path B approach: The standard Autoware ONNX export (via torch.onnx.export +
 sparse_functional.py symbolic methods) produces autoware::ImplicitGemm nodes
 with 5 inputs. This script enriches them to autoware::ImplicitGemmInt8 nodes
 with 7 inputs (+ channel_scale + bias_scaled) and INT8 scale attributes.
+Each layer's 5D filter **initializer** is replaced with **FP32 constants** holding the
+baked quantized values (same grid as int8; plugin v3 casts to int8 in ``enqueue``).
+Per-channel scales match ``ImplicitGemmInt8``; activations stay FP16 into the plugin.
 
 Usage::
 
@@ -27,8 +30,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import onnx
-from onnx import TensorProto, helper, numpy_helper
 import torch
+from onnx import TensorProto, helper, numpy_helper
 
 
 def _load_amax_from_checkpoint(
@@ -67,8 +70,7 @@ def _build_layer_scale_map(
     layers = OrderedDict()
 
     pattern = re.compile(
-        r"^(?:module\.)?(?P<prefix>pts_middle_encoder\.)"
-        r"(?P<stem>.+?)\._(?P<kind>input|weight)_quantizer\._amax$"
+        r"^(?:module\.)?(?P<prefix>pts_middle_encoder\.)" r"(?P<stem>.+?)\._(?P<kind>input|weight)_quantizer\._amax$"
     )
 
     for key, val in sorted(amax_dict.items()):
@@ -195,9 +197,7 @@ def _resolve_int8_output_amax(
                 "cli_override": "--pathb-terminal-absmax",
                 "conv_out_input_quantizer": "conv_out._input_quantizer._amax",
             }.get(terminal_src, terminal_src)
-            print(
-                f"  [int8-output-scale] {stem}: terminal layer → {terminal_src} ({hint})"
-            )
+            print(f"  [int8-output-scale] {stem}: terminal layer → {terminal_src} ({hint})")
         return terminal_boundary_np, terminal_src
 
     raise ValueError(
@@ -275,9 +275,7 @@ def _successor_stem_for_int8_output_scale(stem: str, topo: List[str]) -> Optiona
     is_downsample = ".downsample" in tail
     # Stride block named encoder_layerS.B.0 (no conv/downsample in tail) — same skip rule as conv2.
     is_stride_tail = bool(
-        re.match(r"^encoder_layer\d+\.\d+\.\d+$", tail)
-        and "conv" not in tail
-        and "downsample" not in tail
+        re.match(r"^encoder_layer\d+\.\d+\.\d+$", tail) and "conv" not in tail and "downsample" not in tail
     )
     if pb is not None and (is_conv2 or is_downsample or is_stride_tail):
         stage, block = pb
@@ -419,9 +417,7 @@ def _implicit_gemm_filter_c_out_c_in(
     return int(w.shape[0]), int(w.shape[4])
 
 
-def _conv_weight_shape_from_state_dict(
-    encoder_sd: Dict[str, torch.Tensor], stem: str
-) -> Optional[Tuple[int, int]]:
+def _conv_weight_shape_from_state_dict(encoder_sd: Dict[str, torch.Tensor], stem: str) -> Optional[Tuple[int, int]]:
     """``(C_out, C_in)`` for ``pts_middle_encoder.{stem}.weight`` if present."""
     for prefix in ("pts_middle_encoder.", "module.pts_middle_encoder."):
         k = f"{prefix}{stem}.weight"
@@ -470,8 +466,7 @@ def _weight_amax_per_cout_vector(
     ):
         raise ValueError(
             f"{stem}: weight _amax shape {tuple(w.shape)} matches **C_in={c_in}** calibration "
-            f"(legacy axis=4). INT8 Path B needs **C_out={c_out}** per-output scales. "
-            + _LEGACY_W_AMAX_PTQ
+            f"(legacy axis=4). INT8 Path B needs **C_out={c_out}** per-output scales. " + _LEGACY_W_AMAX_PTQ
         )
 
     raise ValueError(
@@ -563,16 +558,8 @@ def _match_onnx_node_to_layer(
     if not candidates:
         return None
 
-    if (
-        encoder_sd
-        and c_out is not None
-        and c_in is not None
-    ):
-        ok_sd = [
-            s
-            for s in candidates
-            if _conv_weight_shape_from_state_dict(encoder_sd, s) == (c_out, c_in)
-        ]
+    if encoder_sd and c_out is not None and c_in is not None:
+        ok_sd = [s for s in candidates if _conv_weight_shape_from_state_dict(encoder_sd, s) == (c_out, c_in)]
         if len(ok_sd) == 1:
             return ok_sd[0]
         if len(ok_sd) > 1:
@@ -587,18 +574,14 @@ def _match_onnx_node_to_layer(
         ok = [
             s
             for s in candidates
-            if _weight_amax_matches_cout_layout(
-                layer_scales.get(s, {}).get("weight_amax"), c_out, c_in
-            )
+            if _weight_amax_matches_cout_layout(layer_scales.get(s, {}).get("weight_amax"), c_out, c_in)
         ]
         if len(ok) == 1:
             return ok[0]
         if len(ok) > 1:
             return max(ok, key=len)
         if verbose:
-            print(
-                f"  [debug-match] no stem with _amax compatible with C_out={c_out} C_in={c_in}."
-            )
+            print(f"  [debug-match] no stem with _amax compatible with C_out={c_out} C_in={c_in}.")
         return None
 
     return max(candidates, key=len)
@@ -610,6 +593,73 @@ def _get_initializer_data(model: onnx.ModelProto, name: str) -> Optional[np.ndar
         if init.name == name:
             return numpy_helper.to_array(init)
     return None
+
+
+def _per_channel_weight_scales_np(si: dict) -> np.ndarray:
+    """Per-output-channel FP32 scales for filter quant (matches ImplicitGemmInt8 CUDA).
+
+    Plugin: ``w_scale[c] = channel_scale[c] * output_scale / input_scale``.
+    """
+    cs = np.asarray(si["channel_scale"], dtype=np.float32).reshape(-1)
+    out_s = np.float32(si["output_scale"])
+    in_s = np.float32(si["input_scale"])
+    return (cs * out_s / in_s).astype(np.float32)
+
+
+def _quantize_filter_fp_to_int8(W: np.ndarray, w_scale_per_cout: np.ndarray) -> np.ndarray:
+    """5D sparse conv weight → int8 (same semantics as plugin ``quantize_weights_per_channel``)."""
+    if W.ndim != 5:
+        raise ValueError(f"expected 5D filter initializer, got shape {tuple(W.shape)}")
+    c_out = int(W.shape[0])
+    w_scale = np.asarray(w_scale_per_cout, dtype=np.float32).reshape(-1)
+    if w_scale.size != c_out:
+        raise ValueError(f"w_scale length {w_scale.size} != C_out {c_out}")
+    Wf = W.astype(np.float32)
+    inv = (1.0 / w_scale).astype(np.float32).reshape(c_out, 1, 1, 1, 1)
+    q = np.rint(Wf * inv)
+    return np.clip(q, -128.0, 127.0).astype(np.int8)
+
+
+def _remove_initializer_named(graph: onnx.GraphProto, name: str) -> bool:
+    for i, init in enumerate(graph.initializer):
+        if init.name == name:
+            del graph.initializer[i]
+            return True
+    return False
+
+
+def _set_filter_fp32_baked_initializer_and_io(
+    graph: onnx.GraphProto,
+    name: str,
+    W_fp32: np.ndarray,
+) -> None:
+    """Replace filter initializer with FP32 tensor (exact integer values in [-128, 127]).
+
+    TensorRT FP16 engines do not reliably support INT8 weight constants feeding custom plugins
+    (format / INT8-calibration issues). Storing baked weights as FP32 avoids both.
+
+    **Do not** keep the filter in ``graph.input`` (initializer-only). Optional ``value_info``
+    uses ``FLOAT`` for Netron / checkers.
+    """
+    if W_fp32.dtype != np.float32:
+        W_fp32 = np.asarray(W_fp32, dtype=np.float32)
+    _remove_initializer_named(graph, name)
+    graph.initializer.append(numpy_helper.from_array(W_fp32, name=name))
+    for i in reversed([i for i, v in enumerate(graph.value_info) if v.name == name]):
+        del graph.value_info[i]
+    shape_list = list(W_fp32.shape)
+    new_inputs: List[onnx.ValueInfoProto] = []
+    for inp in graph.input:
+        if inp.name == name:
+            continue  # drop: constant weights must not be TRT network inputs
+        preserved = onnx.ValueInfoProto()
+        preserved.CopyFrom(inp)
+        new_inputs.append(preserved)
+    for i in range(len(graph.input) - 1, -1, -1):
+        del graph.input[i]
+    for inp in new_inputs:
+        graph.input.append(inp)
+    graph.value_info.append(helper.make_tensor_value_info(name, TensorProto.FLOAT, shape_list))
 
 
 def _onnx_node_text_blob(node: onnx.NodeProto) -> str:
@@ -657,11 +707,18 @@ def _implicit_gemm_attrs_from_node(node: onnx.NodeProto) -> Dict[str, object]:
     return out
 
 
+# TensorRT ONNX parser defaults missing ``plugin_version`` to "1" (see TRT custom-layer docs).
+# Must match ``kIMPLICIT_GEMM_INT8_PLUGIN_VERSION`` in implicit_gemm_int8_plugin.hpp.
+_IMPLICIT_GEMM_INT8_ONNX_PLUGIN_VERSION = "3"
+_IMPLICIT_GEMM_INT8_ONNX_PLUGIN_NAMESPACE = ""
+
+
 def _append_implicit_gemm_int8_plugin_attributes(
     int8_node: onnx.NodeProto,
     attrs: Dict[str, object],
 ) -> None:
     """Set plugin fields exactly as TensorRT ``ImplicitGemmInt8PluginCreator`` expects (no ``_f`` names)."""
+
     def _f(key: str, default: float) -> float:
         v = attrs.get(key, default)
         return float(v) if v is not None else default
@@ -672,6 +729,8 @@ def _append_implicit_gemm_int8_plugin_attributes(
 
     int8_node.attribute.extend(
         [
+            helper.make_attribute("plugin_version", _IMPLICIT_GEMM_INT8_ONNX_PLUGIN_VERSION),
+            helper.make_attribute("plugin_namespace", _IMPLICIT_GEMM_INT8_ONNX_PLUGIN_NAMESPACE),
             helper.make_attribute("act_alpha", _f("act_alpha", 0.0)),
             helper.make_attribute("act_beta", _f("act_beta", 0.0)),
             helper.make_attribute("is_subm", _i("is_subm", 0)),
@@ -701,6 +760,10 @@ def transform_onnx_int8(
     override_terminal_absmax: Optional[float] = None,
 ) -> onnx.ModelProto:
     """Replace ImplicitGemm nodes with ImplicitGemmInt8 nodes.
+
+    Filter weights are quantized offline, stored as **FP32** initializers (integer grid,
+    initializer-only, not ``graph.input``) for TensorRT ``precision_policy="fp16"``. Plugin **v3**
+    casts them to int8 inside ``enqueue``.
 
     Args:
         model: ONNX model with autoware::ImplicitGemm nodes.
@@ -771,9 +834,7 @@ def transform_onnx_int8(
                 "fix sparse PTQ / _build_layer_scale_map."
             )
 
-        output_amax, oa_tag = _resolve_int8_output_amax(
-            stem, layer_scales, topo_stems, term_np, term_src, verbose
-        )
+        output_amax, oa_tag = _resolve_int8_output_amax(stem, layer_scales, topo_stems, term_np, term_src, verbose)
 
         # Try to get bias from state_dict.
         bias = None
@@ -791,13 +852,9 @@ def transform_onnx_int8(
                 f"{stem}: no pts_middle_encoder.{stem}.weight (5D) in checkpoint; "
                 "cannot validate weight _amax. " + _LEGACY_W_AMAX_PTQ
             )
-        w_for_scale = _weight_amax_per_cout_vector(
-            weight_amax, sh_w[0], sh_w[1], stem
-        )
+        w_for_scale = _weight_amax_per_cout_vector(weight_amax, sh_w[0], sh_w[1], stem)
 
-        scale_info[stem] = _compute_int8_scales(
-            input_amax, w_for_scale, output_amax, bias
-        )
+        scale_info[stem] = _compute_int8_scales(input_amax, w_for_scale, output_amax, bias)
         if verbose:
             print(
                 f"  [debug-scale] {stem}: w_amax.shape={np.shape(weight_amax)} "
@@ -807,14 +864,13 @@ def transform_onnx_int8(
     n_expected_int8 = sum(
         1
         for n in graph.node
-        if n.op_type == "ImplicitGemm"
-        and n.domain == "autoware"
-        and not _implicit_gemm_is_conv_out(n)
+        if n.op_type == "ImplicitGemm" and n.domain == "autoware" and not _implicit_gemm_is_conv_out(n)
     )
 
     # Replace nodes.
     new_nodes = []
     transform_count = 0
+    baked_filter_names: set[str] = set()
 
     for node in graph.node:
         if node.op_type != "ImplicitGemm" or node.domain != "autoware":
@@ -822,10 +878,7 @@ def transform_onnx_int8(
             continue
 
         if _implicit_gemm_is_conv_out(node):
-            print(
-                "  [int8] Keep FP32 ImplicitGemm for conv_out (PTQ): "
-                f"name={node.name!r}"
-            )
+            print("  [int8] Keep FP32 ImplicitGemm for conv_out (PTQ): " f"name={node.name!r}")
             new_nodes.append(node)
             continue
 
@@ -855,6 +908,31 @@ def transform_onnx_int8(
             )
 
         c_out = c_scale
+
+        if len(node.input) < 2:
+            raise ValueError(f"Path B ONNX: ImplicitGemm node {node.name!r} has no filter input (need input[1]).")
+        filter_tensor_name = node.input[1]
+        if filter_tensor_name in baked_filter_names:
+            raise ValueError(
+                f"Path B ONNX: filter initializer {filter_tensor_name!r} is reused by another "
+                "ImplicitGemm; offline INT8 baking needs one unique initializer per INT8 layer."
+            )
+        W_fp = _get_initializer_data(model, filter_tensor_name)
+        if W_fp is None:
+            raise ValueError(
+                f"Path B ONNX: filter {filter_tensor_name!r} is not a graph initializer "
+                "(cannot bake INT8 offline). Export sparse ONNX with constant weights."
+            )
+        w_scales_vec = _per_channel_weight_scales_np(si)
+        W_int8 = _quantize_filter_fp_to_int8(W_fp, w_scales_vec)
+        W_fp32 = W_int8.astype(np.float32)
+        _set_filter_fp32_baked_initializer_and_io(graph, filter_tensor_name, W_fp32)
+        baked_filter_names.add(filter_tensor_name)
+        if verbose:
+            print(
+                f"  [bake-weight-fp32] {stem}: {filter_tensor_name} "
+                f"shape={tuple(W_fp32.shape)} (quant grid from int8; was {W_fp.dtype})"
+            )
 
         # Create ONNX initializers for channel_scale and bias_scaled.
         cs_name, bs_name = _safe_trt_scale_names(stem, occupied_names)
@@ -887,9 +965,11 @@ def transform_onnx_int8(
 
         new_nodes.append(int8_node)
         transform_count += 1
-        print(f"  [int8] {stem}: input_scale={si['input_scale']:.6f} "
-              f"output_scale={si['output_scale']:.6f} "
-              f"channel_scale_shape={si['channel_scale'].shape}")
+        print(
+            f"  [int8] {stem}: input_scale={si['input_scale']:.6f} "
+            f"output_scale={si['output_scale']:.6f} "
+            f"channel_scale_shape={si['channel_scale'].shape}"
+        )
 
     # Replace nodes in graph.
     del graph.node[:]
@@ -903,21 +983,25 @@ def transform_onnx_int8(
         )
 
     print(f"\nTransformed {transform_count} ImplicitGemm → ImplicitGemmInt8 nodes")
+    print(
+        "Baked weights as FP32 initializers — use ImplicitGemmInt8 plugin **version 3** "
+        "(rebuild libimplicit_gemm_int8_plugin.so) and rebuild TensorRT engines."
+    )
     return model
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Transform ONNX ImplicitGemm nodes to ImplicitGemmInt8"
-    )
+    parser = argparse.ArgumentParser(description="Transform ONNX ImplicitGemm nodes to ImplicitGemmInt8")
     parser.add_argument("--onnx", required=True, help="Input ONNX model path")
     parser.add_argument(
-        "--checkpoint", required=True,
+        "--checkpoint",
+        required=True,
         help="PTQ checkpoint with NVIDIA _amax calibration values",
     )
     parser.add_argument("--output", required=True, help="Output ONNX path")
     parser.add_argument(
-        "--config", default=None,
+        "--config",
+        default=None,
         help="MMEngine config (optional, for bias extraction from fresh model)",
     )
     parser.add_argument(
