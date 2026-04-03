@@ -12,6 +12,8 @@ Numbered filenames follow **creation time** (filesystem birth time, with mtime t
 
 **「INT8 sparse conv」**：PyTorch 端是 **TensorQuantizer + `_amax`（fake quant）**；預設 TRT 上仍是 **FP16 ImplicitGemm** 除非走 Path B。完整步驟、表格與 mermaid 圖見 **[`12_int8_sparse_pipeline_ptq_onnx_trt.md`](./12_int8_sparse_pipeline_ptq_onnx_trt.md)**。
 
+**端到端總覽（PTQ → INT8 spconv → 部署，並對照 spconv / CUDA-BEVFusion）**：**[`README_PTQ_INT8_SPCONV_DEPLOYMENT.md`](./README_PTQ_INT8_SPCONV_DEPLOYMENT.md)**。
+
 | # | File | Topic |
 |---|------|--------|
 | 1 | [`1_spconv_int8.md`](./1_spconv_int8.md) | spconv INT8 / libspconv alignment notes |
@@ -28,5 +30,6 @@ Numbered filenames follow **creation time** (filesystem birth time, with mtime t
 | **12** | [**`12_int8_sparse_pipeline_ptq_onnx_trt.md`**](./12_int8_sparse_pipeline_ptq_onnx_trt.md) | **PTQ → ONNX → TRT 內部流程；稀疏 INT8 在各層如何成立** |
 | **13** | [**`13_int8_pathb_tensorrt_eval_milestone.md`**](./13_int8_pathb_tensorrt_eval_milestone.md) | **里程碑：PyTorch BEV mAP 0.35→0.37；TRT split mAP 仍 0 但 Predict_num 0→400+（改動極關鍵）** |
 | **14** | [**`14_trt_split_map_zero_debug.md`**](./14_trt_split_map_zero_debug.md) | **Split TRT 有預測但 mAP=0：管線對照、原因歸納、`BEVFUSION_TRT_*` / `DEBUG_POSTPROCESS` 除錯** |
+| — | [**`README_PTQ_INT8_SPCONV_DEPLOYMENT.md`**](./README_PTQ_INT8_SPCONV_DEPLOYMENT.md) | **PTQ → ONNX → TRT 全流程詳解；與 spconv 官方、CUDA-BEVFusion（libspconv）對照** |
 
 Python entrypoints, configs, and pipelines live in the parent directory (`deployment/projects/bevfusion/`), alongside this `docs/` folder.

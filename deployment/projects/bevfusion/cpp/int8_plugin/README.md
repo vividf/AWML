@@ -74,3 +74,4 @@ PyTorch／QTensor 路徑可能透過其他解量化路徑掩蓋差異，但 **�
 ### 後續若擴充功能時的注意點
 
 目前 plugin 對 **`output_add`（殘差）** 傳空 tensor。若未來在 INT8 路徑啟用殘差，`ConvGemmOps` 內對 int8 的 `beta` 會用到 `output_add_scale / output_scale`；在 **`output_scale` 固定為 `1.0f`** 的情況下，需重新檢查殘差分支的 scale 語意是否仍與匯出端一致。
+python -m deployment.cli.main bevfusion   deployment/projects/bevfusion/config/deploy_config_split_int8.py   projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m_fx.py
