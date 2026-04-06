@@ -14,6 +14,8 @@ Numbered filenames follow **creation time** (filesystem birth time, with mtime t
 
 **端到端總覽（PTQ → INT8 spconv → 部署，並對照 spconv / CUDA-BEVFusion）**：**[`README_PTQ_INT8_SPCONV_DEPLOYMENT.md`](./README_PTQ_INT8_SPCONV_DEPLOYMENT.md)**。
 
+**INT8 到底在哪裡、怎麼做（AWML vs spconv／cumm 對照）**：**[`README_INT8_WHERE_AND_HOW.md`](./README_INT8_WHERE_AND_HOW.md)**。
+
 | # | File | Topic |
 |---|------|--------|
 | 1 | [`1_spconv_int8.md`](./1_spconv_int8.md) | spconv INT8 / libspconv alignment notes |
@@ -31,5 +33,6 @@ Numbered filenames follow **creation time** (filesystem birth time, with mtime t
 | **13** | [**`13_int8_pathb_tensorrt_eval_milestone.md`**](./13_int8_pathb_tensorrt_eval_milestone.md) | **里程碑：PyTorch BEV mAP 0.35→0.37；TRT split mAP 仍 0 但 Predict_num 0→400+（改動極關鍵）** |
 | **14** | [**`14_trt_split_map_zero_debug.md`**](./14_trt_split_map_zero_debug.md) | **Split TRT 有預測但 mAP=0：管線對照、原因歸納、`BEVFUSION_TRT_*` / `DEBUG_POSTPROCESS` 除錯** |
 | — | [**`README_PTQ_INT8_SPCONV_DEPLOYMENT.md`**](./README_PTQ_INT8_SPCONV_DEPLOYMENT.md) | **PTQ → ONNX → TRT 全流程詳解；與 spconv 官方、CUDA-BEVFusion（libspconv）對照** |
+| — | [**`README_INT8_WHERE_AND_HOW.md`**](./README_INT8_WHERE_AND_HOW.md) | **哪裡 FP16／哪裡真 INT8；Path B 與 `ConvGemmOps::implicit_gemm`、`is_int8_inference`、spconv `ops.py` 對照** |
 
 Python entrypoints, configs, and pipelines live in the parent directory (`deployment/projects/bevfusion/`), alongside this `docs/` folder.
