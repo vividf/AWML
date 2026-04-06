@@ -71,16 +71,13 @@ class VerificationOrchestrator:
             self.logger.info(f"No verification scenarios for export mode '{export_mode.value}', skipping...")
             return {}
 
-        needs_pytorch = any(
-            policy.ref_backend is Backend.PYTORCH or policy.test_backend is Backend.PYTORCH for policy in scenarios
-        )
-        if needs_pytorch:
-            _, pytorch_valid = artifact_manager.resolve_artifact(Backend.PYTORCH)
-            if not pytorch_valid:
-                self.logger.warning(
-                    "PyTorch checkpoint not available, but required by verification scenarios. Skipping verification."
-                )
-                return {}
+        # ORT/TRT verification still uses the Torch checkpoint for preprocessing (same as evaluation).
+        _, pytorch_valid = artifact_manager.resolve_artifact(Backend.PYTORCH)
+        if not pytorch_valid:
+            self.logger.warning(
+                "PyTorch checkpoint not available, but required for verification preprocess. Skipping verification."
+            )
+            return {}
 
         num_verify_samples = verification_cfg.num_verify_samples
         tolerance = verification_cfg.tolerance
