@@ -74,11 +74,12 @@ class VerificationOrchestrator:
             )
             return {}
 
+
+        # ORT/TRT verification still uses the Torch checkpoint for preprocessing (same as evaluation).
         _, pytorch_valid = artifact_manager.resolve_artifact(Backend.PYTORCH)
         if not pytorch_valid:
             self.logger.warning(
-                "PyTorch checkpoint not registered or missing; verification needs it for preprocessing/decode. "
-                "Skipping verification."
+                "PyTorch checkpoint not available, but required for verification preprocess. Skipping verification."
             )
             return {}
 

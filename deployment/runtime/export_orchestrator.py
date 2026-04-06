@@ -140,6 +140,38 @@ class ExportOrchestrator:
         self._resolve_external_artifacts(result)
         return result
 
+    def _determine_pytorch_requirements(self) -> bool:
+        """
+        Determine if PyTorch model is required based on configuration.
+
+        ONNX / TensorRT evaluation and verification still load the checkpoint because
+        deploy pipelines use the Torch module for preprocessing (e.g. voxelization)
+        and task-specific postprocessing, even when inference runs in ORT or TRT.
+
+        Returns:
+            True if PyTorch model is needed, False otherwise
+        """
+        if self.config.export_config.should_export_onnx:
+            return True
+
+        eval_config = self.config.evaluation_config
+        if eval_config.enabled:
+            backends_cfg = eval_config.backends
+            for backend in (Backend.PYTORCH, Backend.ONNX, Backend.TENSORRT):
+                sub = backends_cfg.get(backend.value, {})
+                if sub and sub.get("enabled", False):
+                    return True
+
+        verification_cfg = self.config.verification_config
+        if verification_cfg.enabled:
+            export_mode = self.config.export_config.mode
+            scenarios = self.config.get_verification_scenarios(export_mode)
+            # Any non-empty scenario needs the reference Torch model for the same reason as ORT/TRT eval.
+            if scenarios:
+                return True
+
+        return False
+
     def _load_and_register_pytorch_model(self, checkpoint_path: str, context: ExportContext) -> Optional[Any]:
         """
         Load and register a PyTorch model from checkpoint.
