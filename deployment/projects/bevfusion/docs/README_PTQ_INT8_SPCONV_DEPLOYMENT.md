@@ -1,6 +1,6 @@
 # BEVFusion：PTQ、INT8 Spconv、部署端到端說明
 
-本文件從**校準 → PyTorch 推理 → ONNX → TensorRT**串起 AWML 內 BEVFusion **稀疏塔 INT8** 的實作方式，並與 **upstream spconv**、**NVIDIA CUDA-BEVFusion（Lidar AI Solution）** 做系統性對照。細部公式與 Path B plugin 見 `11_int8_pathb_autoware_plugin.md`、`12_int8_sparse_pipeline_ptq_onnx_trt.md`；**TensorRT epilogue / `output_scale` 修復**見 `cpp/int8_plugin/README.md`。
+本文件從**校準 → PyTorch 推理 → ONNX → TensorRT**串起 AWML 內 BEVFusion **稀疏塔 INT8** 的實作方式，並與 **upstream spconv**、**NVIDIA CUDA-BEVFusion（Lidar AI Solution）** 做系統性對照。細部公式與 Path B plugin 見 `11_int8_pathb_autoware_plugin.md`、`12_int8_sparse_pipeline_ptq_onnx_trt.md`；**TensorRT epilogue / `output_scale` 修復**見 `cpp/int8_plugin/README.md`。**「哪裡 FP16、哪裡真 INT8」與 spconv／cumm 對照**見 **`README_INT8_WHERE_AND_HOW.md`**。
 
 ---
 
