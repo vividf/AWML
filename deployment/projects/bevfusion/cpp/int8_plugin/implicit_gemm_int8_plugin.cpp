@@ -193,6 +193,11 @@ ImplicitGemmInt8Plugin::ImplicitGemmInt8Plugin(
   tuner_int8_ptr_ = std::make_unique<ConvTunerSimple>(ConvMain::get_all_conv_algo_desp());
 }
 
+ImplicitGemmInt8Plugin::~ImplicitGemmInt8Plugin()
+{
+  releaseConstantCache();
+}
+
 void ImplicitGemmInt8Plugin::initFieldsToSerialize()
 {
   data_to_serialize_.clear();
@@ -206,6 +211,120 @@ void ImplicitGemmInt8Plugin::initFieldsToSerialize()
 
   fc_to_serialize_.nbFields = data_to_serialize_.size();
   fc_to_serialize_.fields = data_to_serialize_.data();
+}
+
+void ImplicitGemmInt8Plugin::releaseConstantCache() noexcept
+{
+  if (cached_weight_int8_ptr_ != nullptr) {
+    cudaFree(cached_weight_int8_ptr_);
+    cached_weight_int8_ptr_ = nullptr;
+  }
+  if (cached_w_scales_ptr_ != nullptr) {
+    cudaFree(cached_w_scales_ptr_);
+    cached_w_scales_ptr_ = nullptr;
+  }
+  if (cached_gemm_bias_ptr_ != nullptr) {
+    cudaFree(cached_gemm_bias_ptr_);
+    cached_gemm_bias_ptr_ = nullptr;
+  }
+  cache_initialized_ = false;
+  cache_mode_logged_ = false;
+  cached_c_out_ = 0;
+  cached_k1_ = 0;
+  cached_k2_ = 0;
+  cached_k3_ = 0;
+  cached_c_in_ = 0;
+  expected_filters_ptr_ = nullptr;
+  expected_channel_scale_ptr_ = nullptr;
+  expected_bias_scaled_ptr_ = nullptr;
+}
+
+std::int32_t ImplicitGemmInt8Plugin::initializeConstantCache(
+  PluginTensorDesc const * input_desc, void const * const * inputs, cudaStream_t stream) noexcept
+{
+  std::int64_t const c_out = input_desc[IN_FILTERS].dims.d[0];
+  std::int64_t const k1 = input_desc[IN_FILTERS].dims.d[1];
+  std::int64_t const k2 = input_desc[IN_FILTERS].dims.d[2];
+  std::int64_t const k3 = input_desc[IN_FILTERS].dims.d[3];
+  std::int64_t const c_in = input_desc[IN_FEATURES].dims.d[1];
+  std::int64_t const k_vol = k1 * k2 * k3;
+  std::int64_t const weight_elements = c_out * k_vol * c_in;
+  std::int64_t const weight_bytes = weight_elements * static_cast<std::int64_t>(sizeof(std::int8_t));
+  std::int64_t const c_out_float_bytes = c_out * static_cast<std::int64_t>(sizeof(float));
+
+  if (inputs[IN_FILTERS] == nullptr || inputs[IN_CHANNEL_SCALE] == nullptr || inputs[IN_BIAS_SCALED] == nullptr) {
+    std::fprintf(
+      stderr,
+      "[ImplicitGemmInt8Plugin] %s: constant-only mode requires non-null filters/channel_scale/"
+      "bias_scaled pointers.\n",
+      layer_name_.c_str());
+    return -1;
+  }
+  if (weight_bytes <= 0 || c_out_float_bytes <= 0) {
+    std::fprintf(
+      stderr, "[ImplicitGemmInt8Plugin] %s: invalid cache shape c_out=%ld k=[%ld,%ld,%ld] c_in=%ld\n",
+      layer_name_.c_str(), static_cast<long>(c_out), static_cast<long>(k1), static_cast<long>(k2),
+      static_cast<long>(k3), static_cast<long>(c_in));
+    return -1;
+  }
+
+  releaseConstantCache();
+
+  cudaError_t st = cudaMalloc(reinterpret_cast<void **>(&cached_weight_int8_ptr_), static_cast<std::size_t>(weight_bytes));
+  if (st != cudaSuccess) {
+    std::fprintf(
+      stderr, "[ImplicitGemmInt8Plugin] %s: cudaMalloc(weight_int8 cache) failed: %s\n",
+      layer_name_.c_str(), cudaGetErrorString(st));
+    releaseConstantCache();
+    return -1;
+  }
+  st = cudaMalloc(reinterpret_cast<void **>(&cached_w_scales_ptr_), static_cast<std::size_t>(c_out_float_bytes));
+  if (st != cudaSuccess) {
+    std::fprintf(
+      stderr, "[ImplicitGemmInt8Plugin] %s: cudaMalloc(w_scales cache) failed: %s\n",
+      layer_name_.c_str(), cudaGetErrorString(st));
+    releaseConstantCache();
+    return -1;
+  }
+  st = cudaMalloc(reinterpret_cast<void **>(&cached_gemm_bias_ptr_), static_cast<std::size_t>(c_out_float_bytes));
+  if (st != cudaSuccess) {
+    std::fprintf(
+      stderr, "[ImplicitGemmInt8Plugin] %s: cudaMalloc(gemm_bias cache) failed: %s\n",
+      layer_name_.c_str(), cudaGetErrorString(st));
+    releaseConstantCache();
+    return -1;
+  }
+
+  launch_compute_w_scales(
+    reinterpret_cast<const float *>(inputs[IN_CHANNEL_SCALE]), cached_w_scales_ptr_,
+    params_.output_scale, params_.input_scale, c_out, stream);
+  launch_quantize_weights_per_channel(
+    reinterpret_cast<const __half *>(inputs[IN_FILTERS]), cached_weight_int8_ptr_, cached_w_scales_ptr_,
+    c_out, k_vol * c_in, stream);
+  launch_fuse_output_scale_into_gemm_scale_bias(
+    reinterpret_cast<const float *>(inputs[IN_CHANNEL_SCALE]),
+    reinterpret_cast<const float *>(inputs[IN_BIAS_SCALED]), params_.output_scale, cached_w_scales_ptr_,
+    cached_gemm_bias_ptr_, c_out, stream);
+
+  st = cudaGetLastError();
+  if (st != cudaSuccess) {
+    std::fprintf(
+      stderr, "[ImplicitGemmInt8Plugin] %s: cache init kernel launch failed: %s\n",
+      layer_name_.c_str(), cudaGetErrorString(st));
+    releaseConstantCache();
+    return -1;
+  }
+
+  cache_initialized_ = true;
+  cached_c_out_ = c_out;
+  cached_k1_ = k1;
+  cached_k2_ = k2;
+  cached_k3_ = k3;
+  cached_c_in_ = c_in;
+  expected_filters_ptr_ = inputs[IN_FILTERS];
+  expected_channel_scale_ptr_ = inputs[IN_CHANNEL_SCALE];
+  expected_bias_scaled_ptr_ = inputs[IN_BIAS_SCALED];
+  return 0;
 }
 
 IPluginCapability * ImplicitGemmInt8Plugin::getCapabilityInterface(
@@ -278,6 +397,12 @@ std::int32_t ImplicitGemmInt8Plugin::configurePlugin(
     in[IN_CHANNEL_SCALE].desc.dims.d[0] == in[IN_FILTERS].desc.dims.d[0]);
   PLUGIN_ASSERT(
     in[IN_BIAS_SCALED].desc.dims.d[0] == in[IN_FILTERS].desc.dims.d[0]);
+
+  std::fprintf(
+    stderr,
+    "[ImplicitGemmInt8Plugin] %s: configured in constant-only mode (filters/channel_scale/"
+    "bias_scaled must remain constant across enqueues).\n",
+    layer_name_.c_str());
 
   return 0;
 }
@@ -364,48 +489,76 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
 
   // --- workspace layout ---
   auto * ws = reinterpret_cast<std::int8_t *>(workspace);
-  std::int64_t feat_int8_bytes = num_act_in * c_in;
-  std::int64_t weight_int8_bytes = c_out * k_vol * c_in;
-  std::int64_t w_scales_bytes = c_out * sizeof(float);
-  std::int64_t gemm_bias_bytes = c_out * sizeof(float);
-
-  // Align each allocation to 256 bytes.
-  auto align = [](std::int64_t x) -> std::int64_t { return (x + 255) & ~255LL; };
   std::int8_t * feat_int8_ptr = ws;
-  float * w_scales_ptr = reinterpret_cast<float *>(ws + align(feat_int8_bytes));
-  std::int8_t * weight_int8_ptr =
-    reinterpret_cast<std::int8_t *>(
-      reinterpret_cast<std::int8_t *>(w_scales_ptr) + align(w_scales_bytes));
-  float * gemm_bias_ptr =
-    reinterpret_cast<float *>(weight_int8_ptr + align(weight_int8_bytes));
 
-  // --- 1. Compute per-channel weight scales from channel_scale ---
-  // w_scale[c] = channel_scale[c] * output_scale / input_scale
-  launch_compute_w_scales(
-    reinterpret_cast<const float *>(inputs[IN_CHANNEL_SCALE]), w_scales_ptr,
-    params_.output_scale, params_.input_scale, c_out, stream);
-
-  // --- 2. Quantize FP16 features → INT8 ---
+  // --- 1. Quantize FP16 features → INT8 ---
   launch_quantize_features(
     reinterpret_cast<const __half *>(inputs[IN_FEATURES]), feat_int8_ptr,
     params_.input_scale, num_act_in * c_in, stream);
 
-  // --- 3. Quantize FP16 weights → INT8 (per-channel) ---
-  launch_quantize_weights_per_channel(
-    reinterpret_cast<const __half *>(inputs[IN_FILTERS]), weight_int8_ptr,
-    w_scales_ptr, c_out, k_vol * c_in, stream);
+  const void * expected_filters_ptr = nullptr;
+  const void * expected_channel_scale_ptr = nullptr;
+  const void * expected_bias_scaled_ptr = nullptr;
+  std::int8_t * cached_weight_int8_ptr = nullptr;
+  float * cached_w_scales_ptr = nullptr;
+  float * cached_gemm_bias_ptr = nullptr;
+  std::int64_t cached_c_out = 0;
+  std::int64_t cached_c_in = 0;
+  std::int64_t cached_k1 = 0;
+  std::int64_t cached_k2 = 0;
+  std::int64_t cached_k3 = 0;
+  {
+    std::lock_guard<std::mutex> lock(cache_init_mutex_);
+    if (!cache_initialized_ && initializeConstantCache(input_desc, inputs, stream) != 0) {
+      return -1;
+    }
+    if (!cache_mode_logged_) {
+      std::fprintf(
+        stderr, "[ImplicitGemmInt8Plugin] %s: constant-only cache mode active (version=%s)\n",
+        layer_name_.c_str(), kIMPLICIT_GEMM_INT8_PLUGIN_VERSION);
+      cache_mode_logged_ = true;
+    }
+    expected_filters_ptr = expected_filters_ptr_;
+    expected_channel_scale_ptr = expected_channel_scale_ptr_;
+    expected_bias_scaled_ptr = expected_bias_scaled_ptr_;
+    cached_weight_int8_ptr = cached_weight_int8_ptr_;
+    cached_w_scales_ptr = cached_w_scales_ptr_;
+    cached_gemm_bias_ptr = cached_gemm_bias_ptr_;
+    cached_c_out = cached_c_out_;
+    cached_c_in = cached_c_in_;
+    cached_k1 = cached_k1_;
+    cached_k2 = cached_k2_;
+    cached_k3 = cached_k3_;
+  }
+  // Constant-only contract: these three tensors must be constants bound once per engine.
+  if (
+    inputs[IN_FILTERS] != expected_filters_ptr ||
+    inputs[IN_CHANNEL_SCALE] != expected_channel_scale_ptr ||
+    inputs[IN_BIAS_SCALED] != expected_bias_scaled_ptr)
+  {
+    std::fprintf(
+      stderr,
+      "[ImplicitGemmInt8Plugin] %s: constant-only mode violation. filters/channel_scale/"
+      "bias_scaled pointers changed after cache init.\n",
+      layer_name_.c_str());
+    return -1;
+  }
+  if (
+    c_out != cached_c_out || c_in != cached_c_in || k1 != cached_k1 || k2 != cached_k2 ||
+    k3 != cached_k3)
+  {
+    std::fprintf(
+      stderr,
+      "[ImplicitGemmInt8Plugin] %s: constant-only mode violation. filter shape changed after cache "
+      "init.\n",
+      layer_name_.c_str());
+    return -1;
+  }
 
-  // s8s8f16 Int8Inference epilogue applies (scale * int32_acc + bias) only; `alpha` (output_scale)
-  // from ConvGemmOps is not used. Fold output dequant into scale/bias and pass output_scale=1.
-  launch_fuse_output_scale_into_gemm_scale_bias(
-    reinterpret_cast<const float *>(inputs[IN_CHANNEL_SCALE]),
-    reinterpret_cast<const float *>(inputs[IN_BIAS_SCALED]), params_.output_scale, w_scales_ptr,
-    gemm_bias_ptr, c_out, stream);
-
-  // --- 4. Build tv::Tensors for implicit_gemm ---
+  // --- 2. Build tv::Tensors for implicit_gemm ---
   tv::Tensor features_tv = tv::from_blob(feat_int8_ptr, {num_act_in, c_in}, tv::int8, 0);
 
-  tv::Tensor weights_tv = tv::from_blob(weight_int8_ptr, {c_out, k1, k2, k3, c_in}, tv::int8, 0);
+  tv::Tensor weights_tv = tv::from_blob(cached_weight_int8_ptr, {c_out, k1, k2, k3, c_in}, tv::int8, 0);
 
   tv::Tensor pair_fwd = tv::from_blob(
     inputs[IN_PAIR_FWD],
@@ -426,8 +579,8 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
   tv::Tensor mask_tensor = tv::zeros({1}, tv::uint32, -1);
   mask_tensor.data_ptr<uint32_t>()[0] = 0xffffffff;
 
-  tv::Tensor channel_scale_tv = tv::from_blob(w_scales_ptr, {c_out}, tv::float32, 0);
-  tv::Tensor bias_scaled_tv = tv::from_blob(gemm_bias_ptr, {c_out}, tv::float32, 0);
+  tv::Tensor channel_scale_tv = tv::from_blob(cached_w_scales_ptr, {c_out}, tv::float32, 0);
+  tv::Tensor bias_scaled_tv = tv::from_blob(cached_gemm_bias_ptr, {c_out}, tv::float32, 0);
 
   std::vector<tv::Tensor> pair_mask_splits{pair_mask_fwd};
   std::vector<tv::Tensor> mask_argsort_splits{mask_argsort_fwd};
@@ -494,21 +647,14 @@ std::size_t ImplicitGemmInt8Plugin::getWorkspaceSize(
   [[maybe_unused]] DynamicPluginTensorDesc const * outputs,
   [[maybe_unused]] std::int32_t num_outputs) const noexcept
 {
-  // INT8 feature/weight buffers, w_scales (then fused GEMM channel scale), GEMM bias scratch.
+  // INT8 feature scratch only. Weight/scale/bias are cached persistently in constant-only mode.
   auto align = [](std::int64_t x) -> std::int64_t { return (x + 255) & ~255LL; };
 
   std::int64_t max_n = inputs[IN_FEATURES].max.d[0];
   std::int64_t c_in = inputs[IN_FEATURES].max.d[1];
-  std::int64_t c_out = inputs[IN_FILTERS].max.d[0];
-  std::int64_t k_vol = inputs[IN_FILTERS].max.d[1] * inputs[IN_FILTERS].max.d[2] *
-                        inputs[IN_FILTERS].max.d[3];
 
   std::int64_t feat_bytes = align(max_n * c_in);
-  std::int64_t w_scales_bytes = align(c_out * static_cast<std::int64_t>(sizeof(float)));
-  std::int64_t weight_bytes = align(c_out * k_vol * c_in);
-  std::int64_t gemm_bias_bytes = align(c_out * static_cast<std::int64_t>(sizeof(float)));
-
-  return static_cast<std::size_t>(feat_bytes + w_scales_bytes + weight_bytes + gemm_bias_bytes);
+  return static_cast<std::size_t>(feat_bytes);
 }
 
 }  // namespace nvinfer1::plugin
