@@ -129,7 +129,7 @@ onnx_config = dict(
 )
 
 tensorrt_config = dict(
-    precision_policy="fp32_tf32",
+    precision_policy="fp16",
     max_workspace_size=1 << 32,
     plugin_libraries=["/opt/plugins/libautoware_tensorrt_plugins.so"],
 )

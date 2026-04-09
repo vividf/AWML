@@ -24,6 +24,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -74,7 +75,7 @@ public:
   using ConvTunerSimple = spconvlib::spconv::csrc::sparse::convops::spops::ConvTuner;
   ImplicitGemmInt8Plugin(const std::string & name, ImplicitGemmInt8Parameters const & params);
 
-  ~ImplicitGemmInt8Plugin() override = default;
+  ~ImplicitGemmInt8Plugin() override;
 
   IPluginCapability * getCapabilityInterface(PluginCapabilityType type) noexcept override;
   IPluginV3 * clone() noexcept override;
@@ -132,6 +133,9 @@ private:
   static constexpr std::int32_t NUM_OUTPUTS{1};
 
   void initFieldsToSerialize();
+  std::int32_t initializeConstantCache(
+    PluginTensorDesc const * input_desc, void const * const * inputs, cudaStream_t stream) noexcept;
+  void releaseConstantCache() noexcept;
 
   std::string layer_name_;
   ImplicitGemmInt8Parameters params_;
@@ -140,6 +144,22 @@ private:
   nvinfer1::PluginFieldCollection fc_to_serialize_;
 
   std::unique_ptr<ConvTunerSimple> tuner_int8_ptr_{};
+
+  // Constant-only path cache (initialized from first enqueue and reused afterward).
+  std::mutex cache_init_mutex_{};
+  bool cache_initialized_{false};
+  bool cache_mode_logged_{false};
+  std::int64_t cached_c_out_{0};
+  std::int64_t cached_k1_{0};
+  std::int64_t cached_k2_{0};
+  std::int64_t cached_k3_{0};
+  std::int64_t cached_c_in_{0};
+  const void * expected_filters_ptr_{nullptr};
+  const void * expected_channel_scale_ptr_{nullptr};
+  const void * expected_bias_scaled_ptr_{nullptr};
+  std::int8_t * cached_weight_int8_ptr_{nullptr};
+  float * cached_w_scales_ptr_{nullptr};
+  float * cached_gemm_bias_ptr_{nullptr};
 };
 
 }  // namespace nvinfer1::plugin
