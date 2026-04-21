@@ -135,6 +135,28 @@ if [ ! -f "$PLUGIN_SRC_DIR/src/implicit_gemm_plugin.cpp" ]; then
   exit 1
 fi
 
+# AWML customisation: disable pair-gen argsort for INT8 sparse encoder.
+# Matches traveller59/spconv INT8 guide and New3D's
+#   bool do_sort = !int8_inference_;  (sparseConvImplicit.cu:368).
+# The patcher is idempotent; can be disabled by exporting
+# AWML_DISABLE_DO_SORT_PATCH=1 before running this script.
+PAIR_GEN_PLUGIN_CPP="$PLUGIN_SRC_DIR/src/get_indices_pairs_implicit_gemm_plugin.cpp"
+PATCHER="$SCRIPT_DIR/patches/disable_sort_for_int8.py"
+if [ "${AWML_DISABLE_DO_SORT_PATCH:-0}" != "1" ]; then
+  if [ ! -f "$PATCHER" ]; then
+    echo "[build_plugin] ERROR: missing patcher $PATCHER"
+    exit 1
+  fi
+  if [ ! -f "$PAIR_GEN_PLUGIN_CPP" ]; then
+    echo "[build_plugin] ERROR: $PAIR_GEN_PLUGIN_CPP not found; upstream layout may have changed"
+    exit 1
+  fi
+  echo "[build_plugin] Applying AWML INT8 do_sort patch to pair-gen plugin"
+  python3 "$PATCHER" "$PAIR_GEN_PLUGIN_CPP"
+else
+  echo "[build_plugin] AWML_DISABLE_DO_SORT_PATCH=1 set; skipping do_sort patch"
+fi
+
 # Configure and build with standalone CMakeLists (no ament/autoware_cmake)
 mkdir -p "$BUILD_DIR"
 cp "$SCRIPT_DIR/CMakeLists.standalone" "$BUILD_DIR/CMakeLists.txt"

@@ -52,6 +52,7 @@ RUN python3 projects/BEVFusion/setup.py develop
 # Build TensorRT custom plugins at image build time.
 COPY projects/BEVFusion/plugins/build_plugin_inside_container.sh /workspace/projects/BEVFusion/plugins/build_plugin_inside_container.sh
 COPY projects/BEVFusion/plugins/CMakeLists.standalone /workspace/projects/BEVFusion/plugins/CMakeLists.standalone
+COPY projects/BEVFusion/plugins/patches /workspace/projects/BEVFusion/plugins/patches
 RUN if [ "${BUILD_TRT_PLUGINS}" = "true" ]; then \
     chmod +x /workspace/projects/BEVFusion/plugins/build_plugin_inside_container.sh && \
     AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF}" \

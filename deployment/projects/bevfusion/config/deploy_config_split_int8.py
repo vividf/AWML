@@ -210,12 +210,12 @@ tensorrt_config = dict(
 
 evaluation = dict(
     enabled=True,
-    num_samples=5,
+    num_samples=-1,
     num_warmup_samples=2,
     verbose=True,
     backends=dict(
         pytorch=dict(
-            enabled=False,
+            enabled=True,
             device=devices["cuda"],
         ),
         onnx=dict(

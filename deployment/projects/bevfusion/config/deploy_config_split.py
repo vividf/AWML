@@ -36,7 +36,7 @@ devices = dict(
 )
 
 export = dict(
-    mode="both",
+    mode="none",
     work_dir="work_dirs/bevfusion_deployment_split",
     onnx_path=None,
 )
@@ -136,7 +136,7 @@ tensorrt_config = dict(
 
 evaluation = dict(
     enabled=True,
-    num_samples=5,
+    num_samples=-1,
     num_warmup_samples=2,
     verbose=True,
     backends=dict(
