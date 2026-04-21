@@ -43,6 +43,13 @@ def _env_int(key: str, default: int) -> int:
 
 _TRT_DEBUG_SPLIT = _env_truthy("BEVFUSION_TRT_DEBUG_SPLIT")
 _TRT_LOG_IO = _env_truthy("BEVFUSION_TRT_LOG_IO")
+# Priority A — in-situ per-layer breakdown for the split sparse engine.
+#   BEVFUSION_TRT_SPARSE_PROFILE=1          attaches trt.IProfiler to the sparse context
+#   BEVFUSION_TRT_SPARSE_PROFILE_EVERY=1    log breakdown on every frame (default: every 10 frames)
+# The standalone tool ``benchmark/profile_sparse_encoder.py`` produces a cleaner report;
+# this env var is a sanity overlay when running the real eval path (step 5).
+_TRT_SPARSE_PROFILE = _env_truthy("BEVFUSION_TRT_SPARSE_PROFILE")
+_TRT_SPARSE_PROFILE_EVERY = max(1, _env_int("BEVFUSION_TRT_SPARSE_PROFILE_EVERY", 10))
 # ImplicitGemmInt8 TRT plugin (C++): per-layer FP16 output stats to stderr after each enqueue.
 #   BEVFUSION_INT8_GEMM_DEBUG=1
 #   BEVFUSION_INT8_GEMM_DEBUG_MAX=60   # max layer-dumps (default 60 ≈ 3 sparse passes × 20 layers)
@@ -150,6 +157,63 @@ class _TRTLayerProfiler(trt.IProfiler):
         self.layer_times.append((str(layer_name), float(ms)))
 
 
+# Priority A — bucket classification for sparse encoder in-situ profile.
+# Mirrors ``benchmark/profile_sparse_encoder.py`` so stage 5 eval and the
+# standalone tool surface the same labels.
+_SPARSE_BUCKET_ORDER: Tuple[str, ...] = (
+    "pair_gen",
+    "implicit_gemm_int8",
+    "implicit_gemm_fp",
+    "scatter_nd",
+    "add",
+    "relu",
+    "quant_dquant",
+    "cast",
+    "layout",
+    "other",
+)
+
+
+def _classify_sparse_bucket(layer_name: str) -> str:
+    """Match sparse encoder TRT layer names to a Priority A bucket.
+
+    Keep patterns simple & case-insensitive — TRT forwards ONNX node names with
+    occasional prefixes, so pure substring matching is enough and cheap.
+    """
+    n = layer_name.lower()
+    # Normalize common separators so ``ImplicitGemm_int8`` / ``ImplicitGemm-int8``
+    # all collapse to ``implicitgemmint8`` before substring matching.
+    n_norm = n.replace("_", "").replace("-", "").replace(" ", "")
+    if "getindicepairsimplicitgemm" in n_norm or ("getindicepairs" in n_norm and "implicitgemm" not in n_norm):
+        return "pair_gen"
+    if "implicitgemmint8" in n_norm:
+        return "implicit_gemm_int8"
+    if "implicitgemm" in n_norm or "indiceconv" in n_norm:
+        return "implicit_gemm_fp"
+    if "scatternd" in n:
+        return "scatter_nd"
+    if "quantizelinear" in n or "dequantizelinear" in n:
+        return "quant_dquant"
+    # Guard: "add"/"relu"/"cast" must be word-like to avoid matching paths.
+    if "relu" in n:
+        return "relu"
+    if "/add" in n or n.endswith("_add") or n.startswith("add"):
+        return "add"
+    if "/cast" in n or "_cast_" in n or n.startswith("cast"):
+        return "cast"
+    if any(k in n for k in ("reshape", "transpose", "concat", "slice", "gather", "squeeze", "unsqueeze")):
+        return "layout"
+    return "other"
+
+
+def _summarize_sparse_layers(layer_times: List[Tuple[str, float]]) -> Dict[str, float]:
+    """Sum sparse TRT layer times per Priority A bucket (ms per frame)."""
+    sums: Dict[str, float] = {b: 0.0 for b in _SPARSE_BUCKET_ORDER}
+    for layer_name, ms in layer_times:
+        sums[_classify_sparse_bucket(layer_name)] += ms
+    return sums
+
+
 def _aggregate_trt_layers_to_stages(layer_times: List[Tuple[str, float]]) -> Dict[str, float]:
     """Map TensorRT layer names to BEVFusion stages and sum times (ms).
 
@@ -244,6 +308,11 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         self._split_debug_frames_done: int = 0
         self._split_debug_max: int = max(0, _env_int("BEVFUSION_TRT_DEBUG_SPLIT_FRAMES", 2))
         self._split_tensor_log_frames_done: int = 0
+        # Priority A: accumulators for sparse encoder bucket breakdown across eval frames.
+        self._sparse_profile_frame_count: int = 0
+        self._sparse_profile_bucket_sum: Dict[str, float] = {b: 0.0 for b in _SPARSE_BUCKET_ORDER}
+        self._sparse_profile_top_layers: Dict[str, float] = {}  # name -> accumulated ms
+        self._last_sparse_profile_buckets: Dict[str, float] = {}
 
         self._load_tensorrt_engine()
         logger.info(f"BEVFusion TensorRT pipeline initialized from: {tensorrt_dir} (split={self._split})")
@@ -510,16 +579,21 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
                         f"(voxelize_reduce={voxelize_reduce}, voxels_ndim={voxels_np.ndim})"
                     )
 
-            # Sparse (spconv) engine: CUDA-timed separately; do not attach profiler here (dense pass clears it).
+            # Sparse (spconv) engine: CUDA-timed separately. If BEVFUSION_TRT_SPARSE_PROFILE=1,
+            # also attach a dedicated IProfiler here so we can answer Priority A's question
+            # ("where does the sparse time actually go?") without a separate run.
+            sparse_profiler: Optional[_TRTLayerProfiler] = _TRTLayerProfiler() if _TRT_SPARSE_PROFILE else None
             sparse_out = self._trt_infer_voxel_inputs(
                 self._engine_sparse,
                 self._context_sparse,
                 voxels_np,
                 coors_np,
                 num_points_np,
-                profiler=None,
+                profiler=sparse_profiler,
                 gpu_interval_events=(self._sparse_ev_s, self._sparse_ev_e),
             )
+            if sparse_profiler is not None:
+                self._record_sparse_profile(sparse_profiler.layer_times)
             if len(sparse_out) != 1:
                 raise RuntimeError(f"Sparse engine: expected 1 output, got {list(sparse_out.keys())}")
             bev_name = next(iter(sparse_out))
@@ -728,7 +802,68 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
 
         return outputs, stage_latencies
 
+    def _record_sparse_profile(self, layer_times: List[Tuple[str, float]]) -> None:
+        """Priority A in-situ overlay: accumulate sparse-engine bucket breakdown.
+
+        We keep running sums across all eval frames so that after the run the user can
+        read off a 'mean sparse encoder bucket' right next to the normal latency table.
+        """
+        if not layer_times:
+            return
+        buckets = _summarize_sparse_layers(layer_times)
+        self._last_sparse_profile_buckets = buckets
+        self._sparse_profile_frame_count += 1
+        for b, ms in buckets.items():
+            self._sparse_profile_bucket_sum[b] = self._sparse_profile_bucket_sum.get(b, 0.0) + ms
+        for name, ms in layer_times:
+            self._sparse_profile_top_layers[name] = self._sparse_profile_top_layers.get(name, 0.0) + ms
+
+        if self._sparse_profile_frame_count % _TRT_SPARSE_PROFILE_EVERY == 0:
+            total = sum(buckets.values()) or 1e-9
+            parts = [
+                f"{b}={buckets[b]:.3f}ms ({buckets[b] / total * 100.0:.1f}%)"
+                for b in _SPARSE_BUCKET_ORDER
+                if buckets.get(b, 0.0) > 0.0
+            ]
+            logger.info(
+                "[priority-a][sparse-profile] frame=%d sparse_layer_sum=%.3fms | %s",
+                self._sparse_profile_frame_count,
+                total,
+                " ".join(parts),
+            )
+
+    def print_sparse_profile_summary(self) -> None:
+        """Print Priority A mean-per-frame sparse-engine bucket breakdown.
+
+        Called by the evaluator at the end of the run; no-op if the env var was off.
+        """
+        n = self._sparse_profile_frame_count
+        if n <= 0:
+            return
+        logger.info("=" * 72)
+        logger.info("[priority-a] Sparse encoder in-situ bucket breakdown (mean/frame, n=%d)", n)
+        logger.info("=" * 72)
+        total_mean = sum(self._sparse_profile_bucket_sum.values()) / n
+        for b in _SPARSE_BUCKET_ORDER:
+            s = self._sparse_profile_bucket_sum.get(b, 0.0)
+            if s <= 0.0:
+                continue
+            mean = s / n
+            pct = (s / (total_mean * n)) * 100.0 if total_mean > 0.0 else 0.0
+            logger.info("  %-20s %8.3f ms  (%5.2f%%)", b, mean, pct)
+        logger.info("  %-20s %8.3f ms", "SUM", total_mean)
+        top_items = sorted(self._sparse_profile_top_layers.items(), key=lambda kv: -kv[1])[:10]
+        logger.info("Top 10 sparse layers (mean/frame):")
+        for name, acc in top_items:
+            logger.info("  %8.3f ms  %s", acc / n, name)
+        logger.info("=" * 72)
+
     def _release_gpu_resources(self) -> None:
+        # Priority A — emit the sparse-profile summary before we tear engines down.
+        try:
+            self.print_sparse_profile_summary()
+        except Exception as exc:
+            logger.warning("[priority-a] sparse-profile summary failed: %s", exc)
         for attr in (
             "_start_event",
             "_end_event",
