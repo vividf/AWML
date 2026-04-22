@@ -6,7 +6,7 @@ import torch
 from cumm import tensorview as tv
 from spconv import constants
 from spconv.algo import CONV_CPP
-from spconv.constants import SPCONV_DO_SORT, SPCONV_USE_DIRECT_TABLE, AllocKeys
+from spconv.constants import SPCONV_USE_DIRECT_TABLE, AllocKeys
 from spconv.core import ConvAlgo
 from spconv.core_cc.csrc.sparse.all import SpconvOps
 from spconv.core_cc.csrc.sparse.convops.spops import ConvGemmOps
@@ -16,6 +16,24 @@ from spconv.pytorch.cppcore import _TORCH_DTYPE_TO_TV, TorchAllocator, get_arch,
 from spconv.tools import CUDAKernelTimer
 from torch.autograd import Function
 from torch.onnx.symbolic_helper import _get_tensor_sizes
+
+# Controls `do_sort` on GetIndicePairsImplicitGemm (ONNX export + PyTorch
+# forward). Default True (pair-mask argsort on, required for FP16). Deploy CLIs
+# (e.g. the BEVFusion entrypoint) flip this to False for INT8 configs via
+# `set_do_sort` before ONNX export. There is deliberately no env-var fallback:
+# the deploy_config is the single source of truth.
+_do_sort: bool = True
+
+
+def set_do_sort(value: bool) -> None:
+    """Set the `do_sort` value used at ONNX export and in the PyTorch forward
+    path for pair-mask argsort. Called by deploy CLIs from ``deploy_cfg.spconv_do_sort``."""
+    global _do_sort
+    _do_sort = bool(value)
+
+
+def _resolve_do_sort() -> bool:
+    return _do_sort
 
 
 class GetIndicePairs(Function):
@@ -245,6 +263,7 @@ class GetIndicePairsImplicitGemm(Function):
             subm_i=subm,
             transpose_i=transpose,
             is_train_i=is_train,
+            do_sort_i=int(_resolve_do_sort()),
             outputs=5,
         )
         indices_shape = _get_tensor_sizes(indices)
@@ -301,7 +320,7 @@ class GetIndicePairsImplicitGemm(Function):
 
         num_out_act_bound: int = -1
         direct_table: bool = SPCONV_USE_DIRECT_TABLE
-        do_sort = SPCONV_DO_SORT
+        do_sort = _resolve_do_sort()
 
         try:
             from torch.fx import Proxy as _FxProxy

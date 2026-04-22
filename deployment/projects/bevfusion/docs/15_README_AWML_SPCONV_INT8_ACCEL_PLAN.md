@@ -769,9 +769,9 @@ encoder layer 主體（~91%）集中在 `encoder_layer{1..4}`，對應五個解�
 
 ### 10.8 下一步建議（基於實測，按 ROI 排序）
 
-1. **Nsight Compute 拆解 pair-gen 內核** ← 最高 ROI  
-   目標是確認 `argsort` / `scan` / `unique` 各佔 `GetIndicePairsImplicitGemm` 的多少 μs，進一步收斂「關 argsort 到底能省多少」；目前 `nsys` 顯示 `sort` 值得優化，但不是整個 pair-gen bucket 的全部  
-   → 使用 `benchmark/nsys_profile_sparse.sh` + `ncu --set full --kernel-id ::regex:argsort|scan`
+1. **Nsight Compute 拆解 pair-gen 內核** ← 最高 ROI（**§10.10 後請調整焦點**）  
+   **已關 `do_sort`（§10.9–10.10）後**，`DeviceMergeSort*` 應大幅下降；此時應優先拆解 **剩餘 pair-gen** 裡的 **hash / stage1–2 / unique / scatter** 等非 sort kernel，並對照開源同一套 `SpconvOps` 是否還能換 algo 或減少 launch。若需對照舊 baseline，在 deploy_config 把 `spconv_do_sort = True` 後重 export ONNX → 重 build engine，再跑 `argsort|scan`。  
+   → `benchmark/nsys_profile_sparse.sh` + `ncu --set full`（kernel filter 依當前 Top kernel 名單調整）
 
 2. **查出唯一那個 `implicit_gemm_fp` 節點**  
    0.062 ms 雖小但是 INT8 覆蓋率的洞；先確認是哪層，再判斷是有意保留（如 New3D 把 `conv_out` 留到 dense 側）還是 transform 遺漏  
@@ -788,26 +788,197 @@ encoder layer 主體（~91%）集中在 `encoder_layer{1..4}`，對應五個解�
    relu (0.817 ms) + cast (0.196 ms) + 可能被 `other` 吃掉的 add ≈ 1.0–1.5 ms  
    若能 fuse 進 conv epilogue，大約是 7–10% 的收益，屬於中等回報；但需要改 plugin，工作量中偏高
 
-綜合來說，**投 Priority A2（pair-gen / sort 優化）ROI 最高**（-14% ~ -29% latency、不需要改 plugin graph），應作為下一階段的首選動作。
+綜合來說，**pair-gen（含 sort）曾是最大桶**；關閉 sort 後實際端到端約 **−11%**（§10.10），下一刀應轉向 **pair-gen 非 sort 段 + graph 邊界**，見 **§10.11**。
 
-### 10.9 A2 實作：在 AWML 關閉 pair-gen 的 `do_sort`
+### 10.9 A2 實作：把 `do_sort` 作為 plugin 屬性（FP16/INT8 分開控制）
 
-對照 [traveller59/spconv INT8 guide](https://github.com/traveller59/spconv/blob/master/docs/INT8_GUIDE.md#performance-guide) 與 New3D 的 `bool do_sort = !int8_inference_;`（`sparseConvImplicit.cu:368`），在 INT8 inference 階段 pair-mask 的 argsort 可以省略。AWML 的 INT8 sparse encoder 是走 `autoware_tensorrt_plugins::GetIndicesPairsImplicitGemmPlugin`（不是 New3D 的 `libspconv.so`），所以要在「**plugin 內部**」關掉，而不是改 New3D 的 `.cu`。
+對照 [traveller59/spconv INT8 guide](https://github.com/traveller59/spconv/blob/master/docs/INT8_GUIDE.md#performance-guide) 與 New3D 的 `bool do_sort = !int8_inference_;`（`sparseConvImplicit.cu:368`），在 INT8 inference 階段 pair-mask 的 argsort 可以省略，但 FP16 不應一起跳過。  
+AWML 的 INT8 sparse encoder 走 `autoware_tensorrt_plugins::GetIndicesPairsImplicitGemmPlugin`（不是 New3D 的 `libspconv.so`），而**同一個 `.so` 會同時服務 FP16/INT8 engine**，因此不能只用 runtime env 做全域開關（FP16 engine 會被誤關 sort）。
 
-**已做的改動（皆在 BEVFusion Dockerfile build-time 自動套用）：**
+**設計：把 `do_sort` 固化到 ONNX → TRT engine 的 plugin 屬性，由 deploy_config 唯一控制。**  
+每個 engine 在 build 時把 `do_sort_i=0/1` 寫進 graph；deploy 時 plugin 自己讀 `params_.do_sort`，不再依賴任何 env var。這樣：
 
-1. 新增 `projects/BEVFusion/plugins/patches/disable_sort_for_int8.py`：idempotent 的 patcher，把 `autoware_tensorrt_plugins` 裡的 `get_indices_pairs_implicit_gemm_plugin.cpp`：
-   - 注入一個 `awml_get_do_sort_from_env()` 小 helper，預設回傳 `false`，支援 runtime override `SPCONV_DO_SORT=1`（對齊 traveller59 Python 端的環境變數名稱）。
-   - 把兩處 `SpconvOps::get_indice_pairs_implicit_gemm(..., use_direct_table);` 改成 `..., use_direct_table, /*do_sort=*/awml_get_do_sort_from_env());`。
-2. `projects/BEVFusion/plugins/build_plugin_inside_container.sh`：在 clone autoware_universe 後、`cmake` 前呼叫 patcher；提供 escape hatch `AWML_DISABLE_DO_SORT_PATCH=1` 在需要比較 baseline 時可以跳過。
-3. `projects/BEVFusion/Dockerfile`：多 `COPY` 一份 `patches/` 目錄進 image，確保 build stage 找得到 patcher。
+- **同一個 `.so`** 可以服務 FP16（預設 `do_sort=1`）與 INT8（`spconv_do_sort=False` → `0`）。
+- 舊 ONNX graph（沒帶 `do_sort` 屬性）自動 fallback 為 `1`，**100% 向後相容**。
+- 單一 source of truth：`deploy_config.spconv_do_sort`；不設即 `True`（sort on）。
 
-> ⚠️ 該 patch 影響的是 **TRT plugin 的 pair-gen**（deploy path）；Python PyTorch 端的 `GetIndicePairsImplicitGemm`（`projects/SparseConvolution/sparse_functional.py:304`）已經是 `do_sort = SPCONV_DO_SORT`，其預設值來自 traveller59 的 `spconv.constants`（預設 `True`），PTQ 校正階段會繼續保留 sort。若要讓 Python eval 與 deploy 行為一致，執行時加 `SPCONV_DO_SORT=0 python -m ...` 即可。
+**交付方式：把 `autoware_tensorrt_plugins` 的改動直接 commit 到 AWML fork；build script 改 clone fork，不再 build-time patch**（先前 patcher-based 版本已移除）。這樣 source of truth 只在 fork，CI / Docker build 完全可重現。
+
+**實作（三個 layer）：**
+
+1. **C++ plugin（固化在 fork `vividf/autoware.universe` 的 `feat/spconv-do-sort-attribute` branch）** — `perception/autoware_tensorrt_plugins` 內三份檔：
+   - `include/autoware/tensorrt_plugins/get_indices_pairs_implicit_gemm_plugin.hpp`：`GetIndicesPairsImplicitGemmParameters` 新增 `std::int32_t do_sort{1};`（**預設 1 = sort**）。
+   - `src/get_indices_pairs_implicit_gemm_plugin.cpp`：
+     - `initFieldsToSerialize()` 多一筆 `("do_sort", &params_.do_sort, kINT32, 1)`。
+     - 兩處 `SpconvOps::get_indice_pairs_implicit_gemm(...)` 改為 `..., use_direct_table, static_cast<bool>(params_.do_sort));`。
+   - `src/get_indices_pairs_implicit_gemm_plugin_creator.cpp`：
+     - 建構子多一筆 `plugin_attributes_.emplace_back("do_sort", nullptr, kINT32, 1)`。
+     - `PLUGIN_VALIDATE(num_fields == 11)` 放寬為 `11 || 12`（舊 ONNX 不帶 `do_sort` 時仍可 build）。
+     - ONNX 解析迴圈多一個 `attr_name == "do_sort"` 分支；若沒帶就使用結構預設值 `1`。
+2. **Python symbolic** `projects/SparseConvolution/sparse_functional.py`：
+   - `GetIndicePairsImplicitGemm.symbolic()` 的 `g.op(...)` 寫 `do_sort_i=int(_resolve_do_sort())`，`forward()` 的 `do_sort = _resolve_do_sort()` 亦走同一來源。
+   - 模組級 `_do_sort: bool = True` 與 `set_do_sort(value)` 兩個 API；**沒有 env-var fallback**，deploy_config 是唯一入口。不呼叫即維持預設 `True`。
+3. **Deploy CLI** `deployment/projects/bevfusion/entrypoint.py`：讀 `deploy_cfg.get("spconv_do_sort", True)`，呼叫 `set_do_sort(value)` 並 log。
+4. **Deploy configs**：`deploy_config_split_int8.py` 寫 `spconv_do_sort = False`（INT8 不 sort）；FP16 config 不寫或顯式設 `True`（保留 sort）。
+5. **Build 腳本** `projects/BEVFusion/plugins/build_plugin_inside_container.sh`：
+   - 新增 env `AUTOWARE_UNIVERSE_REPO`（預設 `https://github.com/vividf/autoware.universe.git`）與既有的 `AUTOWARE_UNIVERSE_REF`（預設改為 `feat/spconv-do-sort-attribute`）；clone 時一併使用。
+   - **已移除** 以前的 `patches/add_do_sort_attribute.py` 呼叫與 `AWML_DISABLE_DO_SORT_PATCH` 開關 — fork 本身即為 source of truth。
+   - Clone 完會檢查 `get_indices_pairs_implicit_gemm_plugin_creator.cpp` 是否含 `"do_sort"` 欄位；缺失時僅印 WARNING（方便 A/B 對比 stock upstream），不中斷 build。
+6. **Dockerfile** `projects/BEVFusion/Dockerfile`：`ARG AUTOWARE_UNIVERSE_REPO` 與 `ARG AUTOWARE_UNIVERSE_REF` 一同透傳給 build script；`COPY plugins/patches` 已移除。
+
+**A/B against stock upstream**（需要對照未改動版本時）：
+
+```bash
+AUTOWARE_UNIVERSE_REPO=https://github.com/autowarefoundation/autoware.universe.git \
+AUTOWARE_UNIVERSE_REF=main \
+bash projects/BEVFusion/plugins/build_plugin_inside_container.sh
+```
+
+Build log 會出現 `WARNING: cloned source does NOT expose the do_sort attribute.`，提醒這不是 production INT8 path。
+
+**從 deploy_config 到 runtime 的串接**：
+
+```text
+[config]   deploy_config.spconv_do_sort = False
+[CLI]      entrypoint.run() → set_do_sort(False)
+[export]   GetIndicePairsImplicitGemm.symbolic() 寫 do_sort_i=0 到 ONNX
+[build]    TRT builder → plugin creator 解析 "do_sort" → params_.do_sort = 0
+[serialize] plugin fields 多一項 "do_sort" → 寫進 .engine
+[runtime]  enqueue() 用 params_.do_sort → SpconvOps::get_indice_pairs_implicit_gemm(..., do_sort=false)
+```
+
+> **為什麼不用 env var？** Env var 是進程級全域，容易污染其他 precision 的 export，而且 CLI invocation 之間沒有持久紀錄。Deploy_config 是 per-engine 設定，天生就跟 `precision_policy` / `plugin_libraries` 等並列，source of truth 只有一個，git 可追蹤。
+
+**對應情境**：
+
+| 情境 | Deploy config | ONNX `do_sort_i` | Plugin `params_.do_sort` | 是否 sort |
+|---|---|---:|---:|---|
+| FP16 deploy（預設） | 不設 或 `spconv_do_sort = True` | `1` | `1` | ✅ sort |
+| INT8 deploy | `spconv_do_sort = False` | `0` | `0` | ❌ skip |
+| **舊 ONNX**（未帶屬性）+ 新 `.so` | — | （缺） | `1`（struct 預設） | ✅ sort（與舊行為一致） |
+| 新 ONNX（帶屬性）+ **舊 `.so`** | — | `0/1` | N/A（舊 creator 只收 11 欄） | ⚠️ build 失敗，必須配對新 `.so` |
+
+> **注意**：`GetIndicesPairsImplicitGemmParameters` 新增欄位後，struct 大小改變；**已存在的 `.engine`（用舊 `.so` serialize 的）無法用新 `.so` 直接 load**，必須重 build engine。這是 attribute-based 方案的固有代價，換來的是「每個 engine 自己帶 `do_sort`」的語意乾淨性。
 
 **驗證步驟：**
 
-1. 重新 build image（`docker build -f projects/BEVFusion/Dockerfile ...`），觀察 log 應出現 `[build_plugin] Applying AWML INT8 do_sort patch to pair-gen plugin` 與 `[awml-patch] patched ... (2 call sites + helper)`。
-2. 重新跑 `benchmark/nsys_profile_sparse.sh`，比對 `nsys stats --report cuda_kern_exec_sum` 裡的 `DeviceMergeSort*` kernel：
-   - **預期**：`sort` bucket 幾乎消失，總 GPU 時間下降約 **1.2–1.7 ms/frame**（與 §10.5 估算一致）。
-   - 若仍看到大量 `DeviceMergeSort*`，代表 patch 沒套到（檢查 AWML_DISABLE_DO_SORT_PATCH 或 `get_indices_pairs_implicit_gemm_plugin.cpp` 裡有沒有 `AWML_PATCH_DO_SORT_FOR_INT8` marker）。
-3. 跑完整 eval，確認 mAP / mAPH 沒有漂移（argsort 只是 locality 優化，不改變 pair 的數學正確性；New3D 也是這麼處理）。若出現 accuracy regression，先把 `SPCONV_DO_SORT=1` 打開 A/B，再往 plugin bug 方向排查。
+1. 重新 build image（或直接在 container 內跑 `bash projects/BEVFusion/plugins/build_plugin_inside_container.sh`）。  
+   log 應出現 `[build_plugin] Plugin repo: https://github.com/vividf/autoware.universe.git` / `[build_plugin] Plugin ref:  feat/spconv-do-sort-attribute` 以及 `[build_plugin] OK: cloned source exposes do_sort plugin attribute`；若 clone 指向 stock upstream 會印 `WARNING: cloned source does NOT expose the do_sort attribute.`。  
+2. 重新 export ONNX：INT8 path 用含 `spconv_do_sort = False` 的 deploy_config（如 `deploy_config_split_int8.py`）；FP16 config 不寫或設 `True`。  
+   entrypoint log 會印 `spconv_do_sort: False (baked into ...)`。在 ONNX 上用 `onnx.helper` 掃 `GetIndicePairsImplicitGemm` node 的 `do_sort` 屬性應能看到對應值（見下方 sanity-check snippet）。  
+3. 重新 build engine（**必要**）。跑 `benchmark/nsys_profile_sparse.sh`：  
+   - INT8：`nsys stats --report cuda_kern_exec_sum` 裡 `DeviceMergeSort*` 應近乎消失、端到端 −1.2~1.7 ms/frame。  
+   - FP16：`DeviceMergeSort*` 應與 stock plugin 表現一致（sort 仍然發生）。  
+4. 跑完整 eval，確認 INT8 的 mAP / mAPH 沒有漂移（argsort 僅是 locality 優化，不改變 pair 數學正確性；與 New3D 的 `do_sort = !int8_inference_` 精神一致）。  
+5. A/B：如要把 INT8 engine 的 sort 重新打開比較 baseline，把 deploy_config 的 `spconv_do_sort` 設 `True`（或暫時 comment 掉讓它走 env fallback），重跑 Step 2 → 5；**runtime 完全不用動**。
+
+**Sanity-check ONNX 屬性**：
+
+```python
+import onnx
+m = onnx.load("work_dirs/bevfusion_split_int8_deployment/onnx/bevfusion_sparse.onnx")
+vals = [(n.name, next((a.i for a in n.attribute if a.name == "do_sort"), None))
+        for n in m.graph.node if n.op_type == "GetIndicePairsImplicitGemm"]
+print(f"{len(vals)} pair-gen nodes; do_sort values: {sorted({v for _, v in vals})}")
+```
+
+- `deploy_config_split_int8.py`（`spconv_do_sort = False`）→ `{0}`。
+- FP16 config（未設或 `True`）→ `{1}`。
+- `None` → ONNX 是舊版 `sparse_functional.py` export 的；重跑 Step 2 即可。新 plugin 會以 struct 預設值 `1` fallback，不會崩。
+
+### 10.10 實測：`do_sort` 關閉後（layer profiler / CUDA-event）
+
+**前提**：已套用 §10.9 的 pair-gen plugin patch（`SpconvOps::get_indice_pairs_implicit_gemm` 傳入 `do_sort=false` 預設）；其餘量測條件與 §10 開頭一致（`profile_sparse_encoder`、warmup/iter 可比）。以下路徑為 container 內 `/workspace` 視角。
+
+```
+Engine  : /workspace/work_dirs/bevfusion_split_int8_deployment/tensorrt/bevfusion_sparse.engine
+Inputs  : real:info/t4dataset_j6gen2_base_infos_test.pkl#0 (num_voxels=70747)
+Total GPU latency (CUDA-event, steady-state):
+  mean=13.652 ± 0.536 ms  median=13.507  min=13.005  max=15.933  n=200
+
+------------------------------------------------------------------------------
+Layer-sum breakdown by op-bucket (mean per-iteration sum):
+------------------------------------------------------------------------------
+  bucket                 count      sum_ms   % of layers
+  pair_gen                  25       5.300        43.54%
+  implicit_gemm_int8        20       4.318        35.47%
+  implicit_gemm_fp           1       0.060         0.49%
+  relu                      20       0.832         6.84%
+  cast                       8       0.207         1.70%
+  layout                     2       0.005         0.04%
+  other                    101       1.452        11.93%
+
+[A2] pair_gen (GetIndicePairsImplicitGemm) = 5.300 ms/iter (43.54% of layer-sum)
+     → 已關 sort 後 pair_gen 仍為最大 bucket；後續若要再削時間，應拆解剩餘 pair-gen（hash / unique / scatter 等非 sort）或改 plugin fusion。
+
+------------------------------------------------------------------------------
+Block roll-up (encoder_layer granularity):
+------------------------------------------------------------------------------
+  block                  count      sum_ms   % of layers
+  other                    168      10.930        89.79%
+  conv_input                 5       0.890         7.31%
+  conv_out                   4       0.353         2.90%
+
+------------------------------------------------------------------------------
+Top 15 layers by mean time:
+------------------------------------------------------------------------------
+    #     mean_ms  bucket                layer_name
+    1       0.863  other                 [trainStation1]
+    2       0.737  pair_gen              /pts_middle_encoder/encoder_layer1/encoder_layer1.2/encoder_layer1.2.0/GetIndicePairsImplicitGemm
+    3       0.587  implicit_gemm_int8    /pts_middle_encoder/conv_input/conv_input.0/ImplicitGemm_int8
+    4       0.566  pair_gen              /pts_middle_encoder/encoder_layer2/encoder_layer2.2/encoder_layer2.2.0/GetIndicePairsImplicitGemm
+    5       0.404  pair_gen              /pts_middle_encoder/encoder_layer3/encoder_layer3.2/encoder_layer3.2.0/GetIndicePairsImplicitGemm
+    6       0.283  pair_gen              /pts_middle_encoder/conv_out/conv_out.0/GetIndicePairsImplicitGemm
+    7       0.273  pair_gen              /pts_middle_encoder/encoder_layer2/encoder_layer2.0/conv1/GetIndicePairsImplicitGemm
+    8       0.270  pair_gen              /pts_middle_encoder/conv_input/conv_input.0/GetIndicePairsImplicitGemm
+    9       0.266  pair_gen              /pts_middle_encoder/encoder_layer1/encoder_layer1.0/conv1/GetIndicePairsImplicitGemm
+   10       0.266  pair_gen              /pts_middle_encoder/encoder_layer1/encoder_layer1.1/conv1/GetIndicePairsImplicitGemm
+   11       0.264  pair_gen              /pts_middle_encoder/encoder_layer1/encoder_layer1.1/conv2/GetIndicePairsImplicitGemm
+   12       0.264  pair_gen              /pts_middle_encoder/encoder_layer1/encoder_layer1.0/conv2/GetIndicePairsImplicitGemm
+   13       0.258  pair_gen              /pts_middle_encoder/encoder_layer2/encoder_layer2.0/conv2/GetIndicePairsImplicitGemm
+   14       0.257  pair_gen              /pts_middle_encoder/encoder_layer2/encoder_layer2.1/conv1/GetIndicePairsImplicitGemm
+   15       0.256  pair_gen              /pts_middle_encoder/encoder_layer2/encoder_layer2.1/conv2/GetIndicePairsImplicitGemm
+==============================================================================
+```
+
+**與 §10.1 / §10.2（有 sort／未關 `do_sort`）對照**
+
+| 指標 | §10.1–10.2 baseline | §10.10（disable sort） | Δ |
+|---|---:|---:|---|
+| CUDA-event **mean** | 15.320 ms | **13.652 ms** | **−1.668 ms**（約 **−10.9%**） |
+| CUDA-event std | ±0.569 | ±0.536 | 相近 |
+| **pair_gen sum_ms** | 7.355（51.70%） | **5.300**（43.54%） | **−2.055 ms**；佔 layer-sum **−8.16 pp** |
+| implicit_gemm_int8 sum_ms | 4.322（30.38%） | 4.318（35.47%） | 合計時間幾乎相同；佔比上升是因為 pair_gen 縮小後分母效應 |
+| implicit_gemm_fp | 1×0.062 ms | 1×0.060 ms | 仍為單一 FP 節點，量級一致 |
+| relu / cast | 0.817 / 0.196 | 0.832 / 0.207 | 小幅波動（profiler 與 fused region 邊界定義 noise） |
+
+**解讀**：關閉 pair-mask sort 後，**端到端 sparse engine GPU 時間下降約 1.67 ms**，與 §10.5 用 `nsys` 粗估的 sort bucket（約 1.25–1.66 ms/frame）同一量級；**pair_gen layer-sum 仍約 5.3 ms**，說明 pair-gen 裡仍有大量 **非 sort** 成本（hash / stage1–2 / mask 生成等），後續仍可做 Nsight Compute 拆解或演算法級優化。Top 15 觀察：`ImplicitGemm_int8`（`conv_input.0`）升到第 3 名，反映 sort 成本拿掉後 **INT8 conv** 與 **剩餘 pair_gen** 的相對排序更接近真實比例。
+
+### 10.11 disable sort 後 vs 開源路線：仍存在的差距與可 improvement 方向
+
+以下對照 **§2**（AWML / New3D / CUDA-BEVFusion 架構差異），並以 **§10.10** 的量測為準：關 sort 之後 **pair_gen 仍 ~5.3 ms（~44% layer-sum）**、**implicit_gemm_int8 仍 ~4.3 ms（~35%）**，瓶頸從「sort 一枝獨秀」變成 **「pair-gen 非 sort 段 + INT8 GEMM + TRT graph 開銷」** 並重。
+
+#### 已與開源敘事對齊的部分
+
+- **INT8 inference 下略過 pair-mask sort**：對應 New3D `do_sort = !int8_inference_`、traveller59 [INT8 performance guide](https://github.com/traveller59/spconv/blob/master/docs/INT8_GUIDE.md#performance-guide) 的精神；實測端到端約 **−11%** sparse engine latency（§10.10）。
+- **INT8 implicit GEMM 本身不慢**：§10.10 Top 15 裡 `ImplicitGemm_int8` 已能與單層 pair_gen 同量級競爭，與「主戰場在 pair / graph 而非純 GEMM kernel」的判斷一致。
+
+#### 仍與開源有結構性差異、因而仍可能帶來收益的項目
+
+| 方向 | 開源 / 參考作法 | AWML 現況與缺口 | 可能收益與備註 |
+|---|---|---|---|
+| **層間 INT8 activation chain** | New3D：`input_precision` / `output_precision` 可維持 **INT8→INT8**，`SparseRelu` / `SparseAdd` 可走 INT8（§2.2） | Path B：`ImplicitGemmInt8` **I/O 仍 FP16**，每層進 plugin 再 `FP16→INT8`（§2.1.1） | 減少 **per-layer 量化與記憶體 traffic**；收益需用 Nsight 看 `launch_quantize_features` / cast 是否仍顯著；屬 **中高工作量**（改 plugin I/O 或 fusion） |
+| **稀疏段改由獨立 engine 執行** | CUDA-BEVFusion：sparse 走 **`spconv::Engine` / libspconv**，非逐層 TRT plugin（§2.3–2.4） | AWML：整段仍是 **TensorRT + 多個 custom plugin**，Myelin fused region（如 `[trainStation1]`）與 layer 邊界開銷仍在 §10.10 Top 1 | **graph 級** 才有可能吃掉 launch / D2D / 調度開銷；屬 **架構級**，長期 ROI 高、短期成本高 |
+| **pair-gen 與 conv 的靜態拆分／reuse** | traveller59 / New3D 註解：靜態 inference 可把 **pair-gen 與 conv 拆層** 以重用 pair（減少重複 indice work） | TRT 圖上每層仍各自 **GetIndicePairsImplicitGemm**，§10.10 顯示 **25 個 pair_gen 節點加總仍是大頭** | 若幾何與 tensor 形狀在 deploy 時固定，理論上可評估 **cache / fuse pair**；需改 ONNX / builder 策略，**中長期** |
+| **pair-gen 演算法段（非 sort）** | 同一套 `SpconvOps::get_indice_pairs_implicit_gemm`，開源亦受 hash / direct_table / mask stage 成本影響 | 關 sort 後 **pair_gen 仍 5.3 ms**：剩餘為 **hash、unique、stage1/2、mask** 等 | **Nsight Compute** 應改瞄準 **非 `DeviceMergeSort*`** 的 top kernels；必要時評估 **algo、`direct_table`、subm stride 路徑** 與 spconv 版本對齊 |
+| **Residual / Epilogue fusion** | New3D 在 engine 內可把 add/relu 與 conv 協調；CUDA-BEVFusion 偏向單一 sparse runtime | §10.10：`relu` + `cast` + `other` 仍佔可見比例；`[trainStation1]` 仍為 Top 1 | **TRT Priority B**：relu epilogue、fuse cast、減少獨立 kernel；與 §10.8 第 3、5 點一致 |
+| **INT8 覆蓋率** | 開源可在 export 明確設多層 `precision=int8`，僅邊界留 FP16 | §10.10 仍見 **1 個 `implicit_gemm_fp`** | 補齊 transform 或接受「最後一層 FP」的 product 決策；屬 **正確性/覆蓋率** 而非純 perf |
+| **deploy 語意：`do_sort` 只對 INT8 engine 關** | 開源在 C++ 內用 **`int8_inference_`** 綁定 | ✅ 已解決：§10.9 把 `do_sort` 做成 ONNX/TRT **序列化屬性**，FP16 export 維持 1、INT8 export 寫 0，舊 ONNX 回退為 1；同一個 `.so` 可服務兩種精度。 | — |
+
+#### 建議優先順序（在 §10.8 基礎上，針對「已關 sort」後的調整）
+
+1. **Profiler + Nsight**：以 §10.10 為 baseline，對 **pair_gen（非 sort）** 與 **`ImplicitGemm_int8`** 分別做 kernel 級拆解；確認下一刀是 **hash/stage** 還是 **quantize/cast**。  
+2. **TRT 層級**：優先展開 **`[trainStation1]`** 與 **relu/cast** 是否可 fusion（與開源「減少邊界」方向一致）。  
+3. **中長期**：若 sparse 仍佔端到端大头，再評估 **獨立 sparse engine** 或 **INT8 I/O plugin**，向 §2.2 / §2.3 靠攏。
+
+**一句話**：關 sort 後，AWML 與開源的差距從「沒做 INT8 pair 優化」縮小到 **「TRT plugin 邊界 + 層間仍 FP16 + 整段 pair/conv 無法像 `spconv::Engine` 一樣全域編排」**；下一階段應優化 **剩餘 pair-gen 與 activation 邊界**，而非再盯 merge-sort。

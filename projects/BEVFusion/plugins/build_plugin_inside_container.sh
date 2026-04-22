@@ -9,12 +9,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-/tmp/trt_plugin_build}"
 SRC_DIR="${SRC_DIR:-/tmp/autoware_tensorrt_plugins_src}"
 INSTALL_PLUGINS_DIR="${INSTALL_PLUGINS_DIR:-/opt/plugins}"
-AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF:-main}"
+# AWML clones autoware_tensorrt_plugins from an AWML-maintained fork that bakes
+# in the do_sort-attribute change (see §10.9 of
+# deployment/projects/bevfusion/docs/15_README_AWML_SPCONV_INT8_ACCEL_PLAN.md).
+# Override the URL/ref via env vars when you want to track a different fork/branch
+# (e.g. upstream autowarefoundation/autoware.universe main for an A/B build).
+AUTOWARE_UNIVERSE_REPO="${AUTOWARE_UNIVERSE_REPO:-https://github.com/vividf/autoware.universe.git}"
+AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF:-feat/spconv-do-sort-attribute}"
 
 echo "[build_plugin] Script dir: $SCRIPT_DIR"
 echo "[build_plugin] Build dir: $BUILD_DIR"
 echo "[build_plugin] Source dir (clone): $SRC_DIR"
 echo "[build_plugin] Install .so to: $INSTALL_PLUGINS_DIR"
+echo "[build_plugin] Plugin repo: $AUTOWARE_UNIVERSE_REPO"
+echo "[build_plugin] Plugin ref:  $AUTOWARE_UNIVERSE_REF"
 
 # Resolve TensorRT from pip so CMake can find headers/libs
 if python3 -c "import tensorrt" 2>/dev/null; then
@@ -115,14 +123,35 @@ if [ -z "$TRT_INCLUDE_DIR" ]; then
   exit 1
 fi
 
-# Clone only perception/autoware_tensorrt_plugins from autoware_universe
+# Clone only perception/autoware_tensorrt_plugins from the configured fork.
+# The fork (default: vividf/autoware.universe @ feat/spconv-do-sort-attribute)
+# already contains the `do_sort` attribute change; no source patching here.
+# To A/B against stock upstream, set:
+#   AUTOWARE_UNIVERSE_REPO=https://github.com/autowarefoundation/autoware.universe.git
+#   AUTOWARE_UNIVERSE_REF=main
+#
+# Cache invalidation: if $SRC_DIR exists but was cloned from a different
+# repo/ref (common after switching to an AWML fork), we must re-clone, otherwise
+# we silently build stale upstream source. The repo/ref pair is recorded in
+# $SRC_DIR/.awml_clone_meta and compared on every invocation.
+CLONE_META_FILE="$SRC_DIR/.awml_clone_meta"
+EXPECTED_META="${AUTOWARE_UNIVERSE_REPO}@${AUTOWARE_UNIVERSE_REF}"
+NEEDS_CLONE=0
 if [ ! -d "$SRC_DIR/src" ] && [ ! -d "$SRC_DIR/perception/autoware_tensorrt_plugins/src" ]; then
-  echo "[build_plugin] Cloning autoware_tensorrt_plugins source..."
+  NEEDS_CLONE=1
+elif [ ! -f "$CLONE_META_FILE" ] || [ "$(cat "$CLONE_META_FILE" 2>/dev/null)" != "$EXPECTED_META" ]; then
+  echo "[build_plugin] Cached clone at $SRC_DIR does not match $EXPECTED_META; forcing re-clone."
+  NEEDS_CLONE=1
+fi
+
+if [ "$NEEDS_CLONE" = "1" ]; then
+  echo "[build_plugin] Cloning autoware_tensorrt_plugins source from $AUTOWARE_UNIVERSE_REPO @ $AUTOWARE_UNIVERSE_REF ..."
   rm -rf "$SRC_DIR"
   git clone --depth 1 --branch "$AUTOWARE_UNIVERSE_REF" \
     --filter=blob:none --sparse \
-    https://github.com/autowarefoundation/autoware_universe.git "$SRC_DIR"
+    "$AUTOWARE_UNIVERSE_REPO" "$SRC_DIR"
   (cd "$SRC_DIR" && git sparse-checkout set perception/autoware_tensorrt_plugins)
+  echo "$EXPECTED_META" > "$CLONE_META_FILE"
 fi
 if [ -d "$SRC_DIR/perception/autoware_tensorrt_plugins" ]; then
   PLUGIN_SRC_DIR="$SRC_DIR/perception/autoware_tensorrt_plugins"
@@ -135,26 +164,15 @@ if [ ! -f "$PLUGIN_SRC_DIR/src/implicit_gemm_plugin.cpp" ]; then
   exit 1
 fi
 
-# AWML customisation: disable pair-gen argsort for INT8 sparse encoder.
-# Matches traveller59/spconv INT8 guide and New3D's
-#   bool do_sort = !int8_inference_;  (sparseConvImplicit.cu:368).
-# The patcher is idempotent; can be disabled by exporting
-# AWML_DISABLE_DO_SORT_PATCH=1 before running this script.
-PAIR_GEN_PLUGIN_CPP="$PLUGIN_SRC_DIR/src/get_indices_pairs_implicit_gemm_plugin.cpp"
-PATCHER="$SCRIPT_DIR/patches/disable_sort_for_int8.py"
-if [ "${AWML_DISABLE_DO_SORT_PATCH:-0}" != "1" ]; then
-  if [ ! -f "$PATCHER" ]; then
-    echo "[build_plugin] ERROR: missing patcher $PATCHER"
-    exit 1
-  fi
-  if [ ! -f "$PAIR_GEN_PLUGIN_CPP" ]; then
-    echo "[build_plugin] ERROR: $PAIR_GEN_PLUGIN_CPP not found; upstream layout may have changed"
-    exit 1
-  fi
-  echo "[build_plugin] Applying AWML INT8 do_sort patch to pair-gen plugin"
-  python3 "$PATCHER" "$PAIR_GEN_PLUGIN_CPP"
+# Sanity-check that the fork actually carries the do_sort attribute change.
+# If the user overrode AUTOWARE_UNIVERSE_REPO/REF to stock upstream, this will
+# warn but not fail (intended for A/B builds).
+if grep -q "\"do_sort\"" "$PLUGIN_SRC_DIR/src/get_indices_pairs_implicit_gemm_plugin_creator.cpp" 2>/dev/null; then
+  echo "[build_plugin] OK: cloned source exposes do_sort plugin attribute"
 else
-  echo "[build_plugin] AWML_DISABLE_DO_SORT_PATCH=1 set; skipping do_sort patch"
+  echo "[build_plugin] WARNING: cloned source does NOT expose the do_sort attribute."
+  echo "[build_plugin]          This is fine ONLY if you are intentionally A/B-testing against stock upstream."
+  echo "[build_plugin]          For production INT8 builds, point AUTOWARE_UNIVERSE_REPO/REF at the AWML fork."
 fi
 
 # Configure and build with standalone CMakeLists (no ament/autoware_cmake)

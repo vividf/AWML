@@ -5,7 +5,11 @@ ARG TRT_VERSION=10.8.0.43
 ARG BUILD_SPCONV_CPP="true"
 ARG SPCONV_CPP_REF="main"
 ARG BUILD_TRT_PLUGINS="true"
-ARG AUTOWARE_UNIVERSE_REF="main"
+# AWML fork of autoware.universe that carries the GetIndicePairsImplicitGemm
+# `do_sort` plugin attribute change. See
+# deployment/projects/bevfusion/docs/15_README_AWML_SPCONV_INT8_ACCEL_PLAN.md §10.9.
+ARG AUTOWARE_UNIVERSE_REPO="https://github.com/vividf/autoware.universe.git"
+ARG AUTOWARE_UNIVERSE_REF="feat/spconv-do-sort-attribute"
 
 # Install deployment/runtime dependencies
 RUN python3 -m pip --no-cache-dir install \
@@ -52,9 +56,9 @@ RUN python3 projects/BEVFusion/setup.py develop
 # Build TensorRT custom plugins at image build time.
 COPY projects/BEVFusion/plugins/build_plugin_inside_container.sh /workspace/projects/BEVFusion/plugins/build_plugin_inside_container.sh
 COPY projects/BEVFusion/plugins/CMakeLists.standalone /workspace/projects/BEVFusion/plugins/CMakeLists.standalone
-COPY projects/BEVFusion/plugins/patches /workspace/projects/BEVFusion/plugins/patches
 RUN if [ "${BUILD_TRT_PLUGINS}" = "true" ]; then \
     chmod +x /workspace/projects/BEVFusion/plugins/build_plugin_inside_container.sh && \
+    AUTOWARE_UNIVERSE_REPO="${AUTOWARE_UNIVERSE_REPO}" \
     AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF}" \
     INSTALL_PLUGINS_DIR="/opt/plugins" \
     bash /workspace/projects/BEVFusion/plugins/build_plugin_inside_container.sh; \

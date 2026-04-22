@@ -50,6 +50,24 @@ def _extract_metrics_config(model_cfg: Config, logger: logging.Logger):
     return Detection3DMetricsConfig(class_names=class_names)
 
 
+def _apply_spconv_do_sort(deploy_cfg: Config, logger: logging.Logger) -> None:
+    """Apply the ``spconv_do_sort`` field from ``deploy_cfg`` (default ``True``)
+    to the GetIndicePairsImplicitGemm symbolic/forward path.
+
+    - ``spconv_do_sort = True``  (default) -> run pair-mask argsort (FP16 needs this).
+    - ``spconv_do_sort = False``           -> skip sort (INT8; matches spconv's
+      INT8 guide and New3D's ``bool do_sort = !int8_inference_;``).
+    """
+    value = bool(deploy_cfg.get("spconv_do_sort", True))
+    from projects.SparseConvolution.sparse_functional import set_do_sort
+
+    set_do_sort(value)
+    logger.info(
+        "spconv_do_sort: %s (baked into GetIndicePairsImplicitGemm.do_sort_i at ONNX export)",
+        value,
+    )
+
+
 def run(args: argparse.Namespace) -> int:
     """Run the BEVFusion deployment workflow."""
     logger = setup_logging(args.log_level)
@@ -59,6 +77,7 @@ def run(args: argparse.Namespace) -> int:
     config = BaseDeploymentConfig(deploy_cfg)
 
     _validate_bevfusion_components(config)
+    _apply_spconv_do_sort(deploy_cfg, logger)
 
     logger.info("=" * 80)
     logger.info("BEVFusion Deployment Pipeline (Unified CLI)")
