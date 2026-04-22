@@ -88,6 +88,21 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 # 評測：註解 Preset A，改為下方三項（checkpoint 指向上列 output；dense 三關必須 False 與 PTQ 一致）
 # ============================================================================
 checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only.pth"
+
+# ============================================================================
+# Sparse pair-gen: skip the pair-mask argsort for INT8 inference.
+# ----------------------------------------------------------------------------
+# Matches New3D's ``bool do_sort = !int8_inference_;`` (sparseConvImplicit.cu:368)
+# and traveller59/spconv's INT8 guide. Baked into the ONNX graph as
+# ``autoware::GetIndicePairsImplicitGemm.do_sort_i=0`` at export time, so the
+# INT8 engine keeps sort **off** regardless of runtime. FP16 deploy_configs
+# should leave this unset (default ``True``) so FP16 engines still sort.
+# - True  (default) : run sort; required for FP16.
+# - False           : skip sort; INT8 recommendation (used here).
+# See deployment/projects/bevfusion/docs/15_README_AWML_SPCONV_INT8_ACCEL_PLAN.md §10.9.
+# ============================================================================
+spconv_do_sort = True
+
 quantization = dict(
     enabled=True,
     ptq_checkpoint=True,
@@ -215,7 +230,7 @@ evaluation = dict(
     verbose=True,
     backends=dict(
         pytorch=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
         ),
         onnx=dict(
