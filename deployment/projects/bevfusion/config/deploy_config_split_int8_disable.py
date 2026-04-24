@@ -87,7 +87,7 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 #
 # 評測：註解 Preset A，改為下方三項（checkpoint 指向上列 output；dense 三關必須 False 與 PTQ 一致）
 # ============================================================================
-checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only.pth"
+checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only_disable_encoder1_0_and_1_1.pth"
 
 # ============================================================================
 # Sparse pair-gen: skip the pair-mask argsort for INT8 inference.
@@ -142,8 +142,11 @@ spconv_do_sort = False
 #     NOT match any node``).
 # ============================================================================
 spconv_int8_fp16_layers = [
-    #  "conv_input.0",  # 第一層 sparse conv 通常最敏感 (matches node.name only)
-    # "encoder_layer3/encoder_layer3.2",  # stride-2 downsample of stage 3
+    "conv_input.0",  # 第一層 sparse conv 通常最敏感 (matches node.name only)
+    "encoder_layer1/encoder_layer1.0/conv1",  # stride-2 downsample of stage 3
+    "encoder_layer1/encoder_layer1.0/conv2",
+    "encoder_layer1/encoder_layer1.1/conv1",  # stride-2 downsample of stage 3
+    "encoder_layer1/encoder_layer1.1/conv2",
 ]
 
 quantization = dict(
@@ -168,8 +171,8 @@ export = dict(
     # "tensorrt" = build TRT engines from existing ONNX (don't re-export ONNX).
     # Use "both" only when you need a fresh ONNX export + TRT build.
     mode="none",
-    work_dir="work_dirs/bevfusion_split_int8_deployment",
-    onnx_path="work_dirs/bevfusion_split_int8_deployment/onnx",
+    work_dir="work_dirs/bevfusion_split_int8_deployment_disable_encoder1_0_and_1_1",
+    onnx_path="work_dirs/bevfusion_split_int8_deployment_disable_encoder1_0_and_1_1/onnx",
 )
 
 _WORK_DIR = str(export["work_dir"]).rstrip("/")

@@ -57,6 +57,7 @@ def _fuse_spconv_bn(model: torch.nn.Module) -> None:
 
 def _prepare_encoder_for_nvidia_int8(
     model: torch.nn.Module,
+    exclude_patterns: Optional[list] = None,
 ) -> None:
     """Add NVIDIA ``TensorQuantizer`` to sparse encoder so PTQ checkpoint ``_amax`` keys load.
 
@@ -65,6 +66,12 @@ def _prepare_encoder_for_nvidia_int8(
     structure by adding ``_input_quantizer`` and ``_weight_quantizer`` submodules
     to each ``SparseConvolution``, then ``load_state_dict`` fills in the calibrated
     ``_amax``.  No FX tracing or graph transformation needed.
+
+    ``exclude_patterns`` (from ``spconv_int8_fp16_layers`` in deploy_cfg) MUST
+    match exactly what was passed to ``apply_nvidia_spconv_int8`` during PTQ,
+    otherwise the module tree will have more/fewer quantizer submodules than
+    the checkpoint ``state_dict`` expects → ``load_state_dict`` will emit
+    noisy missing/unexpected keys.
     """
     sparse_encoder = getattr(model, "pts_middle_encoder", None)
     if sparse_encoder is None:
@@ -78,7 +85,11 @@ def _prepare_encoder_for_nvidia_int8(
         return
 
     sparse_encoder.eval()
-    apply_nvidia_spconv_int8(sparse_encoder, exclude_conv_out=True)
+    apply_nvidia_spconv_int8(
+        sparse_encoder,
+        exclude_conv_out=True,
+        exclude_patterns=list(exclude_patterns or []),
+    )
     # PTQ saves these Path-B buffers; register so load_state_dict(strict=False) loads them instead
     # of reporting unexpected_keys (and so inspection / future export see checkpoint values).
     if not hasattr(sparse_encoder, "_pathb_sparse_tail_absmax"):
@@ -424,9 +435,14 @@ def _load_with_quantization(
                 raise
 
         # Add NVIDIA TensorQuantizer to sparse encoder so PTQ _amax keys load correctly.
+        # ``spconv_int8_fp16_layers`` is hoisted into ``quantization`` by runner.py (from the
+        # deploy_cfg top-level key). Must match what PTQ used, or state_dict keys won't align.
         if quantization.get("spconv_int8", False):
             try:
-                _prepare_encoder_for_nvidia_int8(model)
+                _prepare_encoder_for_nvidia_int8(
+                    model,
+                    exclude_patterns=quantization.get("spconv_int8_fp16_layers", []) or [],
+                )
             except Exception:
                 logger.exception("PTQ load: NVIDIA sparse encoder quantizer setup failed")
                 raise

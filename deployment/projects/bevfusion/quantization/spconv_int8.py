@@ -255,7 +255,7 @@ def bevfusion_spconv_qconfig_mapping(is_qat: bool = False):
                     quant_max=127,
                     dtype=torch.qint8,
                     qscheme=torch.per_tensor_symmetric,
-                    eps=2 ** -12,
+                    eps=2**-12,
                 ),
                 weight=default_per_channel_weight_observer,
             )
@@ -266,8 +266,7 @@ def bevfusion_spconv_qconfig_mapping(is_qat: bool = False):
             )
         except ImportError:
             logger.warning(
-                "SparseMinMaxObserver not available in spconv; falling back to "
-                "default SparseHistogramObserver"
+                "SparseMinMaxObserver not available in spconv; falling back to " "default SparseHistogramObserver"
             )
 
     for name in ("conv_out", "conv_out.0", "conv_out.1", "conv_out.2"):
@@ -383,8 +382,7 @@ def replace_bevfusion_sparse_encoder_conv_out_with_native_fp32(encoder: nn.Modul
 
     encoder.conv_out = new_conv
     logger.info(
-        "Replaced pts_middle_encoder.conv_out with native FP32 SparseSequential "
-        "(%d / %d tensors copied).",
+        "Replaced pts_middle_encoder.conv_out with native FP32 SparseSequential " "(%d / %d tensors copied).",
         len(load_dict),
         len(new_sd),
     )
@@ -511,12 +509,15 @@ def _disable_spconv_fx_trace_mode() -> None:
 # NVIDIA pytorch_quantization approach (adapted from CUDA-BEVFusion)
 # ---------------------------------------------------------------------------
 
+
 def _get_sparse_conv_types() -> tuple:
     """Return a tuple of SparseConvolution classes to quantize."""
     from spconv.pytorch.conv import SparseConvolution as SpconvSparseConvolution
+
     conv_types: list = [SpconvSparseConvolution]
     try:
         from projects.SparseConvolution.sparse_conv import SparseConvolution as CustomSparseConvolution
+
         conv_types.append(CustomSparseConvolution)
     except ImportError:
         pass
@@ -550,6 +551,7 @@ def _nvidia_quantized_forward(self, input):
 def apply_nvidia_spconv_int8(
     sparse_encoder: nn.Module,
     exclude_conv_out: bool = True,
+    exclude_patterns: Optional[List[str]] = None,
 ) -> nn.Module:
     """Add NVIDIA ``TensorQuantizer`` to every ``SparseConvolution`` in *sparse_encoder*.
 
@@ -564,6 +566,20 @@ def apply_nvidia_spconv_int8(
 
     ``conv_out`` is excluded by default (stays FP32).
 
+    ``exclude_patterns`` (case-insensitive substrings matched on each module's
+    ``named_modules()`` name, e.g. ``"conv_input.0"`` or
+    ``"encoder_layer1.0.conv1"``) skip installing TensorQuantizer on those
+    sparse convs entirely — no ``_input_quantizer`` / ``_weight_quantizer``
+    submodule is attached and the module's ``forward`` is left untouched.
+    This is the **correct** way to keep selected layers FP16 end-to-end:
+    PTQ calibration then observes the genuine FP activation distribution
+    downstream (no fake-quant contamination from excluded layers), so the
+    retained ``_amax`` values match the runtime behavior exactly. Any later
+    ONNX / TRT ``ImplicitGemm`` skip logic is defense in depth, not the root
+    control. Matching is done on PyTorch module names only — **never** on
+    ONNX tensor names — to avoid the scope-path contamination bug where
+    downstream tensors carry an upstream producer's name as a substring.
+
     Returns the same *sparse_encoder* (modified in-place).
     """
     from pytorch_quantization import calib
@@ -574,12 +590,32 @@ def apply_nvidia_spconv_int8(
     weight_desc = QuantDescriptor(num_bits=8, axis=(0))
     conv_types = _get_sparse_conv_types()
 
+    norm_patterns: List[str] = [p.lower() for p in (exclude_patterns or []) if p]
+    pattern_hits: Dict[str, int] = {p: 0 for p in norm_patterns}
+
     count = 0
+    skipped_fp16 = 0
     for name, module in list(sparse_encoder.named_modules()):
         if not isinstance(module, conv_types):
             continue
         if exclude_conv_out and "conv_out" in name:
             logger.info("  Skipping conv_out from NVIDIA quantization: %s", name)
+            continue
+
+        low_name = name.lower()
+        matched_pat: Optional[str] = None
+        for pat in norm_patterns:
+            if pat in low_name:
+                matched_pat = pat
+                break
+        if matched_pat is not None:
+            pattern_hits[matched_pat] += 1
+            skipped_fp16 += 1
+            logger.info(
+                "  [nvidia-quant] SKIP (kept FP16 per exclude_patterns='%s'): %s",
+                matched_pat,
+                name,
+            )
             continue
 
         iq = quant_nn.TensorQuantizer(input_desc)
@@ -597,10 +633,27 @@ def apply_nvidia_spconv_int8(
 
         count += 1
         if count <= 3:
-            logger.info("  [nvidia-quant] %s: added TensorQuantizer (in=%d, out=%d)",
-                        name, module.in_channels, module.out_channels)
+            logger.info(
+                "  [nvidia-quant] %s: added TensorQuantizer (in=%d, out=%d)",
+                name,
+                module.in_channels,
+                module.out_channels,
+            )
 
     logger.info("Applied NVIDIA TensorQuantizer to %d sparse conv modules", count)
+    if norm_patterns:
+        logger.info(
+            "  [nvidia-quant] FP16 exclusion summary: %d sparse convs kept FP16 (no TensorQuantizer)",
+            skipped_fp16,
+        )
+        for pat, hits in pattern_hits.items():
+            logger.info("  [nvidia-quant]   pattern='%s' -> %d module(s)", pat, hits)
+        unmatched = [p for p, h in pattern_hits.items() if h == 0]
+        if unmatched:
+            logger.warning(
+                "  [nvidia-quant] exclude_patterns with ZERO matches (typo?): %s",
+                unmatched,
+            )
     return sparse_encoder
 
 
@@ -704,18 +757,14 @@ def _collect_pathb_last_int8_conv_output_absmax(
             _topologically_sorted_sparse_stems,
         )
     except Exception as e:
-        raise ImportError(
-            "Path-B: failed to import _topologically_sorted_sparse_stems for last-int8 absmax"
-        ) from e
+        raise ImportError("Path-B: failed to import _topologically_sorted_sparse_stems for last-int8 absmax") from e
 
     topo = _topologically_sorted_sparse_stems(stems)
     last_stem = topo[-1]
     try:
         mod = _module_from_pts_stem(encoder, last_stem)
     except Exception as e:
-        raise RuntimeError(
-            f"Path-B: could not resolve stem {last_stem!r} for last-int8 absmax"
-        ) from e
+        raise RuntimeError(f"Path-B: could not resolve stem {last_stem!r} for last-int8 absmax") from e
 
     device = next(encoder.parameters()).device
     mx = torch.zeros((), device=device, dtype=torch.float32)
@@ -828,8 +877,10 @@ def _report_nvidia_quantizer_stats(encoder: nn.Module) -> None:
                     vals = amax.flatten().tolist()
                     print(f"  [nvidia-amax] {name}: amax={vals}")
                 else:
-                    print(f"  [nvidia-amax] {name}: amax shape={tuple(amax.shape)}, "
-                          f"min={amax.min():.4f}, max={amax.max():.4f}, mean={amax.mean():.4f}")
+                    print(
+                        f"  [nvidia-amax] {name}: amax shape={tuple(amax.shape)}, "
+                        f"min={amax.min():.4f}, max={amax.max():.4f}, mean={amax.mean():.4f}"
+                    )
                 count += 1
     print(f"[nvidia-calib] {count} quantizers with calibrated amax")
 
@@ -837,6 +888,7 @@ def _report_nvidia_quantizer_stats(encoder: nn.Module) -> None:
 # ---------------------------------------------------------------------------
 # FX approach (legacy — see docstring at top of file)
 # ---------------------------------------------------------------------------
+
 
 def apply_spconv_int8_quantization(
     sparse_encoder: nn.Module,
@@ -876,8 +928,8 @@ def apply_spconv_int8_quantization(
     # inside their _conv_forward, causing spatial_shape bugs during symbolic tracing.
     try:
         from projects.SparseConvolution.sparse_conv import SparseConv3d as CustomSparseConv3d
-        from projects.SparseConvolution.sparse_conv import SubMConv3d as CustomSubMConv3d
         from projects.SparseConvolution.sparse_conv import SparseConvolution as CustomSparseConvolution
+        from projects.SparseConvolution.sparse_conv import SubMConv3d as CustomSubMConv3d
 
         for cls in (CustomSparseConv3d, CustomSubMConv3d, CustomSparseConvolution):
             if cls not in prepare_custom_config.non_traceable_module_classes:
@@ -936,7 +988,9 @@ def calibrate_spconv_model(
 
     logger.info(
         "Calibration complete: %d samples, total_voxels=%d, avg=%.0f",
-        n_samples, total_voxels, total_voxels / max(n_samples, 1),
+        n_samples,
+        total_voxels,
+        total_voxels / max(n_samples, 1),
     )
 
     _report_observer_stats(prepared_encoder)
@@ -964,18 +1018,18 @@ def _report_observer_stats(model: nn.Module) -> None:
                         mn = float(obs_min) if obs_min.numel() == 1 else float(obs_min.min())
                         mx = float(obs_max) if obs_max.numel() == 1 else float(obs_max.max())
                         extra = f", observed_range=[{mn:.4f}, {mx:.4f}]"
-                    print(f"  [observer] {name}: scale={s_val:.6f}, "
-                          f"zp={int(zp.flatten()[0])}{extra}")
+                    print(f"  [observer] {name}: scale={s_val:.6f}, " f"zp={int(zp.flatten()[0])}{extra}")
                 else:
                     uncalibrated_names.append(name)
             except Exception:
                 uncalibrated_names.append(name)
 
-    print(f"[observer-summary] {calibrated}/{total} observers calibrated "
-          f"(observer type: {type(mod).__name__})")
+    print(f"[observer-summary] {calibrated}/{total} observers calibrated " f"(observer type: {type(mod).__name__})")
     if uncalibrated_names:
-        print(f"[observer-summary] {len(uncalibrated_names)} UNCALIBRATED observers "
-              f"(default scale=1.0): {uncalibrated_names[:10]}")
+        print(
+            f"[observer-summary] {len(uncalibrated_names)} UNCALIBRATED observers "
+            f"(default scale=1.0): {uncalibrated_names[:10]}"
+        )
 
 
 def convert_spconv_int8(

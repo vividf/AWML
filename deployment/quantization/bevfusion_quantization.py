@@ -30,7 +30,7 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -100,6 +100,21 @@ def _load_deploy_quantization_cfg(deploy_cfg_path: str) -> Tuple[Dict[str, Any],
             quant = {k: quant_raw[k] for k in quant_raw}
         except Exception:
             quant = dict(quant_raw)
+
+    # Hoist top-level ``spconv_int8_fp16_layers`` (kept top-level for consistency with
+    # ``spconv_do_sort``) into the returned quant dict so downstream PTQ/loader code
+    # only has to look in ONE place. Entries are substring-matched against
+    # ``named_modules()`` names in ``apply_nvidia_spconv_int8(exclude_patterns=...)``.
+    if "spconv_int8_fp16_layers" not in quant:
+        fp16_layers = deploy_cfg.get("spconv_int8_fp16_layers", None)
+        if fp16_layers is None:
+            fp16_layers = getattr(deploy_cfg, "spconv_int8_fp16_layers", None)
+        if fp16_layers is not None:
+            try:
+                quant["spconv_int8_fp16_layers"] = list(fp16_layers)
+            except TypeError:
+                quant["spconv_int8_fp16_layers"] = []
+
     ckpt = deploy_cfg.get("checkpoint_path", None)
     if ckpt is None:
         ckpt = getattr(deploy_cfg, "checkpoint_path", None)
@@ -118,8 +133,10 @@ def _report_converted_scale_buffers(converted_encoder) -> None:
         if "zero_point" in name:
             zp_bufs[name] = buf
 
-    print(f"  [ptq-scale-check] Converted encoder has {len(scale_bufs)} scale buffers, "
-          f"{len(zp_bufs)} zero_point buffers")
+    print(
+        f"  [ptq-scale-check] Converted encoder has {len(scale_bufs)} scale buffers, "
+        f"{len(zp_bufs)} zero_point buffers"
+    )
 
     n_valid = 0
     n_default = 0
@@ -398,32 +415,44 @@ def _calibrate_spconv(
                         feats = feats.contiguous()
 
                     n_vox = int(feats.shape[0])
-                    print(f"  [voxel-stats] Sample {len(calibration_data)+1}: {n_vox} voxels, "
-                          f"feats shape={tuple(feats.shape)}, coords shape={tuple(coords.shape)}")
+                    print(
+                        f"  [voxel-stats] Sample {len(calibration_data)+1}: {n_vox} voxels, "
+                        f"feats shape={tuple(feats.shape)}, coords shape={tuple(coords.shape)}"
+                    )
                     calibration_data.append((feats, coords.int(), 1))
 
         except Exception as e:
-            raise RuntimeError(
-                f"spconv INT8 calibration: batch {i} failed while collecting voxel samples"
-            ) from e
+            raise RuntimeError(f"spconv INT8 calibration: batch {i} failed while collecting voxel samples") from e
 
     if not calibration_data:
-        raise RuntimeError(
-            "spconv INT8 calibration: no voxel samples collected (check dataloader / points inputs)."
-        )
+        raise RuntimeError("spconv INT8 calibration: no voxel samples collected (check dataloader / points inputs).")
 
     voxel_counts = [int(f.shape[0]) for f, _, _ in calibration_data]
     print(f"  Collected {len(calibration_data)} samples")
-    print(f"  [voxel-stats] Voxel counts: min={min(voxel_counts)}, max={max(voxel_counts)}, "
-          f"mean={sum(voxel_counts)/len(voxel_counts):.0f}, median={sorted(voxel_counts)[len(voxel_counts)//2]}")
+    print(
+        f"  [voxel-stats] Voxel counts: min={min(voxel_counts)}, max={max(voxel_counts)}, "
+        f"mean={sum(voxel_counts)/len(voxel_counts):.0f}, median={sorted(voxel_counts)[len(voxel_counts)//2]}"
+    )
 
     from deployment.projects.bevfusion.quantization.spconv_int8 import (
         apply_nvidia_spconv_int8,
         calibrate_spconv_nvidia,
     )
 
+    fp16_layers: List[str] = list(quant_cfg.get("spconv_int8_fp16_layers", []) or [])
+    if fp16_layers:
+        print(f"  [nvidia-quant] spconv_int8_fp16_layers active ({len(fp16_layers)} pattern(s)): {fp16_layers}")
+        print(
+            "  [nvidia-quant] These modules will NOT get _input_quantizer/_weight_quantizer → "
+            "downstream PTQ _amax is calibrated against TRUE FP activations (no fake-quant contamination)."
+        )
+
     print("  Applying NVIDIA TensorQuantizer path (histogram + MSE, adapted from CUDA-BEVFusion)")
-    apply_nvidia_spconv_int8(sparse_encoder, exclude_conv_out=True)
+    apply_nvidia_spconv_int8(
+        sparse_encoder,
+        exclude_conv_out=True,
+        exclude_patterns=fp16_layers,
+    )
     calibrate_spconv_nvidia(sparse_encoder, calibration_data)
 
     amax_keys = [k for k in sparse_encoder.state_dict() if "_amax" in k]
@@ -613,8 +642,10 @@ def run_ptq(args):
     scale_keys = [k for k in sparse_keys if "scale" in k or "zero_point" in k]
     quant_keys = amax_keys or scale_keys
     tag = "_amax" if amax_keys else "scale/zp"
-    print(f"\n  [save-check] Saved {len(save_sd)} total keys, "
-          f"{len(sparse_keys)} pts_middle_encoder keys, {len(quant_keys)} {tag} keys")
+    print(
+        f"\n  [save-check] Saved {len(save_sd)} total keys, "
+        f"{len(sparse_keys)} pts_middle_encoder keys, {len(quant_keys)} {tag} keys"
+    )
     _pathb = "pts_middle_encoder._pathb_sparse_tail_absmax"
     _pathb_m = "module.pts_middle_encoder._pathb_sparse_tail_absmax"
     if _pathb in save_sd or _pathb_m in save_sd:
@@ -662,8 +693,10 @@ def run_ptq(args):
     print(f'  1. Set checkpoint_path = "{args.output}" in your deploy config')
     print(f"  2. Set quantization.ptq_checkpoint = True")
     if not dense_on:
-        print("  2b. Sparse-only: also set quant_backbone=False, quant_neck=False, quant_head=False "
-              "(must match this checkpoint; else load_state_dict / mAP will be wrong).")
+        print(
+            "  2b. Sparse-only: also set quant_backbone=False, quant_neck=False, quant_head=False "
+            "(must match this checkpoint; else load_state_dict / mAP will be wrong)."
+        )
     print(f"  3. Run:")
     print(f"     python -m deployment.cli.main bevfusion \\")
     print(f"       deployment/projects/bevfusion/config/deploy_config_int8.py \\")
