@@ -74,12 +74,32 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
             )
 
         quantization = self.config.deploy_cfg.get("quantization", None)
+        if quantization is not None:
+            # Copy so we can safely mutate without touching the deploy_cfg singleton.
+            quantization = dict(quantization)
+            # Hoist top-level ``spconv_int8_fp16_layers`` (list of substring patterns matched on
+            # sparse-conv module names) into the quantization dict. This is how model_loader
+            # learns WHICH sparse convs to keep in FP16 — those modules get NO
+            # _input_quantizer/_weight_quantizer, so the reloaded module tree matches the PTQ
+            # checkpoint exactly (PTQ ran with the same exclusion).
+            fp16_layers = self.config.deploy_cfg.get("spconv_int8_fp16_layers", None)
+            if fp16_layers is not None:
+                try:
+                    quantization["spconv_int8_fp16_layers"] = list(fp16_layers)
+                except TypeError:
+                    quantization["spconv_int8_fp16_layers"] = []
         if quantization and quantization.get("enabled", False):
             logger.info("=" * 60)
             logger.info("BEVFusion INT8 Quantization Enabled")
             logger.info("  Dense (backbone/neck/head): pytorch_quantization")
             if quantization.get("spconv_int8", False):
                 logger.info("  Sparse encoder: spconv INT8 (cumm kernels)")
+            fp16_layers_ = quantization.get("spconv_int8_fp16_layers") or []
+            if fp16_layers_:
+                logger.info(
+                    "  Sparse FP16 keep-list (spconv_int8_fp16_layers): %s",
+                    fp16_layers_,
+                )
             logger.info("=" * 60)
 
         model = build_bevfusion_model(
@@ -129,9 +149,7 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
             )
             return model
 
-        has_nvidia_quantizers = any(
-            hasattr(m, "_input_quantizer") for m in sparse_encoder.modules()
-        )
+        has_nvidia_quantizers = any(hasattr(m, "_input_quantizer") for m in sparse_encoder.modules())
         if has_nvidia_quantizers:
             logger.info(
                 "pts_middle_encoder already has NVIDIA TensorQuantizer (PTQ / model_loader path); "

@@ -355,6 +355,17 @@ def _collect_occupied_tensor_names(graph: onnx.GraphProto) -> set[str]:
     return out
 
 
+def _allocate_unique_tensor_name(suggested: str, occupied: set[str]) -> str:
+    """Return ``suggested`` if unused; otherwise ``suggested_1``, ``suggested_2``, …"""
+    name = suggested
+    i = 0
+    while name in occupied:
+        i += 1
+        name = f"{suggested}_{i}"
+    occupied.add(name)
+    return name
+
+
 def _safe_trt_scale_names(stem: str, occupied: set[str]) -> tuple[str, str]:
     """Build unique initializer / ValueInfo names that TensorRT's ONNX parser accepts.
 
@@ -613,6 +624,32 @@ def _implicit_gemm_is_conv_out(node: onnx.NodeProto) -> bool:
     return "conv_out" in _onnx_node_text_blob(node)
 
 
+def _implicit_gemm_matches_fp16_pattern(node: onnx.NodeProto, patterns: Optional[List[str]]) -> Optional[str]:
+    """Return the matching pattern (or None) if an ``ImplicitGemm`` node should be kept FP16.
+
+    Each ``patterns`` entry is a case-insensitive substring matched **only against
+    ``node.name``** — NOT against ``inputs`` / ``outputs``. PyTorch's ONNX exporter
+    names output tensors with their producer's scope path (e.g. the Relu after
+    ``conv_input.0`` still contains the literal substring ``conv_input.0`` in its
+    tensor name), which then appears as an *input* on the *next* ImplicitGemm.
+    Matching on the full text blob would therefore silently FP16-ify the downstream
+    layer too — a subtle cause of large mAP drops. Matching only ``node.name``
+    avoids that contamination because each node has a unique scope-qualified name.
+
+    Exposed to users via ``spconv_int8_fp16_layers`` in the BEVFusion
+    deploy_config.
+    """
+    if not patterns:
+        return None
+    name = (node.name or "").lower().replace("\\", "/")
+    for pat in patterns:
+        if not pat:
+            continue
+        if pat.lower() in name:
+            return pat
+    return None
+
+
 def _implicit_gemm_filter_c_out(model: onnx.ModelProto, node: onnx.NodeProto) -> Optional[int]:
     c_out, _ = _implicit_gemm_filter_c_out_c_in(model, node)
     return c_out
@@ -690,6 +727,7 @@ def transform_onnx_int8(
     amax_dict: Optional[Dict[str, torch.Tensor]] = None,
     override_terminal_absmax: Optional[float] = None,
     audit_records: Optional[List[Dict[str, Any]]] = None,
+    fp16_layer_patterns: Optional[List[str]] = None,
 ) -> onnx.ModelProto:
     """Replace ImplicitGemm nodes with ImplicitGemmInt8 nodes.
 
@@ -704,6 +742,12 @@ def transform_onnx_int8(
             PTQ, or pass ``--pathb-terminal-absmax``.
         audit_records: If provided, append one JSON-serializable dict per converted
             ``ImplicitGemmInt8`` (for ``--audit-report`` or custom tooling).
+        fp16_layer_patterns: Optional list of case-insensitive substring patterns.
+            Any ``ImplicitGemm`` node whose name/inputs/outputs contain one of the
+            patterns is **kept as FP16** (skipped INT8 replacement), in addition to
+            the automatic ``conv_out`` skip. Driven by ``spconv_int8_fp16_layers`` in
+            the BEVFusion deploy_config (see ``deploy_config_split_int8.py`` for
+            syntax examples).
 
     Returns:
         Modified ONNX model with autoware::ImplicitGemmInt8 nodes.
@@ -791,11 +835,20 @@ def transform_onnx_int8(
                 f"output_amax_tag={oa_tag!r} output_scale={scale_info[stem]['output_scale']:.6f}"
             )
 
+    fp16_patterns_norm: List[str] = [p.lower() for p in (fp16_layer_patterns or []) if p]
+    if fp16_patterns_norm:
+        print(f"  [int8] spconv_int8_fp16_layers patterns (kept FP16): {fp16_patterns_norm}")
+
     n_expected_int8 = sum(
         1
         for n in graph.node
-        if n.op_type == "ImplicitGemm" and n.domain == "autoware" and not _implicit_gemm_is_conv_out(n)
+        if n.op_type == "ImplicitGemm"
+        and n.domain == "autoware"
+        and not _implicit_gemm_is_conv_out(n)
+        and _implicit_gemm_matches_fp16_pattern(n, fp16_patterns_norm) is None
     )
+    # Track which patterns matched nodes, to warn about typos / dead patterns.
+    fp16_pattern_hits: Dict[str, int] = {p: 0 for p in fp16_patterns_norm}
 
     # Replace nodes.
     new_nodes = []
@@ -809,6 +862,16 @@ def transform_onnx_int8(
 
         if _implicit_gemm_is_conv_out(node):
             print("  [int8] Keep FP32 ImplicitGemm for conv_out (PTQ): " f"name={node.name!r}")
+            new_nodes.append(node)
+            continue
+
+        matched_fp16 = _implicit_gemm_matches_fp16_pattern(node, fp16_patterns_norm)
+        if matched_fp16 is not None:
+            fp16_pattern_hits[matched_fp16] += 1
+            print(
+                f"  [int8] Keep FP16 ImplicitGemm per spconv_int8_fp16_layers "
+                f"(pattern={matched_fp16!r}): name={node.name!r}"
+            )
             new_nodes.append(node)
             continue
 
@@ -927,6 +990,37 @@ def transform_onnx_int8(
             f"{'...' if len(unused_stems) > 12 else ''}"
         )
 
+    # Final census: enumerate every autoware::ImplicitGemm{,Int8} node that will be shipped
+    # to TensorRT, so the user can eyeball exactly which sparse-conv layers run FP16 vs INT8.
+    # Indispensable when debugging spconv_int8_fp16_layers / mAP regressions: if a node you
+    # expected to be FP16 shows up under "INT8 nodes", the fp16 keep-list did not match.
+    final_fp16_nodes: List[str] = []
+    final_int8_nodes: List[str] = []
+    for n in graph.node:
+        if n.domain != "autoware":
+            continue
+        if n.op_type == "ImplicitGemm":
+            final_fp16_nodes.append(n.name or "<unnamed>")
+        elif n.op_type == "ImplicitGemmInt8":
+            final_int8_nodes.append(n.name or "<unnamed>")
+    print("\n  [int8-census] Final autoware::ImplicitGemm node types in output ONNX:")
+    print(f"  [int8-census]   ImplicitGemm     (FP16, kept): {len(final_fp16_nodes)}")
+    for nm in final_fp16_nodes:
+        print(f"  [int8-census]     - {nm}")
+    print(f"  [int8-census]   ImplicitGemmInt8 (INT8 conv): {len(final_int8_nodes)}")
+    for nm in final_int8_nodes:
+        print(f"  [int8-census]     - {nm}")
+
+    unmatched_fp16 = [p for p, hits in fp16_pattern_hits.items() if hits == 0]
+    if unmatched_fp16:
+        print(
+            "\n  [int8-audit] WARNING: spconv_int8_fp16_layers patterns did NOT match any node "
+            f"(likely a typo or stale entry): {unmatched_fp16}"
+        )
+    if fp16_pattern_hits and any(v > 0 for v in fp16_pattern_hits.values()):
+        matched_summary = ", ".join(f"{p!r}:{v}" for p, v in fp16_pattern_hits.items() if v > 0)
+        print(f"\n  [int8-audit] spconv_int8_fp16_layers match counts: {matched_summary}")
+
     print(f"\nTransformed {transform_count} ImplicitGemm → ImplicitGemmInt8 nodes")
     return model
 
@@ -962,6 +1056,25 @@ def main():
         default=None,
         help="Write JSON array of per-layer INT8 scale summaries (matched stem, scales, channel_scale stats).",
     )
+    parser.add_argument(
+        "--fp16-layers",
+        default=None,
+        help=(
+            "Comma-separated list of case-insensitive substring patterns. Any ImplicitGemm "
+            "node whose name/inputs/outputs contains one of these substrings is kept FP16 "
+            "instead of being replaced by ImplicitGemmInt8 (for accuracy tuning). "
+            "Example: --fp16-layers 'encoder_layer3.encoder_layer3.2,conv_input.0'"
+        ),
+    )
+    parser.add_argument(
+        "--fp16-layers-from-deploy-cfg",
+        default=None,
+        help=(
+            "Path to a BEVFusion deploy_config .py that defines spconv_int8_fp16_layers "
+            "(list[str] of substring patterns). Merged with --fp16-layers. "
+            "Usually points to deploy_config_split_int8.py."
+        ),
+    )
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
@@ -992,8 +1105,29 @@ def main():
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     encoder_sd = ckpt.get("state_dict", ckpt)
 
-    # Transform.
+    fp16_layer_patterns: List[str] = []
+    if args.fp16_layers:
+        fp16_layer_patterns.extend(p.strip() for p in args.fp16_layers.split(",") if p.strip())
+    if args.fp16_layers_from_deploy_cfg:
+        try:
+            from mmengine import Config  # type: ignore
+        except ImportError as e:
+            raise SystemExit(
+                "--fp16-layers-from-deploy-cfg requires mmengine; install it or pass " "--fp16-layers directly."
+            ) from e
+        deploy_cfg = Config.fromfile(args.fp16_layers_from_deploy_cfg)
+        cfg_list = deploy_cfg.get("spconv_int8_fp16_layers", []) or []
+        if not isinstance(cfg_list, (list, tuple)):
+            raise SystemExit(
+                f"spconv_int8_fp16_layers in {args.fp16_layers_from_deploy_cfg!r} must be a "
+                f"list of strings, got {type(cfg_list).__name__}."
+            )
+        fp16_layer_patterns.extend(str(p) for p in cfg_list if str(p).strip())
+    fp16_layer_patterns = list(dict.fromkeys(fp16_layer_patterns))
+
     print(f"\nTransforming ImplicitGemm → ImplicitGemmInt8...")
+    if fp16_layer_patterns:
+        print(f"  FP16 keep-list ({len(fp16_layer_patterns)}): {fp16_layer_patterns}")
     audit_records: List[Dict[str, Any]] = []
     model = transform_onnx_int8(
         model,
@@ -1003,6 +1137,7 @@ def main():
         amax_dict=amax_dict,
         override_terminal_absmax=args.pathb_terminal_absmax,
         audit_records=audit_records if args.audit_report else None,
+        fp16_layer_patterns=fp16_layer_patterns,
     )
 
     if args.audit_report:
