@@ -35,11 +35,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-# Before any import that loads spconv.constants (prepare_fx / sparse layers need relaxed asserts).
-import os
-
-os.environ.setdefault("SPCONV_FX_TRACE_MODE", "1")
-
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -119,48 +114,6 @@ def _load_deploy_quantization_cfg(deploy_cfg_path: str) -> Tuple[Dict[str, Any],
     if ckpt is None:
         ckpt = getattr(deploy_cfg, "checkpoint_path", None)
     return quant, ckpt
-
-
-def _report_converted_scale_buffers(converted_encoder) -> None:
-    """After convert_fx, report scale/zero_point buffers saved in the encoder."""
-    import torch
-
-    scale_bufs = {}
-    zp_bufs = {}
-    for name, buf in converted_encoder.named_buffers():
-        if "scale" in name:
-            scale_bufs[name] = buf
-        if "zero_point" in name:
-            zp_bufs[name] = buf
-
-    print(
-        f"  [ptq-scale-check] Converted encoder has {len(scale_bufs)} scale buffers, "
-        f"{len(zp_bufs)} zero_point buffers"
-    )
-
-    n_valid = 0
-    n_default = 0
-    for name, buf in scale_bufs.items():
-        val = float(buf.flatten()[0]) if buf.numel() > 0 else -1.0
-        if abs(val - 1.0) < 1e-6 or val <= 0:
-            n_default += 1
-            print(f"    WARNING: {name} = {val:.6f} (looks uncalibrated!)")
-        else:
-            n_valid += 1
-            if n_valid <= 5:
-                print(f"    {name} = {val:.6f}")
-
-    print(f"  [ptq-scale-check] {n_valid} valid scales, {n_default} uncalibrated (=1.0)")
-
-    total_params = sum(p.numel() for p in converted_encoder.parameters())
-    total_bufs = sum(b.numel() for b in converted_encoder.buffers())
-    print(f"  [ptq-model-check] params={total_params}, buffers={total_bufs}")
-
-    sd = converted_encoder.state_dict()
-    sparse_scale_keys = [k for k in sd if "scale" in k or "zero_point" in k]
-    print(f"  [ptq-model-check] state_dict has {len(sd)} keys, {len(sparse_scale_keys)} are scale/zp")
-    if sparse_scale_keys:
-        print(f"  [ptq-model-check] sample scale/zp keys: {sparse_scale_keys[:5]}")
 
 
 def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
@@ -310,9 +263,8 @@ def _calibrate_dense(model, dataloader, num_batches, method="mse"):
         """Best-effort dtype normalization before test_step during calibration.
 
         Some dataloader/preprocessor paths may provide integer voxel features.
-        When sparse encoder is already FX INT8-converted, quantize ops inside that
-        graph require float activations and can raise:
-        "Quantize only works on Float Tensor, got Int".
+        Integer voxel features or points are coerced to float32 where needed for
+        dense Q/DQ calibration.
         """
         if not isinstance(batch, dict):
             return batch
@@ -450,7 +402,6 @@ def _calibrate_spconv(
     print("  Applying NVIDIA TensorQuantizer path (histogram + MSE, adapted from CUDA-BEVFusion)")
     apply_nvidia_spconv_int8(
         sparse_encoder,
-        exclude_conv_out=True,
         exclude_patterns=fp16_layers,
     )
     calibrate_spconv_nvidia(sparse_encoder, calibration_data)
@@ -524,12 +475,6 @@ def run_ptq(args):
     print("\n[1/6] Loading BEVFusion model...")
     model = _build_bevfusion_model(args.config, args.checkpoint, args.device)
 
-    from deployment.projects.bevfusion.quantization.spconv_int8 import (
-        install_spconv_quantize_per_tensor_float_input_guard,
-    )
-
-    install_spconv_quantize_per_tensor_float_input_guard()
-
     # [2/6] Fuse BN
     if fuse_bn:
         print("\n[2/6] Fusing BatchNorm layers...")
@@ -581,7 +526,7 @@ def run_ptq(args):
     if not args.skip_spconv_int8:
         quant_cfg_for_sparse, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
         if quant_cfg_for_sparse.get("spconv_int8", False):
-            print("\n[4b/6] Spconv INT8 for sparse encoder (FX path, runs before dense PTQ calib)...")
+            print("\n[4b/6] Spconv INT8 for sparse encoder (NVIDIA TensorQuantizer, runs before dense PTQ calib)...")
             spconv_samples = min(total_ds, int(args.calibrate_samples))
             print(
                 f"  Spconv calibration frames: {spconv_samples} "

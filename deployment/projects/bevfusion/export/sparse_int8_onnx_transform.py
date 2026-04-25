@@ -10,7 +10,7 @@ Usage::
     python -m deployment.projects.bevfusion.export.sparse_int8_onnx_transform \\
         --onnx work_dirs/bevfusion/sparse_encoder.onnx \\
         --checkpoint work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only.pth \\
-        --config projects/BEVFusion/configs/.../bevfusion_..._fx.py \\
+        --config projects/BEVFusion/configs/.../bevfusion_..._120m.py \\
         --output work_dirs/bevfusion/sparse_encoder_int8_pathb.onnx
 
 The output ONNX can be loaded by TensorRT with the ImplicitGemmInt8Plugin.
@@ -612,16 +612,13 @@ def _get_initializer_data(model: onnx.ModelProto, name: str) -> Optional[np.ndar
     return None
 
 
-def _onnx_node_text_blob(node: onnx.NodeProto) -> str:
-    parts = [node.name or ""]
-    parts.extend(node.input)
-    parts.extend(node.output)
-    return " ".join(parts).lower().replace("\\", "/")
-
-
-def _implicit_gemm_is_conv_out(node: onnx.NodeProto) -> bool:
-    """PTQ keeps ``conv_out`` FP32; ONNX node must stay ``ImplicitGemm``, not Int8."""
-    return "conv_out" in _onnx_node_text_blob(node)
+def _implicit_gemm_to_int8_path(node: onnx.NodeProto, fp16_patterns_norm: List[str]) -> bool:
+    """Whether this ``autoware::ImplicitGemm`` should be replaced by ``ImplicitGemmInt8``."""
+    if node.op_type != "ImplicitGemm" or node.domain != "autoware":
+        return False
+    if _implicit_gemm_matches_fp16_pattern(node, fp16_patterns_norm) is not None:
+        return False
+    return True
 
 
 def _implicit_gemm_matches_fp16_pattern(node: onnx.NodeProto, patterns: Optional[List[str]]) -> Optional[str]:
@@ -743,11 +740,10 @@ def transform_onnx_int8(
         audit_records: If provided, append one JSON-serializable dict per converted
             ``ImplicitGemmInt8`` (for ``--audit-report`` or custom tooling).
         fp16_layer_patterns: Optional list of case-insensitive substring patterns.
-            Any ``ImplicitGemm`` node whose name/inputs/outputs contain one of the
-            patterns is **kept as FP16** (skipped INT8 replacement), in addition to
-            the automatic ``conv_out`` skip. Driven by ``spconv_int8_fp16_layers`` in
-            the BEVFusion deploy_config (see ``deploy_config_split_int8.py`` for
-            syntax examples).
+            Any ``ImplicitGemm`` node whose **name** contains one of the patterns is
+            **kept as FP16** ``ImplicitGemm`` (skipped INT8 replacement). Driven by
+            ``spconv_int8_fp16_layers`` in the BEVFusion deploy_config. ``conv_out`` follows
+            the same rule as other layers (no ONNX special-case skip).
 
     Returns:
         Modified ONNX model with autoware::ImplicitGemmInt8 nodes.
@@ -839,14 +835,7 @@ def transform_onnx_int8(
     if fp16_patterns_norm:
         print(f"  [int8] spconv_int8_fp16_layers patterns (kept FP16): {fp16_patterns_norm}")
 
-    n_expected_int8 = sum(
-        1
-        for n in graph.node
-        if n.op_type == "ImplicitGemm"
-        and n.domain == "autoware"
-        and not _implicit_gemm_is_conv_out(n)
-        and _implicit_gemm_matches_fp16_pattern(n, fp16_patterns_norm) is None
-    )
+    n_expected_int8 = sum(1 for n in graph.node if _implicit_gemm_to_int8_path(n, fp16_patterns_norm))
     # Track which patterns matched nodes, to warn about typos / dead patterns.
     fp16_pattern_hits: Dict[str, int] = {p: 0 for p in fp16_patterns_norm}
 
@@ -857,11 +846,6 @@ def transform_onnx_int8(
 
     for node in graph.node:
         if node.op_type != "ImplicitGemm" or node.domain != "autoware":
-            new_nodes.append(node)
-            continue
-
-        if _implicit_gemm_is_conv_out(node):
-            print("  [int8] Keep FP32 ImplicitGemm for conv_out (PTQ): " f"name={node.name!r}")
             new_nodes.append(node)
             continue
 

@@ -87,8 +87,8 @@ flowchart TB
 實作於 `_calibrate_spconv`（`bevfusion_quantization.py`）與 `deployment/projects/bevfusion/quantization/spconv_int8.py`：
 
 1. **收集校準樣本**：從 dataloader 取點雲 → `pts_voxel_layer` 得到 **完整 voxel**（與 Lidar AI Solution 一類流程對齊，不隨意裁 voxel 數）。
-2. **`apply_nvidia_spconv_int8(sparse_encoder, exclude_conv_out=True)`**  
-   在每個 `SparseConvolution`（可排除最後 `conv_out`）上掛：
+2. **`apply_nvidia_spconv_int8(sparse_encoder, exclude_patterns=...)`**  
+   在每個 `SparseConvolution`（可依 deploy 的 `spconv_int8_fp16_layers` 子字串略過指定層）上掛：
    - `_input_quantizer`（啟動 fake quant）
    - `_weight_quantizer`（權重 per-channel）
 3. **`calibrate_spconv_nvidia`**  
@@ -122,8 +122,7 @@ flowchart TB
 ### 3.5 與 spconv 官方 INT8 文件的關係
 
 - **spconv `docs/INT8_GUIDE.md`**：以 **torch.fx** 可追蹤圖、`prepare_fx` / `convert_fx`、Residual 融合等為前提，並說明 **channel % 32** 等 INT8 kernel 限制。
-- **AWML 預設主路徑**：**不依賴**整塔 FX 替換來做稀疏校準，而是 **NVIDIA `TensorQuantizer`**（與 CUDA-BEVFusion / CenterPoint 範例一致），避免舊 FX 路徑上已知問題（例如 peak clipping 導致 mAP≈0，見 `spconv_int8.py` 檔頭說明）。
-- **FX 路徑**：仍保留為 legacy／特殊情境，需與 `spconv_ptq_basicblock_fx`、`GraphModule` 鍵對齊；`deploy_config_split_int8.py` 內有 **Preset C / spconv_ptq_basicblock_fx** 註解。
+- **AWML 路徑**：**不依賴**整塔 FX 替換來做稀疏校準，而是 **NVIDIA `TensorQuantizer`**（與 CUDA-BEVFusion / CenterPoint 範例一致）。舊的 `prepare_fx` / `GraphModule` sparse PTQ 已從程式碼移除；請只用目前 `bevfusion_quantization.py` 產生的 `_amax` checkpoint。
 
 ---
 
@@ -135,7 +134,7 @@ flowchart TB
   2. **`_prepare_encoder_for_nvidia_int8`**：再次 `apply_nvidia_spconv_int8`，使模組樹與 checkpoint **鍵一致**。
   3. **`load_state_dict`**：載回權重與 **`_amax`**。
 
-若偵測到已是 `GraphModule` 或已有 NVIDIA quantizer，runner 會**跳過**另一套 `prepare_fx + calibrate`，避免重複校準。
+若 `pts_middle_encoder` 上已有 NVIDIA `TensorQuantizer`（PTQ checkpoint 載入後），runner **不再**做任何稀疏端重新校準。
 
 **環境**：評測 PyTorch INT8 路徑需 **`pytorch_quantization`**（Docker 內常需 `pip install pytorch-quantization`，見 `deploy_config_int8.py` / `deploy_config_split_int8.py` 註解）。
 

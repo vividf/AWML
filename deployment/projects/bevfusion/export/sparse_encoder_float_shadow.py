@@ -152,8 +152,7 @@ def resolve_sparse_onnx_shadow(
                     )
                 return pts_middle_encoder, overrides_nv
             can_nv = all(
-                hasattr(pts_middle_encoder, name) or (name in overrides_nv)
-                for name in SPARSE_ENCODER_SHADOW_ATTRS
+                hasattr(pts_middle_encoder, name) or (name in overrides_nv) for name in SPARSE_ENCODER_SHADOW_ATTRS
             )
             if can_nv:
                 if overrides_nv:
@@ -238,7 +237,7 @@ def build_float_sparse_encoder_shadow(
     if missing:
         raise RuntimeError(
             "Cannot rebuild FP32 sparse encoder for ONNX: GraphModule + overrides missing: "
-            f"{missing}. Ensure convert_spconv_int8 copies attrs from the pre-FX encoder, or pass "
+            f"{missing}. Ensure the FP32 shadow encoder defines these (match training sparse_encoder), or pass "
             f"a BEVFusion model with model.cfg.model.pts_middle_encoder. See "
             f"docs/5_bevfusion_onnx_trt_spconv_int8.md (bevfusion project)."
         )
@@ -259,7 +258,7 @@ def build_float_sparse_encoder_shadow(
 
     block_type = _pick("block_type")
     if block_type is None:
-        block_type = "basicblock_fx"
+        block_type = "basicblock"
     order_val = _pick("order")
     order = tuple(order_val) if order_val is not None else ("conv", "norm", "act")
 

@@ -25,7 +25,7 @@ CLI::
         <your_model_cfg.py>
 """
 
-spconv_do_sort = True
+spconv_do_sort = False
 
 # ============================================================================
 # Checkpoint Path
@@ -38,7 +38,7 @@ devices = dict(
 )
 
 export = dict(
-    mode="both",
+    mode="none",
     work_dir="work_dirs/bevfusion_deployment_split",
     onnx_path=None,
 )
@@ -143,7 +143,7 @@ evaluation = dict(
     verbose=True,
     backends=dict(
         pytorch=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
         ),
         onnx=dict(

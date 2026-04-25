@@ -1,15 +1,8 @@
-"""BEVFusion quantization utilities.
+"""BEVFusion quantization utilities (sparse tower: NVIDIA TensorQuantizer path)."""
 
-Provides spconv INT8 quantization for sparse encoder and
-pytorch_quantization integration for dense parts.
-"""
-
-from .spconv_int8 import (
-    apply_spconv_int8_quantization,
-    calibrate_spconv_model,
-)
+from .spconv_int8 import apply_nvidia_spconv_int8, calibrate_spconv_nvidia
 
 __all__ = [
-    "apply_spconv_int8_quantization",
-    "calibrate_spconv_model",
+    "apply_nvidia_spconv_int8",
+    "calibrate_spconv_nvidia",
 ]

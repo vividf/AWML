@@ -141,7 +141,7 @@ evaluation = dict(
     verbose=True,
     backends=dict(
         pytorch=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
         ),
         onnx=dict(
