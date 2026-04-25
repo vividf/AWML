@@ -1,8 +1,9 @@
 """
 BEVFusion INT8 Deployment Configuration
 
-Uses spconv INT8 for the sparse encoder backbone; the last ``conv_out`` block stays FP32.
-Dense parts use pytorch_quantization. Re-run PTQ after this policy change so checkpoints match.
+Uses NVIDIA ``TensorQuantizer`` INT8 on sparse ``SparseConvolution`` layers (including ``conv_out``
+unless excluded via ``spconv_int8_fp16_layers``). Dense parts use pytorch_quantization.
+Re-run PTQ after policy changes so checkpoints match.
 
 Two deployment modes:
 A) With PTQ checkpoint (recommended):
@@ -16,28 +17,25 @@ B) Without PTQ checkpoint (runtime calibration only):
    3. Dense Q/DQ will be inserted but NOT calibrated (no _amax)
 
 Usage:
-    # For spconv_int8, use FX-traceable config (block_type='basicblock_fx'):
-    #   config: bevfusion_*_120m_fx.py (same as base 120m, checkpoint compatible)
+    # Step 1: Generate PTQ checkpoint (``*_120m.py`` or legacy ``*_120m_fx.py`` alias)
 
-    # Step 1: Generate PTQ checkpoint
     python deployment/quantization/bevfusion_quantization.py ptq \
-        --config projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m_fx.py \
+        --config projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m.py \
         --checkpoint work_dirs/bevfusion/epoch_30.pth \
         --deploy-cfg deployment/projects/bevfusion/config/deploy_config_int8.py \
         --calibrate-samples 256 --batch-size 1 --calib-seed 0 \
         --output work_dirs/bevfusion/epoch_30_ptq2.pth
 
-    # Step 2: Deploy with PTQ checkpoint (use same _fx config)
+    # Step 2: Deploy with PTQ checkpoint (same mmconfig as PTQ)
     python -m deployment.cli.main bevfusion \
         deployment/projects/bevfusion/config/deploy_config_int8.py \
-        projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m_fx.py \
+        projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m.py \
         --module main_body
 
     # Optional: split sparse/dense ONNX + engines (route 1) with same PTQ checkpoint
     #   → deployment/projects/bevfusion/config/deploy_config_split_int8.py
 
-Docker (awml-bevfusion:full): set FX trace before spconv import and install NVIDIA quant wheels, e.g.:
-    export SPCONV_FX_TRACE_MODE=1
+Docker (awml-bevfusion:full): install NVIDIA quant wheels, e.g.:
     pip install --no-cache-dir \\
         --index-url https://pypi.nvidia.com \\
         --extra-index-url https://pypi.org/simple \\
@@ -67,11 +65,8 @@ quantization = dict(
     quant_neck=True,
     quant_head=True,
     quant_add=False,
-    # Sparse encoder (pts_middle_encoder): use spconv INT8 (cumm kernels)
+    # Sparse encoder (pts_middle_encoder): NVIDIA TensorQuantizer INT8 (Path B ONNX)
     spconv_int8=True,
-    # PTQ script + deploy loader both upgrade SparseBasicBlock→SparseBasicBlockFX before prepare_fx.
-    # Set False only for legacy PTQ .pth files produced without that upgrade.
-    spconv_ptq_basicblock_fx=True,
     # Layers to skip quantization (prefix match)
     sensitive_layers=[],
 )

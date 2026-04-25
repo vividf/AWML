@@ -198,11 +198,9 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         setup_quantization_for_onnx_export()
         from deployment.projects.bevfusion.quantization.spconv_quantized_add_patch import (
             ensure_spconv_quantize_per_tensor_float_activations,
-            retarget_graphmodule_quantize_per_tensor_calls,
         )
 
         ensure_spconv_quantize_per_tensor_float_activations()
-        retarget_graphmodule_quantize_per_tensor_calls(model)
         self.logger.info("Running torch.onnx.export...")
         self._export_to_onnx(model, voxels, coors, num_points_per_voxel, str(temp_path), onnx_cfg)
 
@@ -245,11 +243,9 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         setup_quantization_for_onnx_export()
         from deployment.projects.bevfusion.quantization.spconv_quantized_add_patch import (
             ensure_spconv_quantize_per_tensor_float_activations,
-            retarget_graphmodule_quantize_per_tensor_calls,
         )
 
         ensure_spconv_quantize_per_tensor_float_activations()
-        retarget_graphmodule_quantize_per_tensor_calls(model)
 
         sparse_cfg = config.components_cfg.get_component("bevfusion_sparse")
         dense_cfg = config.components_cfg.get_component("bevfusion_dense")

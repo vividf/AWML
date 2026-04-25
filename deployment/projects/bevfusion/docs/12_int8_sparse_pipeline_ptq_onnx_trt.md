@@ -68,8 +68,8 @@ flowchart LR
 
 腳本 **不再走舊版純 FX `prepare_fx` 整塔替換** 作為主路徑；`_calibrate_spconv` 實作為 **NVIDIA / CUDA-BEVFusion 風格**：
 
-1. **`apply_nvidia_spconv_int8(sparse_encoder)`**  
-   在每個 `SparseConvolution`（可排除 `conv_out`）上掛 `_input_quantizer`、`_weight_quantizer`（`pytorch_quantization` 的 `TensorQuantizer`）。
+1. **`apply_nvidia_spconv_int8(sparse_encoder, exclude_patterns=...)`**  
+   在每個 `SparseConvolution`（含 `conv_out`；可依 deploy 的 `spconv_int8_fp16_layers` 子字串略過指定層）上掛 `_input_quantizer`、`_weight_quantizer`（`pytorch_quantization` 的 `TensorQuantizer`）。
 2. **`calibrate_spconv_nvidia`**  
    用 voxel 特徵跑稀疏 encoder forward，收集 **histogram**，再以 **MSE** 等方法 `compute_amax`，寫入各 quantizer 的 **`_amax`** buffer。
 3. 存進 checkpoint 的鍵形如：  

@@ -15,44 +15,19 @@ else:
 import numpy as np
 import torch
 
-from .sparse_block_fx import SparseBasicBlockFX
 from .sparse_convmodule import make_sparse_convmodule
 
 logger = logging.getLogger(__name__)
 
 
 def _is_fx_proxy(t) -> bool:
+    """True if *t* is a ``torch.fx.Proxy`` (symbolic trace). Kept for ``bevfusion._ensure_float_for_pts_pipeline``."""
     try:
         from torch.fx import Proxy
 
         return isinstance(t, Proxy)
     except Exception:
         return False
-
-
-def _in_torch_fx_prepare_trace() -> bool:
-    """Detect torch.fx symbolic_trace used by torch.ao.quantization.prepare_fx."""
-    try:
-        fn = getattr(torch.fx, "is_symbolic_trace", None)
-        if callable(fn) and fn():
-            return True
-    except Exception:
-        pass
-    try:
-        from torch.fx._symbolic_trace import is_tracing
-
-        if callable(is_tracing) and is_tracing():
-            return True
-    except Exception:
-        pass
-    try:
-        from torch.fx._symbolic_trace import _is_fx_tracing
-
-        if callable(_is_fx_tracing) and _is_fx_tracing():
-            return True
-    except Exception:
-        pass
-    return False
 
 
 def _conv_out_to_bev(out_tensor, output_channels: Optional[int] = None, target_z: int = 2) -> torch.Tensor:
@@ -72,12 +47,6 @@ def _conv_out_to_bev(out_tensor, output_channels: Optional[int] = None, target_z
     # (N, C, H, W, D) → (N, C, D, H, W) → (N, C*D, H, W)
     t = x.permute(0, 1, 4, 2, 3).contiguous()
     return t.view(n, c * int(d), int(h), int(w))
-
-
-# FX trace fails when control flow uses symbolic (traced) variables; dense() or shape/view can trigger that.
-# Wrapping makes this a single non-traced call so prepare_fx succeeds.
-if hasattr(torch.fx, "wrap"):
-    _conv_out_to_bev = torch.fx.wrap(_conv_out_to_bev)
 
 
 @MODELS.register_module()
@@ -128,7 +97,12 @@ class BEVFusionSparseEncoder(SparseEncoder):
         return_middle_feats=False,
     ):
         super(SparseEncoder, self).__init__()
-        assert block_type in ["conv_module", "basicblock", "basicblock_fx"]
+        if block_type == "basicblock_fx":
+            logger.warning(
+                "block_type='basicblock_fx' is deprecated; using 'basicblock' (legacy FX sparse PTQ removed)."
+            )
+            block_type = "basicblock"
+        assert block_type in ["conv_module", "basicblock"]
         self.sparse_shape = sparse_shape
         self.in_channels = in_channels
         self.register_buffer("aug_features_min_values", torch.tensor(aug_features_min_values))
@@ -217,19 +191,9 @@ class BEVFusionSparseEncoder(SparseEncoder):
             y = y.reshape(num_points, -1)
             voxel_features = torch.cat([torch.cos(y), torch.sin(y)], dim=1)
 
-        # INT8 / quantize_per_tensor needs float32 features. Do not branch on is_floating_point() or dtype:
-        # under prepare_fx, voxel_features is a Proxy and those checks participate in control flow → TraceError.
         voxel_features = voxel_features.contiguous().to(dtype=torch.float32)
-        # int32 + contiguous: spconv implicit_gemm merge_sort assumes int32 indices; non-contiguous → illegal access
         coors = coors.to(dtype=torch.int32, device=voxel_features.device).contiguous()
-        # Do not compare symbolic shapes under FX (prepare_fx); see _in_torch_fx_prepare_trace docstring.
-        if (
-            not torch.jit.is_tracing()
-            and not _in_torch_fx_prepare_trace()
-            and not _is_fx_proxy(voxel_features)
-            and not _is_fx_proxy(coors)
-            and voxel_features.shape[0] != coors.shape[0]
-        ):
+        if not torch.jit.is_tracing() and voxel_features.shape[0] != coors.shape[0]:
             raise ValueError(f"voxel_features / coors row mismatch: {voxel_features.shape[0]} vs {coors.shape[0]}")
         input_sp_tensor = SparseConvTensor(voxel_features, coors, self.sparse_shape, batch_size)
         x = self.conv_input(input_sp_tensor)
@@ -240,7 +204,6 @@ class BEVFusionSparseEncoder(SparseEncoder):
             encode_features.append(x)
 
         # for detection head
-        # [200, 176, 5] -> [200, 176, 2]; use wrapped op so FX does not trace dense()/shape/view (avoids "symbolically traced variables in control flow")
         out = self.conv_out(encode_features[-1])
         spatial_features = _conv_out_to_bev(out, self.output_channels)
 
@@ -257,10 +220,10 @@ class BEVFusionSparseEncoder(SparseEncoder):
         block_type: Optional[str] = "conv_module",
         conv_cfg: Optional[dict] = None,
     ) -> int:
-        """Build encoder layers. Overridden to support basicblock_fx for torch.fx INT8."""
+        """Build encoder layers (``basicblock`` = mmdet3d ``SparseBasicBlock``)."""
         if conv_cfg is None:
             conv_cfg = dict(type="SubMConv3d")
-        assert block_type in ["conv_module", "basicblock", "basicblock_fx"]
+        assert block_type in ["conv_module", "basicblock"]
         self.encoder_layers = SparseSequential()
 
         for i, blocks in enumerate(self.encoder_channels):
@@ -280,7 +243,7 @@ class BEVFusionSparseEncoder(SparseEncoder):
                             conv_type="SparseConv3d",
                         )
                     )
-                elif block_type in ("basicblock", "basicblock_fx"):
+                elif block_type == "basicblock":
                     if j == len(blocks) - 1 and i != len(self.encoder_channels) - 1:
                         blocks_list.append(
                             make_block(
@@ -295,9 +258,8 @@ class BEVFusionSparseEncoder(SparseEncoder):
                             )
                         )
                     else:
-                        block_cls = SparseBasicBlockFX if block_type == "basicblock_fx" else SparseBasicBlock
                         blocks_list.append(
-                            block_cls(
+                            SparseBasicBlock(
                                 in_channels,
                                 out_channels,
                                 norm_cfg=norm_cfg,

@@ -7,7 +7,7 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 
 **隔離問題時怎麼想（與 ``deploy_config_split.py`` 無關）**
 
-  同一條 CLI、同一個 ``*_120m_fx.py``、**仍用本檔**（split 路徑與 work_dir 不變），只把
+  同一條 CLI、同一個 mmconfig（例如 ``*_120m.py``）、**仍用本檔**（split 路徑與 work_dir 不變），只把
   ``checkpoint_path`` 改成 **訓練 FP32 .pth**，並設 ``quantization = dict(enabled=False)``。
   若此時 **mAP 正常**，則 **split / voxel preprocess / eval 管線沒壞**；mAP 掉在 **PTQ .pth 或
   quantization 載入**（含 dense Q/DQ、spconv INT8、key 與 mmconfig 是否一致）。
@@ -15,29 +15,22 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 
 **前置條件**
   - ``checkpoint_path`` 指向 ``bevfusion_quantization.py ptq`` 產生的 **.pth**；``quantization.ptq_checkpoint=True``（本檔預設已開）。
-  - 稀疏塔預設：**主幹 INT8、最後 ``conv_out``（SparseSequential）FP32**（``bevfusion_spconv_qconfig_mapping``）。舊的「含 INT8 conv_out」PTQ .pth 與現有 GraphModule **鍵/結構不同**，請用目前腳本 **重跑 PTQ**。
-  - **``spconv_ptq_basicblock_fx``** 必須與 **產生該 PTQ .pth 時** 的 sparse 圖一致，否則會出現 ``bn1.weight`` missing / ``bn1_scale_0`` unexpected、mAP≈0。
-
-    - **False**：legacy PTQ（``*_base_120m.py``、舊腳本、未做 block 升級）與 deploy 對齊時。
-    - **True**：``*_120m_fx.py`` 且已用 **目前** ``bevfusion_quantization.py`` 重跑 PTQ（腳本內會 ``SparseBasicBlock→FX``）時，建議與 PTQ 一致。
-
+  - 稀疏塔：**主幹 INT8**（含 ``conv_out``）；本檔與 ``deploy_config_split_int8.py`` 的差異在
+    ``spconv_int8_fp16_layers``（此處列多層 FP ``ImplicitGemm`` 做對照實驗）。變更後請 **重跑 PTQ**。
 **稀疏段 ONNX**
-  - ``convert_fx`` 後的 GraphModule 無法直接匯出（ONNX 不支援 ``_empty_affine_quantized``）。
-  - 匯出時 pipeline 會 **暫時**以重建的 **FP32 融合稀疏塔** 取代 GraphModule 僅供 trace，結束後還原；
-    產生的 ``bevfusion_sparse.onnx`` 為 **浮點稀疏圖**（與 Lidar ``*.scn.onnx`` + libspconv FP16/FP 路線同類），
-    **數值與 PTQ INT8 不完全相同**；真 INT8 稀疏推理請仍用 PyTorch 或依 spconv TENSORRT_INT8_GUIDE 餵權重給 plugin。
+  - 匯出的 ``bevfusion_sparse.onnx`` 為浮點 ``ImplicitGemm``；Path B 以 ``sparse_int8_onnx_transform.py`` 換成 INT8 plugin 圖。
 
 **CLI**（需在含 pytorch-quantization 的環境；Docker 內用 ``pip install --no-cache-dir --index-url https://pypi.nvidia.com --extra-index-url https://pypi.org/simple pytorch-quantization==2.1.3``，詳見 ``deploy_config_int8.py`` 註解）::
 
     python -m deployment.cli.main bevfusion \\
         deployment/projects/bevfusion/config/deploy_config_split_int8.py \\
-        projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m_fx.py \\
+        projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m.py \\
         --module main_body
 
 產生 PTQ checkpoint 範例（與 int8 單檔相同）::
 
     python deployment/quantization/bevfusion_quantization.py ptq \\
-        --config projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m_fx.py \\
+        --config projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m.py \\
         --checkpoint work_dirs/bevfusion/epoch_30.pth \\
         --deploy-cfg deployment/projects/bevfusion/config/deploy_config_int8.py \\
         --calibrate-samples 256 --batch-size 1 --calib-seed 0 \\
@@ -62,12 +55,11 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 #     quant_head=True,
 #     quant_add=False,
 #     spconv_int8=True,
-#     spconv_ptq_basicblock_fx=True,
 #     sensitive_layers=[],
 # )
 
 # ============================================================================
-# Preset B：同 split_int8 路徑 + *_fx.py，僅 FP32 驗證 mAP / 管線（註解掉 Preset A 後啟用）
+# Preset B：同 split_int8 路徑 + mmconfig，僅 FP32 驗證 mAP / 管線（註解掉 Preset A 後啟用）
 # ============================================================================
 # checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30.pth"
 # quantization = dict(enabled=False)
@@ -78,7 +70,7 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 # PTQ（需 deploy 內 spconv_int8=True，並加 --sparse-int8-only）::
 #
 #   python deployment/quantization/bevfusion_quantization.py ptq \\
-#       --config .../bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m_fx.py \\
+#       --config .../bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m.py \\
 #       --checkpoint work_dirs/bevfusion/bevfusion_epoch_30.pth \\
 #       --deploy-cfg deployment/projects/bevfusion/config/deploy_config_split_int8.py \\
 #       --sparse-int8-only \\
@@ -128,8 +120,8 @@ spconv_do_sort = False
 #     Full path (``/pts_middle_encoder/conv_input/conv_input.0/ImplicitGemm``)
 #     or a unique tail (``conv_input.0/ImplicitGemm`` / ``conv_input.0``) both
 #     work because match is substring on name.
-#   - ``conv_out.*`` is always kept FP32 automatically (PTQ rule); no need to
-#     list it here.
+#   - To keep ``conv_out`` as FP ``ImplicitGemm``, add a matching substring under
+#     ``spconv_int8_fp16_layers`` (same as any other layer).
 #   - The PTQ checkpoint already contains ``_amax`` for these layers, which is
 #     harmless: it will simply not be consumed (expect an
 #     ``[int8-audit] WARNING: calibrated stems with no matched ImplicitGemm
@@ -143,11 +135,36 @@ spconv_do_sort = False
 # ============================================================================
 spconv_int8_fp16_layers = [
     "conv_input.0",  # 第一層 sparse conv 通常最敏感 (matches node.name only)
-    "encoder_layer1/encoder_layer1.0/conv1",  # stride-2 downsample of stage 3
+    "encoder_layer1/encoder_layer1.0/conv1",
     "encoder_layer1/encoder_layer1.0/conv2",
-    "encoder_layer1/encoder_layer1.1/conv1",  # stride-2 downsample of stage 3
+    #
+    "encoder_layer1/encoder_layer1.1/conv1",
     "encoder_layer1/encoder_layer1.1/conv2",
+    #
+    "encoder_layer1/encoder_layer1.2/encoder_layer1.2.0",
+    "encoder_layer2/encoder_layer2.0/conv1",
+    "encoder_layer2/encoder_layer2.0/conv2",
+    #
+    "encoder_layer2/encoder_layer2.1/conv1",
+    "encoder_layer2/encoder_layer2.1/conv2",
+    #
+    "encoder_layer2/encoder_layer2.2/encoder_layer2.2.0",
+    "encoder_layer3/encoder_layer3.0/conv1",
+    "encoder_layer3/encoder_layer3.0/conv2",
+    #
+    "encoder_layer3/encoder_layer3.1/conv1",
+    "encoder_layer3/encoder_layer3.1/conv2",
+    #
+    "encoder_layer3/encoder_layer3.2/encoder_layer3.2.0",
+    "encoder_layer4/encoder_layer4.0/conv1",
+    "encoder_layer4/encoder_layer4.0/conv2",
+    #
+    "encoder_layer4/encoder_layer4.1/conv1",
+    "encoder_layer4/encoder_layer4.1/conv2",
+    #
+    "conv_out/conv_out.0",
 ]
+
 
 quantization = dict(
     enabled=True,
@@ -158,7 +175,6 @@ quantization = dict(
     quant_head=False,
     quant_add=False,
     spconv_int8=True,
-    spconv_ptq_basicblock_fx=True,
     sensitive_layers=[],
 )
 
