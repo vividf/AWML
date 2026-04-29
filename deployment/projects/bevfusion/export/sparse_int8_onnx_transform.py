@@ -701,6 +701,8 @@ def _append_implicit_gemm_int8_plugin_attributes(
             helper.make_attribute("is_subm", _i("is_subm", 0)),
             helper.make_attribute("output_scale", _f("output_scale", 1.0)),
             helper.make_attribute("input_scale", _f("input_scale", 1.0)),
+            helper.make_attribute("timing_enabled", _i("timing_enabled", 0)),
+            helper.make_attribute("timing_max_logs", _i("timing_max_logs", 1000)),
         ]
     )
     # Keep Autoware ImplicitGemm extras if present (shape / legacy parsers).
@@ -725,6 +727,8 @@ def transform_onnx_int8(
     override_terminal_absmax: Optional[float] = None,
     audit_records: Optional[List[Dict[str, Any]]] = None,
     fp16_layer_patterns: Optional[List[str]] = None,
+    plugin_timing_enabled: bool = False,
+    plugin_timing_max_logs: int = 1000,
 ) -> onnx.ModelProto:
     """Replace ImplicitGemm nodes with ImplicitGemmInt8 nodes.
 
@@ -744,6 +748,10 @@ def transform_onnx_int8(
             **kept as FP16** ``ImplicitGemm`` (skipped INT8 replacement). Driven by
             ``spconv_int8_fp16_layers`` in the BEVFusion deploy_config. ``conv_out`` follows
             the same rule as other layers (no ONNX special-case skip).
+        plugin_timing_enabled: When True, ONNX attributes ``timing_enabled`` / ``timing_max_logs``
+            are set on each ``ImplicitGemmInt8`` so the TensorRT plugin logs CUDA-event splits
+            (deploy_config: ``implicit_gemm_int8_plugin_timing``).
+        plugin_timing_max_logs: Upper bound on timing log lines (stderr); same key in deploy_config.
 
     Returns:
         Modified ONNX model with autoware::ImplicitGemmInt8 nodes.
@@ -915,6 +923,8 @@ def transform_onnx_int8(
         attrs = _implicit_gemm_attrs_from_node(node)
         attrs["output_scale"] = float(si["output_scale"])
         attrs["input_scale"] = float(si["input_scale"])
+        attrs["timing_enabled"] = int(bool(plugin_timing_enabled))
+        attrs["timing_max_logs"] = int(plugin_timing_max_logs)
 
         int8_node = helper.make_node(
             "ImplicitGemmInt8",
@@ -1059,6 +1069,16 @@ def main():
             "Usually points to deploy_config_split_int8.py."
         ),
     )
+    parser.add_argument(
+        "--deploy-cfg",
+        default=None,
+        help=(
+            "Same as --fp16-layers-from-deploy-cfg but preferred: loads deploy_config .py for "
+            "spconv_int8_fp16_layers, implicit_gemm_int8_plugin_timing, and "
+            "implicit_gemm_int8_plugin_timing_max_logs. "
+            "If both --deploy-cfg and --fp16-layers-from-deploy-cfg are set, --deploy-cfg wins."
+        ),
+    )
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
@@ -1089,29 +1109,43 @@ def main():
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     encoder_sd = ckpt.get("state_dict", ckpt)
 
-    fp16_layer_patterns: List[str] = []
-    if args.fp16_layers:
-        fp16_layer_patterns.extend(p.strip() for p in args.fp16_layers.split(",") if p.strip())
-    if args.fp16_layers_from_deploy_cfg:
+    fp16_layer_patterns = []
+    plugin_timing_enabled = False
+    plugin_timing_max_logs = 1000
+
+    deploy_cfg_path = getattr(args, "deploy_cfg", None) or args.fp16_layers_from_deploy_cfg
+    if deploy_cfg_path:
         try:
             from mmengine import Config  # type: ignore
         except ImportError as e:
             raise SystemExit(
-                "--fp16-layers-from-deploy-cfg requires mmengine; install it or pass " "--fp16-layers directly."
+                "--deploy-cfg / --fp16-layers-from-deploy-cfg requires mmengine; install it or pass "
+                "--fp16-layers directly."
             ) from e
-        deploy_cfg = Config.fromfile(args.fp16_layers_from_deploy_cfg)
+        deploy_cfg = Config.fromfile(deploy_cfg_path)
         cfg_list = deploy_cfg.get("spconv_int8_fp16_layers", []) or []
         if not isinstance(cfg_list, (list, tuple)):
             raise SystemExit(
-                f"spconv_int8_fp16_layers in {args.fp16_layers_from_deploy_cfg!r} must be a "
+                f"spconv_int8_fp16_layers in {deploy_cfg_path!r} must be a "
                 f"list of strings, got {type(cfg_list).__name__}."
             )
         fp16_layer_patterns.extend(str(p) for p in cfg_list if str(p).strip())
+        plugin_timing_enabled = bool(deploy_cfg.get("implicit_gemm_int8_plugin_timing", False))
+        plugin_timing_max_logs = int(deploy_cfg.get("implicit_gemm_int8_plugin_timing_max_logs", 1000))
+
+    if args.fp16_layers:
+        fp16_layer_patterns.extend(p.strip() for p in args.fp16_layers.split(",") if p.strip())
+
     fp16_layer_patterns = list(dict.fromkeys(fp16_layer_patterns))
 
     print(f"\nTransforming ImplicitGemm → ImplicitGemmInt8...")
     if fp16_layer_patterns:
         print(f"  FP16 keep-list ({len(fp16_layer_patterns)}): {fp16_layer_patterns}")
+    print(
+        f"  ImplicitGemmInt8 plugin CUDA timing attrs: timing_enabled={plugin_timing_enabled} "
+        f"timing_max_logs={plugin_timing_max_logs}"
+        + (f" (from deploy_cfg {deploy_cfg_path!r})" if deploy_cfg_path else "")
+    )
     audit_records: List[Dict[str, Any]] = []
     model = transform_onnx_int8(
         model,
@@ -1122,6 +1156,8 @@ def main():
         override_terminal_absmax=args.pathb_terminal_absmax,
         audit_records=audit_records if args.audit_report else None,
         fp16_layer_patterns=fp16_layer_patterns,
+        plugin_timing_enabled=plugin_timing_enabled,
+        plugin_timing_max_logs=plugin_timing_max_logs,
     )
 
     if args.audit_report:

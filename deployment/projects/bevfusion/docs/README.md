@@ -32,6 +32,7 @@ Numbered filenames follow **creation time** (filesystem birth time, with mtime t
 | **12** | [**`12_int8_sparse_pipeline_ptq_onnx_trt.md`**](./12_int8_sparse_pipeline_ptq_onnx_trt.md) | **PTQ → ONNX → TRT 內部流程；稀疏 INT8 在各層如何成立** |
 | **13** | [**`13_int8_pathb_tensorrt_eval_milestone.md`**](./13_int8_pathb_tensorrt_eval_milestone.md) | **里程碑：PyTorch BEV mAP 0.35→0.37；TRT split mAP 仍 0 但 Predict_num 0→400+（改動極關鍵）** |
 | **14** | [**`14_trt_split_map_zero_debug.md`**](./14_trt_split_map_zero_debug.md) | **Split TRT 有預測但 mAP=0：管線對照、原因歸納、`BEVFUSION_TRT_*` / `DEBUG_POSTPROCESS` 除錯** |
+| **18** | [**`18_SPARSE_PROFILE_INT8_VS_FP16_COMPARISON.md`**](./18_SPARSE_PROFILE_INT8_VS_FP16_COMPARISON.md) | **Priority A：同一輸入下 INT8 vs FP16 sparse engine 對照；為何 ImplicitGemm 時間相近；Nsight 下沉拆 kernel** |
 | — | [**`README_PTQ_INT8_SPCONV_DEPLOYMENT.md`**](./README_PTQ_INT8_SPCONV_DEPLOYMENT.md) | **PTQ → ONNX → TRT 全流程詳解；與 spconv 官方、CUDA-BEVFusion（libspconv）對照** |
 | — | [**`README_INT8_WHERE_AND_HOW.md`**](./README_INT8_WHERE_AND_HOW.md) | **哪裡 FP16／哪裡真 INT8；Path B 與 `ConvGemmOps::implicit_gemm`、`is_int8_inference`、spconv `ops.py` 對照** |
 

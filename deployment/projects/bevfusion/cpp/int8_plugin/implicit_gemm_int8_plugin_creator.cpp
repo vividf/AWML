@@ -37,6 +37,8 @@ ImplicitGemmInt8PluginCreator::ImplicitGemmInt8PluginCreator()
   plugin_attributes_.emplace_back("is_subm", nullptr, PluginFieldType::kINT32, 1);
   plugin_attributes_.emplace_back("output_scale", nullptr, PluginFieldType::kFLOAT32, 1);
   plugin_attributes_.emplace_back("input_scale", nullptr, PluginFieldType::kFLOAT32, 1);
+  plugin_attributes_.emplace_back("timing_enabled", nullptr, PluginFieldType::kINT32, 1);
+  plugin_attributes_.emplace_back("timing_max_logs", nullptr, PluginFieldType::kINT32, 1);
 
   fc_.nbFields = plugin_attributes_.size();
   fc_.fields = plugin_attributes_.data();
@@ -61,6 +63,8 @@ IPluginV3 * ImplicitGemmInt8PluginCreator::createPlugin(
       params.is_subm = 0;
       params.output_scale = 1.0f;
       params.input_scale = 1.0f;
+      params.timing_enabled = 0;
+      params.timing_max_logs = 1000;
 
       for (std::int32_t i = 0; i < num_fields; ++i) {
         const std::string attr_name = fields[i].name;
@@ -75,13 +79,23 @@ IPluginV3 * ImplicitGemmInt8PluginCreator::createPlugin(
           params.output_scale = static_cast<float const *>(fields[i].data)[0];
         } else if (attr_name == "input_scale") {
           params.input_scale = static_cast<float const *>(fields[i].data)[0];
+        } else if (attr_name == "timing_enabled") {
+          params.timing_enabled = static_cast<std::int32_t const *>(fields[i].data)[0];
+        } else if (attr_name == "timing_max_logs") {
+          params.timing_max_logs = static_cast<std::int32_t const *>(fields[i].data)[0];
         }
+      }
+
+      if (params.timing_max_logs <= 0) {
+        params.timing_max_logs = 1000;
       }
 
       std::fprintf(
         stderr,
-        "[ImplicitGemmInt8] %s: is_subm=%ld output_scale=%.6f input_scale=%.6f\n",
-        name, params.is_subm, params.output_scale, params.input_scale);
+        "[ImplicitGemmInt8] %s: is_subm=%ld output_scale=%.6f input_scale=%.6f timing_enabled=%d "
+        "timing_max_logs=%d\n",
+        name, params.is_subm, params.output_scale, params.input_scale, params.timing_enabled,
+        params.timing_max_logs);
 
       return new ImplicitGemmInt8Plugin{std::string(name), params};
     } catch (std::exception const & e) {

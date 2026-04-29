@@ -4,8 +4,8 @@
 
   * **A1** — 分離 ``implicit_gemm`` / pair-gen / sort / elementwise / scatter
     的實際時間佔比，而不是只看總 latency。
-  * **A2** — 量測目前 ``GetIndicePairsImplicitGemm``（pair-gen + argsort）
-    這個 bucket 的成本，回答「INT8 路線下是否有機會 ``do_sort=false``」。
+  * **A2** — 量測 ``GetIndicePairsImplicitGemm`` 這個 bucket（pair 建構等；未必含 argsort）。
+    會讀 ``--deploy-cfg`` 的 ``spconv_do_sort``，避免在 ``do_sort=false`` 時仍誤導成「要去關 sort」。
 
 使用流程（配合部署 step 0~5，詳見 ``docs/16_PRIORITY_A_PROFILING_USAGE.md``）::
 
@@ -466,6 +466,24 @@ def _run_benchmark(
 # =============================================================================
 # Reporting
 # =============================================================================
+def _resolve_spconv_do_sort(deploy_cfg_path: Optional[str]) -> Optional[bool]:
+    """Read ``spconv_do_sort`` from deploy config (same default as ``entrypoint._apply_spconv_do_sort``).
+
+    ``None`` means no config was provided or parsing failed — the report cannot
+    infer whether the **exported** engine skips argsort.
+    """
+    if not deploy_cfg_path:
+        return None
+    try:
+        from mmengine.config import Config  # noqa: WPS433
+
+        deploy_cfg = Config.fromfile(deploy_cfg_path)
+        return bool(deploy_cfg.get("spconv_do_sort", True))
+    except Exception as exc:
+        logger.warning("[report] could not read spconv_do_sort from %s: %s", deploy_cfg_path, exc)
+        return None
+
+
 def _stats(values: Sequence[float]) -> Dict[str, float]:
     if not values:
         return {"count": 0}
@@ -540,6 +558,7 @@ def _format_report(
     block_stats: Dict[str, Dict[str, float]],
     layer_means: List[Tuple[str, float]],
     top_n: int,
+    spconv_do_sort: Optional[bool],
 ) -> str:
     lines: List[str] = []
     total_stats = _stats(record.total_ms)
@@ -575,15 +594,49 @@ def _format_report(
     lines.append(
         "[A2] pair_gen (GetIndicePairsImplicitGemm) = " f"{pair_sum:.3f} ms/iter ({pair_pct:.2f}% of layer-sum)"
     )
-    if pair_pct >= 10.0:
+    # Clarify: this bucket is the whole pair plugin, not "sort time" alone.
+    if spconv_do_sort is None:
         lines.append(
-            "     → pair-gen / sort 佔比明顯；New3D 的 `do_sort=!int8_inference_` 在此有潛在收益，"
-            "值得用 Nsight Compute 進一步拆解 argsort / scan kernel。"
+            "     Deploy spconv_do_sort: **unknown** (add `--deploy-cfg` to show export intent). "
+            "pair_gen ≠ argsort only — it includes hash/scan/gather even when sort is off."
         )
-    elif pair_pct >= 3.0:
-        lines.append("     → pair-gen 中等；若要再壓榨，優先順序低於 implicit_gemm / 邊界優化。")
+    elif spconv_do_sort:
+        lines.append(
+            "     Deploy spconv_do_sort: **True** — ONNX export bakes pair-mask argsort ON (FP16-style). "
+            "High pair_gen may include DeviceMergeSort-style work."
+        )
     else:
-        lines.append("     → pair-gen 佔比很低；sort 改造的收益有限（與 8.1 類似結論）。")
+        lines.append(
+            "     Deploy spconv_do_sort: **False** — export targets `do_sort_i=0` (no pair-mask argsort). "
+            "Remaining pair_gen time is index/pair construction, not a missing sort opt."
+        )
+
+    if pair_pct >= 10.0:
+        if spconv_do_sort is False:
+            lines.append(
+                "     → Pair-gen share is large but **sort is already off by design**; use Nsight on "
+                "hash/scan/prefix kernels, not as a cue to «turn off sort again»."
+            )
+        elif spconv_do_sort is True:
+            lines.append(
+                "     → pair-gen / sort 佔比明顯；`do_sort=false` 於 INT8 export 可能仍有收益，"
+                "值得用 Nsight Compute 對照 `DeviceMergeSort*` / scan kernel。"
+            )
+        else:
+            lines.append(
+                "     → pair-gen 佔比高；請對照 nsys 是否有 `DeviceMergeSort*` 以判斷 argsort 是否仍在執行，"
+                "並確認 engine 是否由含 `spconv_do_sort=False` 的 deploy 匯出。"
+            )
+    elif pair_pct >= 3.0:
+        if spconv_do_sort is False:
+            lines.append("     → pair-gen 中等（多為非-sort 的配對開銷）；再壓榨優先級通常低於 implicit_gemm / 邊界。")
+        else:
+            lines.append("     → pair-gen 中等；若要再壓榨，優先順序低於 implicit_gemm / 邊界優化。")
+    else:
+        if spconv_do_sort is False:
+            lines.append("     → pair-gen 佔比低（於 do_sort=false 仍屬正常）。")
+        else:
+            lines.append("     → pair-gen 佔比很低；pair-mask sort 改造空間通常有限（與 8.1 類似結論）。")
 
     lines.append("")
     lines.append("-" * 78)
@@ -624,9 +677,11 @@ def _dump_json(
     bucket_stats: Dict[str, Dict[str, float]],
     block_stats: Dict[str, Dict[str, float]],
     layer_means: List[Tuple[str, float]],
+    spconv_do_sort: Optional[bool],
 ) -> None:
     payload = {
         "engine": engine_path,
+        "spconv_do_sort_from_deploy_cfg": spconv_do_sort,
         "inputs": {
             "source": inputs.source,
             "num_voxels": inputs.num_voxels,
@@ -764,6 +819,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     bucket_stats, block_stats, layer_means = _summarize_layers(record)
+    spconv_do_sort = _resolve_spconv_do_sort(args.deploy_cfg)
     print(
         _format_report(
             engine_path=engine_path,
@@ -773,6 +829,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             block_stats=block_stats,
             layer_means=layer_means,
             top_n=args.top_n,
+            spconv_do_sort=spconv_do_sort,
         )
     )
 
@@ -787,6 +844,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         bucket_stats=bucket_stats,
         block_stats=block_stats,
         layer_means=layer_means,
+        spconv_do_sort=spconv_do_sort,
     )
     return 0
 

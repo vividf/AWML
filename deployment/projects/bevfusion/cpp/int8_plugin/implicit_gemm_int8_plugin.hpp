@@ -44,6 +44,8 @@ struct ImplicitGemmInt8Parameters
   std::int64_t is_subm;
   float output_scale;
   float input_scale;   // input_amax / 127.0 for feature quantization
+  std::int32_t timing_enabled{0};       // 1 = CUDA-event splits to stderr (profile only)
+  std::int32_t timing_max_logs{1000};   // max timing lines across all plugin instances
 };
 
 // ImplicitGemmInt8Plugin: FP16 I/O with internal INT8 GEMM using cumm kernels.
@@ -66,6 +68,10 @@ struct ImplicitGemmInt8Parameters
 //
 // Debug (stderr): set BEVFUSION_INT8_GEMM_DEBUG=1 to print FP16 output min/max/mean per layer
 // (first BEVFUSION_INT8_GEMM_DEBUG_MAX enqueues, default 60). Rebuild this shared library after changes.
+//
+// Timing (stderr): enable via deploy_config ``implicit_gemm_int8_plugin_timing`` baked into ONNX
+// at Path B export (see sparse_int8_onnx_transform). Logs CUDA-event splits per successful enqueue:
+//   fp16_to_int8_ms, prep_ms, implicit_gemm_ms (implicit_gemm includes fused FP16 output).
 class ImplicitGemmInt8Plugin : public IPluginV3,
                                public IPluginV3OneCore,
                                public IPluginV3OneBuild,
@@ -120,6 +126,9 @@ public:
     DynamicPluginTensorDesc const * outputs, std::int32_t num_outputs) const noexcept override;
 
 private:
+  bool ensureTimingEvents() noexcept;
+  void destroyTimingEvents() noexcept;
+
   static constexpr std::int32_t IN_FEATURES{0};
   static constexpr std::int32_t IN_FILTERS{1};
   static constexpr std::int32_t IN_PAIR_FWD{2};
@@ -160,6 +169,12 @@ private:
   std::int8_t * cached_weight_int8_ptr_{nullptr};
   float * cached_w_scales_ptr_{nullptr};
   float * cached_gemm_bias_ptr_{nullptr};
+
+  cudaEvent_t timing_ev_quant_start_{};
+  cudaEvent_t timing_ev_quant_end_{};
+  cudaEvent_t timing_ev_implicit_start_{};
+  cudaEvent_t timing_ev_implicit_end_{};
+  bool timing_events_created_{false};
 };
 
 }  // namespace nvinfer1::plugin

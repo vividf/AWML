@@ -222,6 +222,8 @@ def build_bevfusion_model(
     checkpoint_path: str,
     device: DeviceSpec,
     quantization: Optional[dict] = None,
+    *,
+    fuse_spconv_bn: bool = False,
 ) -> torch.nn.Module:
     """Build a BEVFusion model from config and load checkpoint weights.
 
@@ -236,6 +238,10 @@ def build_bevfusion_model(
             - quant_add: bool (quantize residual add)
             - sensitive_layers: list of layer name prefixes to skip
             - spconv_int8: bool (use spconv INT8 for sparse encoder)
+        fuse_spconv_bn: If True and ``quantization`` is not enabled, fuse each
+            SparseConvolution + BatchNorm1d pair in ``pts_middle_encoder`` after
+            ``load_checkpoint`` (same ``fuse_spconv_bn_eval`` path as PTQ load).
+            Ignored when ``quantization.enabled`` is True (PTQ already fuses sparse BN).
 
     Returns:
         Loaded and eval-mode BEVFusion model.
@@ -276,6 +282,8 @@ def build_bevfusion_model(
             load_checkpoint(model, checkpoint_path, map_location=torch_device)
     else:
         load_checkpoint(model, checkpoint_path, map_location=torch_device)
+        if fuse_spconv_bn:
+            _fuse_spconv_bn(model)
 
     model.eval()
     model.cfg = model_cfg

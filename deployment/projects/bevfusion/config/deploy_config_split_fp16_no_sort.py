@@ -28,6 +28,19 @@ CLI::
 spconv_do_sort = False
 
 # ============================================================================
+# FP16 ``autoware::ImplicitGemm`` plugin: optional CUDA timing (stderr)
+# ----------------------------------------------------------------------------
+# Baked into ONNX via ``patch_implicit_gemm_onnx_timing`` before TRT build.
+# Re-export / patch ONNX and rebuild ``bevfusion_sparse.engine`` after changes.
+# ============================================================================
+implicit_gemm_plugin_timing = True
+implicit_gemm_plugin_timing_max_logs = 1000
+
+# Fuse SparseConv + BN in ``pts_middle_encoder`` before ONNX export (same as PTQ load path).
+# Aligns FP16 sparse subgraph with INT8 deploy / fair latency vs mAP comparison.
+fuse_spconv_bn = True
+
+# ============================================================================
 # Checkpoint Path
 # ============================================================================
 checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30.pth"
@@ -40,7 +53,7 @@ devices = dict(
 export = dict(
     mode="none",
     work_dir="work_dirs/bevfusion_deployment_split",
-    onnx_path=None,
+    onnx_path="work_dirs/bevfusion_deployment_split/onnx",
 )
 
 _WORK_DIR = str(export["work_dir"]).rstrip("/")
@@ -138,7 +151,7 @@ tensorrt_config = dict(
 
 evaluation = dict(
     enabled=True,
-    num_samples=-1,
+    num_samples=1,
     num_warmup_samples=2,
     verbose=True,
     backends=dict(

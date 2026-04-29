@@ -15,12 +15,10 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 
 **前置條件**
   - ``checkpoint_path`` 指向 ``bevfusion_quantization.py ptq`` 產生的 **.pth**；``quantization.ptq_checkpoint=True``（本檔預設已開）。
-  - 稀疏塔：**主幹 INT8**（含 ``conv_out``，與其他 ``SparseConvolution`` 相同掛 quantizer / Path B
-    ``ImplicitGemmInt8``）。若要把 ``conv_out`` 留在 FP ``ImplicitGemm``，在 deploy 的
-    ``spconv_int8_fp16_layers`` 加可匹配 ONNX 節點名的子字串即可。變更量化策略後請 **重跑 PTQ**。
+  - 稀疏塔：**主幹 INT8**（含 ``conv_out``）；本檔與 ``deploy_config_split_int8.py`` 的差異在
+    ``spconv_int8_fp16_layers``（此處列多層 FP ``ImplicitGemm`` 做對照實驗）。變更後請 **重跑 PTQ**。
 **稀疏段 ONNX**
-  - 匯出的 ``bevfusion_sparse.onnx`` 為 **浮點** ``ImplicitGemm`` 圖；Path B 以 ``sparse_int8_onnx_transform.py``
-    換成 ``ImplicitGemmInt8`` 後才在 TensorRT 跑稀疏 INT8 kernel。
+  - 匯出的 ``bevfusion_sparse.onnx`` 為浮點 ``ImplicitGemm``；Path B 以 ``sparse_int8_onnx_transform.py`` 換成 INT8 plugin 圖。
 
 **CLI**（需在含 pytorch-quantization 的環境；Docker 內用 ``pip install --no-cache-dir --index-url https://pypi.nvidia.com --extra-index-url https://pypi.org/simple pytorch-quantization==2.1.3``，詳見 ``deploy_config_int8.py`` 註解）::
 
@@ -81,7 +79,7 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 #
 # 評測：註解 Preset A，改為下方三項（checkpoint 指向上列 output；dense 三關必須 False 與 PTQ 一致）
 # ============================================================================
-checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only.pth"
+checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only_exp1.pth"
 
 # ============================================================================
 # Sparse pair-gen: skip the pair-mask argsort for INT8 inference.
@@ -96,6 +94,18 @@ checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only.pth"
 # See deployment/projects/bevfusion/docs/15_README_AWML_SPCONV_INT8_ACCEL_PLAN.md §10.9.
 # ============================================================================
 spconv_do_sort = False
+
+# ============================================================================
+# ImplicitGemmInt8 TRT plugin: optional per-kernel CUDA timing to stderr
+# ----------------------------------------------------------------------------
+# Baked into each ``ImplicitGemmInt8`` ONNX node at Path B
+# (``sparse_int8_onnx_transform`` with ``--deploy-cfg`` or
+# ``--fp16-layers-from-deploy-cfg`` pointing to this file). Re-export ONNX and
+# rebuild the sparse engine after changing. When enabled, each enqueue may
+# ``cudaEventSynchronize`` (profile only; not for production latency).
+# ============================================================================
+implicit_gemm_int8_plugin_timing = False
+implicit_gemm_int8_plugin_timing_max_logs = 1000
 
 # ============================================================================
 # Sparse INT8: per-layer FP16 keep-list (accuracy knob).
@@ -122,8 +132,8 @@ spconv_do_sort = False
 #     Full path (``/pts_middle_encoder/conv_input/conv_input.0/ImplicitGemm``)
 #     or a unique tail (``conv_input.0/ImplicitGemm`` / ``conv_input.0``) both
 #     work because match is substring on name.
-#   - ``conv_out`` is INT8 by default like other sparse layers; list a ``conv_out`` substring
-#     here only if you intentionally want that head as FP16 ``ImplicitGemm``.
+#   - To keep ``conv_out`` as FP ``ImplicitGemm``, add a matching substring under
+#     ``spconv_int8_fp16_layers`` (same as any other layer).
 #   - The PTQ checkpoint already contains ``_amax`` for these layers, which is
 #     harmless: it will simply not be consumed (expect an
 #     ``[int8-audit] WARNING: calibrated stems with no matched ImplicitGemm
@@ -136,9 +146,37 @@ spconv_do_sort = False
 #     NOT match any node``).
 # ============================================================================
 spconv_int8_fp16_layers = [
-    #  "conv_input.0",  # 第一層 sparse conv 通常最敏感 (matches node.name only)
-    # "encoder_layer3/encoder_layer3.2",  # stride-2 downsample of stage 3
+    "conv_input.0",
+    "encoder_layer1/encoder_layer1.0/conv1",
+    "encoder_layer1/encoder_layer1.0/conv2",
+    #
+    "encoder_layer1/encoder_layer1.1/conv1",
+    "encoder_layer1/encoder_layer1.1/conv2",
+    #
+    "encoder_layer1/encoder_layer1.2/encoder_layer1.2.0",
+    "encoder_layer2/encoder_layer2.0/conv1",
+    "encoder_layer2/encoder_layer2.0/conv2",
+    #
+    "encoder_layer2/encoder_layer2.1/conv1",
+    "encoder_layer2/encoder_layer2.1/conv2",
+    # #
+    # "encoder_layer2/encoder_layer2.2/encoder_layer2.2.0",
+    # "encoder_layer3/encoder_layer3.0/conv1",
+    # "encoder_layer3/encoder_layer3.0/conv2",
+    # #
+    # "encoder_layer3/encoder_layer3.1/conv1",
+    # "encoder_layer3/encoder_layer3.1/conv2",
+    # #
+    # "encoder_layer3/encoder_layer3.2/encoder_layer3.2.0",
+    # "encoder_layer4/encoder_layer4.0/conv1",
+    # "encoder_layer4/encoder_layer4.0/conv2",
+    # #
+    # "encoder_layer4/encoder_layer4.1/conv1",
+    # "encoder_layer4/encoder_layer4.1/conv2",
+    # #
+    # "conv_out/conv_out.0",
 ]
+
 
 quantization = dict(
     enabled=True,
@@ -161,8 +199,8 @@ export = dict(
     # "tensorrt" = build TRT engines from existing ONNX (don't re-export ONNX).
     # Use "both" only when you need a fresh ONNX export + TRT build.
     mode="none",
-    work_dir="work_dirs/bevfusion_split_int8_deployment",
-    onnx_path="work_dirs/bevfusion_split_int8_deployment/onnx",
+    work_dir="work_dirs/bevfusion_split_int8_deployment_sparse_exp1",
+    onnx_path="work_dirs/bevfusion_split_int8_deployment_sparse_exp1/onnx",
 )
 
 _WORK_DIR = str(export["work_dir"]).rstrip("/")
