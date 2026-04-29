@@ -34,6 +34,8 @@ def audit_implicit_gemm_int8_onnx(model: onnx.ModelProto, *, stream=sys.stdout) 
         attrs = _implicit_gemm_attrs_from_node(node)
         in_s = float(attrs.get("input_scale", 0.0) or 0.0)
         out_s = float(attrs.get("output_scale", 0.0) or 0.0)
+        te = int(attrs.get("timing_enabled", 0) or 0)
+        tml = int(attrs.get("timing_max_logs", 1000) or 1000)
         cs_name = node.input[5] if len(node.input) > 5 else ""
         bs_name = node.input[6] if len(node.input) > 6 else ""
         cs = _get_initializer_data(model, cs_name) if cs_name else None
@@ -44,6 +46,7 @@ def audit_implicit_gemm_int8_onnx(model: onnx.ModelProto, *, stream=sys.stdout) 
             cs_line = "channel_scale=(missing or not initializer)"
         print(
             f"[ImplicitGemmInt8] name={node.name!r} in_scale={in_s:.6g} out_scale={out_s:.6g} "
+            f"timing_enabled={te} timing_max_logs={tml} "
             f"{cs_line} cs_tensor={cs_name!r} bias_scaled_tensor={bs_name!r}",
             file=stream,
         )

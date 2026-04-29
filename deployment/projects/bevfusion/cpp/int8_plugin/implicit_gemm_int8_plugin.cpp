@@ -93,6 +93,8 @@ int int8_gemm_debug_max_logs() noexcept
 
 std::atomic<int> g_int8_gemm_debug_seq{0};
 
+std::atomic<int> g_int8_plugin_timing_seq{0};
+
 // D2H copy + host stats (debug only). Syncs `stream` so TRT enqueue ordering stays defined.
 void int8_gemm_debug_dump_fp16_output(
   void const * d_ptr, std::int64_t n_elements, std::string const & layer_name,
@@ -195,7 +197,53 @@ ImplicitGemmInt8Plugin::ImplicitGemmInt8Plugin(
 
 ImplicitGemmInt8Plugin::~ImplicitGemmInt8Plugin()
 {
+  destroyTimingEvents();
   releaseConstantCache();
+}
+
+bool ImplicitGemmInt8Plugin::ensureTimingEvents() noexcept
+{
+  if (timing_events_created_) {
+    return true;
+  }
+  cudaError_t e0 = cudaEventCreateWithFlags(&timing_ev_quant_start_, cudaEventDefault);
+  cudaError_t e1 = cudaEventCreateWithFlags(&timing_ev_quant_end_, cudaEventDefault);
+  cudaError_t e2 = cudaEventCreateWithFlags(&timing_ev_implicit_start_, cudaEventDefault);
+  cudaError_t e3 = cudaEventCreateWithFlags(&timing_ev_implicit_end_, cudaEventDefault);
+  if (e0 != cudaSuccess || e1 != cudaSuccess || e2 != cudaSuccess || e3 != cudaSuccess) {
+    std::fprintf(
+      stderr,
+      "[ImplicitGemmInt8Plugin] %s: cudaEventCreate failed (%s %s %s %s)\n", layer_name_.c_str(),
+      cudaGetErrorString(e0), cudaGetErrorString(e1), cudaGetErrorString(e2),
+      cudaGetErrorString(e3));
+    if (e0 == cudaSuccess) {
+      cudaEventDestroy(timing_ev_quant_start_);
+    }
+    if (e1 == cudaSuccess) {
+      cudaEventDestroy(timing_ev_quant_end_);
+    }
+    if (e2 == cudaSuccess) {
+      cudaEventDestroy(timing_ev_implicit_start_);
+    }
+    if (e3 == cudaSuccess) {
+      cudaEventDestroy(timing_ev_implicit_end_);
+    }
+    return false;
+  }
+  timing_events_created_ = true;
+  return true;
+}
+
+void ImplicitGemmInt8Plugin::destroyTimingEvents() noexcept
+{
+  if (!timing_events_created_) {
+    return;
+  }
+  cudaEventDestroy(timing_ev_quant_start_);
+  cudaEventDestroy(timing_ev_quant_end_);
+  cudaEventDestroy(timing_ev_implicit_start_);
+  cudaEventDestroy(timing_ev_implicit_end_);
+  timing_events_created_ = false;
 }
 
 void ImplicitGemmInt8Plugin::initFieldsToSerialize()
@@ -208,6 +256,10 @@ void ImplicitGemmInt8Plugin::initFieldsToSerialize()
     "output_scale", &params_.output_scale, PluginFieldType::kFLOAT32, 1);
   data_to_serialize_.emplace_back(
     "input_scale", &params_.input_scale, PluginFieldType::kFLOAT32, 1);
+  data_to_serialize_.emplace_back(
+    "timing_enabled", &params_.timing_enabled, PluginFieldType::kINT32, 1);
+  data_to_serialize_.emplace_back(
+    "timing_max_logs", &params_.timing_max_logs, PluginFieldType::kINT32, 1);
 
   fc_to_serialize_.nbFields = data_to_serialize_.size();
   fc_to_serialize_.fields = data_to_serialize_.data();
@@ -491,10 +543,25 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
   auto * ws = reinterpret_cast<std::int8_t *>(workspace);
   std::int8_t * feat_int8_ptr = ws;
 
+  bool do_timing = false;
+  int timing_seq = -1;
+  if (params_.timing_enabled != 0) {
+    timing_seq = g_int8_plugin_timing_seq.fetch_add(1, std::memory_order_relaxed);
+    do_timing =
+      timing_seq < params_.timing_max_logs && ensureTimingEvents();
+  }
+  if (do_timing) {
+    cudaEventRecord(timing_ev_quant_start_, stream);
+  }
+
   // --- 1. Quantize FP16 features → INT8 ---
   launch_quantize_features(
     reinterpret_cast<const __half *>(inputs[IN_FEATURES]), feat_int8_ptr,
     params_.input_scale, num_act_in * c_in, stream);
+
+  if (do_timing) {
+    cudaEventRecord(timing_ev_quant_end_, stream);
+  }
 
   const void * expected_filters_ptr = nullptr;
   const void * expected_channel_scale_ptr = nullptr;
@@ -592,6 +659,10 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
     {SPCONV_ALLOC_OUT_FEATURES, out_features}};
   StaticAllocator alloc(tensor_dict);
 
+  if (do_timing) {
+    cudaEventRecord(timing_ev_implicit_start_, stream);
+  }
+
   ConvGemmOps::implicit_gemm(
     alloc, *tuner_int8_ptr_, features_tv, weights_tv, pair_fwd,
     pair_mask_splits, mask_argsort_splits, static_cast<int>(num_act_out),
@@ -609,6 +680,30 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
     /*output_add=*/tv::Tensor(),
     /*output_add_scale=*/0.0f,
     /*output_dtype=*/static_cast<int>(tv::float16));
+
+  if (do_timing) {
+    cudaEventRecord(timing_ev_implicit_end_, stream);
+    cudaError_t sync_st = cudaEventSynchronize(timing_ev_implicit_end_);
+    if (sync_st != cudaSuccess) {
+      std::fprintf(
+        stderr, "[BEVFUSION_INT8_PLUGIN_TIMING] seq=%d layer=%s cudaEventSynchronize(implicit_end) failed: %s\n",
+        timing_seq, layer_name_.c_str(), cudaGetErrorString(sync_st));
+    } else {
+      float ms_fp16_to_int8 = 0.F;
+      float ms_prep = 0.F;
+      float ms_implicit = 0.F;
+      cudaEventElapsedTime(&ms_fp16_to_int8, timing_ev_quant_start_, timing_ev_quant_end_);
+      cudaEventElapsedTime(&ms_prep, timing_ev_quant_end_, timing_ev_implicit_start_);
+      cudaEventElapsedTime(&ms_implicit, timing_ev_implicit_start_, timing_ev_implicit_end_);
+      std::fprintf(
+        stderr,
+        "[BEVFUSION_INT8_PLUGIN_TIMING] seq=%d layer=%s fp16_to_int8_ms=%.5f prep_ms=%.5f "
+        "implicit_gemm_ms=%.5f "
+        "(implicit_gemm_ms = INT8 sparse conv + fused FP16 output; prep_ms = weight-cache GPU on "
+        "first enqueue + gap before implicit_gemm)\n",
+        timing_seq, layer_name_.c_str(), ms_fp16_to_int8, ms_prep, ms_implicit);
+    }
+  }
 
   if (int8_gemm_debug_env_enabled()) {
     int const seq = g_int8_gemm_debug_seq.fetch_add(1, std::memory_order_relaxed);

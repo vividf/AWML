@@ -101,11 +101,13 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
                 )
             logger.info("=" * 60)
 
+        fuse_spconv_bn = bool(self.config.deploy_cfg.get("fuse_spconv_bn", False))
         model = build_bevfusion_model(
             model_cfg=self.model_cfg,
             checkpoint_path=checkpoint_path,
             device=cuda_device,
             quantization=quantization,
+            fuse_spconv_bn=fuse_spconv_bn,
         )
 
         if quantization and quantization.get("enabled") and quantization.get("spconv_int8"):
