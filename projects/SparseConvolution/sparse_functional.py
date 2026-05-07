@@ -36,6 +36,22 @@ def _resolve_do_sort() -> bool:
     return _do_sort
 
 
+def _gemm_activation_to_onnx_int(act_type: Any) -> int:
+    """Map ``tv.gemm.Activation`` to :cpp:enum:`tv::gemm::Activation` integer (see cumm ``constants.h``)."""
+
+    if act_type is None:
+        return 0
+    if isinstance(act_type, int):
+        return int(act_type)
+    v = getattr(act_type, "value", None)
+    if v is not None:
+        return int(v)
+    try:
+        return int(act_type)
+    except Exception:
+        return 0
+
+
 class GetIndicePairs(Function):
 
     @staticmethod
@@ -438,6 +454,7 @@ class ImplicitGemm(Function):
             fp32_accum_i=fp32_accum,
             act_alpha_f=act_alpha,
             act_beta_f=act_beta,
+            act_type_i=_gemm_activation_to_onnx_int(act_type),
             output_scale_f=output_scale,
             output_add_scale_f=output_add_scale,
             outputs=1,

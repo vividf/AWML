@@ -79,7 +79,7 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 #
 # 評測：註解 Preset A，改為下方三項（checkpoint 指向上列 output；dense 三關必須 False 與 PTQ 一致）
 # ============================================================================
-checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only_exp1.pth"
+checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only_exp3.pth"
 
 # ============================================================================
 # Sparse pair-gen: skip the pair-mask argsort for INT8 inference.
@@ -99,13 +99,22 @@ spconv_do_sort = False
 # ImplicitGemmInt8 TRT plugin: optional per-kernel CUDA timing to stderr
 # ----------------------------------------------------------------------------
 # Baked into each ``ImplicitGemmInt8`` ONNX node at Path B
-# (``sparse_int8_onnx_transform`` with ``--deploy-cfg`` or
-# ``--fp16-layers-from-deploy-cfg`` pointing to this file). Re-export ONNX and
+# (``sparse_int8_onnx_transform --deploy-cfg ...`` pointing to this file).
+# Re-export ONNX and
 # rebuild the sparse engine after changing. When enabled, each enqueue may
 # ``cudaEventSynchronize`` (profile only; not for production latency).
 # ============================================================================
 implicit_gemm_int8_plugin_timing = False
 implicit_gemm_int8_plugin_timing_max_logs = 1000
+
+# ============================================================================
+# Sparse ONNX transform: fuse ImplicitGemm with trailing Relu / Add(const)+Relu.
+# ----------------------------------------------------------------------------
+# Consumed by ``sparse_int8_onnx_transform --deploy-cfg ...``.
+# - True  (default): run ONNX fusion passes and bake act_type / merged bias.
+# - False          : keep explicit Relu/Add nodes (debug / ablation).
+# ============================================================================
+spconv_int8_fuse_implicit_gemm_relu = True
 
 # ============================================================================
 # Sparse INT8: per-layer FP16 keep-list (accuracy knob).
@@ -160,9 +169,9 @@ spconv_int8_fp16_layers = [
     "encoder_layer2/encoder_layer2.1/conv1",
     "encoder_layer2/encoder_layer2.1/conv2",
     # #
-    # "encoder_layer2/encoder_layer2.2/encoder_layer2.2.0",
-    # "encoder_layer3/encoder_layer3.0/conv1",
-    # "encoder_layer3/encoder_layer3.0/conv2",
+    "encoder_layer2/encoder_layer2.2/encoder_layer2.2.0",
+    "encoder_layer3/encoder_layer3.0/conv1",
+    "encoder_layer3/encoder_layer3.0/conv2",
     # #
     # "encoder_layer3/encoder_layer3.1/conv1",
     # "encoder_layer3/encoder_layer3.1/conv2",
@@ -199,8 +208,8 @@ export = dict(
     # "tensorrt" = build TRT engines from existing ONNX (don't re-export ONNX).
     # Use "both" only when you need a fresh ONNX export + TRT build.
     mode="none",
-    work_dir="work_dirs/bevfusion_split_int8_deployment_sparse_exp1",
-    onnx_path="work_dirs/bevfusion_split_int8_deployment_sparse_exp1/onnx",
+    work_dir="work_dirs/bevfusion_split_int8_deployment_sparse_exp3",
+    onnx_path="work_dirs/bevfusion_split_int8_deployment_sparse_exp3/onnx",
 )
 
 _WORK_DIR = str(export["work_dir"]).rstrip("/")

@@ -476,7 +476,7 @@ INT8 部署常見的一條精度救援路徑是：**從 PTQ 敏感度排行或 K
 
 - **Stage A — PTQ（step 1）**：`apply_nvidia_spconv_int8(..., exclude_patterns=...)` 跳過對應 `SparseConvolution` 的 quantizer 安裝。checkpoint **不會** 出現該層的 `_amax`。
 - **Stage B — PTQ reload（step 2 / step 5，經 runner.py）**：`_prepare_encoder_for_nvidia_int8(..., exclude_patterns=...)` 以相同規則重建 quantizer 樹，確保 `load_state_dict` key 對齊。
-- **Stage C — ONNX transform（step 4）**：`--fp16-layers-from-deploy-cfg` 讓 `sparse_int8_onnx_transform` 保留對應的 `ImplicitGemm` 節點（**必要**；Stage A 把 stem 從 checkpoint 裡拿掉後，step 4 若沒拿到這個 list，會因為「找不到 calibrated stem」而 **直接 fail**，屬於 fail-fast，不是 regression）。
+- **Stage C — ONNX transform（step 4）**：`--deploy-cfg` 讓 `sparse_int8_onnx_transform` 保留對應的 `ImplicitGemm` 節點（**必要**；Stage A 把 stem 從 checkpoint 裡拿掉後，step 4 若沒拿到這個 list，會因為「找不到 calibrated stem」而 **直接 fail**，屬於 fail-fast，不是 regression）。
 
 因此：**任何時候改動 `spconv_int8_fp16_layers` 都必須 `step 1 → step 2 → step 4 → step 5` 全部重跑**；不能只重跑 step 4。
 
@@ -491,7 +491,7 @@ spconv_int8_fp16_layers = [
 ]
 ```
 
-Step 1（PTQ）會自動讀 deploy_cfg；step 4 必須顯式帶 `--fp16-layers-from-deploy-cfg` 才會生效（option 2，非 option 1）。
+Step 1（PTQ）會自動讀 deploy_cfg；step 4 必須顯式帶 `--deploy-cfg` 才會生效（option 2，非 option 1）。
 
 ### 比對規則（為什麼純用 name）
 

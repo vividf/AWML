@@ -32,12 +32,67 @@ import json
 import os
 import re
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import onnx
 import torch
 from onnx import TensorProto, helper, numpy_helper
+
+from deployment.projects.bevfusion.export.onnx_fuse_implicit_gemm_activation import (
+    _try_get_constant_numpy,
+)
+
+
+@dataclass
+class DeployTransformOptions:
+    """Optional transform knobs loaded from a BEVFusion deploy_config."""
+
+    fp16_layer_patterns: List[str]
+    plugin_timing_enabled: bool
+    plugin_timing_max_logs: int
+    fuse_implicit_gemm_relu: bool
+
+
+def _load_deploy_transform_options(deploy_cfg_path: Optional[str]) -> DeployTransformOptions:
+    """Read sparse-int8 transform options from deploy config.
+
+    Supported keys:
+    - spconv_int8_fp16_layers
+    - implicit_gemm_int8_plugin_timing
+    - implicit_gemm_int8_plugin_timing_max_logs
+    - spconv_int8_fuse_implicit_gemm_relu
+    """
+    default = DeployTransformOptions(
+        fp16_layer_patterns=[],
+        plugin_timing_enabled=False,
+        plugin_timing_max_logs=1000,
+        fuse_implicit_gemm_relu=True,
+    )
+    if not deploy_cfg_path:
+        return default
+
+    try:
+        from mmengine import Config  # type: ignore
+    except ImportError as e:
+        raise SystemExit("--deploy-cfg requires mmengine; install it or avoid --deploy-cfg.") from e
+
+    deploy_cfg = Config.fromfile(deploy_cfg_path)
+
+    cfg_list = deploy_cfg.get("spconv_int8_fp16_layers", []) or []
+    if not isinstance(cfg_list, (list, tuple)):
+        raise SystemExit(
+            f"spconv_int8_fp16_layers in {deploy_cfg_path!r} must be a list of strings, "
+            f"got {type(cfg_list).__name__}."
+        )
+
+    return DeployTransformOptions(
+        fp16_layer_patterns=[str(p) for p in cfg_list if str(p).strip()],
+        plugin_timing_enabled=bool(deploy_cfg.get("implicit_gemm_int8_plugin_timing", False)),
+        plugin_timing_max_logs=int(deploy_cfg.get("implicit_gemm_int8_plugin_timing_max_logs", 1000)),
+        fuse_implicit_gemm_relu=bool(deploy_cfg.get("spconv_int8_fuse_implicit_gemm_relu", True)),
+    )
 
 
 def _load_amax_from_checkpoint(
@@ -545,6 +600,55 @@ def _all_substring_matching_stems(
     return found
 
 
+def _stem_node_name_match_score(node_name: str, stem: str) -> int:
+    """How strongly ``stem`` is supported by the ImplicitGemm node's **name** (scope path).
+
+    Input tensor names can still contain ``conv1`` when they carry activations **into** ``conv2``
+    (Residual naming), which makes substring-only matching ambiguous for sibling convs that share
+    ``(C_out, C_in)``.
+
+    ONNX node names use ``/`` (e.g. ``...encoder_layer3.0/conv2/...``) while PTQ stems use ``.``
+    (``encoder_layer3.0.conv2``). Flattening ``/`` → ``.`` makes dotted stem variants match.
+    """
+    if not node_name or not stem:
+        return 0
+    n_lower = node_name.lower().replace("\\", "/")
+    # Align ``…/encoder_layer3.0/conv2/…`` with stem substring ``encoder_layer3.0.conv2``.
+    n_dots = n_lower.replace("/", ".")
+    while ".." in n_dots:
+        n_dots = n_dots.replace("..", ".")
+
+    best = 0
+    for v in _stem_variants_for_onnx_match(stem):
+        if not v:
+            continue
+        vl = v.lower()
+        if vl and vl in n_dots:
+            best = max(best, len(vl))
+        vs = vl.replace(".", "/")
+        if vs and vs in n_lower:
+            best = max(best, len(vs))
+
+    # Strong tie-break: stem tail (``conv1`` vs ``conv2``) as a path segment in node.name.
+    tail = stem.rstrip(".").split(".")[-1].lower()
+    if tail and (
+        f"/{tail}/" in n_lower or f"/{tail}." in n_lower or n_lower.endswith("/" + tail) or f".{tail}." in n_dots
+    ):
+        best += 4096
+
+    return best
+
+
+def _pick_stem_disambiguated(node: onnx.NodeProto, stems: List[str]) -> Optional[str]:
+    """Choose one stem when multiple candidates share weight-shape / _amax compatibility."""
+    if not stems:
+        return None
+    if len(stems) == 1:
+        return stems[0]
+    name = node.name or ""
+    return max(stems, key=lambda s: (_stem_node_name_match_score(name, s), len(s)))
+
+
 def _match_onnx_node_to_layer(
     node: onnx.NodeProto,
     model: onnx.ModelProto,
@@ -558,6 +662,9 @@ def _match_onnx_node_to_layer(
     Prefer ``state_dict`` 5D weight ``(C_out, C_in)`` vs ONNX filter (strongest). Then fall back
     to ``_amax`` shape heuristics. Substring matching is kept; ``encoder_layers.`` is the only
     auto-stripped prefix (never strip ``conv_input.0`` → ``0``).
+
+    When several stems share the same weight layout (e.g. ``conv1`` / ``conv2`` same channels),
+    ties are broken using **node.name** scope, not longest stem string alone.
     """
     c_out, c_in = _implicit_gemm_filter_c_out_c_in(model, node)
     candidates = _all_substring_matching_stems(node, layer_stems)
@@ -580,7 +687,7 @@ def _match_onnx_node_to_layer(
         if len(ok_sd) == 1:
             return ok_sd[0]
         if len(ok_sd) > 1:
-            return max(ok_sd, key=len)
+            return _pick_stem_disambiguated(node, ok_sd)
         if verbose and candidates:
             print(
                 "  [debug-match] no stem with state_dict weight (C_out,C_in) matching ONNX filter; "
@@ -596,12 +703,12 @@ def _match_onnx_node_to_layer(
         if len(ok) == 1:
             return ok[0]
         if len(ok) > 1:
-            return max(ok, key=len)
+            return _pick_stem_disambiguated(node, ok)
         if verbose:
             print(f"  [debug-match] no stem with _amax compatible with C_out={c_out} C_in={c_in}.")
         return None
 
-    return max(candidates, key=len)
+    return _pick_stem_disambiguated(node, candidates)
 
 
 def _get_initializer_data(model: onnx.ModelProto, name: str) -> Optional[np.ndarray]:
@@ -703,6 +810,7 @@ def _append_implicit_gemm_int8_plugin_attributes(
             helper.make_attribute("input_scale", _f("input_scale", 1.0)),
             helper.make_attribute("timing_enabled", _i("timing_enabled", 0)),
             helper.make_attribute("timing_max_logs", _i("timing_max_logs", 1000)),
+            helper.make_attribute("act_type", _i("act_type", 0)),
         ]
     )
     # Keep Autoware ImplicitGemm extras if present (shape / legacy parsers).
@@ -729,6 +837,7 @@ def transform_onnx_int8(
     fp16_layer_patterns: Optional[List[str]] = None,
     plugin_timing_enabled: bool = False,
     plugin_timing_max_logs: int = 1000,
+    fuse_implicit_gemm_trailing_relu: bool = True,
 ) -> onnx.ModelProto:
     """Replace ImplicitGemm nodes with ImplicitGemmInt8 nodes.
 
@@ -752,6 +861,8 @@ def transform_onnx_int8(
             are set on each ``ImplicitGemmInt8`` so the TensorRT plugin logs CUDA-event splits
             (deploy_config: ``implicit_gemm_int8_plugin_timing``).
         plugin_timing_max_logs: Upper bound on timing log lines (stderr); same key in deploy_config.
+        fuse_implicit_gemm_trailing_relu: When True, run ``fuse_autoware_implicit_gemm_trailing_relu``
+            so standalone ``Relu`` chains on sparse conv outputs become ``ImplicitGemm.act_type=kReLU``.
 
     Returns:
         Modified ONNX model with autoware::ImplicitGemmInt8 nodes.
@@ -768,6 +879,27 @@ def transform_onnx_int8(
         )
 
     model = copy.deepcopy(model)
+
+    if fuse_implicit_gemm_trailing_relu:
+        from deployment.projects.bevfusion.export.onnx_fuse_implicit_gemm_activation import (
+            fuse_autoware_implicit_gemm_fp16_add_relu,
+            fuse_autoware_implicit_gemm_trailing_relu,
+        )
+
+        n_fp16_ar = fuse_autoware_implicit_gemm_fp16_add_relu(model)
+        if n_fp16_ar:
+            print(
+                f"  [onnx-fuse] Fused {n_fp16_ar} ImplicitGemm→Add(const)→Relu → "
+                "6-input ImplicitGemm + act_type=kReLU."
+            )
+
+        n_fused = fuse_autoware_implicit_gemm_trailing_relu(model)
+        if n_fused:
+            print(
+                f"  [onnx-fuse] Merged {n_fused} ImplicitGemm→Relu chain(s): "
+                "act_type=kReLU (1), Relu nodes removed."
+            )
+
     graph = model.graph
     layer_stems = list(layer_scales.keys())
     occupied_names = _collect_occupied_tensor_names(graph)
@@ -851,6 +983,7 @@ def transform_onnx_int8(
     new_nodes = []
     transform_count = 0
     stem_assigned_to_node: Dict[str, str] = {}
+    init_map: Dict[str, np.ndarray] = {init.name: numpy_helper.to_array(init) for init in graph.initializer}
 
     for node in graph.node:
         if node.op_type != "ImplicitGemm" or node.domain != "autoware":
@@ -904,13 +1037,41 @@ def transform_onnx_int8(
 
         c_out = c_scale
 
+        # FP16 fusion may add a 6th tensor input (Add folded into ImplicitGemm). INT8 uses 5 sparse
+        # tensors + scales; merge that extra FP32/Half bias into bias_scaled (= bias / output_scale).
+        bs_arr = np.asarray(si["bias_scaled"], dtype=np.float32).reshape(-1).copy()
+        if len(node.input) == 6:
+            extra_name = node.input[5]
+            extra = _try_get_constant_numpy(graph, extra_name, init_map)
+            if extra is None:
+                raise ValueError(
+                    "Path B ONNX transform: ImplicitGemm "
+                    f"{node.name!r} has 6 inputs (ONNX-fused bias) but constant "
+                    f"{extra_name!r} is not an initializer or Constant node value."
+                )
+            ex = np.asarray(extra, dtype=np.float32).reshape(-1)
+            if ex.size != bs_arr.size:
+                raise ValueError(
+                    "Path B ONNX transform: fused 6th-input bias length "
+                    f"{ex.size} != C_out {bs_arr.size} (stem={stem!r}, node={node.name!r})."
+                )
+            out_sc = float(si["output_scale"])
+            bs_arr = bs_arr + (ex / out_sc)
+            if verbose:
+                print(
+                    f"  [int8] Merged ONNX 6th-input fused bias into bias_scaled "
+                    f"(stem={stem!r}, node={node.name!r})"
+                )
+
         # Create ONNX initializers for channel_scale and bias_scaled.
         cs_name, bs_name = _safe_trt_scale_names(stem, occupied_names)
 
         cs_init = numpy_helper.from_array(si["channel_scale"], name=cs_name)
-        bs_init = numpy_helper.from_array(si["bias_scaled"], name=bs_name)
+        bs_init = numpy_helper.from_array(bs_arr, name=bs_name)
         graph.initializer.append(cs_init)
         graph.initializer.append(bs_init)
+        init_map[cs_name] = np.asarray(si["channel_scale"], dtype=np.float32)
+        init_map[bs_name] = bs_arr
 
         # TRT's ONNX parser requires graph.input entries with type info
         # for all initializers referenced by custom plugin nodes.
@@ -926,9 +1087,17 @@ def transform_onnx_int8(
         attrs["timing_enabled"] = int(bool(plugin_timing_enabled))
         attrs["timing_max_logs"] = int(plugin_timing_max_logs)
 
+        # Fused FP16 export may have 6 inputs (optional per-channel bias); Int8 uses 5 sparse + scales.
+        if len(node.input) not in (5, 6):
+            raise ValueError(
+                f"Path B: autoware::ImplicitGemm {node.name!r} has {len(node.input)} inputs; "
+                "expected 5 or 6 (6 = ONNX-fused bias). Take first 5 as sparse tensors."
+            )
+        sparse_in = list(node.input[:5])
+
         int8_node = helper.make_node(
             "ImplicitGemmInt8",
-            inputs=list(node.input) + [cs_name, bs_name],
+            inputs=sparse_in + [cs_name, bs_name],
             outputs=list(node.output),
             domain="autoware",
             name=f"{node.name}_int8" if node.name else f"ImplicitGemmInt8_{transform_count}",
@@ -975,6 +1144,19 @@ def transform_onnx_int8(
             f"replacements (excluding conv_out), got {transform_count}. "
             "Graph/calibration mismatch."
         )
+
+    if fuse_implicit_gemm_trailing_relu:
+        from deployment.projects.bevfusion.export.onnx_fuse_implicit_gemm_activation import (
+            fuse_autoware_implicit_gemm_int8_add_relu,
+        )
+
+        n_add_relu = fuse_autoware_implicit_gemm_int8_add_relu(model)
+        if n_add_relu:
+            print(
+                f"  [onnx-fuse] Fused {n_add_relu} ImplicitGemmInt8→Add(const)→Relu chain(s): "
+                "bias merged into bias_scaled (+= bias_fp/output_scale), act_type=kReLU; "
+                "Add/ReLU removed."
+            )
 
     unused_stems = set(scale_info.keys()) - set(stem_assigned_to_node.keys())
     if unused_stems:
@@ -1061,22 +1243,12 @@ def main():
         ),
     )
     parser.add_argument(
-        "--fp16-layers-from-deploy-cfg",
-        default=None,
-        help=(
-            "Path to a BEVFusion deploy_config .py that defines spconv_int8_fp16_layers "
-            "(list[str] of substring patterns). Merged with --fp16-layers. "
-            "Usually points to deploy_config_split_int8.py."
-        ),
-    )
-    parser.add_argument(
         "--deploy-cfg",
         default=None,
         help=(
-            "Same as --fp16-layers-from-deploy-cfg but preferred: loads deploy_config .py for "
+            "Loads deploy_config .py for "
             "spconv_int8_fp16_layers, implicit_gemm_int8_plugin_timing, and "
-            "implicit_gemm_int8_plugin_timing_max_logs. "
-            "If both --deploy-cfg and --fp16-layers-from-deploy-cfg are set, --deploy-cfg wins."
+            "implicit_gemm_int8_plugin_timing_max_logs."
         ),
     )
     args = parser.parse_args()
@@ -1109,29 +1281,9 @@ def main():
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     encoder_sd = ckpt.get("state_dict", ckpt)
 
-    fp16_layer_patterns = []
-    plugin_timing_enabled = False
-    plugin_timing_max_logs = 1000
-
-    deploy_cfg_path = getattr(args, "deploy_cfg", None) or args.fp16_layers_from_deploy_cfg
-    if deploy_cfg_path:
-        try:
-            from mmengine import Config  # type: ignore
-        except ImportError as e:
-            raise SystemExit(
-                "--deploy-cfg / --fp16-layers-from-deploy-cfg requires mmengine; install it or pass "
-                "--fp16-layers directly."
-            ) from e
-        deploy_cfg = Config.fromfile(deploy_cfg_path)
-        cfg_list = deploy_cfg.get("spconv_int8_fp16_layers", []) or []
-        if not isinstance(cfg_list, (list, tuple)):
-            raise SystemExit(
-                f"spconv_int8_fp16_layers in {deploy_cfg_path!r} must be a "
-                f"list of strings, got {type(cfg_list).__name__}."
-            )
-        fp16_layer_patterns.extend(str(p) for p in cfg_list if str(p).strip())
-        plugin_timing_enabled = bool(deploy_cfg.get("implicit_gemm_int8_plugin_timing", False))
-        plugin_timing_max_logs = int(deploy_cfg.get("implicit_gemm_int8_plugin_timing_max_logs", 1000))
+    deploy_cfg_path = getattr(args, "deploy_cfg", None)
+    deploy_opts = _load_deploy_transform_options(deploy_cfg_path)
+    fp16_layer_patterns = list(deploy_opts.fp16_layer_patterns)
 
     if args.fp16_layers:
         fp16_layer_patterns.extend(p.strip() for p in args.fp16_layers.split(",") if p.strip())
@@ -1142,9 +1294,14 @@ def main():
     if fp16_layer_patterns:
         print(f"  FP16 keep-list ({len(fp16_layer_patterns)}): {fp16_layer_patterns}")
     print(
-        f"  ImplicitGemmInt8 plugin CUDA timing attrs: timing_enabled={plugin_timing_enabled} "
-        f"timing_max_logs={plugin_timing_max_logs}"
+        f"  ImplicitGemmInt8 plugin CUDA timing attrs: timing_enabled={deploy_opts.plugin_timing_enabled} "
+        f"timing_max_logs={deploy_opts.plugin_timing_max_logs}"
         + (f" (from deploy_cfg {deploy_cfg_path!r})" if deploy_cfg_path else "")
+    )
+    print(
+        "  ImplicitGemm ReLU/Add ONNX fuse: "
+        f"{'enabled' if deploy_opts.fuse_implicit_gemm_relu else 'disabled'}"
+        + (f" (from deploy_cfg {deploy_cfg_path!r})" if deploy_cfg_path else " (default)")
     )
     audit_records: List[Dict[str, Any]] = []
     model = transform_onnx_int8(
@@ -1156,8 +1313,9 @@ def main():
         override_terminal_absmax=args.pathb_terminal_absmax,
         audit_records=audit_records if args.audit_report else None,
         fp16_layer_patterns=fp16_layer_patterns,
-        plugin_timing_enabled=plugin_timing_enabled,
-        plugin_timing_max_logs=plugin_timing_max_logs,
+        plugin_timing_enabled=deploy_opts.plugin_timing_enabled,
+        plugin_timing_max_logs=deploy_opts.plugin_timing_max_logs,
+        fuse_implicit_gemm_trailing_relu=deploy_opts.fuse_implicit_gemm_relu,
     )
 
     if args.audit_report:

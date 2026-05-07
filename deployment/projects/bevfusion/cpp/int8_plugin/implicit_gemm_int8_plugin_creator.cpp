@@ -39,6 +39,7 @@ ImplicitGemmInt8PluginCreator::ImplicitGemmInt8PluginCreator()
   plugin_attributes_.emplace_back("input_scale", nullptr, PluginFieldType::kFLOAT32, 1);
   plugin_attributes_.emplace_back("timing_enabled", nullptr, PluginFieldType::kINT32, 1);
   plugin_attributes_.emplace_back("timing_max_logs", nullptr, PluginFieldType::kINT32, 1);
+  plugin_attributes_.emplace_back("act_type", nullptr, PluginFieldType::kINT32, 1);
 
   fc_.nbFields = plugin_attributes_.size();
   fc_.fields = plugin_attributes_.data();
@@ -65,6 +66,7 @@ IPluginV3 * ImplicitGemmInt8PluginCreator::createPlugin(
       params.input_scale = 1.0f;
       params.timing_enabled = 0;
       params.timing_max_logs = 1000;
+      params.act_type = 0;
 
       for (std::int32_t i = 0; i < num_fields; ++i) {
         const std::string attr_name = fields[i].name;
@@ -83,6 +85,8 @@ IPluginV3 * ImplicitGemmInt8PluginCreator::createPlugin(
           params.timing_enabled = static_cast<std::int32_t const *>(fields[i].data)[0];
         } else if (attr_name == "timing_max_logs") {
           params.timing_max_logs = static_cast<std::int32_t const *>(fields[i].data)[0];
+        } else if (attr_name == "act_type") {
+          params.act_type = static_cast<std::int32_t const *>(fields[i].data)[0];
         }
       }
 
