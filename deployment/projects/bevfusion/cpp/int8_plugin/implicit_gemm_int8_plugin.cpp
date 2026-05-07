@@ -166,6 +166,22 @@ void int8_gemm_debug_dump_fp16_output(
       layer_name.c_str());
   }
 }
+
+tv::gemm::Activation int8_activation_from_param(std::int32_t const v) noexcept
+{
+  switch (v) {
+    case 0:
+      return tv::gemm::Activation::kNone;
+    case 1:
+      return tv::gemm::Activation::kReLU;
+    case 2:
+      return tv::gemm::Activation::kSigmoid;
+    case 3:
+      return tv::gemm::Activation::kLeakyReLU;
+    default:
+      return tv::gemm::Activation::kNone;
+  }
+}
 }  // namespace
 
 // Alloc keys — spconv headers define SPCONV_ALLOC_FEATURES etc. as macros.
@@ -260,6 +276,7 @@ void ImplicitGemmInt8Plugin::initFieldsToSerialize()
     "timing_enabled", &params_.timing_enabled, PluginFieldType::kINT32, 1);
   data_to_serialize_.emplace_back(
     "timing_max_logs", &params_.timing_max_logs, PluginFieldType::kINT32, 1);
+  data_to_serialize_.emplace_back("act_type", &params_.act_type, PluginFieldType::kINT32, 1);
 
   fc_to_serialize_.nbFields = data_to_serialize_.size();
   fc_to_serialize_.fields = data_to_serialize_.data();
@@ -425,30 +442,44 @@ std::int32_t ImplicitGemmInt8Plugin::configurePlugin(
   DynamicPluginTensorDesc const * in, std::int32_t num_inputs,
   [[maybe_unused]] DynamicPluginTensorDesc const * out, std::int32_t num_outputs) noexcept
 {
-  PLUGIN_ASSERT(num_inputs == NUM_INPUTS);
-  PLUGIN_ASSERT(num_outputs == NUM_OUTPUTS);
+  if (in == nullptr) {
+    return -1;
+  }
+  if (num_inputs != NUM_INPUTS) {
+    std::fprintf(
+      stderr, "[ImplicitGemmInt8Plugin] %s: configurePlugin expected %d inputs, got %d\n",
+      layer_name_.c_str(), static_cast<int>(NUM_INPUTS), static_cast<int>(num_inputs));
+    return -1;
+  }
+  if (num_outputs != NUM_OUTPUTS) {
+    std::fprintf(
+      stderr, "[ImplicitGemmInt8Plugin] %s: configurePlugin expected %d outputs, got %d\n",
+      layer_name_.c_str(), static_cast<int>(NUM_OUTPUTS), static_cast<int>(num_outputs));
+    return -1;
+  }
 
-  // features: [N, C_in]
-  PLUGIN_ASSERT(in[IN_FEATURES].desc.dims.nbDims == 2);
-  // filters: [C_out, K1, K2, K3, C_in]
-  PLUGIN_ASSERT(in[IN_FILTERS].desc.dims.nbDims == 5);
-  // pair_fwd: [K_vol, num_act_out]
-  PLUGIN_ASSERT(in[IN_PAIR_FWD].desc.dims.nbDims == 2);
-  // pair_mask_fwd: [num_act_out, 1]
-  PLUGIN_ASSERT(in[IN_PAIR_MASK_FWD].desc.dims.nbDims == 2);
-  // mask_argsort_fwd: [num_act_out]
-  PLUGIN_ASSERT(in[IN_MASK_ARGSORT_FWD].desc.dims.nbDims == 1);
-  // channel_scale: [C_out]
-  PLUGIN_ASSERT(in[IN_CHANNEL_SCALE].desc.dims.nbDims == 1);
-  // bias_scaled: [C_out]
-  PLUGIN_ASSERT(in[IN_BIAS_SCALED].desc.dims.nbDims == 1);
+  if (in[IN_FEATURES].desc.dims.nbDims != 2 || in[IN_FILTERS].desc.dims.nbDims != 5 ||
+      in[IN_PAIR_FWD].desc.dims.nbDims != 2 || in[IN_PAIR_MASK_FWD].desc.dims.nbDims != 2 ||
+      in[IN_MASK_ARGSORT_FWD].desc.dims.nbDims != 1 || in[IN_CHANNEL_SCALE].desc.dims.nbDims != 1 ||
+      in[IN_BIAS_SCALED].desc.dims.nbDims != 1)
+  {
+    std::fprintf(
+      stderr,
+      "[ImplicitGemmInt8Plugin] %s: configurePlugin unexpected tensor ranks\n",
+      layer_name_.c_str());
+    return -1;
+  }
 
-  PLUGIN_ASSERT(
-    in[IN_FILTERS].desc.dims.d[4] == in[IN_FEATURES].desc.dims.d[1]);
-  PLUGIN_ASSERT(
-    in[IN_CHANNEL_SCALE].desc.dims.d[0] == in[IN_FILTERS].desc.dims.d[0]);
-  PLUGIN_ASSERT(
-    in[IN_BIAS_SCALED].desc.dims.d[0] == in[IN_FILTERS].desc.dims.d[0]);
+  if (in[IN_FILTERS].desc.dims.d[4] != in[IN_FEATURES].desc.dims.d[1] ||
+      in[IN_CHANNEL_SCALE].desc.dims.d[0] != in[IN_FILTERS].desc.dims.d[0] ||
+      in[IN_BIAS_SCALED].desc.dims.d[0] != in[IN_FILTERS].desc.dims.d[0])
+  {
+    std::fprintf(
+      stderr,
+      "[ImplicitGemmInt8Plugin] %s: configurePlugin C_out / C_in dimension mismatch\n",
+      layer_name_.c_str());
+    return -1;
+  }
 
   std::fprintf(
     stderr,
@@ -460,9 +491,19 @@ std::int32_t ImplicitGemmInt8Plugin::configurePlugin(
 }
 
 bool ImplicitGemmInt8Plugin::supportsFormatCombination(
-  std::int32_t pos, DynamicPluginTensorDesc const * in_out,
-  [[maybe_unused]] std::int32_t num_inputs, [[maybe_unused]] std::int32_t num_outputs) noexcept
+  std::int32_t pos, DynamicPluginTensorDesc const * in_out, std::int32_t num_inputs,
+  std::int32_t num_outputs) noexcept
 {
+  if (in_out == nullptr) {
+    return false;
+  }
+  if (num_inputs != NUM_INPUTS || num_outputs != NUM_OUTPUTS) {
+    return false;
+  }
+  if (pos < 0 || pos >= num_inputs + num_outputs) {
+    return false;
+  }
+
   bool supported = in_out[pos].desc.format == nvinfer1::TensorFormat::kLINEAR;
 
   switch (pos) {
@@ -495,9 +536,14 @@ bool ImplicitGemmInt8Plugin::supportsFormatCombination(
 
 std::int32_t ImplicitGemmInt8Plugin::getOutputDataTypes(
   DataType * output_types, std::int32_t num_outputs,
-  DataType const * input_types, [[maybe_unused]] std::int32_t num_inputs) const noexcept
+  DataType const * input_types, std::int32_t num_inputs) const noexcept
 {
-  PLUGIN_ASSERT(num_outputs == NUM_OUTPUTS);
+  if (output_types == nullptr || input_types == nullptr) {
+    return -1;
+  }
+  if (num_outputs != NUM_OUTPUTS || num_inputs != NUM_INPUTS) {
+    return -1;
+  }
   output_types[0] = input_types[IN_FEATURES];  // FP16
   return 0;
 }
@@ -508,8 +554,12 @@ std::int32_t ImplicitGemmInt8Plugin::getOutputShapes(
   [[maybe_unused]] std::int32_t num_shape_inputs, DimsExprs * outputs, std::int32_t num_outputs,
   [[maybe_unused]] IExprBuilder & expr_builder) noexcept
 {
-  PLUGIN_ASSERT(num_inputs == NUM_INPUTS);
-  PLUGIN_ASSERT(num_outputs == NUM_OUTPUTS);
+  if (inputs == nullptr || outputs == nullptr) {
+    return -1;
+  }
+  if (num_inputs != NUM_INPUTS || num_outputs != NUM_OUTPUTS) {
+    return -1;
+  }
 
   outputs[0].nbDims = 2;
   // num_act_out from pair_mask_fwd dim 0
@@ -673,7 +723,7 @@ std::int32_t ImplicitGemmInt8Plugin::enqueue(
     /*bias=*/bias_scaled_tv,
     /*act_alpha=*/params_.act_alpha,
     /*act_beta=*/params_.act_beta,
-    /*act_type=*/tv::gemm::Activation::kNone,
+    /*act_type=*/int8_activation_from_param(params_.act_type),
     /*use_tf32=*/false,
     /*output_scale=*/1.0f,
     /*scale=*/channel_scale_tv,

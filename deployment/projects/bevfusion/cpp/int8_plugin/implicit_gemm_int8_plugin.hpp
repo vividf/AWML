@@ -46,6 +46,8 @@ struct ImplicitGemmInt8Parameters
   float input_scale;   // input_amax / 127.0 for feature quantization
   std::int32_t timing_enabled{0};       // 1 = CUDA-event splits to stderr (profile only)
   std::int32_t timing_max_logs{1000};   // max timing lines across all plugin instances
+  /// tv::gemm::Activation as int (kNone=0, kReLU=1, ...); ONNX ``act_type`` / ``act_type_i``.
+  std::int32_t act_type{0};
 };
 
 // ImplicitGemmInt8Plugin: FP16 I/O with internal INT8 GEMM using cumm kernels.

@@ -2,6 +2,7 @@
 # Build libautoware_tensorrt_plugins.so inside the BEVFusion Docker container.
 # Run this script from inside the container (e.g. /workspace or any dir).
 # Usage: bash projects/BEVFusion/plugins/build_plugin_inside_container.sh
+# Local source (no clone): AUTOWARE_TENSORRT_PLUGINS_SRC=/path/to/perception/autoware_tensorrt_plugins
 # Result: libautoware_tensorrt_plugins.so is written to /opt/plugins/
 set -e
 
@@ -15,7 +16,8 @@ INSTALL_PLUGINS_DIR="${INSTALL_PLUGINS_DIR:-/opt/plugins}"
 # Override the URL/ref via env vars when you want to track a different fork/branch
 # (e.g. upstream autowarefoundation/autoware.universe main for an A/B build).
 AUTOWARE_UNIVERSE_REPO="${AUTOWARE_UNIVERSE_REPO:-https://github.com/vividf/autoware.universe.git}"
-AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF:-feat/spconv-do-sort-attribute}"
+# AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF:-feat/spconv-do-sort-attribute}"
+AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF:-test/add_implicitgemm_timing}"
 
 echo "[build_plugin] Script dir: $SCRIPT_DIR"
 echo "[build_plugin] Build dir: $BUILD_DIR"
@@ -123,6 +125,21 @@ if [ -z "$TRT_INCLUDE_DIR" ]; then
   exit 1
 fi
 
+# Optional: use a bind-mounted `perception/autoware_tensorrt_plugins` tree and skip `git clone`.
+# Example: export AUTOWARE_TENSORRT_PLUGINS_SRC=/workspace/autoware.universe/perception/autoware_tensorrt_plugins
+AUTOWARE_TENSORRT_PLUGINS_SRC="${AUTOWARE_TENSORRT_PLUGINS_SRC:-}"
+PLUGIN_SRC_DIR=""
+if [ -n "$AUTOWARE_TENSORRT_PLUGINS_SRC" ]; then
+  if [ -f "$AUTOWARE_TENSORRT_PLUGINS_SRC/src/implicit_gemm_plugin.cpp" ]; then
+    PLUGIN_SRC_DIR="$(cd "$AUTOWARE_TENSORRT_PLUGINS_SRC" && pwd)"
+    echo "[build_plugin] Using AUTOWARE_TENSORRT_PLUGINS_SRC=$PLUGIN_SRC_DIR (skipping git clone)"
+  else
+    echo "[build_plugin] ERROR: AUTOWARE_TENSORRT_PLUGINS_SRC=$AUTOWARE_TENSORRT_PLUGINS_SRC"
+    echo "[build_plugin]        must contain src/implicit_gemm_plugin.cpp"
+    exit 1
+  fi
+fi
+
 # Clone only perception/autoware_tensorrt_plugins from the configured fork.
 # The fork (default: vividf/autoware.universe @ feat/spconv-do-sort-attribute)
 # already contains the `do_sort` attribute change; no source patching here.
@@ -134,29 +151,31 @@ fi
 # repo/ref (common after switching to an AWML fork), we must re-clone, otherwise
 # we silently build stale upstream source. The repo/ref pair is recorded in
 # $SRC_DIR/.awml_clone_meta and compared on every invocation.
-CLONE_META_FILE="$SRC_DIR/.awml_clone_meta"
-EXPECTED_META="${AUTOWARE_UNIVERSE_REPO}@${AUTOWARE_UNIVERSE_REF}"
-NEEDS_CLONE=0
-if [ ! -d "$SRC_DIR/src" ] && [ ! -d "$SRC_DIR/perception/autoware_tensorrt_plugins/src" ]; then
-  NEEDS_CLONE=1
-elif [ ! -f "$CLONE_META_FILE" ] || [ "$(cat "$CLONE_META_FILE" 2>/dev/null)" != "$EXPECTED_META" ]; then
-  echo "[build_plugin] Cached clone at $SRC_DIR does not match $EXPECTED_META; forcing re-clone."
-  NEEDS_CLONE=1
-fi
+if [ -z "$PLUGIN_SRC_DIR" ]; then
+  CLONE_META_FILE="$SRC_DIR/.awml_clone_meta"
+  EXPECTED_META="${AUTOWARE_UNIVERSE_REPO}@${AUTOWARE_UNIVERSE_REF}"
+  NEEDS_CLONE=0
+  if [ ! -d "$SRC_DIR/src" ] && [ ! -d "$SRC_DIR/perception/autoware_tensorrt_plugins/src" ]; then
+    NEEDS_CLONE=1
+  elif [ ! -f "$CLONE_META_FILE" ] || [ "$(cat "$CLONE_META_FILE" 2>/dev/null)" != "$EXPECTED_META" ]; then
+    echo "[build_plugin] Cached clone at $SRC_DIR does not match $EXPECTED_META; forcing re-clone."
+    NEEDS_CLONE=1
+  fi
 
-if [ "$NEEDS_CLONE" = "1" ]; then
-  echo "[build_plugin] Cloning autoware_tensorrt_plugins source from $AUTOWARE_UNIVERSE_REPO @ $AUTOWARE_UNIVERSE_REF ..."
-  rm -rf "$SRC_DIR"
-  git clone --depth 1 --branch "$AUTOWARE_UNIVERSE_REF" \
-    --filter=blob:none --sparse \
-    "$AUTOWARE_UNIVERSE_REPO" "$SRC_DIR"
-  (cd "$SRC_DIR" && git sparse-checkout set perception/autoware_tensorrt_plugins)
-  echo "$EXPECTED_META" > "$CLONE_META_FILE"
-fi
-if [ -d "$SRC_DIR/perception/autoware_tensorrt_plugins" ]; then
-  PLUGIN_SRC_DIR="$SRC_DIR/perception/autoware_tensorrt_plugins"
-else
-  PLUGIN_SRC_DIR="$SRC_DIR"
+  if [ "$NEEDS_CLONE" = "1" ]; then
+    echo "[build_plugin] Cloning autoware_tensorrt_plugins source from $AUTOWARE_UNIVERSE_REPO @ $AUTOWARE_UNIVERSE_REF ..."
+    rm -rf "$SRC_DIR"
+    git clone --depth 1 --branch "$AUTOWARE_UNIVERSE_REF" \
+      --filter=blob:none --sparse \
+      "$AUTOWARE_UNIVERSE_REPO" "$SRC_DIR"
+    (cd "$SRC_DIR" && git sparse-checkout set perception/autoware_tensorrt_plugins)
+    echo "$EXPECTED_META" > "$CLONE_META_FILE"
+  fi
+  if [ -d "$SRC_DIR/perception/autoware_tensorrt_plugins" ]; then
+    PLUGIN_SRC_DIR="$SRC_DIR/perception/autoware_tensorrt_plugins"
+  else
+    PLUGIN_SRC_DIR="$SRC_DIR"
+  fi
 fi
 
 if [ ! -f "$PLUGIN_SRC_DIR/src/implicit_gemm_plugin.cpp" ]; then

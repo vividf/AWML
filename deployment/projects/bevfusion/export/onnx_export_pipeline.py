@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import warnings
 from copy import deepcopy
 from pathlib import Path
@@ -265,6 +266,10 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         self._export_to_onnx(
             model, voxels, coors, num_points_per_voxel, str(sparse_onnx), onnx_cfg_sparse, wrapper="sparse"
         )
+        if self._should_auto_transform_sparse_onnx_int8(config=config):
+            self._postprocess_sparse_onnx_int8(config=config, sparse_onnx_path=sparse_onnx)
+        else:
+            self._postprocess_sparse_onnx_fp(config=config, sparse_onnx_path=sparse_onnx)
 
         with torch.no_grad():
             sw = BEVFusionSparseWrapper(model)
@@ -291,6 +296,100 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         self.logger.info("=" * 80)
 
         return Artifact(path=str(output_dir_path))
+
+    def _should_auto_transform_sparse_onnx_int8(self, *, config: BaseDeploymentConfig) -> bool:
+        """Whether split sparse ONNX should be transformed to ImplicitGemmInt8."""
+        quant_cfg = config.deploy_cfg.get("quantization", {}) or {}
+        return bool(quant_cfg.get("enabled", False) and quant_cfg.get("spconv_int8", False))
+
+    def _postprocess_sparse_onnx_int8(self, *, config: BaseDeploymentConfig, sparse_onnx_path: Path) -> None:
+        """Auto-run Path-B transform after sparse ONNX export (step2 includes old step3/4)."""
+        if not sparse_onnx_path.exists():
+            raise FileNotFoundError(f"Sparse ONNX not found for INT8 transform: {sparse_onnx_path}")
+
+        checkpoint_path = config.checkpoint_path
+        if not checkpoint_path:
+            raise RuntimeError(
+                "INT8 sparse ONNX auto-transform requires deploy_cfg.checkpoint_path "
+                "(PTQ checkpoint with _amax entries)."
+            )
+
+        backup_fp16 = sparse_onnx_path.parent.parent / sparse_onnx_path.name.replace(".onnx", "_fp16.onnx")
+        shutil.copy2(str(sparse_onnx_path), str(backup_fp16))
+
+        from deployment.projects.bevfusion.export.sparse_int8_onnx_transform import (
+            _build_layer_scale_map,
+            _load_amax_from_checkpoint,
+            transform_onnx_int8,
+        )
+
+        self.logger.info("Sparse ONNX INT8 transform: backup FP16 ONNX -> %s", backup_fp16)
+
+        amax_dict = _load_amax_from_checkpoint(checkpoint_path)
+        if not amax_dict:
+            raise RuntimeError(
+                f"PTQ checkpoint {checkpoint_path!r} has no _amax keys; cannot auto-transform sparse ONNX to INT8."
+            )
+        layer_scales = _build_layer_scale_map(amax_dict)
+        if not layer_scales:
+            raise RuntimeError(
+                f"No sparse layer scales built from checkpoint {checkpoint_path!r}; "
+                "check PTQ output / spconv INT8 calibration."
+            )
+
+        ckpt = torch.load(checkpoint_path, map_location="cpu")
+        encoder_sd = ckpt.get("state_dict", ckpt)
+        fp16_patterns = [
+            str(p) for p in (config.deploy_cfg.get("spconv_int8_fp16_layers", []) or []) if str(p).strip()
+        ]
+        plugin_timing_enabled = bool(config.deploy_cfg.get("implicit_gemm_int8_plugin_timing", False))
+        plugin_timing_max_logs = int(config.deploy_cfg.get("implicit_gemm_int8_plugin_timing_max_logs", 1000))
+        fuse_implicit_gemm_relu = bool(config.deploy_cfg.get("spconv_int8_fuse_implicit_gemm_relu", True))
+
+        model_fp = onnx.load(str(backup_fp16))
+        model_int8 = transform_onnx_int8(
+            model_fp,
+            layer_scales,
+            encoder_sd,
+            verbose=bool(config.deploy_cfg.get("spconv_int8_transform_verbose", False)),
+            amax_dict=amax_dict,
+            fp16_layer_patterns=fp16_patterns,
+            plugin_timing_enabled=plugin_timing_enabled,
+            plugin_timing_max_logs=plugin_timing_max_logs,
+            fuse_implicit_gemm_trailing_relu=fuse_implicit_gemm_relu,
+        )
+        onnx.save_model(model_int8, str(sparse_onnx_path))
+        self.logger.info(
+            "Sparse ONNX INT8 transform done: %s (fp16 backup: %s)",
+            sparse_onnx_path,
+            backup_fp16,
+        )
+
+    def _postprocess_sparse_onnx_fp(self, *, config: BaseDeploymentConfig, sparse_onnx_path: Path) -> None:
+        """Optional FP sparse ONNX postprocess (ImplicitGemm activation fusion)."""
+        enable_fuse = bool(config.deploy_cfg.get("spconv_fuse_implicit_gemm_relu", False))
+        if not enable_fuse:
+            self.logger.info("Sparse ONNX postprocess: ImplicitGemm ReLU/Add fuse disabled by deploy config.")
+            return
+        if not sparse_onnx_path.exists():
+            raise FileNotFoundError(f"Sparse ONNX not found for postprocess: {sparse_onnx_path}")
+
+        from deployment.projects.bevfusion.export.onnx_fuse_implicit_gemm_activation import (
+            fuse_autoware_implicit_gemm_fp16_add_relu,
+            fuse_autoware_implicit_gemm_trailing_relu,
+        )
+
+        model = onnx.load(str(sparse_onnx_path))
+        n_add_relu = fuse_autoware_implicit_gemm_fp16_add_relu(model)
+        n_relu = fuse_autoware_implicit_gemm_trailing_relu(model)
+        onnx.save_model(model, str(sparse_onnx_path))
+
+        self.logger.info(
+            "Sparse ONNX postprocess: ImplicitGemm fuse done (Add+Relu=%d, trailing Relu=%d): %s",
+            n_add_relu,
+            n_relu,
+            sparse_onnx_path,
+        )
 
     @staticmethod
     def _assert_split_model_ok(model: torch.nn.Module) -> None:

@@ -36,6 +36,16 @@ spconv_do_sort = False
 implicit_gemm_plugin_timing = True
 implicit_gemm_plugin_timing_max_logs = 1000
 
+# ============================================================================
+# Sparse ONNX postprocess (FP): fuse ImplicitGemm with trailing Relu/Add(const)+Relu.
+# ----------------------------------------------------------------------------
+# Applied automatically by deployment/projects/bevfusion/export/onnx_export_pipeline.py
+# after exporting ``bevfusion_sparse.onnx``.
+# - True  : bake activation into ImplicitGemm (act_type / optional 6th bias input)
+# - False : keep explicit Relu/Add nodes
+# ============================================================================
+spconv_fuse_implicit_gemm_relu = True
+
 # Fuse SparseConv + BN in ``pts_middle_encoder`` before ONNX export (same as PTQ load path).
 # Aligns FP16 sparse subgraph with INT8 deploy / fair latency vs mAP comparison.
 fuse_spconv_bn = True
@@ -52,8 +62,8 @@ devices = dict(
 
 export = dict(
     mode="none",
-    work_dir="work_dirs/bevfusion_deployment_split",
-    onnx_path="work_dirs/bevfusion_deployment_split/onnx",
+    work_dir="work_dirs/bevfusion_deployment_split_fuse_relu",
+    onnx_path="work_dirs/bevfusion_deployment_split_fuse_relu/onnx",
 )
 
 _WORK_DIR = str(export["work_dir"]).rstrip("/")
@@ -151,7 +161,7 @@ tensorrt_config = dict(
 
 evaluation = dict(
     enabled=True,
-    num_samples=1,
+    num_samples=-1,
     num_warmup_samples=2,
     verbose=True,
     backends=dict(
