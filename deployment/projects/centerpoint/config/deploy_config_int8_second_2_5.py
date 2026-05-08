@@ -8,14 +8,13 @@ Usage:
 """
 
 # ============================================================================
-# Task type for pipeline building
-# ============================================================================
-task_type = "detection3d"
-
-# ============================================================================
 # Checkpoint Path - Use PTQ quantized checkpoint
 # ============================================================================
-checkpoint_path = "models/2_5/experiment_j6_gen2/second/epoch_30_ptq.pth"
+# checkpoint_path = "models/2_5/experiment_j6_gen2/second/epoch_30_ptq.pth"
+# work_dirs/centerpoint/centerpoint_2_5_best_epoch_28.pth
+checkpoint_path = "work_dirs/centerpoint_2_5/centerpoint_2_5_best_epoch_28_ptq.pth"
+
+deploy_log_path = "deployment.log"
 
 # ============================================================================
 # Quantization Configuration
@@ -45,27 +44,28 @@ devices = dict(
     cuda="cuda:0",
 )
 
+
+# Single literal for deployment output root (used before `export` exists).
+_DEPLOY_WORK_DIR = "work_dirs/centerpoint_2_5"
+_WORK_DIR = _DEPLOY_WORK_DIR.rstrip("/")
+_ONNX_DIR = f"{_WORK_DIR}/onnx"
+_TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
+
 # ============================================================================
 # Export Configuration
 # ============================================================================
 export = dict(
     mode="both",
-    work_dir="models/2_5/experiment_j6_gen2/second/int8-deployment",
-    onnx_path=None,
+    work_dir=_DEPLOY_WORK_DIR,
+    onnx_path=_ONNX_DIR,
 )
 
-# Derived artifact directories
-_WORK_DIR = str(export["work_dir"]).rstrip("/")
-_ONNX_DIR = f"{_WORK_DIR}/onnx"
-_TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
-output_path = f"{_WORK_DIR}/deploy.log"
 
 # ============================================================================
 # Unified Component Configuration
 # ============================================================================
 components = dict(
-    voxel_encoder=dict(
-        name="pts_voxel_encoder",
+    pts_voxel_encoder=dict(
         onnx_file="pts_voxel_encoder.onnx",
         engine_file="pts_voxel_encoder.engine",
         io=dict(
@@ -88,8 +88,7 @@ components = dict(
             ),
         ),
     ),
-    backbone_head=dict(
-        name="pts_backbone_neck_head",
+    pts_backbone_neck_head=dict(
         onnx_file="pts_backbone_neck_head.onnx",
         engine_file="pts_backbone_neck_head.engine",
         io=dict(
@@ -128,7 +127,7 @@ components = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    info_file="info/kokseang_2_5_experiment/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=1,
 )
 
@@ -136,7 +135,7 @@ runtime_io = dict(
 # ONNX Export Settings
 # ============================================================================
 onnx_config = dict(
-    opset_version=16,
+    opset_version=17,
     do_constant_folding=True,
     export_params=True,
     keep_initializers_as_inputs=False,

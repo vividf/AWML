@@ -3,55 +3,18 @@
 from __future__ import annotations
 
 import argparse
-import io
 import logging
-
-import sys
-from contextlib import redirect_stdout
-from pathlib import Path
-from typing import Any, Mapping
 
 from mmengine.config import Config
 
-from deployment.cli.args import setup_logging
-from deployment.configs import BaseDeploymentConfig
+from deployment.cli.args import add_deployment_file_logging, setup_logging
+from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.contexts import CenterPointExportContext
 from deployment.projects.centerpoint.eval.evaluator import CenterPointEvaluator
 from deployment.projects.centerpoint.eval.metrics_utils import extract_t4metric_v2_config
 from deployment.projects.centerpoint.io.data_loader import CenterPointDataLoader
 from deployment.projects.centerpoint.runner import CenterPointDeploymentRunner
-
-_REQUIRED_COMPONENTS = ("pts_voxel_encoder", "pts_backbone_neck_head")
-
-
-def _validate_required_components(components_cfg) -> None:
-    """Validate that all CenterPoint required components exist in the config.
-
-    Args:
-        components_cfg: Components config with get_component(name).
-
-    Raises:
-        KeyError or similar: If any of _REQUIRED_COMPONENTS is missing.
-    """
-    for component_name in _REQUIRED_COMPONENTS:
-        components_cfg.get_component(component_name)
-
-
-class _StdoutTee(io.TextIOBase):
-    """Duplicate stdout writes to terminal and a log file."""
-
-    def __init__(self, stream: io.TextIOBase, log_stream: io.TextIOBase) -> None:
-        self._stream = stream
-        self._log_stream = log_stream
-
-    def write(self, s: str) -> int:
-        self._stream.write(s)
-        self._log_stream.write(s)
-        return len(s)
-
-    def flush(self) -> None:
-        self._stream.flush()
-        self._log_stream.flush()
+from deployment.projects.registry import project_registry
 
 
 def run(args: argparse.Namespace) -> int:
@@ -63,41 +26,35 @@ def run(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success).
     """
+    logger = setup_logging(args.log_level)
+
     deploy_cfg = Config.fromfile(args.deploy_cfg)
-    output_path = deploy_cfg.get("output_path")
-    if output_path:
-        log_path = Path(str(output_path))
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as log_stream:
-            with redirect_stdout(_StdoutTee(sys.stdout, log_stream)):
-                return _run_centerpoint(args, deploy_cfg)
-
-    return _run_centerpoint(args, deploy_cfg)
-
-
-def _run_centerpoint(args: argparse.Namespace, deploy_cfg: Config) -> int:
-    """Execute deployment workflow using a prepared deploy config."""
-    logger = setup_logging(args.log_level, deploy_cfg.get("output_path"))
     model_cfg = Config.fromfile(args.model_cfg)
     config = BaseDeploymentConfig(deploy_cfg)
 
-    _validate_required_components(config.components_cfg)
+    log_file = config.resolved_deploy_log_file
+    if log_file:
+        add_deployment_file_logging(log_file)
+        logger.info("Deployment log file: %s", log_file)
 
+    project_registry.validate_required_components("centerpoint", config.components_cfg)
+
+    # TODO(vividf): this can be removed?
     quantization_cfg = deploy_cfg.get("quantization", None)
-
-    logger.info("=" * 80)
-    logger.info("CenterPoint Deployment Pipeline (Unified CLI)")
-    logger.info("=" * 80)
     if quantization_cfg and quantization_cfg.get("enabled", False):
         logger.info(f"  Quantization: {quantization_cfg.get('mode', 'ptq')} (enabled)")
     else:
         logger.info("  Quantization: disabled")
 
+    logger.info("=" * 80)
+    logger.info("CenterPoint Deployment Pipeline")
+    logger.info("=" * 80)
+
     data_loader = CenterPointDataLoader(
         info_file=config.runtime_config.info_file,
         model_cfg=model_cfg,
     )
-    logger.info(f"Loaded {data_loader.num_samples} samples")
+    logger.info("Loaded %s samples", data_loader.num_samples)
 
     metrics_config = extract_t4metric_v2_config(model_cfg, logger=logger)
 

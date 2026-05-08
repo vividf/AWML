@@ -5,7 +5,6 @@ CenterPoint TensorRT Pipeline Implementation.
 from __future__ import annotations
 
 import logging
-import os.path as osp
 import time
 from typing import Dict, List, Tuple, Union
 
@@ -16,7 +15,7 @@ import tensorrt as trt
 import torch
 from typing_extensions import override
 
-from deployment.configs import ComponentsConfig
+from deployment.configs.schema import ComponentsConfig
 from deployment.core.artifacts import resolve_artifact_path
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
@@ -25,12 +24,12 @@ from deployment.pipelines.gpu_resource_mixin import (
     TensorRTResourceManager,
     release_tensorrt_resources,
 )
-from deployment.projects.centerpoint.pipelines.centerpoint_pipeline import CenterPointDeploymentPipeline
+from deployment.projects.centerpoint.pipelines.centerpoint_pipeline import CenterPointInferencePipeline
 
 logger = logging.getLogger(__name__)
 
 
-class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipeline):
+class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline):
     """TensorRT-based CenterPoint pipeline (engine-per-component inference).
 
     Loads separate TensorRT engines for pts_voxel_encoder and pts_backbone_neck_head components
@@ -73,7 +72,7 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
         self._voxel_encoder_end_event = cuda.Event()
 
         self._load_tensorrt_engines()
-        logger.info(f"TensorRT pipeline initialized with engines from: {tensorrt_dir}")
+        logger.info("TensorRT pipeline initialized with engines from: %s", tensorrt_dir)
 
     def _load_tensorrt_engines(self) -> None:
         """Load TensorRT engines for each component.
@@ -101,9 +100,6 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
         }
 
         for component_name, engine_path in engine_files.items():
-            if not osp.exists(engine_path):
-                raise FileNotFoundError(f"TensorRT engine not found: {engine_path}")
-
             with open(engine_path, "rb") as f:
                 engine = runtime.deserialize_cuda_engine(f.read())
             if engine is None:
@@ -118,7 +114,7 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
 
             self._engines[component_name] = engine
             self._contexts[component_name] = context
-            logger.info(f"Loaded TensorRT engine: {component_name}")
+            logger.info("Loaded TensorRT engine: %s", component_name)
 
     def _get_io_names(
         self,
@@ -345,27 +341,17 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointDeploymentPipelin
 
     def _release_gpu_resources(self) -> None:
         """Release TensorRT resources (engines and contexts) and CUDA events."""
-        # Destroy CUDA events
-        if hasattr(self, "_backbone_start_event"):
-            try:
-                del self._backbone_start_event
-            except Exception:
-                pass
-        if hasattr(self, "_backbone_end_event"):
-            try:
-                del self._backbone_end_event
-            except Exception:
-                pass
-        if hasattr(self, "_voxel_encoder_start_event"):
-            try:
-                del self._voxel_encoder_start_event
-            except Exception:
-                pass
-        if hasattr(self, "_voxel_encoder_end_event"):
-            try:
-                del self._voxel_encoder_end_event
-            except Exception:
-                pass
+        for attr in (
+            "_backbone_start_event",
+            "_backbone_end_event",
+            "_voxel_encoder_start_event",
+            "_voxel_encoder_end_event",
+        ):
+            if hasattr(self, attr):
+                try:
+                    delattr(self, attr)
+                except Exception:
+                    pass
 
         release_tensorrt_resources(
             engines=getattr(self, "_engines", None),

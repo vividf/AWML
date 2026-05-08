@@ -1,5 +1,5 @@
 """
-CenterPoint Deployment Pipeline Base Class.
+CenterPoint inference pipeline base class.
 
 Provides common preprocessing, postprocessing, and inference logic
 shared by PyTorch, ONNX, and TensorRT backend implementations.
@@ -19,7 +19,7 @@ from typing_extensions import override
 
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
-from deployment.pipelines.base_pipeline import BaseInferencePipeline    
+from deployment.pipelines.base_pipeline import BaseInferencePipeline
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +215,7 @@ class CenterPointInferencePipeline(BaseInferencePipeline):
         self,
         head_outputs: List[torch.Tensor],
         sample_meta: Dict[str, object],
-    ) -> List[Dict[str, Union[List[float], float, int]]]:   
+    ) -> List[Dict[str, Union[List[float], float, int]]]:
         """Postprocess head outputs to detection results.
 
         Args:
