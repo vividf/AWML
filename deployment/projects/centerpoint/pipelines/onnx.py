@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 from typing import List
 
-
 import numpy as np
 import onnxruntime as ort
 import torch
@@ -62,6 +61,7 @@ class CenterPointONNXPipeline(CenterPointInferencePipeline):
 
         Uses self.onnx_dir, self._components_cfg, and self.device to resolve paths
         and select execution providers.
+
         Raises:
             FileNotFoundError: If ONNX model files are not found.
             RuntimeError: If model loading fails.
