@@ -95,6 +95,18 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
 
         self.export_model_cfg: Optional[Config] = None
 
+    def _resolve_export_load_device(self) -> DeviceSpec:
+        """Pick CPU vs CUDA for building/loading the export PyTorch model.
+
+        Prefer the deploy config CUDA device when ``torch.cuda.is_available()`` so large PTQ
+        ``torch.load`` + tensors land on GPU VRAM instead of spiking host RAM (common silent OOM
+        / SIGKILL in small containers when loading was hard-coded to CPU).
+        """
+        devices = self.config.devices
+        if torch.cuda.is_available() and devices.cuda is not None:
+            return devices.cuda
+        return DeviceSpec.from_value("cpu")
+
     def load_pytorch_model(self, checkpoint_path: str, context: ExportContext) -> torch.nn.Module:
         """Load PyTorch model for export.
 
@@ -107,11 +119,16 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         """
         rot_y_axis_reference = self._extract_rot_y_axis_reference(context)
 
+        quant_cfg = self.config.deploy_cfg.get("quantization")
+        load_device = self._resolve_export_load_device()
+        self.logger.info("PyTorch export load device: %s", load_device)
+
         model, export_model_cfg = build_centerpoint_onnx_model(
             base_model_cfg=self.model_cfg,
             checkpoint_path=checkpoint_path,
-            device=DeviceSpec.from_value("cpu"),
+            device=load_device,
             rot_y_axis_reference=rot_y_axis_reference,
+            quantization=quant_cfg,
         )
 
         self.export_model_cfg = export_model_cfg

@@ -5,7 +5,7 @@ CenterPoint Deployment Configuration
 # ============================================================================
 # Checkpoint Path - Single source of truth for PyTorch model
 # ============================================================================
-checkpoint_path = "work_dirs/centerpoint/best_checkpoint.pth"
+checkpoint_path = "work_dirs/centerpoint_2_5/centerpoint_2_5_best_epoch_28.pth"
 
 # Log file path (relative paths are under export.work_dir). Set to None to disable file logging.
 deploy_log_path = "deployment.log"
@@ -19,7 +19,7 @@ devices = dict(
 )
 
 # Single literal for deployment output root (used before `export` exists).
-_DEPLOY_WORK_DIR = "work_dirs/centerpoint_deployment"
+_DEPLOY_WORK_DIR = "work_dirs/centerpoint_2_5_fp16"
 _WORK_DIR = _DEPLOY_WORK_DIR.rstrip("/")
 _ONNX_DIR = f"{_WORK_DIR}/onnx"
 _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
