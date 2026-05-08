@@ -7,7 +7,9 @@ This module provides ONNX-compatible model building from MMEngine configs.
 from __future__ import annotations
 
 import copy
-from typing import Tuple
+import logging
+import os
+from typing import Optional, Set, Tuple
 
 import torch
 from mmengine.config import Config
@@ -20,6 +22,21 @@ from deployment.projects.centerpoint.onnx_models import (  # noqa: F401 - regist
     centerpoint_onnx,
     pillar_encoder_onnx,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _import_tensor_quantizer():
+    """Lazily import TensorQuantizer from pytorch_quantization.
+
+    Returns None when the package is not installed.
+    """
+    try:
+        from pytorch_quantization.nn import TensorQuantizer
+
+        return TensorQuantizer
+    except ImportError:
+        return None
 
 
 def create_onnx_model_cfg(
@@ -354,6 +371,7 @@ def build_centerpoint_onnx_model(
     checkpoint_path: str,
     device: DeviceSpec,
     rot_y_axis_reference: bool = False,
+    quantization: Optional[dict] = None,
 ) -> Tuple[torch.nn.Module, Config]:
     """Build an ONNX-compatible CenterPoint model.
 
@@ -364,6 +382,9 @@ def build_centerpoint_onnx_model(
         checkpoint_path: Path to the checkpoint file.
         device: Target device specification.
         rot_y_axis_reference: Whether to use y-axis rotation reference.
+        quantization: Optional deploy-config ``quantization`` dict. When present and
+            ``enabled`` is True, loads the checkpoint via ``_load_quantized_checkpoint``
+            (BN fuse + Q/DQ + weights) so PTQ/QAT state dict keys match the built graph.
 
     Returns:
         Tuple of ``(model, export_model_cfg)``; the latter matches ``model.cfg``.
@@ -373,5 +394,23 @@ def build_centerpoint_onnx_model(
         device=device,
         rot_y_axis_reference=rot_y_axis_reference,
     )
+
+    qcfg = quantization or {}
+    if qcfg.get("enabled", False):
+        init_default_scope("mmdet3d")
+        model_config = copy.deepcopy(export_model_cfg.model)
+        model = MODELS.build(model_config)
+        torch_device = device.to_torch_device()
+        model.to(torch_device)
+        model = _load_quantized_checkpoint(
+            model,
+            checkpoint_path,
+            str(torch_device),
+            qcfg,
+        )
+        model.eval()
+        model.cfg = export_model_cfg
+        return model, export_model_cfg
+
     model = build_model_from_cfg(export_model_cfg, checkpoint_path, device=device)
     return model, export_model_cfg
