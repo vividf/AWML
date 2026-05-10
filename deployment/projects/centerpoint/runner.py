@@ -11,6 +11,7 @@ import torch
 from mmengine.config import Config
 
 from deployment.configs.base import BaseDeploymentConfig
+from deployment.core.backend import Backend
 from deployment.core.contexts import CenterPointExportContext, ExportContext
 from deployment.core.device import DeviceSpec
 from deployment.core.io.base_data_loader import BaseDataLoader
@@ -107,6 +108,25 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             return devices.cuda
         return DeviceSpec.from_value("cpu")
 
+    def _is_pytorch_evaluation_enabled(self) -> bool:
+        """Check whether evaluation config enables the PyTorch backend."""
+        evaluation_cfg = self.config.evaluation_config
+        if not evaluation_cfg.enabled:
+            return False
+        backends_cfg = self.config.evaluation_backends
+        pytorch_backend_cfg = backends_cfg.get("pytorch") or backends_cfg.get(Backend.PYTORCH) or {}
+        return bool(pytorch_backend_cfg.get("enabled", False))
+
+    def _should_use_quantized_checkpoint(self, quant_cfg: Optional[dict]) -> bool:
+        """Decide whether to build model with quantized checkpoint transformations."""
+        if not quant_cfg or not quant_cfg.get("enabled", False):
+            return False
+
+        export_cfg = self.config.export_config
+        needs_quantized_for_export = export_cfg.should_export_onnx or export_cfg.should_export_tensorrt
+        needs_quantized_for_eval_pytorch = self._is_pytorch_evaluation_enabled()
+        return needs_quantized_for_export or needs_quantized_for_eval_pytorch
+
     def load_pytorch_model(self, checkpoint_path: str, context: ExportContext) -> torch.nn.Module:
         """Load PyTorch model for export.
 
@@ -120,6 +140,16 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         rot_y_axis_reference = self._extract_rot_y_axis_reference(context)
 
         quant_cfg = self.config.deploy_cfg.get("quantization")
+        export_cfg = self.config.export_config
+        should_apply_quantized_load = self._should_use_quantized_checkpoint(quant_cfg)
+        effective_quant_cfg = quant_cfg if should_apply_quantized_load else None
+        if quant_cfg and quant_cfg.get("enabled", False) and not should_apply_quantized_load:
+            self.logger.info(
+                "Quantization is enabled in config, but export mode is '%s'. "
+                "Skipping quantized checkpoint load for evaluation-only run.",
+                export_cfg.mode.value,
+            )
+
         load_device = self._resolve_export_load_device()
         self.logger.info("PyTorch export load device: %s", load_device)
 
@@ -128,7 +158,7 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             checkpoint_path=checkpoint_path,
             device=load_device,
             rot_y_axis_reference=rot_y_axis_reference,
-            quantization=quant_cfg,
+            quantization=effective_quant_cfg,
         )
 
         self.export_model_cfg = export_model_cfg
