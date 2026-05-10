@@ -24,8 +24,24 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
     Returns:
         Configured logger instance
     """
-    logging.basicConfig(level=getattr(logging, level), format=_LOG_FORMAT)
-    return logging.getLogger("deployment")
+    level_value = getattr(logging, level)
+    root = logging.getLogger()
+    root.setLevel(level_value)
+
+    # Keep existing handler chain intact to avoid breaking external log capture.
+    # Only initialize default root handler when no handlers exist yet.
+    if not root.handlers:
+        logging.basicConfig(level=level_value, format=_LOG_FORMAT)
+    else:
+        formatter = logging.Formatter(_LOG_FORMAT)
+        for handler in root.handlers:
+            handler.setLevel(level_value)
+            if isinstance(handler, logging.StreamHandler):
+                handler.setFormatter(formatter)
+
+    logger = logging.getLogger("deployment")
+    logger.setLevel(level_value)
+    return logger
 
 
 def add_deployment_file_logging(log_file_path: str) -> None:

@@ -55,7 +55,7 @@ _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="onnx",
+    mode="trt",
     work_dir=_DEPLOY_WORK_DIR,
     onnx_path=_ONNX_DIR,
 )
@@ -155,7 +155,7 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=-1,
+    num_samples=1,
     verbose=True,
     backends=dict(
         pytorch=dict(
@@ -168,7 +168,7 @@ evaluation = dict(
             model_dir=_ONNX_DIR,
         ),
         tensorrt=dict(
-            enabled=False,
+            enabled=True,
             device=devices["cuda"],
             engine_dir=_TENSORRT_DIR,
         ),
