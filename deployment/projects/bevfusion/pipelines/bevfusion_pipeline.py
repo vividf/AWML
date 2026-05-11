@@ -21,7 +21,7 @@ from typing_extensions import override
 
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
-from deployment.pipelines.base_pipeline import BaseDeploymentPipeline
+from deployment.pipelines.base_pipeline import BaseInferencePipeline
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def _env_int_pp(key: str, default: int) -> int:
         return default
 
 
-class BEVFusionDeploymentPipeline(BaseDeploymentPipeline):
+class BEVFusionDeploymentPipeline(BaseInferencePipeline):
     """Base pipeline for BEVFusion inference.
 
     Handles voxelization in preprocessing and bbox decoding in postprocessing.

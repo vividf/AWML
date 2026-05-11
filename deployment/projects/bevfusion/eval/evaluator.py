@@ -9,19 +9,13 @@ import numpy as np
 from mmengine.config import Config
 from typing_extensions import override
 
-from deployment.configs import ComponentsConfig
-from deployment.core import (
-    BaseEvaluator,
-    Detection3DMetricsConfig,
-    Detection3DMetricsInterface,
-    EvalResultDict,
-    InferenceInput,
-    ModelSpec,
-    TaskProfile,
-)
+from deployment.configs.schema import ComponentsConfig
 from deployment.core.device import DeviceSpec
+from deployment.core.evaluation.base_evaluator import BaseEvaluator
+from deployment.core.evaluation.evaluator_types import EvalResultDict, InferenceInput, ModelSpec
 from deployment.core.io.base_data_loader import BaseDataLoader
-from deployment.pipelines.base_pipeline import BaseDeploymentPipeline
+from deployment.core.metrics.detection_3d_metrics import Detection3DMetricsConfig, Detection3DMetricsInterface
+from deployment.pipelines.base_pipeline import BaseInferencePipeline
 from deployment.pipelines.factory import PipelineFactory
 from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_components
 
@@ -82,18 +76,10 @@ class BEVFusionEvaluator(BaseEvaluator):
         self._components_cfg = components_cfg
         self._tensorrt_plugin_libraries = tuple(tensorrt_plugin_libraries)
 
-        task_profile = TaskProfile(
-            task_name="bevfusion_3d_detection",
-            display_name="BEVFusion 3D Object Detection",
-            class_names=tuple(class_names),
-            num_classes=len(class_names),
-        )
-
         metrics_interface = Detection3DMetricsInterface(metrics_config)
 
         super().__init__(
             metrics_interface=metrics_interface,
-            task_profile=task_profile,
             model_cfg=model_cfg,
         )
 
@@ -106,7 +92,7 @@ class BEVFusionEvaluator(BaseEvaluator):
         return [out.name for out in comp.io.outputs]
 
     @override
-    def _create_pipeline(self, model_spec: ModelSpec, device: DeviceSpec) -> BaseDeploymentPipeline:
+    def _create_pipeline(self, model_spec: ModelSpec, device: DeviceSpec) -> BaseInferencePipeline:
         return PipelineFactory.create(
             project_name="bevfusion",
             model_spec=model_spec,

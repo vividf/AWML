@@ -8,12 +8,12 @@ from typing import Iterable
 import torch
 from typing_extensions import override
 
-from deployment.configs import ComponentsConfig
+from deployment.configs.schema import ComponentsConfig
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
 from deployment.core.evaluation.evaluator_types import ModelSpec
 from deployment.pipelines.base_factory import BasePipelineFactory
-from deployment.pipelines.base_pipeline import BaseDeploymentPipeline
+from deployment.pipelines.base_pipeline import BaseInferencePipeline
 from deployment.pipelines.registry import pipeline_registry
 from deployment.projects.bevfusion.pipelines.onnx import BEVFusionONNXPipeline
 from deployment.projects.bevfusion.pipelines.pytorch import BEVFusionPyTorchPipeline
@@ -40,7 +40,7 @@ class BEVFusionPipelineFactory(BasePipelineFactory):
         device: DeviceSpec,
         components_cfg: ComponentsConfig,
         tensorrt_plugin_libraries: Iterable[str] = (),
-    ) -> BaseDeploymentPipeline:
+    ) -> BaseInferencePipeline:
         device = device or model_spec.device
         backend = model_spec.backend
 
@@ -51,20 +51,20 @@ class BEVFusionPipelineFactory(BasePipelineFactory):
             return BEVFusionPyTorchPipeline(pytorch_model, device=device)
 
         if backend is Backend.ONNX:
-            logger.info(f"Creating BEVFusion ONNX pipeline from {model_spec.path} on {device}")
+            logger.info("Creating BEVFusion ONNX pipeline from %s on %s", model_spec.artifact.path, device)
             return BEVFusionONNXPipeline(
                 pytorch_model,
-                onnx_dir=model_spec.path,
+                onnx_dir=model_spec.artifact.path,
                 device=device,
                 components_cfg=components_cfg,
             )
 
         if backend is Backend.TENSORRT:
-            logger.info(f"Creating BEVFusion TensorRT pipeline from {model_spec.path} on {device}")
+            logger.info("Creating BEVFusion TensorRT pipeline from %s on %s", model_spec.artifact.path, device)
             plugin_libs = tuple(tensorrt_plugin_libraries)
             return BEVFusionTensorRTPipeline(
                 pytorch_model,
-                tensorrt_dir=model_spec.path,
+                tensorrt_dir=model_spec.artifact.path,
                 device=device,
                 components_cfg=components_cfg,
                 plugin_libraries=plugin_libs,

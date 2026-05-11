@@ -41,6 +41,7 @@ class BasePipelineFactory(ABC):
         pytorch_model: torch.nn.Module,
         device: DeviceSpec,
         components_cfg: ComponentsConfig,
+        **kwargs: Any,
     ) -> BaseInferencePipeline:
         """Build and return a pipeline instance for the given model spec.
 
@@ -54,6 +55,7 @@ class BasePipelineFactory(ABC):
             pytorch_model: A loaded PyTorch model (used for PYTORCH backends).
             device: Optional device override (defaults to `model_spec.device`).
             components_cfg: Project-specific component configuration (e.g., file paths, IO specs).
+            **kwargs: Project-specific optional parameters.
         """
         raise NotImplementedError
 

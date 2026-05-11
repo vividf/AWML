@@ -20,7 +20,7 @@ Usage:
 """
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, List
 
 import torch
 
@@ -56,6 +56,7 @@ class PipelineFactory:
         pytorch_model: torch.nn.Module,
         device: DeviceSpec,
         components_cfg: ComponentsConfig,
+        **kwargs: Any,
     ) -> BaseInferencePipeline:
         """
         Create a pipeline for the specified project.
@@ -66,6 +67,7 @@ class PipelineFactory:
             pytorch_model: PyTorch model instance
             device: Override device (uses model_spec.device if None)
             components_cfg: Project-specific component configuration
+            **kwargs: Project-specific optional parameters
 
         Returns:
             Pipeline instance
@@ -88,6 +90,7 @@ class PipelineFactory:
             pytorch_model=pytorch_model,
             device=device,
             components_cfg=components_cfg,
+            **kwargs,
         )
 
     @staticmethod

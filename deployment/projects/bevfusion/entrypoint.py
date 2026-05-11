@@ -7,13 +7,14 @@ import logging
 
 from mmengine.config import Config
 
-from deployment.cli.args import setup_logging
-from deployment.configs import BaseDeploymentConfig
+from deployment.cli.args import add_deployment_file_logging, setup_logging
+from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.contexts import ExportContext
 from deployment.projects.bevfusion.eval.evaluator import BEVFusionEvaluator
 from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_components
 from deployment.projects.bevfusion.io.data_loader import BEVFusionDataLoader
 from deployment.projects.bevfusion.runner import BEVFusionDeploymentRunner
+from deployment.projects.registry import project_registry
 
 
 def _validate_bevfusion_components(config: BaseDeploymentConfig) -> None:
@@ -34,10 +35,19 @@ def _extract_metrics_config(model_cfg: Config, logger: logging.Logger):
 
     class_names = model_cfg.class_names
 
+    def _cfg_get(obj, key, default=None):
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        if key in obj:
+            return obj[key]
+        return getattr(obj, key, default)
+
     evaluator_cfg = getattr(model_cfg, "val_evaluator", None) or getattr(model_cfg, "test_evaluator", None)
     if evaluator_cfg is None:
         logger.warning("No evaluator config found; using basic metrics config")
-        return Detection3DMetricsConfig(class_names=class_names)
+        return Detection3DMetricsConfig(class_names=class_names, frame_id="base_link")
 
     evaluator_type = getattr(evaluator_cfg, "type", None)
 
@@ -46,8 +56,15 @@ def _extract_metrics_config(model_cfg: Config, logger: logging.Logger):
 
         return extract_t4metric_v2_config(model_cfg, logger=logger)
 
-    logger.info(f"Evaluator type '{evaluator_type}'; using basic Detection3DMetricsConfig")
-    return Detection3DMetricsConfig(class_names=class_names)
+    perception_cfg = _cfg_get(evaluator_cfg, "perception_evaluator_configs")
+    frame_id = _cfg_get(evaluator_cfg, "frame_id") or _cfg_get(perception_cfg, "frame_id") or "base_link"
+
+    logger.info(
+        "Evaluator type '%s'; using Detection3DMetricsConfig fallback (frame_id=%s)",
+        evaluator_type,
+        frame_id,
+    )
+    return Detection3DMetricsConfig(class_names=class_names, frame_id=frame_id)
 
 
 def _apply_spconv_do_sort(deploy_cfg: Config, logger: logging.Logger) -> None:
@@ -70,17 +87,22 @@ def _apply_spconv_do_sort(deploy_cfg: Config, logger: logging.Logger) -> None:
 
 def run(args: argparse.Namespace) -> int:
     """Run the BEVFusion deployment workflow."""
-    logger = setup_logging(args.log_level)
-
     deploy_cfg = Config.fromfile(args.deploy_cfg)
+    logger = setup_logging(args.log_level)
     model_cfg = Config.fromfile(args.model_cfg)
     config = BaseDeploymentConfig(deploy_cfg)
 
+    log_file = config.resolved_deploy_log_file
+    if log_file:
+        add_deployment_file_logging(log_file)
+        logger.info("Deployment log file: %s", log_file)
+
+    project_registry.validate_required_components("bevfusion", config.components_cfg)
     _validate_bevfusion_components(config)
     _apply_spconv_do_sort(deploy_cfg, logger)
 
     logger.info("=" * 80)
-    logger.info("BEVFusion Deployment Pipeline (Unified CLI)")
+    logger.info("BEVFusion Deployment Pipeline")
     logger.info("=" * 80)
 
     quantization_cfg = deploy_cfg.get("quantization", None)

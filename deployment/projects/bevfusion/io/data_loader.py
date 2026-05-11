@@ -14,7 +14,7 @@ from mmengine.config import Config
 from mmengine.registry import DATASETS, init_default_scope
 from typing_extensions import override
 
-from deployment.core import BaseDataLoader
+from deployment.core.io.base_data_loader import BaseDataLoader
 
 
 class BEVFusionDataLoader(BaseDataLoader):

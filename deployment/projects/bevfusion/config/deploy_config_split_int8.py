@@ -205,9 +205,7 @@ devices = dict(
 )
 
 export = dict(
-    # "tensorrt" = build TRT engines from existing ONNX (don't re-export ONNX).
-    # Use "both" only when you need a fresh ONNX export + TRT build.
-    mode="none",
+    mode="trt",
     work_dir="work_dirs/bevfusion_split_int8_deployment_sparse_exp3",
     onnx_path="work_dirs/bevfusion_split_int8_deployment_sparse_exp3/onnx",
 )

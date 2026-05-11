@@ -16,12 +16,23 @@ from deployment.projects.bevfusion.debug.sparse_encoder_hooks import (
     try_register_sparse_encoder_sparse_conv_hooks,
 )
 from deployment.projects.bevfusion.pipelines.bevfusion_pipeline import BEVFusionDeploymentPipeline
-from projects.BEVFusion.bevfusion.bevfusion import _ensure_float_for_pts_pipeline
+
+try:
+    from projects.BEVFusion.bevfusion.bevfusion import _ensure_float_for_pts_pipeline as _ensure_float_for_pts_impl
+except Exception:
+    _ensure_float_for_pts_impl = None
 
 logger = logging.getLogger(__name__)
 
 
 _PYTORCH_TENSOR_LOG_PREFIX = "[BEVFUSION][PyTorch][tensors]"
+
+
+def _ensure_float_for_pts_pipeline(tensor: torch.Tensor) -> torch.Tensor:
+    """Best-effort compatibility wrapper for BEVFusion sparse feature dtype normalization."""
+    if _ensure_float_for_pts_impl is not None:
+        return _ensure_float_for_pts_impl(tensor)
+    return tensor.float() if tensor.dtype != torch.float32 else tensor
 
 
 def _tensor_stats(t: torch.Tensor, name: str) -> str:

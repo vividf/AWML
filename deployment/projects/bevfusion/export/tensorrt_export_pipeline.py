@@ -11,7 +11,8 @@ from typing import Dict, List, Optional
 
 import torch
 
-from deployment.configs import BaseDeploymentConfig, ComponentsConfig
+from deployment.configs.base import BaseDeploymentConfig
+from deployment.configs.schema import ComponentsConfig
 from deployment.core.artifacts import Artifact
 from deployment.core.device import DeviceSpec
 from deployment.exporters.common.factory import ExporterFactory

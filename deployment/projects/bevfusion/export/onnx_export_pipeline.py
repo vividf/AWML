@@ -20,7 +20,7 @@ import onnx_graphsurgeon as gs
 import torch
 import torch.nn as nn
 
-from deployment.configs import BaseDeploymentConfig
+from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.artifacts import Artifact
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.exporters.export_pipelines.base import OnnxExportPipeline

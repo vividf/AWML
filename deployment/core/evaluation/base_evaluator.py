@@ -206,6 +206,7 @@ class BaseEvaluator(ABC):
         data_loader: BaseDataLoader,
         num_samples: int,
         verbose: bool = False,
+        num_warmup_samples: int = 0,
     ) -> EvalResultDict:
         """Run inference over samples and compute task metrics via ``metrics_interface``.
 
@@ -214,6 +215,8 @@ class BaseEvaluator(ABC):
             data_loader: Provides ``load_sample(i)`` with ``ground_truth`` for each sample.
             num_samples: Requested batch count (capped by ``data_loader.num_samples``).
             verbose: If True, log progress every :data:`LOG_INTERVAL` samples.
+            num_warmup_samples: Number of initial samples to run as warmup.
+                Warmup runs execute inference but are excluded from metrics and latency stats.
 
         Returns:
             Task-specific evaluation dict from ``_build_results``.
@@ -224,9 +227,8 @@ class BaseEvaluator(ABC):
         logger.info(
             "Starting sample loop for backend=%s (artifact path: %s)",
             model.backend.value,
-            model.path,
+            model.artifact.path,
         )
-        logger.info("Number of samples: %s", num_samples)
 
         self._ensure_model_on_device(model.device)
         pipeline = self._create_pipeline(model, model.device)
@@ -235,20 +237,39 @@ class BaseEvaluator(ABC):
         latencies: List[float] = []
         latency_breakdowns: List[Dict[str, float]] = []
 
-        actual_samples = min(num_samples, data_loader.num_samples)
+        warmup_samples = max(0, int(num_warmup_samples))
+        warmup_samples = min(warmup_samples, data_loader.num_samples)
+        actual_samples = min(num_samples, max(0, data_loader.num_samples - warmup_samples))
+        total_runs = warmup_samples + actual_samples
 
-        for idx in range(actual_samples):
+        logger.info(
+            "Number of evaluation samples: %s (warmup: %s, total runs: %s)",
+            actual_samples,
+            warmup_samples,
+            total_runs,
+        )
+
+        for idx in range(total_runs):
+            is_warmup = idx < warmup_samples
+            eval_idx = idx - warmup_samples
+
             if verbose and idx % LOG_INTERVAL == 0:
-                logger.info("Processing sample %s/%s", idx + 1, actual_samples)
+                if is_warmup:
+                    logger.info("Warmup sample %s/%s", idx + 1, warmup_samples)
+                else:
+                    logger.info("Processing sample %s/%s", eval_idx + 1, actual_samples)
 
             sample = data_loader.load_sample(idx)
             inference_input = self._prepare_input(sample, data_loader, model.device)
+
+            infer_result = pipeline.infer(inference_input.data, metadata=inference_input.metadata)
+            if is_warmup:
+                continue
 
             if "ground_truth" not in sample:
                 raise KeyError("DataLoader.load_sample() must return 'ground_truth' for evaluation.")
             ground_truths = self._parse_ground_truths(sample["ground_truth"])
 
-            infer_result = pipeline.infer(inference_input.data, metadata=inference_input.metadata)
             latencies.append(infer_result.latency_ms)
             if infer_result.breakdown:
                 latency_breakdowns.append(infer_result.breakdown)

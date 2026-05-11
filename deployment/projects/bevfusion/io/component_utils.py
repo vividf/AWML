@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deployment.configs import ComponentsConfig
+from deployment.configs.schema import ComponentsConfig
 
 
 def is_split_bevfusion_components(components_cfg: ComponentsConfig) -> bool:

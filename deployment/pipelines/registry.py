@@ -5,7 +5,7 @@ Flattened from `deployment/pipelines/common/registry.py`.
 """
 
 import logging
-from typing import Dict, Type
+from typing import Any, Dict, Type
 
 import torch
 
@@ -80,6 +80,7 @@ class PipelineRegistry:
         pytorch_model: torch.nn.Module,
         device: DeviceSpec,
         components_cfg: ComponentsConfig,
+        **kwargs: Any,
     ) -> BaseInferencePipeline:
         """Create a project-specific pipeline instance using the registered factory.
 
@@ -92,6 +93,7 @@ class PipelineRegistry:
             pytorch_model=pytorch_model,
             device=device,
             components_cfg=components_cfg,
+            **kwargs,
         )
 
     def list_projects(self) -> list:

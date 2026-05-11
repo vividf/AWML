@@ -11,7 +11,7 @@ import onnxruntime as ort
 import torch
 from typing_extensions import override
 
-from deployment.configs import ComponentsConfig
+from deployment.configs.schema import ComponentsConfig
 from deployment.core.artifacts import resolve_artifact_path
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
