@@ -7,7 +7,7 @@ import logging
 
 from mmengine.config import Config
 
-from deployment.cli.args import setup_logging
+from deployment.cli.args import add_deployment_file_logging, setup_logging
 from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.contexts import CenterPointExportContext
 from deployment.projects.centerpoint.eval.evaluator import CenterPointEvaluator
@@ -41,9 +41,14 @@ def run(args: argparse.Namespace) -> int:
         Exit code (0 for success).
     """
     deploy_cfg = Config.fromfile(args.deploy_cfg)
-    logger = setup_logging(args.log_level, deploy_cfg.get("output_path"))
+    logger = setup_logging(args.log_level)
     model_cfg = Config.fromfile(args.model_cfg)
     config = BaseDeploymentConfig(deploy_cfg)
+
+    log_file = config.resolved_deploy_log_file
+    if log_file:
+        add_deployment_file_logging(log_file)
+        logger.info("Deployment log file: %s", log_file)
 
     _validate_required_components(config.components_cfg)
 

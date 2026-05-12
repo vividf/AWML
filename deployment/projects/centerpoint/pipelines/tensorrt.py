@@ -83,7 +83,7 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
             FileNotFoundError: If engine files are not found.
             RuntimeError: If engine loading or context creation fails.
         """
-        load_tensorrt_plugin_libraries(logger)
+        # load_tensorrt_plugin_libraries(logger)
         trt.init_libnvinfer_plugins(self._logger, "")
         runtime = trt.Runtime(self._logger)
 

@@ -245,12 +245,16 @@ def _build_skip_layers(quantization: dict) -> Set[str]:
     skip_layers: Set[str] = set(quantization.get("sensitive_layers", []) or [])
 
     # SECOND/ResNet: pts_backbone.blocks.*
+    # Merge two controls into one effective stage set:
+    # 1) contiguous first-N from skip_backbone_first_stages
+    # 2) explicit indexes from skip_backbone_stages
+    skip_backbone_stage_ids: Set[int] = set()
     skip_first = int(quantization.get("skip_backbone_first_stages", 0) or 0)
     if skip_first > 0:
-        for i in range(skip_first):
-            skip_layers.add(f"pts_backbone.blocks.{i}")
-    for i in quantization.get("skip_backbone_stages", []) or []:
-        skip_layers.add(f"pts_backbone.blocks.{int(i)}")
+        skip_backbone_stage_ids.update(range(skip_first))
+    skip_backbone_stage_ids.update(int(i) for i in (quantization.get("skip_backbone_stages", []) or []))
+    for stage_id in skip_backbone_stage_ids:
+        skip_layers.add(f"pts_backbone.blocks.{stage_id}")
 
     # VoVNet: pts_backbone.stem, .stage2, .stage3, .stage4 (must match PTQ so model structure = checkpoint)
     vovnet_stages = quantization.get("skip_vovnet_stages", None)
