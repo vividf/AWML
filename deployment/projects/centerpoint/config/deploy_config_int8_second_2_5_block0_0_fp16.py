@@ -12,7 +12,7 @@ Usage:
 # ============================================================================
 # checkpoint_path = "models/2_5/experiment_j6_gen2/second/epoch_30_ptq.pth"
 # work_dirs/centerpoint/centerpoint_2_5_best_epoch_28.pth
-checkpoint_path = "work_dirs/centerpoint_2_5/centerpoint_2_5_best_epoch_28_ptq.pth"
+checkpoint_path = "work_dirs/centerpoint_2_5/centerpoint_2_5_best_epoch_28_ptq_block_0_0_fp16.pth"
 
 deploy_log_path = "deployment.log"
 
@@ -30,11 +30,9 @@ quantization = dict(
     # SECOND backbone selective skip (prefix: pts_backbone.blocks.{i})
     # Use explicit stage list only.
     # If still unstable, extend to [0, 1] or [0, 1, 2] and re-run PTQ with same setting.
-    skip_backbone_stages=[0],
+    skip_backbone_stages=[],
     sensitive_layers=[
-        # "pts_neck.deblocks.0.0",  # ConvTranspose2d - no TRT INT8 support
-        # "pts_neck.deblocks.1.0",  # ConvTranspose2d - no TRT INT8 support
-        # "pts_neck.deblocks.2.0",  # ConvTranspose2d - no TRT INT8 support
+        "pts_backbone.blocks.0.0",
     ],
 )
 
@@ -48,7 +46,7 @@ devices = dict(
 
 
 # Single literal for deployment output root (used before `export` exists).
-_DEPLOY_WORK_DIR = "work_dirs/centerpoint_2_5"
+_DEPLOY_WORK_DIR = "work_dirs/centerpoint_2_5_block0_0_fp16"
 _WORK_DIR = _DEPLOY_WORK_DIR.rstrip("/")
 _ONNX_DIR = f"{_WORK_DIR}/onnx"
 _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"

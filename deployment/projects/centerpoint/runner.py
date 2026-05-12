@@ -8,6 +8,7 @@ import logging
 from typing import Optional
 
 import torch
+import torch.nn as nn
 from mmengine.config import Config
 
 from deployment.configs.base import BaseDeploymentConfig
@@ -161,9 +162,31 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             quantization=effective_quant_cfg,
         )
 
+        self._log_model_structure_for_sensitive_layers(model)
         self.export_model_cfg = export_model_cfg
         self._setup_evaluator(model, export_model_cfg)
         return model
+
+    def _log_model_structure_for_sensitive_layers(self, model: torch.nn.Module) -> None:
+        """Log module names so users can configure sensitive_layers without guessing."""
+        self.logger.info("=" * 80)
+        self.logger.info("Model module names (for quantization debugging)")
+        self.logger.info("Use these PyTorch names in quantization.sensitive_layers")
+        self.logger.info("-" * 80)
+
+        for name, module in model.named_modules():
+            if not name:
+                continue
+            self.logger.info("  %s (%s)", name, module.__class__.__name__)
+
+        self.logger.info("-" * 80)
+        self.logger.info("Sensitive layer candidates (Conv/ConvTranspose/Linear)")
+        for name, module in model.named_modules():
+            if not name:
+                continue
+            if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
+                self.logger.info("  %s", name)
+        self.logger.info("=" * 80)
 
     def _extract_rot_y_axis_reference(self, context: ExportContext) -> bool:
         """Extract rot_y_axis_reference from export context.
