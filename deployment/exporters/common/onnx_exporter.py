@@ -10,6 +10,7 @@ import torch
 
 from deployment.exporters.common.base_exporter import BaseExporter
 from deployment.exporters.common.configs import ONNXExportConfig
+from deployment.exporters.common.onnx_qdq_visualize import make_qdq_readable
 
 
 class ONNXExporter(BaseExporter):
@@ -86,6 +87,8 @@ class ONNXExporter(BaseExporter):
         self._do_onnx_export(model, sample_input, output_path, self.config)
         if self.config.simplify:
             self._simplify_model(output_path)
+        if self.config.visualize_qdq_values:
+            self._make_qdq_readable(output_path)
 
     def _prepare_for_onnx(self, model: torch.nn.Module) -> torch.nn.Module:
         """
@@ -171,3 +174,19 @@ class ONNXExporter(BaseExporter):
                 self.logger.warning("ONNX model simplification failed")
         except Exception as e:
             self.logger.warning("ONNX simplification error: %s", e)
+
+    def _make_qdq_readable(self, onnx_path: str) -> None:
+        """Postprocess ONNX for better Q/DQ readability in graph viewers."""
+        self.logger.info("Annotating Q/DQ nodes for readability...")
+        try:
+            model = onnx.load(onnx_path)
+            annotated, promoted, removed = make_qdq_readable(model)
+            onnx.save(model, onnx_path)
+            self.logger.info(
+                "Q/DQ readability postprocess done: annotated=%d, promoted_constants=%d, removed_constant_nodes=%d",
+                annotated,
+                promoted,
+                removed,
+            )
+        except Exception as e:
+            self.logger.warning("Q/DQ readability postprocess skipped: %s", e)

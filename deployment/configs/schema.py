@@ -136,6 +136,9 @@ class OnnxConfig:
     export_params: bool = True
     keep_initializers_as_inputs: bool = False
     simplify: bool = False
+    # Make Q/DQ easier to inspect in Netron by annotating node names and
+    # promoting Q/DQ Constant scale/zp inputs into initializers.
+    visualize_qdq_values: bool = False
     # Device for torch.onnx.export tracing (e.g. "cpu", "cuda:0"). None = pipeline default.
     trace_device: Optional[str] = None
 
@@ -154,6 +157,7 @@ class OnnxConfig:
             export_params=bool(raw.get("export_params", True)),
             keep_initializers_as_inputs=bool(raw.get("keep_initializers_as_inputs", False)),
             simplify=bool(raw.get("simplify", False)),
+            visualize_qdq_values=bool(raw.get("visualize_qdq_values", False)),
             trace_device=trace_device,
         )
 

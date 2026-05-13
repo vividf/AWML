@@ -23,6 +23,7 @@ import torch.nn as nn
 from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.artifacts import Artifact
 from deployment.core.io.base_data_loader import BaseDataLoader
+from deployment.exporters.common.onnx_qdq_visualize import make_qdq_readable
 from deployment.exporters.export_pipelines.base import OnnxExportPipeline
 from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_components
 from deployment.projects.bevfusion.io.model_loader import setup_quantization_for_onnx_export
@@ -207,6 +208,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
 
         num_proposals = self._get_num_proposals(model)
         self._fix_topk(str(temp_path), str(output_path), num_proposals)
+        self._apply_qdq_visualization_if_enabled(str(output_path), onnx_cfg)
 
         self.logger.info("=" * 80)
         self.logger.info(f"BEVFusion ONNX export successful: {output_path}")
@@ -270,6 +272,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             self._postprocess_sparse_onnx_int8(config=config, sparse_onnx_path=sparse_onnx)
         else:
             self._postprocess_sparse_onnx_fp(config=config, sparse_onnx_path=sparse_onnx)
+        self._apply_qdq_visualization_if_enabled(str(sparse_onnx), onnx_cfg_sparse)
 
         with torch.no_grad():
             sw = BEVFusionSparseWrapper(model)
@@ -290,6 +293,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
 
         num_proposals = self._get_num_proposals(model)
         self._fix_topk(str(dense_temp), str(dense_onnx), num_proposals)
+        self._apply_qdq_visualization_if_enabled(str(dense_onnx), onnx_cfg_dense)
 
         self.logger.info("=" * 80)
         self.logger.info("Split ONNX export OK: %s , %s", sparse_onnx, dense_onnx)
@@ -446,9 +450,28 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             "opset_version": opset_version,
             "export_params": True,
             "keep_initializers_as_inputs": False,
+            "visualize_qdq_values": bool(getattr(onnx_settings, "visualize_qdq_values", False)),
             "verbose": False,
             "trace_device": trace_device,
         }
+
+    def _apply_qdq_visualization_if_enabled(self, onnx_path: str, onnx_cfg: Dict[str, Any]) -> None:
+        """Annotate Q/DQ and collapse related Constant nodes for easier graph inspection."""
+        if not bool(onnx_cfg.get("visualize_qdq_values", False)):
+            return
+        try:
+            model = onnx.load(onnx_path)
+            annotated, promoted, removed = make_qdq_readable(model)
+            onnx.save_model(model, onnx_path)
+            self.logger.info(
+                "Q/DQ readability postprocess done for %s: annotated=%d, promoted_constants=%d, removed_constant_nodes=%d",
+                onnx_path,
+                annotated,
+                promoted,
+                removed,
+            )
+        except Exception as e:
+            self.logger.warning("Q/DQ readability postprocess skipped for %s: %s", onnx_path, e)
 
     def _export_dense_to_onnx(
         self,

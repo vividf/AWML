@@ -99,6 +99,7 @@ class ONNXExportConfig(BaseExporterConfig):
     keep_initializers_as_inputs: bool = False
     verbose: bool = False
     do_constant_folding: bool = True
+    visualize_qdq_values: bool = False
     save_file: str = "model.onnx"
     batch_size: Optional[int] = None
 
@@ -115,6 +116,7 @@ class ONNXExportConfig(BaseExporterConfig):
             keep_initializers_as_inputs=data.get("keep_initializers_as_inputs", cls.keep_initializers_as_inputs),
             verbose=data.get("verbose", cls.verbose),
             do_constant_folding=data.get("do_constant_folding", cls.do_constant_folding),
+            visualize_qdq_values=bool(data.get("visualize_qdq_values", cls.visualize_qdq_values)),
             save_file=data.get("save_file", cls.save_file),
             batch_size=data.get("batch_size", cls.batch_size),
         )

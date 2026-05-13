@@ -249,6 +249,7 @@ class BaseDeploymentConfig:
             "dynamic_axes": component_cfg.io.dynamic_axes,
             "export_params": onnx_config.export_params,
             "keep_initializers_as_inputs": onnx_config.keep_initializers_as_inputs,
+            "visualize_qdq_values": onnx_config.visualize_qdq_values,
             "verbose": False,
             "save_file": component_cfg.onnx_file,
             "batch_size": None,

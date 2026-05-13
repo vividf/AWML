@@ -12,7 +12,7 @@ Usage:
 # ============================================================================
 # checkpoint_path = "models/2_5/experiment_j6_gen2/second/epoch_30_ptq.pth"
 # work_dirs/centerpoint/centerpoint_2_5_best_epoch_28.pth
-checkpoint_path = "vivid/bench_comparison/centerpoint_2_6/epoch_29_ptq.pth"
+checkpoint_path = "vivid/bench_comparison/centerpoint_2_6/epoch_29_ptq_exp4.pth"
 
 
 deploy_log_path = "deployment.log"
@@ -31,8 +31,12 @@ quantization = dict(
     # SECOND backbone selective skip (prefix: pts_backbone.blocks.{i})
     # Use explicit stage list only.
     # If still unstable, extend to [0, 1] or [0, 1, 2] and re-run PTQ with same setting.
-    skip_backbone_stages=[0],
-    sensitive_layers=[],
+    skip_backbone_stages=[],
+    sensitive_layers=[
+        "pts_backbone.blocks.0.0",
+        "pts_backbone.blocks.0.3",
+        "pts_backbone.blocks.0.6",
+    ],
 )
 
 # ============================================================================
@@ -45,7 +49,7 @@ devices = dict(
 
 
 # Single literal for deployment output root (used before `export` exists).
-_DEPLOY_WORK_DIR = "work_dirs/centerpoint_2_6_skip_stage_0"
+_DEPLOY_WORK_DIR = "work_dirs/centerpoint_2_6_exp4_block0_3_6_fp16"
 _WORK_DIR = _DEPLOY_WORK_DIR.rstrip("/")
 _ONNX_DIR = f"{_WORK_DIR}/onnx"
 _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
@@ -54,7 +58,7 @@ _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="none",
+    mode="both",
     work_dir=_DEPLOY_WORK_DIR,
     onnx_path=_ONNX_DIR,
 )
@@ -138,7 +142,6 @@ onnx_config = dict(
     do_constant_folding=True,
     export_params=True,
     keep_initializers_as_inputs=False,
-    visualize_qdq_values=True,
     simplify=False,
 )
 
@@ -155,12 +158,12 @@ tensorrt_config = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=-1,
+    num_samples=200,
     num_warmup_samples=2,
     verbose=True,
     backends=dict(
         pytorch=dict(
-            enabled=True,
+            enabled=False,
             device=devices["cuda"],
         ),
         onnx=dict(
