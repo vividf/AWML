@@ -33,6 +33,7 @@ _BEVFUSION_LATENCY_STAGE_LAYOUT: Tuple[Tuple[str, int], ...] = (
     ("neck_ms", 2),
     ("head_ms", 2),
     ("post_scoring_ms", 2),
+    ("dense_unattributed_ms", 2),
     ("postprocessing_ms", 0),
 )
 
@@ -48,6 +49,7 @@ _BEVFUSION_STAGE_DISPLAY_NAME: Dict[str, str] = {
     "neck_ms": "Neck",
     "head_ms": "Head",
     "post_scoring_ms": "Post Scoring",
+    "dense_unattributed_ms": "Dense Unattributed",
 }
 
 
@@ -170,22 +172,25 @@ class BEVFusionEvaluator(BaseEvaluator):
     def print_results(self, results: EvalResultDict) -> None:
         metrics_report = self.metrics_interface.format_metrics_report()
         if metrics_report:
-            print(metrics_report)
+            for line in metrics_report.rstrip().split("\n"):
+                logger.info(line)
 
         if "latency" in results:
             latency_dict = results["latency"].to_dict()
-            print("\nLatency Statistics:")
-            print(f"  Mean:   {latency_dict['mean_ms']:.2f} ms")
-            print(f"  Std:    {latency_dict['std_ms']:.2f} ms")
-            print(f"  Min:    {latency_dict['min_ms']:.2f} ms")
-            print(f"  Max:    {latency_dict['max_ms']:.2f} ms")
-            print(f"  Median: {latency_dict['median_ms']:.2f} ms")
+            logger.info("")
+            logger.info("Latency Statistics:")
+            logger.info("  Mean:   %.2f ms", latency_dict["mean_ms"])
+            logger.info("  Std:    %.2f ms", latency_dict["std_ms"])
+            logger.info("  Min:    %.2f ms", latency_dict["min_ms"])
+            logger.info("  Max:    %.2f ms", latency_dict["max_ms"])
+            logger.info("  Median: %.2f ms", latency_dict["median_ms"])
 
         if "latency_breakdown" in results:
             breakdown = results["latency_breakdown"]
             breakdown_dict = breakdown.to_dict() if hasattr(breakdown, "to_dict") else breakdown
             if breakdown_dict:
-                print("\nStage-wise Latency Breakdown:")
+                logger.info("")
+                logger.info("Stage-wise Latency Breakdown:")
                 printed: set[str] = set()
                 for stage_key, indent_level in _BEVFUSION_LATENCY_STAGE_LAYOUT:
                     if stage_key not in breakdown_dict:
@@ -199,7 +204,7 @@ class BEVFusionEvaluator(BaseEvaluator):
                     printed.add(stage_key)
                     prefix = " " * (2 + indent_level)
                     label = _bevfusion_stage_display_name(stage_key)
-                    print(f"{prefix}{label:18s}: {mean_ms:.2f} ± {std_ms:.2f} ms")
+                    logger.info("%s%-18s: %.2f ± %.2f ms", prefix, label, mean_ms, std_ms)
 
                 extra_keys = sorted(k for k in breakdown_dict if k not in printed)
                 for stage_key in extra_keys:
@@ -210,6 +215,7 @@ class BEVFusionEvaluator(BaseEvaluator):
                     if mean_ms == 0.0 and std_ms == 0.0:
                         continue
                     label = _bevfusion_stage_display_name(stage_key)
-                    print(f"  {label:18s}: {mean_ms:.2f} ± {std_ms:.2f} ms")
+                    logger.info("  %-18s: %.2f ± %.2f ms", label, mean_ms, std_ms)
 
-        print(f"\nTotal Samples: {results['num_samples']}")
+        logger.info("")
+        logger.info("Total Samples: %s", results["num_samples"])
