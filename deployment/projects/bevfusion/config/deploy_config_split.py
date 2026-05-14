@@ -29,9 +29,7 @@ CLI::
 # Checkpoint Path
 # ============================================================================
 # checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30.pth"
-# checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28.pth"
-checkpoint_path = "vivid/bench_comparison/bevfusion_epoch_30.pth"
-
+checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28.pth"
 
 devices = dict(
     cpu="cpu",
