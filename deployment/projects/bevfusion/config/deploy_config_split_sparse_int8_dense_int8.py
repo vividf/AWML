@@ -79,7 +79,9 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 #
 # 評測：註解 Preset A，改為下方三項（checkpoint 指向上列 output；dense 三關必須 False 與 PTQ 一致）
 # ============================================================================
-checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only_exp3.pth"
+# checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only_exp3.pth"
+checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28_ptq.pth"
+
 
 # ============================================================================
 # Sparse pair-gen: skip the pair-mask argsort for INT8 inference.
@@ -191,9 +193,9 @@ quantization = dict(
     enabled=True,
     ptq_checkpoint=True,
     fuse_bn=True,
-    quant_backbone=False,
-    quant_neck=False,
-    quant_head=False,
+    quant_backbone=True,
+    quant_neck=True,
+    quant_head=True,
     quant_add=False,
     spconv_int8=True,
     sensitive_layers=[],
@@ -206,8 +208,9 @@ devices = dict(
 
 export = dict(
     mode="trt",
-    work_dir="work_dirs/bevfusion_split_int8_deployment_sparse_exp3",
-    onnx_path="work_dirs/bevfusion_split_int8_deployment_sparse_exp3/onnx",
+    work_dir="work_dirs/bevfusion_deployment_2_7_sparse_int8_dense_int8",
+    onnx_path="work_dirs/bevfusion_deployment_2_7_sparse_int8_dense_int8/onnx",
+    # onnx_path=None,
 )
 
 _WORK_DIR = str(export["work_dir"]).rstrip("/")
@@ -283,7 +286,7 @@ components = dict(
 )
 
 runtime_io = dict(
-    info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="info/kokseang_2_6_1/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=0,
 )
 
@@ -292,6 +295,7 @@ onnx_config = dict(
     do_constant_folding=True,
     export_params=True,
     keep_initializers_as_inputs=False,
+    visualize_qdq_values=True,
     simplify=False,
 )
 
@@ -305,7 +309,7 @@ tensorrt_config = dict(
 )
 
 evaluation = dict(
-    enabled=True,
+    enabled=False,
     num_samples=-1,
     num_warmup_samples=2,
     verbose=True,
