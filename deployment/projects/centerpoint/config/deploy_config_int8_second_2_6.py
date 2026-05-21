@@ -45,7 +45,7 @@ devices = dict(
 
 
 # Single literal for deployment output root (used before `export` exists).
-_DEPLOY_WORK_DIR = "work_dirs/centerpoint_2_6_skip_stage_0"
+_DEPLOY_WORK_DIR = "work_dirs/centerpoint_2_6_skip_stage_0_by_distance_largebus"
 _WORK_DIR = _DEPLOY_WORK_DIR.rstrip("/")
 _ONNX_DIR = f"{_WORK_DIR}/onnx"
 _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
@@ -54,7 +54,7 @@ _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
 # Export Configuration
 # ============================================================================
 export = dict(
-    mode="none",
+    mode="both",
     work_dir=_DEPLOY_WORK_DIR,
     onnx_path=_ONNX_DIR,
 )
@@ -126,7 +126,7 @@ components = dict(
 # Runtime I/O settings
 # ============================================================================
 runtime_io = dict(
-    info_file="info/kokseang_2_6_1/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="info/kokseang_2_6_1/t4dataset_largebus_infos_test.pkl",
     sample_idx=1,
 )
 

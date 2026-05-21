@@ -215,8 +215,9 @@ class BaseEvaluator(ABC):
             data_loader: Provides ``load_sample(i)`` with ``ground_truth`` for each sample.
             num_samples: Requested batch count (capped by ``data_loader.num_samples``).
             verbose: If True, log progress every :data:`LOG_INTERVAL` samples.
-            num_warmup_samples: Number of initial samples to run as warmup.
+            num_warmup_samples: Number of warmup runs before evaluation.
                 Warmup runs execute inference but are excluded from metrics and latency stats.
+                Warmup does not consume evaluation samples.
 
         Returns:
             Task-specific evaluation dict from ``_build_results``.
@@ -239,7 +240,7 @@ class BaseEvaluator(ABC):
 
         warmup_samples = max(0, int(num_warmup_samples))
         warmup_samples = min(warmup_samples, data_loader.num_samples)
-        actual_samples = min(num_samples, max(0, data_loader.num_samples - warmup_samples))
+        actual_samples = min(num_samples, data_loader.num_samples)
         total_runs = warmup_samples + actual_samples
 
         logger.info(
@@ -249,22 +250,22 @@ class BaseEvaluator(ABC):
             total_runs,
         )
 
-        for idx in range(total_runs):
-            is_warmup = idx < warmup_samples
-            eval_idx = idx - warmup_samples
+        # Warmup reuses early samples and does not consume evaluation indices.
+        for warmup_idx in range(warmup_samples):
+            if verbose and warmup_idx % LOG_INTERVAL == 0:
+                logger.info("Warmup sample %s/%s", warmup_idx + 1, warmup_samples)
 
-            if verbose and idx % LOG_INTERVAL == 0:
-                if is_warmup:
-                    logger.info("Warmup sample %s/%s", idx + 1, warmup_samples)
-                else:
-                    logger.info("Processing sample %s/%s", eval_idx + 1, actual_samples)
-
-            sample = data_loader.load_sample(idx)
+            sample = data_loader.load_sample(warmup_idx)
             inference_input = self._prepare_input(sample, data_loader, model.device)
+            pipeline.infer(inference_input.data, metadata=inference_input.metadata)
 
+        for eval_idx in range(actual_samples):
+            if verbose and eval_idx % LOG_INTERVAL == 0:
+                logger.info("Processing sample %s/%s", eval_idx + 1, actual_samples)
+
+            sample = data_loader.load_sample(eval_idx)
+            inference_input = self._prepare_input(sample, data_loader, model.device)
             infer_result = pipeline.infer(inference_input.data, metadata=inference_input.metadata)
-            if is_warmup:
-                continue
 
             if "ground_truth" not in sample:
                 raise KeyError("DataLoader.load_sample() must return 'ground_truth' for evaluation.")
@@ -277,7 +278,7 @@ class BaseEvaluator(ABC):
             predictions = self._parse_predictions(infer_result.output)
             self._add_to_interface(predictions, ground_truths)
 
-            if model.backend is Backend.TENSORRT and idx % GPU_CLEANUP_INTERVAL == 0:
+            if model.backend is Backend.TENSORRT and eval_idx % GPU_CLEANUP_INTERVAL == 0:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 

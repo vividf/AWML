@@ -80,7 +80,7 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 # 評測：註解 Preset A，改為下方三項（checkpoint 指向上列 output；dense 三關必須 False 與 PTQ 一致）
 # ============================================================================
 # checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only_exp3.pth"
-checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28_ptq.pth"
+checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28_ptq_sparse_int8_dense_int8.pth"
 
 
 # ============================================================================
@@ -207,9 +207,9 @@ devices = dict(
 )
 
 export = dict(
-    mode="trt",
-    work_dir="work_dirs/bevfusion_deployment_2_7_sparse_int8_dense_int8",
-    onnx_path="work_dirs/bevfusion_deployment_2_7_sparse_int8_dense_int8/onnx",
+    mode="none",
+    work_dir="work_dirs/bevfusion_deployment_2_7_sparse_int8_dense_int8_test",
+    onnx_path="work_dirs/bevfusion_deployment_2_7_sparse_int8_dense_int8_test/onnx",
     # onnx_path=None,
 )
 
@@ -309,8 +309,8 @@ tensorrt_config = dict(
 )
 
 evaluation = dict(
-    enabled=False,
-    num_samples=-1,
+    enabled=True,
+    num_samples=5,
     num_warmup_samples=2,
     verbose=True,
     backends=dict(
