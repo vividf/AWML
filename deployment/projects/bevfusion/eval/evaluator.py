@@ -17,7 +17,7 @@ from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.core.metrics.detection_3d_metrics import Detection3DMetricsConfig, Detection3DMetricsInterface
 from deployment.pipelines.base_pipeline import BaseInferencePipeline
 from deployment.pipelines.factory import PipelineFactory
-from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_components
+from deployment.projects.bevfusion.io.component_utils import has_component, is_split_bevfusion_components
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,9 @@ class BEVFusionEvaluator(BaseEvaluator):
 
     @override
     def _get_output_names(self) -> Optional[List[str]]:
-        if is_split_bevfusion_components(self._components_cfg):
+        if is_split_bevfusion_components(self._components_cfg) and not has_component(
+            self._components_cfg, "bevfusion_main_body"
+        ):
             comp = self._components_cfg.get_component("bevfusion_dense")
         else:
             comp = self._components_cfg.get_component("bevfusion_main_body")

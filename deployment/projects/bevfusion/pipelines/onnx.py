@@ -15,7 +15,7 @@ from deployment.configs.schema import ComponentsConfig
 from deployment.core.artifacts import resolve_artifact_path
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
-from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_components
+from deployment.projects.bevfusion.io.component_utils import has_component, is_split_bevfusion_components
 from deployment.projects.bevfusion.pipelines.bevfusion_pipeline import BEVFusionDeploymentPipeline
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,17 @@ class BEVFusionONNXPipeline(BEVFusionDeploymentPipeline):
 
         self.onnx_dir = onnx_dir
         self._components_cfg = components_cfg
-        self._split = is_split_bevfusion_components(components_cfg)
+        split_layout = is_split_bevfusion_components(components_cfg)
+        merged_model_available = False
+        if split_layout and has_component(components_cfg, "bevfusion_main_body"):
+            merged_path = resolve_artifact_path(
+                base_dir=self.onnx_dir,
+                components_cfg=self._components_cfg,
+                component_name="bevfusion_main_body",
+                file_key="onnx_file",
+            )
+            merged_model_available = osp.exists(merged_path)
+        self._split = split_layout and not merged_model_available
         self.session: Optional[ort.InferenceSession] = None
         self._session_sparse: Optional[ort.InferenceSession] = None
         self._session_dense: Optional[ort.InferenceSession] = None

@@ -44,17 +44,17 @@ implicit_gemm_plugin_timing_max_logs = 1000
 # - True  : bake activation into ImplicitGemm (act_type / optional 6th bias input)
 # - False : keep explicit Relu/Add nodes
 # ============================================================================
-spconv_fuse_implicit_gemm_relu = True
+spconv_fuse_implicit_gemm_relu = False
 
 # Fuse SparseConv + BN in ``pts_middle_encoder`` before ONNX export (same as PTQ load path).
 # Aligns FP16 sparse subgraph with INT8 deploy / fair latency vs mAP comparison.
-fuse_spconv_bn = True
+fuse_spconv_bn = False
 
 # ============================================================================
 # Checkpoint Path
 # ============================================================================
-# checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30.pth"
-checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28.pth"
+checkpoint_path = "work_dirs/bevfusion/best_epoch_28.pth"
+# checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28.pth"
 
 
 devices = dict(
@@ -63,10 +63,21 @@ devices = dict(
 )
 
 export = dict(
-    mode="both",
-    work_dir="work_dirs/bevfusion_deployment_2_7_fp16_no_sort",
-    onnx_path=None,
+    mode="trt",
+    work_dir="work_dirs/bevfusion_deployment_2_7_fp16_kok",
+    onnx_path="work_dirs/bevfusion_deployment_2_7_fp16_kok/onnx",
 )
+
+
+# Optional: keep split component definitions for debugging, but export/eval as one main body.
+# - False: split sparse+dense ONNX/engine (default)
+# - True : one ONNX + one engine + one backend pipeline
+bevfusion_merge = dict(
+    enabled=True,
+    onnx_file="bevfusion_lidar.onnx",
+    engine_file="bevfusion_lidar.engine",
+)
+
 
 _WORK_DIR = str(export["work_dir"]).rstrip("/")
 _ONNX_DIR = f"{_WORK_DIR}/onnx"
@@ -143,8 +154,8 @@ components = dict(
 
 runtime_io = dict(
     # info_file="info/kokseang_2_5_experiment/t4dataset_j6gen2_base_infos_test.pkl",
-    # info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
-    info_file="info/kokseang_2_6_1/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
+    # info_file="info/kokseang_2_6_1/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=0,
 )
 

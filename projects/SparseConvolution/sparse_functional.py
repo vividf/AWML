@@ -141,7 +141,7 @@ class GetIndicePairs(Function):
         pair = alloc.allocated[AllocKeys.PairFwd]
         indice_num_per_loc = alloc.allocated[AllocKeys.IndiceNumPerLoc]
 
-        num_act_out = torch.tensor([num_act_out], dtype=torch.int32).to(out_inds.device)
+        num_act_out = torch.tensor([num_act_out], dtype=torch.int32, device=out_inds.device)
 
         return out_inds[:num_act_out], pair, indice_num_per_loc, num_act_out
 
@@ -383,7 +383,7 @@ class GetIndicePairsImplicitGemm(Function):
             do_sort=do_sort,
         )
 
-        num_act_out = torch.tensor([num_act_out], dtype=torch.int32).to(indices.device)
+        num_act_out = torch.tensor([num_act_out], dtype=torch.int32, device=indices.device)
 
         mask_split_count = mask_tensor.dim(0)
         # NOTE(knzo25): we support only the simplest case

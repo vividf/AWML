@@ -24,7 +24,7 @@ from deployment.pipelines.gpu_resource_mixin import (
     TensorRTResourceManager,
     release_tensorrt_resources,
 )
-from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_components
+from deployment.projects.bevfusion.io.component_utils import has_component, is_split_bevfusion_components
 from deployment.projects.bevfusion.pipelines.bevfusion_pipeline import BEVFusionDeploymentPipeline
 
 logger = logging.getLogger(__name__)
@@ -317,7 +317,17 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         self._components_cfg = components_cfg
         self._plugin_libraries = plugin_libraries
         self._trt_logger = trt.Logger(trt.Logger.WARNING)
-        self._split = is_split_bevfusion_components(components_cfg)
+        split_layout = is_split_bevfusion_components(components_cfg)
+        merged_engine_available = False
+        if split_layout and has_component(components_cfg, "bevfusion_main_body"):
+            merged_engine_path = resolve_artifact_path(
+                base_dir=tensorrt_dir,
+                components_cfg=components_cfg,
+                component_name="bevfusion_main_body",
+                file_key="engine_file",
+            )
+            merged_engine_available = osp.exists(merged_engine_path)
+        self._split = split_layout and not merged_engine_available
         self._engine = None
         self._context = None
         self._engine_sparse = None

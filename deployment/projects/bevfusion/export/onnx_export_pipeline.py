@@ -25,7 +25,11 @@ from deployment.core.artifacts import Artifact
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.exporters.common.onnx_qdq_visualize import make_qdq_readable
 from deployment.exporters.export_pipelines.base import OnnxExportPipeline
-from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_components
+from deployment.projects.bevfusion.io.component_utils import (
+    has_component,
+    is_split_bevfusion_components,
+    should_merge_split_bevfusion,
+)
 from deployment.projects.bevfusion.io.model_loader import setup_quantization_for_onnx_export
 
 logger = logging.getLogger(__name__)
@@ -295,6 +299,18 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         self._fix_topk(str(dense_temp), str(dense_onnx), num_proposals)
         self._apply_qdq_visualization_if_enabled(str(dense_onnx), onnx_cfg_dense)
 
+        if should_merge_split_bevfusion(config.deploy_cfg):
+            self._merge_split_onnx_artifact(
+                config=config,
+                sparse_onnx_path=sparse_onnx,
+                dense_onnx_path=dense_onnx,
+                output_dir_path=output_dir_path,
+            )
+            if has_component(config.components_cfg, "bevfusion_main_body"):
+                onnx_cfg_main = self._get_onnx_config(config, "bevfusion_main_body")
+                merged_main = output_dir_path / config.components_cfg.get_component("bevfusion_main_body").onnx_file
+                self._apply_qdq_visualization_if_enabled(str(merged_main), onnx_cfg_main)
+
         self.logger.info("=" * 80)
         self.logger.info("Split ONNX export OK: %s , %s", sparse_onnx, dense_onnx)
         self.logger.info("=" * 80)
@@ -395,6 +411,87 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             sparse_onnx_path,
         )
 
+    def _merge_split_onnx_artifact(
+        self,
+        *,
+        config: BaseDeploymentConfig,
+        sparse_onnx_path: Path,
+        dense_onnx_path: Path,
+        output_dir_path: Path,
+    ) -> None:
+        """Merge split sparse+dense ONNX into single main_body ONNX."""
+        if not has_component(config.components_cfg, "bevfusion_main_body"):
+            raise KeyError(
+                "bevfusion_merge is enabled but components_cfg has no 'bevfusion_main_body'. "
+                "Ensure merge overlay is applied before export."
+            )
+        merged_cfg = config.components_cfg.get_component("bevfusion_main_body")
+        merged_path = output_dir_path / merged_cfg.onnx_file
+
+        try:
+            from onnx import compose as onnx_compose
+        except Exception as e:
+            raise RuntimeError("ONNX compose utilities unavailable; cannot merge split ONNX.") from e
+
+        if not sparse_onnx_path.exists():
+            raise FileNotFoundError(f"Sparse ONNX not found: {sparse_onnx_path}")
+        if not dense_onnx_path.exists():
+            raise FileNotFoundError(f"Dense ONNX not found: {dense_onnx_path}")
+
+        sparse_model = onnx.load(str(sparse_onnx_path))
+        dense_model = onnx.load(str(dense_onnx_path))
+
+        # onnx.compose.merge_models requires identical IR/opset metadata.
+        target_ir = max(int(sparse_model.ir_version), int(dense_model.ir_version))
+        sparse_model.ir_version = target_ir
+        dense_model.ir_version = target_ir
+
+        sparse_opsets = {imp.domain: int(imp.version) for imp in sparse_model.opset_import}
+        dense_opsets = {imp.domain: int(imp.version) for imp in dense_model.opset_import}
+        merged_opsets = dict(sparse_opsets)
+        for domain, version in dense_opsets.items():
+            merged_opsets[domain] = max(version, merged_opsets.get(domain, version))
+        merged_opset_ids = [onnx.helper.make_operatorsetid(d, v) for d, v in merged_opsets.items()]
+        del sparse_model.opset_import[:]
+        sparse_model.opset_import.extend(merged_opset_ids)
+        del dense_model.opset_import[:]
+        dense_model.opset_import.extend(merged_opset_ids)
+
+        sparse_pref = onnx_compose.add_prefix(sparse_model, prefix="sparse/")
+        dense_pref = onnx_compose.add_prefix(dense_model, prefix="dense/")
+
+        sparse_out_name = config.components_cfg.get_component("bevfusion_sparse").io.outputs[0].name
+        dense_in_name = config.components_cfg.get_component("bevfusion_dense").io.inputs[0].name
+        io_map = [(f"sparse/{sparse_out_name}", f"dense/{dense_in_name}")]
+
+        merged_model = onnx_compose.merge_models(sparse_pref, dense_pref, io_map=io_map)
+        merged_graph = gs.import_onnx(merged_model)
+
+        sparse_inputs = [inp.name for inp in config.components_cfg.get_component("bevfusion_sparse").io.inputs]
+        dense_outputs = [out.name for out in config.components_cfg.get_component("bevfusion_dense").io.outputs]
+        if len(merged_graph.inputs) != len(sparse_inputs):
+            self.logger.warning(
+                "Merged ONNX input count mismatch: graph=%d expected=%d",
+                len(merged_graph.inputs),
+                len(sparse_inputs),
+            )
+        if len(merged_graph.outputs) != len(dense_outputs):
+            self.logger.warning(
+                "Merged ONNX output count mismatch: graph=%d expected=%d",
+                len(merged_graph.outputs),
+                len(dense_outputs),
+            )
+        for i, name in enumerate(sparse_inputs):
+            if i < len(merged_graph.inputs):
+                merged_graph.inputs[i].name = name
+        for i, name in enumerate(dense_outputs):
+            if i < len(merged_graph.outputs):
+                merged_graph.outputs[i].name = name
+
+        merged_graph.cleanup().toposort()
+        onnx.save_model(gs.export_onnx(merged_graph), str(merged_path))
+        self.logger.info("Merged split ONNX -> %s", merged_path)
+
     @staticmethod
     def _assert_split_model_ok(model: torch.nn.Module) -> None:
         if getattr(model, "fusion_layer", None) is not None:
@@ -448,6 +545,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             "output_names": output_names,
             "dynamic_axes": dynamic_axes,
             "opset_version": opset_version,
+            "do_constant_folding": bool(getattr(onnx_settings, "do_constant_folding", True)),
             "export_params": True,
             "keep_initializers_as_inputs": False,
             "visualize_qdq_values": bool(getattr(onnx_settings, "visualize_qdq_values", False)),
@@ -472,6 +570,57 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             )
         except Exception as e:
             self.logger.warning("Q/DQ readability postprocess skipped for %s: %s", onnx_path, e)
+
+    def _torch_onnx_export_module(
+        self,
+        module: nn.Module,
+        model_inputs: tuple,
+        output_path: str,
+        onnx_cfg: Dict[str, Any],
+    ) -> None:
+        """Run ``torch.onnx.export`` with deploy ``onnx_config`` (incl. ``do_constant_folding``)."""
+        export_kw: Dict[str, Any] = dict(
+            export_params=onnx_cfg["export_params"],
+            input_names=onnx_cfg["input_names"],
+            output_names=onnx_cfg["output_names"],
+            opset_version=onnx_cfg["opset_version"],
+            dynamic_axes=onnx_cfg["dynamic_axes"],
+            keep_initializers_as_inputs=onnx_cfg["keep_initializers_as_inputs"],
+            verbose=onnx_cfg["verbose"],
+            do_constant_folding=bool(onnx_cfg.get("do_constant_folding", True)),
+        )
+        try:
+            from torch.onnx import TrainingMode
+
+            export_kw["training"] = TrainingMode.EVAL
+        except Exception:
+            pass
+
+        unsupported_onnx_op = getattr(getattr(torch.onnx, "errors", None), "UnsupportedOperatorError", None)
+
+        with torch.no_grad():
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=".*non-tuple sequence for multidimensional indexing.*",
+                    category=UserWarning,
+                )
+                try:
+                    torch.onnx.export(module, model_inputs, output_path, **export_kw)
+                except Exception as e:
+                    if (
+                        unsupported_onnx_op is not None
+                        and isinstance(e, unsupported_onnx_op)
+                        and "_empty_affine_quantized" in str(e)
+                    ):
+                        raise RuntimeError(
+                            "torch.onnx.export failed on quantized tensors (aten::_empty_affine_quantized). "
+                            "Expected fix: FX GraphModule under pts_middle_encoder with "
+                            "sparse_encoder_float_shadow.SPARSE_ENCODER_SHADOW_ATTRS so the exporter "
+                            "swaps in an FP32 BEVFusionSparseEncoder for tracing only. "
+                            "If your encoder is wrapped, ensure a child GraphModule exposes those attributes."
+                        ) from e
+                    raise
 
     def _export_dense_to_onnx(
         self,
@@ -501,30 +650,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             wrapper.to(trace_dev)
             bev = lidar_bev.to(trace_dev)
 
-            export_kw: Dict[str, Any] = dict(
-                export_params=onnx_cfg["export_params"],
-                input_names=onnx_cfg["input_names"],
-                output_names=onnx_cfg["output_names"],
-                opset_version=onnx_cfg["opset_version"],
-                dynamic_axes=onnx_cfg["dynamic_axes"],
-                keep_initializers_as_inputs=onnx_cfg["keep_initializers_as_inputs"],
-                verbose=onnx_cfg["verbose"],
-            )
-            try:
-                from torch.onnx import TrainingMode
-
-                export_kw["training"] = TrainingMode.EVAL
-            except Exception:
-                pass
-
-            with torch.no_grad():
-                with warnings.catch_warnings():
-                    warnings.filterwarnings(
-                        "ignore",
-                        message=".*non-tuple sequence for multidimensional indexing.*",
-                        category=UserWarning,
-                    )
-                    torch.onnx.export(wrapper, (bev,), output_path, **export_kw)
+            self._torch_onnx_export_module(wrapper, (bev,), output_path, onnx_cfg)
         finally:
             if moved_for_trace:
                 try:
@@ -644,47 +770,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             wrapper_mod.eval()
             wrapper_mod.to(trace_dev)
 
-            export_kw: Dict[str, Any] = dict(
-                export_params=onnx_cfg["export_params"],
-                input_names=onnx_cfg["input_names"],
-                output_names=onnx_cfg["output_names"],
-                opset_version=onnx_cfg["opset_version"],
-                dynamic_axes=onnx_cfg["dynamic_axes"],
-                keep_initializers_as_inputs=onnx_cfg["keep_initializers_as_inputs"],
-                verbose=onnx_cfg["verbose"],
-            )
-            try:
-                from torch.onnx import TrainingMode
-
-                export_kw["training"] = TrainingMode.EVAL
-            except Exception:
-                pass
-
-            unsupported_onnx_op = getattr(getattr(torch.onnx, "errors", None), "UnsupportedOperatorError", None)
-            with torch.no_grad():
-                # Pip spconv dense()/scatter uses list indexing; PyTorch 2.x deprecates x[list] (use x[tuple(list)]).
-                with warnings.catch_warnings():
-                    warnings.filterwarnings(
-                        "ignore",
-                        message=".*non-tuple sequence for multidimensional indexing.*",
-                        category=UserWarning,
-                    )
-                    try:
-                        torch.onnx.export(wrapper_mod, model_inputs, output_path, **export_kw)
-                    except Exception as e:
-                        if (
-                            unsupported_onnx_op is not None
-                            and isinstance(e, unsupported_onnx_op)
-                            and "_empty_affine_quantized" in str(e)
-                        ):
-                            raise RuntimeError(
-                                "torch.onnx.export failed on quantized tensors (aten::_empty_affine_quantized). "
-                                "Expected fix: FX GraphModule under pts_middle_encoder with "
-                                "sparse_encoder_float_shadow.SPARSE_ENCODER_SHADOW_ATTRS so the exporter "
-                                "swaps in an FP32 BEVFusionSparseEncoder for tracing only. "
-                                "If your encoder is wrapped, ensure a child GraphModule exposes those attributes."
-                            ) from e
-                        raise
+            self._torch_onnx_export_module(wrapper_mod, model_inputs, output_path, onnx_cfg)
         finally:
             if orig_sparse_encoder is not None:
                 model.pts_middle_encoder = orig_sparse_encoder

@@ -151,13 +151,14 @@ class BEVFusionHead(nn.Module):
         self.init_weights()
         self._init_assigner_sampler()
 
-        # Position Embedding for Cross-Attention, which is re-used during training # noqa: E501
+        # Position embedding tensors are model state and must follow ``module.to(device)``
+        # during ONNX export (constant folding evaluates them together with CUDA weights).
+        # Keep them as non-persistent buffers to avoid checkpoint schema changes.
         x_size = self.test_cfg["grid_size"][0] // self.test_cfg["out_size_factor"]
         y_size = self.test_cfg["grid_size"][1] // self.test_cfg["out_size_factor"]
-        self.bev_pos = self.create_2D_grid(x_size, y_size)
-
-        self.img_feat_pos = None
-        self.img_feat_collapsed_pos = None
+        self.register_buffer("bev_pos", self.create_2D_grid(x_size, y_size), persistent=False)
+        self.register_buffer("img_feat_pos", None, persistent=False)
+        self.register_buffer("img_feat_collapsed_pos", None, persistent=False)
 
         self.dense_heatmap_pooling_classes = dense_heatmap_pooling_classes
         self.class_name_to_indices = {class_name: i for i, class_name in enumerate(class_names)}

@@ -11,7 +11,12 @@ from deployment.cli.args import add_deployment_file_logging, setup_logging
 from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.contexts import ExportContext
 from deployment.projects.bevfusion.eval.evaluator import BEVFusionEvaluator
-from deployment.projects.bevfusion.io.component_utils import is_split_bevfusion_components
+from deployment.projects.bevfusion.io.component_utils import (
+    has_component,
+    is_split_bevfusion_components,
+    maybe_add_merged_main_body_component,
+    should_merge_split_bevfusion,
+)
 from deployment.projects.bevfusion.io.data_loader import BEVFusionDataLoader
 from deployment.projects.bevfusion.runner import BEVFusionDeploymentRunner
 from deployment.projects.registry import project_registry
@@ -21,8 +26,27 @@ def _validate_bevfusion_components(config: BaseDeploymentConfig) -> None:
     if is_split_bevfusion_components(config.components_cfg):
         config.components_cfg.get_component("bevfusion_sparse")
         config.components_cfg.get_component("bevfusion_dense")
+        if has_component(config.components_cfg, "bevfusion_main_body"):
+            config.components_cfg.get_component("bevfusion_main_body")
     else:
         config.components_cfg.get_component("bevfusion_main_body")
+
+
+def _apply_bevfusion_component_merge_overlay(config: BaseDeploymentConfig, logger: logging.Logger) -> None:
+    """Apply optional split+merge overlay driven by deploy config."""
+    if not should_merge_split_bevfusion(config.deploy_cfg):
+        return
+    before_names = list(config.components_cfg.component_names())
+    config.components_cfg = maybe_add_merged_main_body_component(
+        deploy_cfg=config.deploy_cfg,
+        components_cfg=config.components_cfg,
+    )
+    after_names = list(config.components_cfg.component_names())
+    logger.info(
+        "BEVFusion merge flag enabled: keeping split export and adding merged artifacts component (%s -> %s)",
+        before_names,
+        after_names,
+    )
 
 
 def _extract_metrics_config(model_cfg: Config, logger: logging.Logger):
@@ -91,6 +115,7 @@ def run(args: argparse.Namespace) -> int:
     logger = setup_logging(args.log_level)
     model_cfg = Config.fromfile(args.model_cfg)
     config = BaseDeploymentConfig(deploy_cfg)
+    _apply_bevfusion_component_merge_overlay(config, logger)
 
     log_file = config.resolved_deploy_log_file
     if log_file:

@@ -212,6 +212,15 @@ export = dict(
     onnx_path="work_dirs/bevfusion_split_int8_deployment_all_exp1/onnx",
 )
 
+# Optional: keep split component definitions for debugging, but export/eval as one main body.
+# - False: split sparse+dense ONNX/engine (default)
+# - True : one ONNX + one engine + one backend pipeline
+bevfusion_merge = dict(
+    enabled=False,
+    onnx_file="bevfusion_lidar.onnx",
+    engine_file="bevfusion_lidar.engine",
+)
+
 _WORK_DIR = str(export["work_dir"]).rstrip("/")
 _ONNX_DIR = f"{_WORK_DIR}/onnx"
 _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"

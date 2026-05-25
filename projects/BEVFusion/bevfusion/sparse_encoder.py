@@ -195,7 +195,10 @@ class BEVFusionSparseEncoder(SparseEncoder):
         coors = coors.to(dtype=torch.int32, device=voxel_features.device).contiguous()
         if not torch.jit.is_tracing() and voxel_features.shape[0] != coors.shape[0]:
             raise ValueError(f"voxel_features / coors row mismatch: {voxel_features.shape[0]} vs {coors.shape[0]}")
-        input_sp_tensor = SparseConvTensor(voxel_features, coors, self.sparse_shape, batch_size)
+        # Avoid spconv default ``grid=torch.Tensor()`` (CPU empty tensor). ONNX
+        # constant folding may then see mixed CPU/CUDA tensors.
+        grid = torch.empty(0, dtype=torch.int32, device=voxel_features.device)
+        input_sp_tensor = SparseConvTensor(voxel_features, coors, self.sparse_shape, batch_size, grid)
         x = self.conv_input(input_sp_tensor)
 
         encode_features = []

@@ -25,11 +25,37 @@ CLI::
         <your_model_cfg.py>
 """
 
+spconv_do_sort = False
+
+# ============================================================================
+# FP16 ``autoware::ImplicitGemm`` plugin: optional CUDA timing (stderr)
+# ----------------------------------------------------------------------------
+# Baked into ONNX via ``patch_implicit_gemm_onnx_timing`` before TRT build.
+# Re-export / patch ONNX and rebuild ``bevfusion_sparse.engine`` after changes.
+# ============================================================================
+implicit_gemm_plugin_timing = True
+implicit_gemm_plugin_timing_max_logs = 1000
+
+# ============================================================================
+# Sparse ONNX postprocess (FP): fuse ImplicitGemm with trailing Relu/Add(const)+Relu.
+# ----------------------------------------------------------------------------
+# Applied automatically by deployment/projects/bevfusion/export/onnx_export_pipeline.py
+# after exporting ``bevfusion_sparse.onnx``.
+# - True  : bake activation into ImplicitGemm (act_type / optional 6th bias input)
+# - False : keep explicit Relu/Add nodes
+# ============================================================================
+spconv_fuse_implicit_gemm_relu = True
+
+# Fuse SparseConv + BN in ``pts_middle_encoder`` before ONNX export (same as PTQ load path).
+# Aligns FP16 sparse subgraph with INT8 deploy / fair latency vs mAP comparison.
+fuse_spconv_bn = True
+
 # ============================================================================
 # Checkpoint Path
 # ============================================================================
-# checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30.pth"
-checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28.pth"
+checkpoint_path = "work_dirs/bevfusion/best_epoch_28.pth"
+# checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28.pth"
+
 
 devices = dict(
     cpu="cpu",
@@ -38,9 +64,10 @@ devices = dict(
 
 export = dict(
     mode="both",
-    work_dir="work_dirs/bevfusion_deployment_2_7",
+    work_dir="work_dirs/bevfusion_deployment_2_7_fp16_opt_not_merged",
     onnx_path=None,
 )
+
 
 # Optional: keep split component definitions for debugging, but export/eval as one main body.
 # - False: split sparse+dense ONNX/engine (default)
@@ -50,6 +77,7 @@ bevfusion_merge = dict(
     onnx_file="bevfusion_lidar.onnx",
     engine_file="bevfusion_lidar.engine",
 )
+
 
 _WORK_DIR = str(export["work_dir"]).rstrip("/")
 _ONNX_DIR = f"{_WORK_DIR}/onnx"
@@ -126,7 +154,8 @@ components = dict(
 
 runtime_io = dict(
     # info_file="info/kokseang_2_5_experiment/t4dataset_j6gen2_base_infos_test.pkl",
-    info_file="info/kokseang_2_6_1/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
+    # info_file="info/kokseang_2_6_1/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=0,
 )
 
