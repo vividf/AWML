@@ -7,53 +7,49 @@ This document summarizes what optimizations were applied based on:
 
 It focuses on the requested topics:
 
-- Mapping
-- Feature Computation
-- Close Sort (disable sorting)
-- Fuse ReLU
-- Fuse BatchNorm
-- ImplicitGEMM INT8
+- **Mapping** — index-generation / sorting policy only
+- **Feature Computation** — runtime compute path and its sub-optimizations:
+  - Close Sort (disable sorting)
+  - Fuse ReLU
+  - Fuse BatchNorm
+  - ImplicitGEMM INT8
 
 ---
 
-## 1) Mapping Optimization
+## 1) Mapping Optimization (Sorting / Index Generation)
+
+Mapping optimization here means **how sparse indices are prepared before GEMM**, specifically the sort policy in `GetIndicePairsImplicitGemm`. It is **not** operator-to-plugin name mapping, ONNX input-contract mapping, or FP 5/6-input plugin wiring (those belong to deployment/plugin docs 21–22).
 
 ### What was optimized
 
-1. **Clear operator-to-plugin mapping in split deployment**
-   - Sparse ONNX nodes are mapped to custom TensorRT plugins:
-     - `autoware::ImplicitGemm` (FP path)
-     - `autoware::ImplicitGemmInt8` (INT8 path)
-   - Split execution maps the pipeline into:
-     - Sparse engine (`bevfusion_sparse.engine`)
-     - Dense engine (`bevfusion_dense.engine`)
-
-2. **Input contract mapping was standardized for INT8 plugin**
-   - `ImplicitGemmInt8` uses a fixed 7-input contract:
-     - 5 sparse tensors (`features`, `filters`, `pair_fwd`, `pair_mask_fwd`, `mask_argsort_fwd`)
-     - `channel_scale`
-     - `bias_scaled`
-   - This prevents ambiguous input interpretation during build/runtime.
-
-3. **FP plugin mapping expanded from only 5-input to 5/6-input**
-   - After ONNX fusion (`ImplicitGemm -> Add(const) -> ReLU`), FP `ImplicitGemm` may have an extra 6th bias input.
-   - Plugin behavior was updated to support both 5 and 6 inputs, so fused models can build engines reliably.
-
-4. **Index mapping policy includes `do_sort` control in `GetIndicePairsImplicitGemm`**
+1. **`do_sort` control in `GetIndicePairsImplicitGemm`**
    - `spconv_do_sort` maps to `GetIndicePairsImplicitGemm.do_sort_i` in exported ONNX.
-   - This is an index-generation (mapping) optimization, not a GEMM math-kernel optimization.
+   - Sort behavior is configurable from export/deploy config at the **index mapping** stage, before `ImplicitGemm` compute.
+
+2. **Close sort (`spconv_do_sort = false`)**
+   - When sorting is disabled, index generation skips the sort step (“close sort”).
+   - The INT8 deployment flow commonly sets `do_sort=false` to avoid sort overhead in sparse index preparation.
 
 ### Why it helps
 
-- Reduces parser/build fragility.
-- Keeps ONNX graph semantics aligned with plugin runtime semantics.
-- Avoids engine build aborts caused by mismatched input expectations.
+- Removes sorting overhead from sparse index preparation when disabled.
+- Reduces kernel launch and memory traffic in index-generation stages.
+- Improves end-to-end latency in many INT8 sparse scenarios.
+
+### Related config / code
+
+- Export/deploy: `spconv_do_sort` → ONNX attribute `do_sort_i` on `GetIndicePairsImplicitGemm`
+- Plugin: `GetIndicePairsImplicitGemm` (`do_sort` / `do_sort_i`)
 
 ---
 
 ## 2) Feature Computation Optimization
 
-### What was optimized
+Feature computation covers **what happens inside or immediately around sparse/dense compute**: quantization in the plugin path, fusion of post-conv ops into plugins, BN folding before export, and the INT8 sparse GEMM plugin path.
+
+### 2.1) Core feature compute path (plugin runtime)
+
+#### What was optimized
 
 1. **Feature quantization pipeline in `enqueue`**
    - FP16 input features are quantized to INT8 in workspace memory before GEMM.
@@ -67,7 +63,7 @@ It focuses on the requested topics:
    - Pair/mask/index tensors produced upstream are passed directly into sparse GEMM.
    - Runtime avoids extra graph-level detours and redundant tensor conversions.
 
-### Why it helps
+#### Why it helps
 
 - Reduces per-frame overhead by reusing cached constants.
 - Improves throughput by minimizing repeated quantization work.
@@ -75,29 +71,32 @@ It focuses on the requested topics:
 
 ---
 
-## 3) Close Sort Optimization (`spconv_do_sort = false`, mapping/index stage)
+### 2.2) Close Sort (`spconv_do_sort = false`)
 
-### What was optimized
+This is the **feature-pipeline consequence** of the mapping sort policy in §1: with sorting off, downstream `ImplicitGemm` receives unsorted (or differently ordered) pair/mask tensors, and the compute path must remain consistent with that choice.
 
-1. **Sort behavior became configurable from export/deploy config**
-   - `do_sort` in `GetIndicePairsImplicitGemm` can be controlled by ONNX attributes/config.
-   - This happens in the index mapping stage before `ImplicitGemm` compute.
+#### What was optimized
 
-2. **INT8 path commonly disables sorting**
-   - In the documented INT8 deployment flow, sorting is typically turned off.
-   - This is referred to as "close sort" (disable sort).
+1. **End-to-end alignment with `do_sort=false`**
+   - Index tensors (`pair_*`, `mask_*`, `mask_argsort_*`) are produced without the sort step when disabled.
+   - INT8 sparse deployment typically keeps this setting through export → engine build → runtime.
 
-### Why it helps
+2. **No extra sort inside GEMM plugin**
+   - Sorting is not reintroduced in `ImplicitGemm` / `ImplicitGemmInt8`; the plugin consumes whatever index layout upstream produced.
 
-- Removes sorting overhead from sparse index preparation.
-- Reduces kernel launch and memory traffic in index generation stages.
-- Improves end-to-end latency in many INT8 sparse scenarios.
+#### Why it helps
+
+- Same latency benefits as §1, but stated from the **compute/dataflow** side: fewer dependencies and less work between index generation and GEMM.
+
+#### See also
+
+- §1 for sort policy and export attribute mapping.
 
 ---
 
-## 4) Fuse ReLU Optimization
+### 2.3) Fuse ReLU
 
-### What was optimized
+#### What was optimized
 
 1. **FP path fusion**
    - `ImplicitGemm -> ReLU` is fused into plugin `act_type`.
@@ -111,7 +110,7 @@ It focuses on the requested topics:
 3. **Transform integration**
    - The sparse INT8 ONNX transform applies fusion in the conversion flow to keep fused behavior consistent between FP and INT8 deployment.
 
-### Where it happens in the pipeline (steps)
+#### Where it happens in the pipeline (steps)
 
 1. **Sparse ONNX transform step (Path B core)**
    - File: `deployment/projects/bevfusion/export/sparse_int8_onnx_transform.py`
@@ -128,7 +127,7 @@ It focuses on the requested topics:
 3. **Resulting runtime stage**
    - At TensorRT runtime, fused activation is executed inside plugin compute (`act_type` and fused bias path), not as separate ONNX nodes.
 
-### Why it helps
+#### Why it helps
 
 - Removes standalone post-conv activation/add nodes.
 - Lowers memory round-trips and kernel fragmentation.
@@ -136,9 +135,9 @@ It focuses on the requested topics:
 
 ---
 
-## 5) Fuse BatchNorm Optimization
+### 2.4) Fuse BatchNorm
 
-### What was optimized
+#### What was optimized
 
 1. **Dense BN fusion is explicitly implemented**
    - Dense submodules (`pts_backbone`, `pts_neck`, `bbox_head`) apply BN fusion before/with quantization flow.
@@ -154,7 +153,7 @@ It focuses on the requested topics:
    - Dense/sparse PTQ path uses `quantization.fuse_bn=True`.
    - Some split configs also expose `fuse_spconv_bn=True` for explicit sparse-BN fusion behavior in deployment/export flow.
 
-### Where it happens in the pipeline (steps)
+#### Where it happens in the pipeline (steps)
 
 1. **Model load / quantization-prepare step**
    - File: `deployment/projects/bevfusion/io/model_loader.py`
@@ -170,11 +169,15 @@ It focuses on the requested topics:
    - Files under `deployment/projects/bevfusion/config/*.py`
    - BN fusion is enabled by config flags before ONNX/TRT export, so exported graphs/weights already reflect fused BN behavior.
 
+#### Why it helps
+
+- Folds BN into conv weights before export, reducing ops and improving numeric stability in quantized graphs.
+
 ---
 
-## 6) ImplicitGEMM INT8 Optimization
+### 2.5) ImplicitGEMM INT8
 
-### What was optimized
+#### What was optimized
 
 1. **ONNX conversion to INT8 sparse plugin**
    - `sparse_int8_onnx_transform.py` replaces FP `ImplicitGemm` nodes with `ImplicitGemmInt8`.
@@ -192,7 +195,11 @@ It focuses on the requested topics:
 4. **Runtime dtype alignment**
    - Bias dtype handling is aligned with activation/output dtype assumptions to avoid runtime dtype assertion failures.
 
-### Why it helps
+5. **Fixed 7-input INT8 plugin contract**
+   - `ImplicitGemmInt8` uses: 5 sparse tensors (`features`, `filters`, `pair_fwd`, `pair_mask_fwd`, `mask_argsort_fwd`), `channel_scale`, `bias_scaled`.
+   - Keeps build/runtime input interpretation unambiguous (see docs 21–22 for full plugin mapping).
+
+#### Why it helps
 
 - Makes INT8 sparse deployment reproducible and stable.
 - Preserves fused-graph semantics across precision modes.
@@ -202,11 +209,13 @@ It focuses on the requested topics:
 
 ## Quick Table
 
-| Topic | Main Optimization | Status |
-|---|---|---|
-| Mapping | Standardized operator/input contracts; 5/6-input FP support | Implemented |
-| Feature Computation | Quantize-cache-fuse scale path in plugin runtime | Implemented |
-| Close Sort | Configurable `do_sort`, often disabled for INT8 | Implemented |
-| Fuse ReLU | FP/INT8 add+activation fused into plugin attrs/inputs | Implemented |
-| Fuse BatchNorm | Explicit dense + sparse BN fusion in model loading/PTQ path | Implemented |
-| ImplicitGEMM INT8 | FP->INT8 transform + bias preservation + robust plugin behavior | Implemented |
+| Section | Topic | Main optimization | Status |
+|---|---|---|---|
+| **1** | Mapping (sorting) | `do_sort` / close sort in `GetIndicePairsImplicitGemm` | Implemented |
+| **2.1** | Feature compute (core) | Quantize-cache-fuse scale path in plugin runtime | Implemented |
+| **2.2** | Close sort (compute alignment) | Pipeline consistent with `do_sort=false`; no re-sort in GEMM | Implemented |
+| **2.3** | Fuse ReLU | FP/INT8 add+activation fused into plugin attrs/inputs | Implemented |
+| **2.4** | Fuse BatchNorm | Dense + sparse BN fusion in model loading/PTQ | Implemented |
+| **2.5** | ImplicitGEMM INT8 | FP→INT8 transform + bias preservation + robust plugin | Implemented |
+
+**Note:** Operator/plugin name mapping, split sparse/dense engines, and FP 5/6-input contracts are documented in `21_README_IMPLICITGEMM_FP_TRT_PLUGIN_ISSUES.md` and `22_README_ONNX_SPCONV_TRT_PLUGIN_AND_INFERENCE.md`, not in §1 of this summary.
