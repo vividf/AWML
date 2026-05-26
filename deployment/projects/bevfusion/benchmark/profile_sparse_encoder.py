@@ -13,7 +13,7 @@
     python -m deployment.projects.bevfusion.benchmark.profile_sparse_encoder \\
         --engine work_dirs/bevfusion_split_int8_deployment/tensorrt/bevfusion_sparse.engine \\
         --deploy-cfg deployment/projects/bevfusion/config/deploy_config_split_int8.py \\
-        --model-cfg projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m_fx.py \\
+        --model-cfg projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m.py \\
         --warmup 20 --iterations 200 \\
         --output work_dirs/bevfusion_split_int8_deployment/sparse_profile.json
 
@@ -232,7 +232,7 @@ def _load_real_sparse_inputs(
     device_spec = DeviceSpec(kind="cuda", index=0) if cuda_available else DeviceSpec(kind="cpu", index=0)
     torch_device = device_spec.to_torch_device()
 
-    # ``quantization=None`` keeps the heavy PTQ / FX rebuild off this path; we only need
+    # ``quantization=None`` keeps the heavy PTQ rebuild off this path; we only need
     # ``pts_voxel_layer`` to produce realistic voxel/coors/npt inputs for the TRT engine.
     #
     # Note on state_dict warnings: PTQ checkpoints carry fused-BN weights plus QDQ ``_amax``

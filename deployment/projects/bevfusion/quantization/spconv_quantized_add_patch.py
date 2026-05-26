@@ -24,7 +24,7 @@ def _activation_tensor_for_quant(ten: torch.Tensor) -> torch.Tensor:
     Do **not** branch on ``ndim`` / ``size(1)`` / ``dtype`` with Python ``in`` checks:
     during ``torch.jit.trace`` / ONNX export, dimensions can be traced tensors, which
     triggers ``TracerWarning`` and can make ``(tensor(N), tensor(C))`` comparisons
-    behave incorrectly. A correct FX graph should only pass float activations here;
+    behave incorrectly. The quantization path should pass float activations here;
     any non-float input is coerced to float32 so export can proceed.
     """
     if ten.is_floating_point():

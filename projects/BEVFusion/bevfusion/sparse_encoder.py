@@ -1,5 +1,4 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-import logging
 from typing import Dict, List, Optional
 
 from mmdet3d.models.layers.sparse_block import SparseBasicBlock
@@ -16,18 +15,6 @@ import numpy as np
 import torch
 
 from .sparse_convmodule import make_sparse_convmodule
-
-logger = logging.getLogger(__name__)
-
-
-def _is_fx_proxy(t) -> bool:
-    """True if *t* is a ``torch.fx.Proxy`` (symbolic trace). Kept for ``bevfusion._ensure_float_for_pts_pipeline``."""
-    try:
-        from torch.fx import Proxy
-
-        return isinstance(t, Proxy)
-    except Exception:
-        return False
 
 
 def _conv_out_to_bev(out_tensor, output_channels: Optional[int] = None, target_z: int = 2) -> torch.Tensor:
@@ -97,11 +84,6 @@ class BEVFusionSparseEncoder(SparseEncoder):
         return_middle_feats=False,
     ):
         super(SparseEncoder, self).__init__()
-        if block_type == "basicblock_fx":
-            logger.warning(
-                "block_type='basicblock_fx' is deprecated; using 'basicblock' (legacy FX sparse PTQ removed)."
-            )
-            block_type = "basicblock"
         assert block_type in ["conv_module", "basicblock"]
         self.sparse_shape = sparse_shape
         self.in_channels = in_channels

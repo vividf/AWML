@@ -7,22 +7,6 @@ Usage:
 
 from __future__ import annotations
 
-import os
-import sys
-
-# spconv reads SPCONV_FX_TRACE_MODE once when spconv.constants is first imported.
-# "1" skips SparseConvTensor dtype/shape asserts (needed for torch.fx / spconv INT8).
-# For normal FP32 ONNX export it must stay unset/"0", or float/non-int32 coors can reach CUDA
-# and cause illegal memory access in implicit_gemm. Enable INT8 via deploy cfg filename,
-# AWML_SPCONV_INT8=1, or export SPCONV_FX_TRACE_MODE=1 before python.
-_argv_joined = " ".join(sys.argv).lower()
-if (
-    "deploy_config_int8" in _argv_joined
-    or "deploy_config_split_int8" in _argv_joined
-    or os.environ.get("AWML_SPCONV_INT8", "") == "1"
-):
-    os.environ.setdefault("SPCONV_FX_TRACE_MODE", "1")
-
 import argparse
 import importlib
 import pkgutil

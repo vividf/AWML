@@ -73,7 +73,7 @@ def _rebuild_conv2d_as_quant(conv: nn.Conv2d) -> QuantConv2d:
     """Build QuantConv2d via ``__init__`` + weight copy (no ``__dict__`` transplant).
 
     Copying ``vars(conv)`` onto a ``QuantConv2d`` shell can carry MMEngine/spconv hooks or
-    half-initialized state that interacts with torch.fx / fake tensors during
+    half-initialized state that interacts badly with fake tensors during
     ``TensorQuantizer`` setup. PTQ deploy load uses this path for robustness.
     """
     _ensure_quant_descriptors_initialized()

@@ -8,7 +8,7 @@ TensorRT (FP16).
 Usage::
 
     python -m deployment.projects.bevfusion.export.export_sparse_encoder_int8 \\
-        --config projects/BEVFusion/configs/.../bevfusion_..._fx.py \\
+        --config projects/BEVFusion/configs/.../bevfusion_....py \\
         --checkpoint work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only.pth \\
         --output work_dirs/bevfusion/sparse_encoder_int8.onnx
 """
@@ -132,33 +132,38 @@ def _fuse_bn(encoder: nn.Module) -> int:
     from deployment.projects.bevfusion.quantization.spconv_int8 import (
         _fuse_spconv_bn_in_encoder,
     )
+
     count = _fuse_spconv_bn_in_encoder(encoder)
     print(f"[fuse-bn] Fused {count} Conv-BN pairs")
     return count
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Export BEVFusion sparse encoder to libspconv INT8 ONNX"
-    )
+    parser = argparse.ArgumentParser(description="Export BEVFusion sparse encoder to libspconv INT8 ONNX")
     parser.add_argument(
-        "--config", required=True,
+        "--config",
+        required=True,
         help="MMEngine config for BEVFusion (must define pts_middle_encoder)",
     )
     parser.add_argument(
-        "--checkpoint", required=True,
+        "--checkpoint",
+        required=True,
         help="PTQ checkpoint with NVIDIA _amax calibration values",
     )
     parser.add_argument(
-        "--output", required=True,
+        "--output",
+        required=True,
         help="Output .onnx file path",
     )
     parser.add_argument(
-        "--in-channel", type=int, default=5,
+        "--in-channel",
+        type=int,
+        default=5,
         help="Number of input voxel feature channels (default: 5)",
     )
     parser.add_argument(
-        "--device", default="cuda:0",
+        "--device",
+        default="cuda:0",
         help="Device (default: cuda:0)",
     )
     args = parser.parse_args()
@@ -187,6 +192,7 @@ def main():
         extract_dynamic_ranges_from_checkpoint,
         set_precision_attributes,
     )
+
     n_ranges = extract_dynamic_ranges_from_checkpoint(encoder, full_state_dict)
     print(f"  Set dynamic ranges on {n_ranges} modules")
 
@@ -210,7 +216,7 @@ def main():
     print("\n" + "=" * 60)
     print("Export complete!")
     print(f"  ONNX: {args.output}")
-    print(f"  Use with: spconv::load_engine_from_onnx(\"{args.output}\", Precision::Int8)")
+    print(f'  Use with: spconv::load_engine_from_onnx("{args.output}", Precision::Int8)')
     print("=" * 60)
 
 

@@ -114,7 +114,7 @@ class BEVFusionMainBodyWrapper(nn.Module):
         import torch.nn.functional as F
 
         # spconv requires int32 indices; float batch column (torch.zeros default) + int coors
-        # yields float tensor and can CUDA fault when SPCONV_FX_TRACE_MODE relaxes dtype checks.
+        # yields float tensor and can CUDA fault in implicit_gemm.
         # INT8 sparse path: quantize_per_tensor only accepts float; keep voxels FP32.
         voxels = voxels.to(dtype=torch.float32)
         coors = coors.to(dtype=torch.int32)
@@ -389,24 +389,21 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         """Optional FP sparse ONNX postprocess (ImplicitGemm activation fusion)."""
         enable_fuse = bool(config.deploy_cfg.get("spconv_fuse_implicit_gemm_relu", False))
         if not enable_fuse:
-            self.logger.info("Sparse ONNX postprocess: ImplicitGemm ReLU/Add fuse disabled by deploy config.")
+            self.logger.info("Sparse ONNX postprocess: ImplicitGemm ReLU fuse disabled by deploy config.")
             return
         if not sparse_onnx_path.exists():
             raise FileNotFoundError(f"Sparse ONNX not found for postprocess: {sparse_onnx_path}")
 
         from deployment.projects.bevfusion.export.onnx_fuse_implicit_gemm_activation import (
-            fuse_autoware_implicit_gemm_fp16_add_relu,
             fuse_autoware_implicit_gemm_trailing_relu,
         )
 
         model = onnx.load(str(sparse_onnx_path))
-        n_add_relu = fuse_autoware_implicit_gemm_fp16_add_relu(model)
         n_relu = fuse_autoware_implicit_gemm_trailing_relu(model)
         onnx.save_model(model, str(sparse_onnx_path))
 
         self.logger.info(
-            "Sparse ONNX postprocess: ImplicitGemm fuse done (Add+Relu=%d, trailing Relu=%d): %s",
-            n_add_relu,
+            "Sparse ONNX postprocess: ImplicitGemm fuse done (trailing Relu=%d): %s",
             n_relu,
             sparse_onnx_path,
         )
@@ -615,10 +612,10 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
                     ):
                         raise RuntimeError(
                             "torch.onnx.export failed on quantized tensors (aten::_empty_affine_quantized). "
-                            "Expected fix: FX GraphModule under pts_middle_encoder with "
+                            "Expected fix: make sure pts_middle_encoder carries "
                             "sparse_encoder_float_shadow.SPARSE_ENCODER_SHADOW_ATTRS so the exporter "
                             "swaps in an FP32 BEVFusionSparseEncoder for tracing only. "
-                            "If your encoder is wrapped, ensure a child GraphModule exposes those attributes."
+                            "If your encoder is wrapped, ensure the wrapped module exposes those attributes."
                         ) from e
                     raise
 
@@ -715,7 +712,6 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
 
                 gm_src, cfg_ov = resolve_sparse_onnx_shadow(enc, model)
                 if gm_src is not None:
-                    gm_cls = getattr(torch.fx, "GraphModule", None)
                     nvidia_shadow = gm_src is enc and encoder_has_nvidia_tensor_quantizers(enc)
                     if nvidia_shadow:
                         self.logger.info(
@@ -724,29 +720,15 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
                             "ImplicitGemm. PTQ _amax stay in checkpoint for Path B transform. See "
                             "docs/11_int8_pathb_autoware_plugin.md §8-4."
                         )
-                    elif gm_cls is not None and isinstance(gm_src, gm_cls):
-                        self.logger.info(
-                            "Sparse tower uses FX GraphModule (spconv INT8 path): using a fused FP32 "
-                            "shadow encoder only for torch.onnx.export (ONNX cannot represent "
-                            "aten::_empty_affine_quantized; same idea as Lidar exptool exporting a float "
-                            "graph). PyTorch PTQ inference is unchanged after export. See "
-                            "docs/5_bevfusion_onnx_trt_spconv_int8.md (bevfusion project) §3 / §十-A."
-                        )
                     else:
                         self.logger.info(
                             "Sparse tower: using fused FP32 shadow encoder for ONNX export "
-                            "(weights from nested GraphModule)."
+                            "(weights copied from source sparse encoder)."
                         )
                     if cfg_ov:
                         self.logger.info(
                             "Shadow rebuild merges %d attribute(s) from model.cfg pts_middle_encoder.",
                             len(cfg_ov),
-                        )
-                    if gm_src is not enc:
-                        self.logger.info(
-                            "Using nested GraphModule for shadow weights (type(enc)=%s, gm=%s).",
-                            type(enc).__name__,
-                            type(gm_src).__name__,
                         )
                     orig_sparse_encoder = enc
                     model.pts_middle_encoder = build_float_sparse_encoder_shadow(

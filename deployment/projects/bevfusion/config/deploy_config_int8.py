@@ -17,7 +17,7 @@ B) Without PTQ checkpoint (runtime calibration only):
    3. Dense Q/DQ will be inserted but NOT calibrated (no _amax)
 
 Usage:
-    # Step 1: Generate PTQ checkpoint (``*_120m.py`` or legacy ``*_120m_fx.py`` alias)
+    # Step 1: Generate PTQ checkpoint (``*_120m.py``)
 
     python deployment/quantization/bevfusion_quantization.py ptq \
         --config projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m.py \

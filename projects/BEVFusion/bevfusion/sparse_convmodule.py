@@ -3,7 +3,7 @@
 
 mmdet3d ``make_sparse_convmodule`` uses ``nn.ReLU`` for ``act``.  With spconv2,
 ``SparseSequential`` passes ``SparseConvTensor`` between layers, so ``nn.ReLU`` breaks
-during FX/ONNX tracing.  Use ``spconv.pytorch.SparseReLU`` instead (same pattern as
+during ONNX tracing.  Use ``spconv.pytorch.SparseReLU`` instead (same pattern as
 ``SparseSyncBatchNorm`` in spconv).
 """
 

@@ -122,10 +122,7 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
         quantization: dict,
         device: DeviceSpec,
     ) -> torch.nn.Module:
-        """Sparse INT8 is applied at PTQ time and recreated in ``model_loader`` for PTQ checkpoints.
-
-        Runtime FX ``prepare_fx`` / ``convert_fx`` is not supported here.
-        """
+        """Sparse INT8 is applied at PTQ time and recreated in ``model_loader`` for PTQ checkpoints."""
         sparse_encoder = getattr(model, "pts_middle_encoder", None)
         if sparse_encoder is None:
             logger.warning("No pts_middle_encoder found; skipping spconv INT8")

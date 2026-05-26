@@ -65,7 +65,7 @@ def _prepare_encoder_for_nvidia_int8(
     values in the checkpoint.  At evaluation time we recreate the same module
     structure by adding ``_input_quantizer`` and ``_weight_quantizer`` submodules
     to each ``SparseConvolution``, then ``load_state_dict`` fills in the calibrated
-    ``_amax``.  No FX tracing or graph transformation needed.
+    ``_amax``. No graph transformation needed.
 
     ``exclude_patterns`` (from ``spconv_int8_fp16_layers`` in deploy_cfg) MUST
     match exactly what was passed to ``apply_nvidia_spconv_int8`` during PTQ,
@@ -163,7 +163,7 @@ def verify_spconv_int8_encoder(model: torch.nn.Module) -> Dict[str, Any]:
 def _verify_spconv_scale_buffers(model: torch.nn.Module, ckpt_state_dict: dict) -> None:
     """Verify that spconv INT8 quantization params were loaded from checkpoint.
 
-    Primarily for NVIDIA checkpoints (_amax keys). Legacy FX checkpoints may still show scale/zero_point keys.
+    Primarily for NVIDIA checkpoints (_amax keys). Legacy checkpoints may still show scale/zero_point keys.
     """
     enc = getattr(model, "pts_middle_encoder", None)
     if enc is None:
@@ -181,7 +181,7 @@ def _verify_spconv_scale_buffers(model: torch.nn.Module, ckpt_state_dict: dict) 
             t = v.flatten().tolist()[:3]
             print(f"  {k} shape={tuple(v.shape)} first3={t}")
     elif ckpt_scale_keys:
-        print(f"[spconv-quant-check] FX approach: checkpoint has {len(ckpt_scale_keys)} scale/zp keys")
+        print(f"[spconv-quant-check] legacy approach: checkpoint has {len(ckpt_scale_keys)} scale/zp keys")
         for k in ckpt_scale_keys[:5]:
             v = ckpt_state_dict[k]
             t = v.flatten().tolist()[:3]
@@ -360,7 +360,8 @@ def _load_with_quantization(
         state_dict = checkpoint.get("state_dict", checkpoint)
         state_dict = _strip_module_prefix_state_dict(state_dict, model)
 
-        # PTQ checkpoint may have sparse conv weights in (C_in, C_out, K, K, K); FX-converted model expects (C_out, K, K, K, C_in). Permute to match.
+        # PTQ checkpoint may have sparse conv weights in (C_in, C_out, K, K, K);
+        # runtime model expects (C_out, K, K, K, C_in). Permute to match.
         if quantization.get("spconv_int8", False):
             _permute_sparse_encoder_weights_to_match_model(state_dict, model)
 
@@ -387,17 +388,17 @@ def _load_with_quantization(
         if quantization.get("spconv_int8", False):
             _verify_spconv_scale_buffers(model, state_dict)
             miss_sparse_bn = any(k.startswith("pts_middle_encoder") and ".bn" in k for k in result.missing_keys)
-            unexp_fx_obs = any(
+            unexp_legacy_obs = any(
                 k.startswith("pts_middle_encoder")
                 and ("_scale_" in k or "_zero_point_" in k or k.endswith("_scale_0") or k.endswith("_zero_point_0"))
                 for k in result.unexpected_keys
             )
-            if miss_sparse_bn and unexp_fx_obs:
+            if miss_sparse_bn and unexp_legacy_obs:
                 logger.error(
-                    "PTQ sparse tower key mismatch: checkpoint looks like a legacy FX-quantized sparse tower "
+                    "PTQ sparse tower key mismatch: checkpoint looks like a legacy observer-style sparse tower "
                     "(scale/zero_point observer keys) but the loaded model expects BN/Conv weights. "
                     "Regenerate the PTQ .pth with the current NVIDIA TensorQuantizer pipeline in "
-                    "bevfusion_quantization.py (sparse _amax keys, no prepare_fx)."
+                    "bevfusion_quantization.py (sparse _amax keys)."
                 )
 
         num_amax = sum(1 for k in state_dict if "_amax" in k)
@@ -462,8 +463,8 @@ def _load_with_quantization(
 def _fuse_dense_bn(model: torch.nn.Module) -> None:
     """Fuse BatchNorm in dense parts only (backbone, neck, head).
 
-    We skip the sparse encoder (pts_middle_encoder) since spconv BN fusion
-    is handled by the spconv FX quantization pipeline.
+    We skip the sparse encoder (pts_middle_encoder) since sparse BN fusion is
+    handled by the sparse PTQ pipeline.
     """
     try:
         from deployment.quantization import fuse_model_bn

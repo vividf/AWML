@@ -1,15 +1,9 @@
 """FP32 sparse-encoder shadow for ``torch.onnx.export``.
 
-**FX GraphModule:** ``convert_fx`` + spconv INT8 yields ``aten::_empty_affine_quantized``; the
-exporter swaps in a fused FP32 ``BEVFusionSparseEncoder`` and copies float weights from the GM.
-
-**NVIDIA TensorQuantizer (scheme A):** PTQ loads a plain ``BEVFusionSparseEncoder`` with
-``_input_quantizer`` / ``_weight_quantizer`` on sparse convs — not a ``GraphModule``. Without shadow,
-``torch.onnx.export`` traces Q/DQ into sparse ONNX. When ``encoder_has_nvidia_tensor_quantizers``
-holds, we use the same shadow rebuild and copy **float** weights from the live encoder's
-``state_dict`` (quantizer buffers are skipped), producing a Q/DQ-free sparse ONNX.
-
-See ``docs/11_int8_pathb_autoware_plugin.md`` (scheme A) and ``docs/12_int8_sparse_pipeline_ptq_onnx_trt.md``.
+When sparse PTQ keeps ``TensorQuantizer`` modules on sparse convs, direct
+``torch.onnx.export`` can trace Q/DQ around sparse ops. This helper rebuilds a
+fused FP32 ``BEVFusionSparseEncoder`` and copies float weights from the source
+encoder so sparse ONNX stays Q/DQ-free.
 """
 
 from __future__ import annotations
@@ -23,7 +17,7 @@ import torch.nn as nn
 
 logger = logging.getLogger(__name__)
 
-# Attributes copied from ``BEVFusionSparseEncoder`` onto the FX root; required to rebuild FP32 shadow.
+# Attributes required to rebuild FP32 shadow encoder.
 SPARSE_ENCODER_SHADOW_ATTRS: tuple[str, ...] = (
     "sparse_shape",
     "in_channels",
@@ -60,13 +54,7 @@ def encoder_has_nvidia_tensor_quantizers(encoder: nn.Module) -> bool:
 
 
 def copy_sparse_encoder_public_attrs(src: nn.Module, dst: nn.Module) -> None:
-    """Copy BEVFusion sparse encoder config fields from ``src`` onto ``dst`` (e.g. FX root after convert_fx).
-
-    ``convert_fx`` / ``remove_conv_add_dq`` often return a ``GraphModule`` that **drops** the original
-    ``sparse_shape``, ``encoder_channels``, etc. ONNX shadow detection then fails and export still
-    traces quantized ops. Call this on the converted root using the pre-``prepare_fx`` encoder as
-    ``src``.
-    """
+    """Copy BEVFusion sparse encoder config fields from ``src`` onto ``dst``."""
     for name in SPARSE_ENCODER_SHADOW_ATTRS:
         if not hasattr(src, name):
             continue
@@ -117,95 +105,29 @@ def resolve_sparse_onnx_shadow(
     pts_middle_encoder: Optional[nn.Module],
     bevfusion: Optional[nn.Module] = None,
 ) -> Tuple[Optional[nn.Module], Dict[str, Any]]:
-    """Pick a ``GraphModule`` under ``pts_middle_encoder`` and optional config overrides for shadow rebuild.
-
-    Returns:
-        (graph_module_or_none, cfg_overrides). When the FX root lacks attributes (common after
-        ``convert_fx``), ``cfg_overrides`` is filled from ``bevfusion.cfg`` so
-        ``build_float_sparse_encoder_shadow`` can still run.
-    """
+    """Pick sparse encoder source module and optional config overrides for shadow rebuild."""
     if pts_middle_encoder is None:
         return None, {}
-    gm_cls = getattr(torch.fx, "GraphModule", None)
-    if gm_cls is None:
-        return None, {}
-
-    for m in pts_middle_encoder.modules():
-        if isinstance(m, gm_cls) and has_sparse_encoder_shadow_attributes(m):
-            return m, {}
-
-    first_gm: Optional[nn.Module] = None
-    for m in pts_middle_encoder.modules():
-        if isinstance(m, gm_cls):
-            first_gm = m
-            break
-    if first_gm is None:
-        # Scheme A: NVIDIA TensorQuantizer on a normal BEVFusionSparseEncoder (no nested GraphModule).
-        if encoder_has_nvidia_tensor_quantizers(pts_middle_encoder):
-            overrides_nv = encoder_cfg_overrides_from_bevfusion_model(bevfusion)
-            if has_sparse_encoder_shadow_attributes(pts_middle_encoder):
-                if overrides_nv:
-                    logger.info(
-                        "Sparse ONNX shadow (NVIDIA TensorQuantizer path): encoder has shadow attrs; "
-                        "%d optional cfg key(s) from model.cfg.",
-                        len(overrides_nv),
-                    )
-                return pts_middle_encoder, overrides_nv
-            can_nv = all(
-                hasattr(pts_middle_encoder, name) or (name in overrides_nv) for name in SPARSE_ENCODER_SHADOW_ATTRS
-            )
-            if can_nv:
-                if overrides_nv:
-                    logger.info(
-                        "Sparse ONNX shadow (NVIDIA TensorQuantizer path): merging %d key(s) from "
-                        "model.cfg pts_middle_encoder.",
-                        len(overrides_nv),
-                    )
-                return pts_middle_encoder, overrides_nv
-            logger.warning(
-                "pts_middle_encoder has NVIDIA TensorQuantizers but lacks SPARSE_ENCODER_SHADOW_ATTRS "
-                "and model.cfg.model.pts_middle_encoder is incomplete; ONNX FP32 shadow skipped "
-                "(sparse ONNX may contain Q/DQ)."
-            )
-        return None, {}
-
     overrides = encoder_cfg_overrides_from_bevfusion_model(bevfusion)
-    can_fill = all(hasattr(first_gm, name) or (name in overrides) for name in SPARSE_ENCODER_SHADOW_ATTRS)
-    if not can_fill:
+    if has_sparse_encoder_shadow_attributes(pts_middle_encoder):
+        return pts_middle_encoder, overrides
+
+    can_fill = all(hasattr(pts_middle_encoder, name) or (name in overrides) for name in SPARSE_ENCODER_SHADOW_ATTRS)
+    if can_fill:
+        if overrides:
+            logger.info(
+                "Sparse ONNX shadow: merging %d key(s) from model.cfg pts_middle_encoder.",
+                len(overrides),
+            )
+        return pts_middle_encoder, overrides
+
+    if encoder_has_nvidia_tensor_quantizers(pts_middle_encoder):
         logger.warning(
-            "FX GraphModule under pts_middle_encoder lacks shadow attrs and model.cfg has "
-            "incomplete pts_middle_encoder; ONNX float shadow cannot run. Missing will block export."
+            "pts_middle_encoder has TensorQuantizers but lacks SPARSE_ENCODER_SHADOW_ATTRS and "
+            "model.cfg.model.pts_middle_encoder is incomplete; ONNX FP32 shadow skipped "
+            "(sparse ONNX may contain Q/DQ)."
         )
-        return None, {}
-
-    if overrides:
-        logger.info(
-            "Sparse ONNX shadow: GraphModule missing some attrs; merging %d keys from model.cfg "
-            "pts_middle_encoder.",
-            len(overrides),
-        )
-    return first_gm, overrides
-
-
-def find_graphmodule_for_sparse_onnx_shadow(root: Optional[nn.Module]) -> Optional[nn.Module]:
-    """Backward-compatible: GraphModule only, no ``model.cfg`` merge (prefer ``resolve_sparse_onnx_shadow``)."""
-    gm, _ = resolve_sparse_onnx_shadow(root, None)
-    return gm
-
-
-def is_spconv_fx_graphmodule_encoder(module: Optional[nn.Module]) -> bool:
-    """True if ``module`` is an FX GraphModule (typical after ``convert_fx`` on the sparse tower).
-
-    Do not require ``type(module).__name__ == "GraphModule"``: ``convert_fx`` / subclasses use
-    different runtime class names while still inheriting ``torch.fx.GraphModule``. A too-strict
-    check skips the FP32 shadow and ``torch.onnx.export`` then hits
-    ``aten::_empty_affine_quantized`` (same class of issue Lidar AI Solution avoids by using
-    ``exptool`` on a non-quantized graph instead of the standard ONNX exporter on Q tensors).
-    """
-    if module is None:
-        return False
-    gm_cls = getattr(torch.fx, "GraphModule", None)
-    return gm_cls is not None and isinstance(module, gm_cls)
+    return None, {}
 
 
 def build_float_sparse_encoder_shadow(
@@ -216,11 +138,10 @@ def build_float_sparse_encoder_shadow(
 ) -> nn.Module:
     """Construct a fused FP32 ``BEVFusionSparseEncoder`` and load weights from ``gm`` state_dict.
 
-    ``gm`` may be an FX ``GraphModule`` **or** a ``BEVFusionSparseEncoder`` with NVIDIA
-    ``TensorQuantizer`` children; only floating conv/BN parameters are copied, not ``_amax``.
+    ``gm`` is typically ``BEVFusionSparseEncoder`` with NVIDIA ``TensorQuantizer``
+    children; only floating conv/BN parameters are copied, not ``_amax``.
 
-    ``cfg_overrides`` supplies fields missing on the source module (from ``model.cfg``), e.g. after
-    ``convert_fx`` stripped ``sparse_shape`` / ``encoder_channels``.
+    ``cfg_overrides`` supplies fields missing on the source module (from ``model.cfg``).
     """
     from mmengine.registry import MODELS, init_default_scope
 
@@ -236,7 +157,7 @@ def build_float_sparse_encoder_shadow(
     missing = [r for r in SPARSE_ENCODER_SHADOW_ATTRS if _pick(r) is None]
     if missing:
         raise RuntimeError(
-            "Cannot rebuild FP32 sparse encoder for ONNX: GraphModule + overrides missing: "
+            "Cannot rebuild FP32 sparse encoder for ONNX: source encoder + overrides missing: "
             f"{missing}. Ensure the FP32 shadow encoder defines these (match training sparse_encoder), or pass "
             f"a BEVFusion model with model.cfg.model.pts_middle_encoder. See "
             f"docs/5_bevfusion_onnx_trt_spconv_int8.md (bevfusion project)."
@@ -301,12 +222,12 @@ def build_float_sparse_encoder_shadow(
     enc_sd = enc.state_dict()
 
     def _align_5d_spconv_weight_to_krsc(v: torch.Tensor, target: torch.Size) -> Optional[torch.Tensor]:
-        """FX / PTQ checkpoints often store 5D sparse conv as (C_in, C_out, Kz, Ky, Kx); MMDet encoder uses KRSC (C_out, Kz, Ky, Kx, C_in)."""
+        """Some PTQ checkpoints store 5D sparse conv as (C_in, C_out, Kz, Ky, Kx); MMDet encoder uses KRSC (C_out, Kz, Ky, Kx, C_in)."""
         if v.dim() != 5 or len(target) != 5:
             return None
         if v.shape == target:
             return v
-        # Explicit ICOC -> KRSC when channel/spatial layout matches (robust across spconv / FX versions).
+        # Explicit ICOC -> KRSC when channel/spatial layout matches.
         if (
             v.shape[0] == target[4]
             and v.shape[1] == target[0]
@@ -323,12 +244,12 @@ def build_float_sparse_encoder_shadow(
             return perm2
         return None
 
-    def _fx_flat_state_key(key: str) -> str:
-        """FX / PTQ sometimes uses underscore keys (e.g. ``encoder_layers_encoder_layer1_0_conv1``)."""
+    def _flat_state_key(key: str) -> str:
+        """Legacy checkpoints may use underscore keys (e.g. ``encoder_layers_encoder_layer1_0_conv1``)."""
         return key.replace(".", "_")
 
     def _gm_value_for_key(key: str) -> Optional[torch.Tensor]:
-        flat = _fx_flat_state_key(key)
+        flat = _flat_state_key(key)
         for cand in (
             key,
             f"module.{key}",

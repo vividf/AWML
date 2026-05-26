@@ -2,7 +2,7 @@
 
 Uses ``pytorch_quantization.TensorQuantizer`` with histogram collection and
 MSE-based amax selection. Each ``SparseConvolution`` gets ``_input_quantizer``
-and ``_weight_quantizer`` submodules; no FX tracing or ``prepare_fx``.
+and ``_weight_quantizer`` submodules.
 """
 
 from __future__ import annotations

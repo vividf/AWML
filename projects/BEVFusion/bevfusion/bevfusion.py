@@ -20,9 +20,9 @@ from .ops import Voxelization
 def _ensure_float_lidar_bev(x: Tensor) -> Tensor:
     """BEV tensor for ``pts_backbone`` / pytorch_quantization must be float.
 
-    After spconv FX INT8 ``convert_fx``, ``pts_middle_encoder`` can return a
-    quantized-per-channel/tensor or integer dense map; ``TensorQuantizer`` then
-    raises "Quantize only works on Float Tensor, got Int".
+    ``pts_middle_encoder`` can return a quantized-per-channel/tensor or integer
+    dense map; ``TensorQuantizer`` then raises
+    "Quantize only works on Float Tensor, got Int".
     """
     if not isinstance(x, torch.Tensor):
         return x
@@ -41,13 +41,13 @@ def _ensure_float_lidar_bev(x: Tensor) -> Tensor:
 def register_pts_middle_encoder_float_input_hook(encoder: Optional[torch.nn.Module]) -> None:
     """Ensure voxel feature tensor is FP32 before sparse encoder forward.
 
-    After spconv ``convert_fx``, the traced ``GraphModule`` can run ``quantize_per_tensor``
-    on the forward argument before any inlined ``to(float32)`` node, so integer voxel
+    Some traced/optimized sparse paths can run ``quantize_per_tensor`` on the
+    forward argument before any inlined ``to(float32)`` node, so integer voxel
     features raise ``RuntimeError: ... got Int``.
 
-    ``forward_pre_hook`` is not reliably invoked for this path (including some PyTorch /
-    FX ``call_wrapped`` paths), so we **wrap instance ``forward``**: the wrapper runs first
-    and then calls the original FX ``forward`` with FP32 ``feats``.
+    ``forward_pre_hook`` is not reliably invoked for this path, so we wrap
+    instance ``forward``: the wrapper runs first and then calls the original
+    ``forward`` with FP32 ``feats``.
     """
     if encoder is None:
         return
@@ -70,16 +70,8 @@ def register_pts_middle_encoder_float_input_hook(encoder: Optional[torch.nn.Modu
 
 
 def _ensure_float_for_pts_pipeline(x: Tensor) -> Tensor:
-    """Float BEV before dense calib/QDQ; skip FX Proxy tensors only.
-
-    Do not skip on ``torch.jit.is_tracing()``: some runners leave tracing flags set in ways
-    that would bypass conversion and leave INT8 BEV hitting ``TensorQuantizer``.
-    """
+    """Float BEV before dense calib/QDQ."""
     if not isinstance(x, torch.Tensor):
-        return x
-    from .sparse_encoder import _is_fx_proxy
-
-    if _is_fx_proxy(x):
         return x
     return _ensure_float_lidar_bev(x)
 
@@ -155,7 +147,7 @@ class BEVFusion(Base3DDetector):
         (e.g. 1440//8 → 180). Heatmap/top-k indices assume ``H*W == len(bev_pos)``.
 
         If the sparse tower exposes **full voxel resolution** (e.g. 1440×1440) into SECOND
-        (INT8/FX ``dense()`` / ``spatial_shape`` bugs), FPN output can be hundreds of pixels
+        (``dense()`` / ``spatial_shape`` bugs), FPN output can be hundreds of pixels
         per side while ``bev_pos`` stays 180×180 → ``gather`` uses out-of-range indices
         (CUDA scatter/gather assert) and later ops may report missing backends.
 
@@ -312,7 +304,7 @@ class BEVFusion(Base3DDetector):
             with torch.amp.autocast("cuda", enabled=False):
                 points = [point.float() for point in points]
                 feats, coords, sizes = self.voxelize(points)
-                # Python int matches FX example_inputs (``batch_size=1``); 0-dim int tensor can confuse traced graphs.
+                # Use Python int for ``batch_size``; 0-dim int tensor can confuse traced graphs.
                 batch_size = max(int((coords[-1, 0] + 1).item()), 1)
         else:
             # NOTE(knzo25): onnx inference. Voxelization happens outside the graph
@@ -334,12 +326,12 @@ class BEVFusion(Base3DDetector):
                 # batch index column must match batch_size passed to SparseConvTensor (hardcoding 1 is wrong if coors hold larger batch ids)
                 batch_size = int(coords[:, 0].max().item()) + 1
                 batch_size = max(batch_size, 1)
-        # FX INT8 sparse graph uses torch quantize nodes on features; integer voxel grids →
-        # "Quantize only works on Float Tensor, got Int" inside pts_middle_encoder (not only dense QDQ).
+        # Sparse quantize nodes require float features; integer voxel grids can raise:
+        # "Quantize only works on Float Tensor, got Int" inside pts_middle_encoder.
         feats = feats.to(dtype=torch.float32)
         x = self.pts_middle_encoder(feats, coords, batch_size)
         # INT8 sparse tower → dense BEV may be qint*/int; dense Q/DQ and calibrators need float.
-        # Do not gate on _in_torch_fx_prepare_trace(): it can stay True after spconv FX in the same process.
+        # Do not gate on tracing state flags; they can stay True in later runs.
         x = _ensure_float_for_pts_pipeline(x)
         return x
 
