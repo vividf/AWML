@@ -338,23 +338,6 @@ class GetIndicePairsImplicitGemm(Function):
         direct_table: bool = SPCONV_USE_DIRECT_TABLE
         do_sort = _resolve_do_sort()
 
-        try:
-            from torch.fx import Proxy as _FxProxy
-
-            _fx_tracing_pairs = isinstance(indices, _FxProxy)
-        except Exception:
-            _fx_tracing_pairs = False
-
-        if _fx_tracing_pairs:
-            nv = indices.shape[0]
-            num_act_out = indices.new_tensor([nv], dtype=torch.int32)
-            k_vol = int(ksize[0] * ksize[1] * ksize[2]) if len(ksize) == 3 else 27
-            pair_fwd = indices.new_zeros((k_vol * nv, nv), dtype=torch.int32)
-            pm = indices.new_zeros((nv, 1), dtype=torch.uint32)
-            ma = indices.new_zeros((nv, 1), dtype=torch.int32)
-            out_inds = indices if subm else indices
-            return (out_inds, pair_fwd, pm, ma, num_act_out)
-
         stream = get_current_stream()
 
         thalloc = TorchAllocator(indices.device)
@@ -441,14 +424,14 @@ class ImplicitGemm(Function):
         output_add_scale: float,
         output_dtype: Optional[torch.dtype],
     ):
+        gemm_inputs = [features, filters, pair_fwd, pair_mask_fwd_splits, mask_argsort_fwd_splits]
+        if bias is not None:
+            # Optional 6th input for folded per-channel bias (C_out).
+            gemm_inputs.append(bias)
 
         output = g.op(
             "autoware::ImplicitGemm",
-            features,
-            filters,
-            pair_fwd,
-            pair_mask_fwd_splits,
-            mask_argsort_fwd_splits,
+            *gemm_inputs,
             is_train_i=is_train,
             is_subm_i=is_subm,
             fp32_accum_i=fp32_accum,
@@ -496,22 +479,7 @@ class ImplicitGemm(Function):
         pair_mask_fwd_splits = [pair_mask_fwd_splits]
         mask_argsort_fwd_splits = [mask_argsort_fwd_splits]
 
-        try:
-            from torch.fx import Proxy as _FxProxy
-
-            _fx_tracing = isinstance(features, _FxProxy)
-        except Exception:
-            _fx_tracing = False
-
-        # torch.fx cannot run c++/tensorview conversion on Proxies; return a shape-correct stub for graph build.
-        if _fx_tracing:
-            out_c = filters.size(0)
-            # SubM keeps voxel count; avoid relying on num_activate_out (may be a tensor / non-symbolic).
-            n_in = features.shape[0]
-            return features.new_zeros((n_in, out_c), dtype=torch.float32)
-
         assert fp32_accum is None, "fp32_accum is not supported"
-        assert bias is None, "bias is not supported"
         assert scale is None
         assert output_add is None
         assert output_dtype == torch.float32, f"expected float32 output dtype, got {output_dtype!r}"
@@ -523,15 +491,14 @@ class ImplicitGemm(Function):
         scale_tv = tv.Tensor()
         output_add_tv = tv.Tensor()
 
-        if not _fx_tracing and not features.is_contiguous():
+        if not features.is_contiguous():
             features = features.contiguous()
-        if not _fx_tracing:
-            assert features.is_contiguous()
-            assert filters.is_contiguous()
+        assert features.is_contiguous()
+        assert filters.is_contiguous()
         if output_dtype is None:
             output_dtype = features.dtype
 
-        is_features_qint8 = False if _fx_tracing else (features.dtype == torch.qint8)
+        is_features_qint8 = features.dtype == torch.qint8
         alloc = TorchAllocator(features.device, is_features_qint8)
         features_tv = torch_tensor_to_tv(features)
         pair_fwd_tv = torch_tensor_to_tv(pair_fwd)
@@ -539,10 +506,18 @@ class ImplicitGemm(Function):
         mask_argsort_fwd_splits_tv = [torch_tensor_to_tv(t) for t in mask_argsort_fwd_splits]
 
         filters_tv = torch_tensor_to_tv(filters)
+        if bias is not None:
+            if not bias.is_contiguous():
+                bias = bias.contiguous()
+            assert bias.dim() == 1, f"bias must be 1D [C_out], got shape={tuple(bias.shape)}"
+            assert (
+                bias.shape[0] == filters.shape[0]
+            ), f"bias shape mismatch: bias.shape[0]={bias.shape[0]} vs C_out={filters.shape[0]}"
+            bias_tv = torch_tensor_to_tv(bias)
         mask = np.array([np.iinfo(np.uint32).max], dtype=np.uint32)
         mask_tv = tv.from_numpy(mask).clone()
         timer_cpp = tv.CUDAKernelTimer(False)
-        if not _fx_tracing and timer._timer is not None:
+        if timer._timer is not None:
             timer_cpp = timer._timer
         auto_fp32_accum = fp32_accum is None
         if fp32_accum is None:
@@ -580,7 +555,7 @@ class ImplicitGemm(Function):
         )
         out_features = alloc.allocated[AllocKeys.OutFeatures]
         mask_output_fwd = alloc.allocated.get(AllocKeys.MaskOutputFwd, None)
-        if not _fx_tracing and is_train:
+        if is_train:
             assert mask_output_fwd is not None
 
         return out_features

@@ -882,16 +882,8 @@ def transform_onnx_int8(
 
     if fuse_implicit_gemm_trailing_relu:
         from deployment.projects.bevfusion.export.onnx_fuse_implicit_gemm_activation import (
-            fuse_autoware_implicit_gemm_fp16_add_relu,
             fuse_autoware_implicit_gemm_trailing_relu,
         )
-
-        n_fp16_ar = fuse_autoware_implicit_gemm_fp16_add_relu(model)
-        if n_fp16_ar:
-            print(
-                f"  [onnx-fuse] Fused {n_fp16_ar} ImplicitGemm→Add(const)→Relu → "
-                "6-input ImplicitGemm + act_type=kReLU."
-            )
 
         n_fused = fuse_autoware_implicit_gemm_trailing_relu(model)
         if n_fused:
@@ -1144,19 +1136,6 @@ def transform_onnx_int8(
             f"replacements (excluding conv_out), got {transform_count}. "
             "Graph/calibration mismatch."
         )
-
-    if fuse_implicit_gemm_trailing_relu:
-        from deployment.projects.bevfusion.export.onnx_fuse_implicit_gemm_activation import (
-            fuse_autoware_implicit_gemm_int8_add_relu,
-        )
-
-        n_add_relu = fuse_autoware_implicit_gemm_int8_add_relu(model)
-        if n_add_relu:
-            print(
-                f"  [onnx-fuse] Fused {n_add_relu} ImplicitGemmInt8→Add(const)→Relu chain(s): "
-                "bias merged into bias_scaled (+= bias_fp/output_scale), act_type=kReLU; "
-                "Add/ReLU removed."
-            )
 
     unused_stems = set(scale_info.keys()) - set(stem_assigned_to_node.keys())
     if unused_stems:

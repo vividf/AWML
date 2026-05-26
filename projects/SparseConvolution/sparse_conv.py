@@ -63,20 +63,9 @@ class SparseConvolution(SparseConvolutionBase):
         act_beta: float = 0,
     ):
         # assert isinstance(input, SparseConvTensor)
-        # Do not use ``input.is_quantized and weight.is_quantized``: during torch.fx prepare_fx,
-        # ``input`` can be a Proxy and ``and`` triggers Proxy.__bool__ → TraceError.
         # INT8 path is not implemented below (raises NotImplementedError); keep FP32/dequant path only.
         is_int8 = False
-
-        try:
-            from torch.fx import Proxy as _FxProxy
-
-            _fx_tracing = isinstance(input.features, _FxProxy)
-        except Exception:
-            _fx_tracing = False
-
-        if not _fx_tracing:
-            assert input.features.shape[1] == self.in_channels, "channel size mismatch"
+        assert input.features.shape[1] == self.in_channels, "channel size mismatch"
         features = input.features
         indices = input.indices
         spatial_shape = input.spatial_shape
@@ -88,8 +77,6 @@ class SparseConvolution(SparseConvolutionBase):
             raise NotImplementedError
 
         if not self.subm:
-            # spatial_shape is always a concrete Python list (from SparseConvTensor),
-            # never a Proxy, so get_conv_output_size works in all tracing modes.
             if self.transposed:
                 out_spatial_shape = ops.get_deconv_output_size(
                     spatial_shape, self.kernel_size, self.stride, self.padding, self.dilation, self.output_padding
@@ -104,7 +91,7 @@ class SparseConvolution(SparseConvolutionBase):
         # input.update_grid(out_spatial_shape)
         # t = time.time()
         out_tensor = input.shadow_copy()
-        if not _fx_tracing and input.benchmark:
+        if input.benchmark:
             raise NotImplementedError
 
         if self.conv1x1 and not is_int8:
@@ -112,51 +99,46 @@ class SparseConvolution(SparseConvolutionBase):
 
         indice_dict = input.indice_dict.copy()
         # only support contiguous tensor for now (indices non-contiguous → CUDA illegal access in merge_sort)
-        if not _fx_tracing and not features.is_contiguous():
+        if not features.is_contiguous():
             features = features.contiguous()
-        if not _fx_tracing and not indices.is_contiguous():
+        if not indices.is_contiguous():
             indices = indices.contiguous()
-        if not _fx_tracing and indices.dtype != torch.int32:
+        if indices.dtype != torch.int32:
             indices = indices.to(dtype=torch.int32)
         algo = self.algo
         if self.indice_key is not None:
             data = input.find_indice_pair(self.indice_key)
             if data is not None:
                 msg = "due to limitation of pytorch, " "you must provide same algo to " "layers share same indice key."
-                if not _fx_tracing:
-                    assert algo == data.algo, msg
+                assert algo == data.algo, msg
                 # algo = data.algo
         profile_ctx = nullcontext()
-        if not _fx_tracing and input._timer is not None and sparse_unique_name:
+        if input._timer is not None and sparse_unique_name:
             profile_ctx = input._timer.namespace(sparse_unique_name)
         with profile_ctx:
             if algo == ConvAlgo.Native:
 
                 datas = input.find_indice_pair(self.indice_key)
                 if datas is not None:
-                    if not _fx_tracing:
-                        assert isinstance(datas, IndiceData)
+                    assert isinstance(datas, IndiceData)
                 if self.inverse:
-                    if not _fx_tracing:
-                        assert datas is not None and self.indice_key is not None
-                        assert datas.is_subm is False, "inverse conv can only be used with standard conv and pool ops."
+                    assert datas is not None and self.indice_key is not None
+                    assert datas.is_subm is False, "inverse conv can only be used with standard conv and pool ops."
 
                     outids = datas.indices
                     indice_pairs = datas.indice_pairs
                     indice_pair_num = datas.indice_pair_num
                     out_spatial_shape = datas.spatial_shape
-                    if not _fx_tracing:
-                        self._check_inverse_reuse_valid(input, spatial_shape, datas)
+                    self._check_inverse_reuse_valid(input, spatial_shape, datas)
                 else:
                     if self.indice_key is not None and datas is not None:
                         outids = datas.out_indices
                         indice_pairs = datas.indice_pairs
                         indice_pair_num = datas.indice_pair_num
-                        if not _fx_tracing:
-                            assert self.subm, "only support reuse subm indices"
-                            self._check_subm_reuse_valid(input, spatial_shape, datas)
+                        assert self.subm, "only support reuse subm indices"
+                        self._check_subm_reuse_valid(input, spatial_shape, datas)
                     else:
-                        if not _fx_tracing and input.benchmark:
+                        if input.benchmark:
                             torch.cuda.synchronize()
                             t = time.time()
                         try:
@@ -189,7 +171,7 @@ class SparseConvolution(SparseConvolutionBase):
                             print(msg, file=sys.stderr)
                             spconv_save_debug_data(indices)
                             raise e
-                        if not _fx_tracing and input.benchmark:
+                        if input.benchmark:
                             torch.cuda.synchronize()
                             interval = time.time() - t
                             out_tensor.benchmark_record[name]["indice_gen_time"].append(interval)
@@ -210,19 +192,17 @@ class SparseConvolution(SparseConvolutionBase):
                         )
                         if self.indice_key is not None:
                             msg = f"your indice key {self.indice_key} already exists in this sparse tensor."
-                            if not _fx_tracing:
-                                assert self.indice_key not in indice_dict, msg
+                            assert self.indice_key not in indice_dict, msg
                             indice_dict[self.indice_key] = indice_data
-                if not _fx_tracing and input.benchmark:
+                if input.benchmark:
                     torch.cuda.synchronize()
                     t = time.time()
                 indice_pairs_calc = indice_pairs
-                if not _fx_tracing and indice_pairs.device != features.device:
+                if indice_pairs.device != features.device:
                     indice_pairs_calc = indice_pairs.to(features.device)
 
-                if not _fx_tracing:
-                    assert not self.inverse, "We are unlikely to ever use this"
-                    assert not training, "This code is for inference only"
+                assert not self.inverse, "We are unlikely to ever use this"
+                assert not training, "This code is for inference only"
 
                 out_features = Fsp_custom.indice_conv(
                     features,
@@ -243,14 +223,12 @@ class SparseConvolution(SparseConvolutionBase):
             else:
                 data = input.find_indice_pair(self.indice_key)
                 if data is not None:
-                    if not _fx_tracing:
-                        assert isinstance(data, ImplicitGemmIndiceData)
+                    assert isinstance(data, ImplicitGemmIndiceData)
                 if self.inverse:
-                    if not _fx_tracing:
-                        assert data is not None and self.indice_key is not None
-                        assert data.is_subm is False, (
-                            "inverse conv can only " "be used with standard " "conv and pool ops."
-                        )
+                    assert data is not None and self.indice_key is not None
+                    assert data.is_subm is False, (
+                        "inverse conv can only " "be used with standard " "conv and pool ops."
+                    )
                     outids = data.indices
                     pair_fwd = data.pair_bwd
                     pair_bwd = data.pair_fwd
@@ -261,8 +239,7 @@ class SparseConvolution(SparseConvolutionBase):
                     masks = data.masks
                     out_spatial_shape = data.spatial_shape
 
-                    if not _fx_tracing:
-                        self._check_inverse_reuse_valid(input, spatial_shape, data)
+                    self._check_inverse_reuse_valid(input, spatial_shape, data)
                 else:
                     if self.indice_key is not None and data is not None:
                         outids = data.out_indices
@@ -274,14 +251,13 @@ class SparseConvolution(SparseConvolutionBase):
                         mask_argsort_bwd_splits = data.mask_argsort_bwd_splits
                         masks = data.masks
                         num_act_out = data.out_voxel_num
-                        if not _fx_tracing:
-                            assert self.subm, "only support reuse subm indices"
-                            self._check_subm_reuse_valid(input, spatial_shape, data)
+                        assert self.subm, "only support reuse subm indices"
+                        self._check_subm_reuse_valid(input, spatial_shape, data)
                     else:
-                        if not _fx_tracing and input.benchmark:
+                        if input.benchmark:
                             torch.cuda.synchronize()
                             t = time.time()
-                        _gen_ctx = nullcontext() if _fx_tracing else input._timer.namespace("gen_pairs")
+                        _gen_ctx = input._timer.namespace("gen_pairs") if input._timer is not None else nullcontext()
                         with _gen_ctx:
                             # we need to gen bwd indices for regular conv
                             # because it may be inversed.
@@ -324,7 +300,7 @@ class SparseConvolution(SparseConvolutionBase):
                                 print(msg, file=sys.stderr)
                                 spconv_save_debug_data(indices)
                                 raise e
-                        if not _fx_tracing and input.benchmark:
+                        if input.benchmark:
                             torch.cuda.synchronize()
                             interval = time.time() - t
                             out_tensor.benchmark_record[name]["indice_gen_time"].append(interval)
@@ -355,10 +331,9 @@ class SparseConvolution(SparseConvolutionBase):
                                 out_voxel_num=num_act_out,
                             )
                             msg = f"your indice key {self.indice_key} " "already exists in this sparse tensor."
-                            if not _fx_tracing:
-                                assert self.indice_key not in indice_dict, msg
+                            assert self.indice_key not in indice_dict, msg
                             indice_dict[self.indice_key] = indice_data
-                if not _fx_tracing and input.benchmark:
+                if input.benchmark:
                     torch.cuda.synchronize()
                     t = time.time()
                 # num_activate_out = outids.shape[
@@ -376,9 +351,6 @@ class SparseConvolution(SparseConvolutionBase):
                     output_dtype = None
                     if output_scale is None:
                         output_dtype = weight.dtype
-                    # prepare_fx may make weight.dtype a non-concrete value; implicit_gemm asserts float32.
-                    if _fx_tracing:
-                        output_dtype = torch.float32
                     out_features = Fsp_custom.implicit_gemm(
                         features,
                         weight_cur,
@@ -391,7 +363,7 @@ class SparseConvolution(SparseConvolutionBase):
                         self.subm,
                         input._timer,
                         self.fp32_accum,
-                        None,
+                        bias_cur,
                         act_alpha,
                         act_beta,
                         act_type,
@@ -399,17 +371,14 @@ class SparseConvolution(SparseConvolutionBase):
                         # scale bias in kernel?
                         1.0 if output_scale is None else output_scale,  # output_scale
                         channel_scale,  # scale
-                        add_input.features if (not _fx_tracing and add_input is not None) else None,
+                        add_input.features if add_input is not None else None,
                         output_add_scale,
                         output_dtype,
                     )
 
-                    if not _fx_tracing and bias_cur is not None:
-                        out_features = out_features + bias_cur
-
-        if not _fx_tracing and bias_for_training is not None:
+        if bias_for_training is not None:
             out_features += bias_for_training
-        if not _fx_tracing and input.benchmark:
+        if input.benchmark:
             torch.cuda.synchronize()
             interval = time.time() - t
             out_tensor.benchmark_record[name]["time"].append(interval)

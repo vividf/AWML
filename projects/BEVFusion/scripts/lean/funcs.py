@@ -119,7 +119,7 @@ def load_checkpoint(model, file, startsname=None):
 
 def replace_feature(self, feature: torch.Tensor):
     """we need to replace x.features = F.relu(x.features) with x = x.replace_feature(F.relu(x.features))
-    due to limit of torch.fx
+    to keep SparseConvTensor metadata consistent
     """
     # assert feature.shape[0] == self.indices.shape[0], "replaced num of features not equal to indices"
     new_spt = SparseConvTensor(feature, self.indices, self.spatial_shape, self.batch_size, self.grid)

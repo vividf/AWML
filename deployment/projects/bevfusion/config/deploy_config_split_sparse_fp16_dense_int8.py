@@ -116,7 +116,7 @@ implicit_gemm_int8_plugin_timing_max_logs = 1000
 # - True  (default): run ONNX fusion passes and bake act_type / merged bias.
 # - False          : keep explicit Relu/Add nodes (debug / ablation).
 # ============================================================================
-spconv_fuse_implicit_gemm_relu = True
+spconv_fuse_implicit_gemm_relu = False
 
 # Fuse SparseConv + BN in ``pts_middle_encoder`` before ONNX export (same as PTQ load path).
 # Aligns FP16 sparse subgraph with INT8 deploy / fair latency vs mAP comparison.
@@ -211,9 +211,9 @@ devices = dict(
 )
 
 export = dict(
-    mode="none",
-    work_dir="work_dirs/bevfusion_deployment_2_7_sparse_fp16_dense_int8",
-    onnx_path="work_dirs/bevfusion_deployment_2_7_sparse_fp16_dense_int8/onnx",
+    mode="trt",
+    work_dir="work_dirs/bevfusion_deployment_2_7_sparse_fp16_dense_int8_testing",
+    onnx_path="work_dirs/bevfusion_deployment_2_7_sparse_fp16_dense_int8_testing/onnx",
     # onnx_path=None,
 )
 
@@ -314,7 +314,7 @@ tensorrt_config = dict(
 
 evaluation = dict(
     enabled=True,
-    num_samples=-1,
+    num_samples=2,
     num_warmup_samples=2,
     verbose=True,
     backends=dict(
