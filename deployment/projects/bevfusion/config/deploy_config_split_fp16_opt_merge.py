@@ -53,8 +53,8 @@ fuse_spconv_bn = True
 # ============================================================================
 # Checkpoint Path
 # ============================================================================
-checkpoint_path = "work_dirs/bevfusion/best_epoch_28.pth"
-# checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28.pth"
+# checkpoint_path = "work_dirs/bevfusion/best_epoch_28.pth"
+checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28.pth"
 
 
 devices = dict(
@@ -63,7 +63,7 @@ devices = dict(
 )
 
 export = dict(
-    mode="none",
+    mode="both",
     work_dir="work_dirs/bevfusion_deployment_2_7_fp16_opt_merged",
     onnx_path=None,
 )
@@ -154,8 +154,8 @@ components = dict(
 
 runtime_io = dict(
     # info_file="info/kokseang_2_5_experiment/t4dataset_j6gen2_base_infos_test.pkl",
-    info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
-    # info_file="info/kokseang_2_6_1/t4dataset_j6gen2_base_infos_test.pkl",
+    # info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="info/kokseang_2_6_1/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=0,
 )
 
@@ -175,7 +175,7 @@ tensorrt_config = dict(
 
 evaluation = dict(
     enabled=True,
-    num_samples=-1,
+    num_samples=20,
     num_warmup_samples=2,
     verbose=True,
     backends=dict(

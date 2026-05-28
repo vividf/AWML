@@ -116,7 +116,7 @@ implicit_gemm_int8_plugin_timing_max_logs = 1000
 # - True  (default): run ONNX fusion passes and bake act_type / merged bias.
 # - False          : keep explicit Relu/Add nodes (debug / ablation).
 # ============================================================================
-spconv_fuse_implicit_gemm_relu = False
+spconv_fuse_implicit_gemm_relu = True
 
 # Fuse SparseConv + BN in ``pts_middle_encoder`` before ONNX export (same as PTQ load path).
 # Aligns FP16 sparse subgraph with INT8 deploy / fair latency vs mAP comparison.
@@ -211,11 +211,22 @@ devices = dict(
 )
 
 export = dict(
-    mode="none",
-    work_dir="work_dirs/bevfusion_deployment_2_7_sparse_fp16_dense_int8_testing",
-    onnx_path="work_dirs/bevfusion_deployment_2_7_sparse_fp16_dense_int8_testing/onnx",
+    mode="both",
+    work_dir="work_dirs/bevfusion_deployment_2_7_sparse_fp16_dense_int8_merge",
+    onnx_path="work_dirs/bevfusion_deployment_2_7_sparse_fp16_dense_int8_merge/onnx",
     # onnx_path=None,
 )
+
+
+# Optional: keep split component definitions for debugging, but export/eval as one main body.
+# - False: split sparse+dense ONNX/engine (default)
+# - True : one ONNX + one engine + one backend pipeline
+bevfusion_merge = dict(
+    enabled=True,
+    onnx_file="bevfusion_lidar.onnx",
+    engine_file="bevfusion_lidar.engine",
+)
+
 
 _WORK_DIR = str(export["work_dir"]).rstrip("/")
 _ONNX_DIR = f"{_WORK_DIR}/onnx"
@@ -314,7 +325,7 @@ tensorrt_config = dict(
 
 evaluation = dict(
     enabled=True,
-    num_samples=2,
+    num_samples=20,
     num_warmup_samples=2,
     verbose=True,
     backends=dict(
