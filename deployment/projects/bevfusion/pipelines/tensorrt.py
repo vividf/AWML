@@ -77,15 +77,11 @@ def _np_tensor_stats(arr: np.ndarray, name: str) -> str:
 
 
 def _normalize_coors_for_legacy_main_body_contract(coors: torch.Tensor) -> torch.Tensor:
-    """Match legacy BEVFusion main-body deploy input convention.
+    """``[x, y, z]`` from voxelization → ``[z, y, x]`` for legacy ONNX/TRT graph inputs."""
+    from deployment.projects.bevfusion.io.coors_contract import voxel_indices_xyz_to_graph_input_zyx
 
-    Historical `projects/BEVFusion/deploy/voxel_detection.py` passes coors as
-    [z, y, x] (without batch), and legacy ONNX main_body wrapper flips inside
-    graph before concatenating batch index. To keep runtime evaluation aligned
-    with that contract, normalize here before feeding TRT/ONNX backends.
-    """
     if coors.ndim == 2 and coors.shape[1] == 3:
-        return coors.flip(dims=[-1]).contiguous()
+        return voxel_indices_xyz_to_graph_input_zyx(coors)
     return coors
 
 

@@ -38,15 +38,17 @@ logger = logging.getLogger(__name__)
 def _normalize_sparse_coors_for_autoware(coors: torch.Tensor) -> torch.Tensor:
     """Normalize sparse coordinates to the legacy Autoware export contract.
 
-    Legacy `projects/BEVFusion/deploy/containers.py` expected incoming coors as
-    [z, y, x] (no batch) and flipped to [x, y, z] before prepending batch index.
-    Keep the same behavior in the new deployment framework so exported ONNX
-    matches the historical Autoware runtime expectation.
+    Graph **inputs** must be ``[z, y, x]`` (no batch). This wrapper flips to
+    ``[x, y, z]`` and prepends batch — same as ``projects/BEVFusion/deploy/containers.py``.
+    Voxelization outputs ``[x, y, z]``; convert with ``voxel_indices_xyz_to_graph_input_zyx``
+    before tracing or feeding ONNX/TRT.
     """
+    from deployment.projects.bevfusion.io.coors_contract import graph_input_zyx_to_model_indices_xyz
+
     coors = coors.to(dtype=torch.int32)
     if coors.shape[1] == 3:
         num_points = coors.shape[0]
-        coors = coors.flip(dims=[-1]).contiguous()  # [z, y, x] -> [x, y, z]
+        coors = graph_input_zyx_to_model_indices_xyz(coors)
         batch_coors = torch.zeros(num_points, 1, dtype=torch.int32, device=coors.device)
         coors = torch.cat([batch_coors, coors], dim=1).contiguous()
     return coors
@@ -522,7 +524,10 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             else:
                 feats, coords = ret
                 sizes = torch.ones(feats.shape[0], device=device)
-            coords = coords[:, :].to(dtype=torch.int32)  # [M, 3] (z, y, x); spconv expects int32
+            from deployment.projects.bevfusion.io.coors_contract import voxel_indices_xyz_to_graph_input_zyx
+
+            coords = coords[:, :].to(dtype=torch.int32)  # [M, 3] (x, y, z) from voxel layer
+            coords = voxel_indices_xyz_to_graph_input_zyx(coords)  # ONNX graph input: [z, y, x]
 
         return feats, coords, sizes
 
