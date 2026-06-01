@@ -188,7 +188,7 @@ def summarize_latency(metric: str, bag_name: str, df: pd.DataFrame) -> Dict[str,
 def plot_time_series(metric: str, dataframes: Dict[str, pd.DataFrame], output_path: Path) -> None:
     plt.figure(figsize=(12, 6))
     for bag_name, df in dataframes.items():
-        plt.plot(df["sample_index"], df["latency_ms"], linewidth=1.2, label=bag_name)
+        plt.plot(df["sample_index"], df["latency_ms"], linewidth=1.2, label=format_bag_label(bag_name))
     plt.xlabel("Message count index")
     plt.ylabel("Latency [ms]")
     plt.title(f"BEVFusion {metric}: Time Series by Message Count")
@@ -224,7 +224,7 @@ def plot_time_series_small_multiples(metric: str, dataframes: Dict[str, pd.DataF
         trend = view["latency_ms"].rolling(window=window, min_periods=1).mean()
 
         ax.plot(view["sample_index"], trend, linewidth=2.0, color="tab:blue")
-        ax.set_title(bag_name)
+        ax.set_title(format_bag_label(bag_name))
         ax.set_xlabel("Message count index")
         ax.set_ylabel("Latency [ms]")
         ax.grid(True, alpha=0.35)
@@ -249,7 +249,7 @@ def plot_time_series_trend_overlay(metric: str, dataframes: Dict[str, pd.DataFra
         window = max(5, len(view) // 30)
         trend = view["latency_ms"].rolling(window=window, min_periods=1).mean()
 
-        plt.plot(view["sample_index"], trend, linewidth=2.2, label=bag_name)
+        plt.plot(view["sample_index"], trend, linewidth=2.2, label=format_bag_label(bag_name))
 
     plt.xlabel("Message count index")
     plt.ylabel("Latency [ms]")
@@ -264,7 +264,7 @@ def plot_time_series_trend_overlay(metric: str, dataframes: Dict[str, pd.DataFra
 def plot_histogram(metric: str, dataframes: Dict[str, pd.DataFrame], output_path: Path) -> None:
     plt.figure(figsize=(10, 6))
     for bag_name, df in dataframes.items():
-        plt.hist(df["latency_ms"], bins=40, alpha=0.5, label=bag_name)
+        plt.hist(df["latency_ms"], bins=40, alpha=0.5, label=format_bag_label(bag_name))
     plt.xlabel("Latency [ms]")
     plt.ylabel("Count")
     plt.title(f"BEVFusion {metric}: Histogram")
@@ -277,9 +277,10 @@ def plot_histogram(metric: str, dataframes: Dict[str, pd.DataFrame], output_path
 
 def plot_boxplot(metric: str, dataframes: Dict[str, pd.DataFrame], output_path: Path) -> None:
     labels = list(dataframes.keys())
+    display_labels = [format_bag_label(name) for name in labels]
     values = [dataframes[name]["latency_ms"].to_numpy() for name in labels]
     plt.figure(figsize=(10, 6))
-    plt.boxplot(values, labels=labels, showmeans=True)
+    plt.boxplot(values, labels=display_labels, showmeans=True)
     plt.ylabel("Latency [ms]")
     plt.title(f"BEVFusion {metric}: Boxplot")
     plt.grid(True)
@@ -294,7 +295,7 @@ def plot_cdf(metric: str, dataframes: Dict[str, pd.DataFrame], output_path: Path
     for bag_name, df in dataframes.items():
         x = np.sort(df["latency_ms"].to_numpy())
         y = np.arange(1, len(x) + 1) / len(x)
-        plt.plot(x, y, linewidth=2, label=bag_name)
+        plt.plot(x, y, linewidth=2, label=format_bag_label(bag_name))
     plt.xlabel("Latency [ms]")
     plt.ylabel("CDF")
     plt.title(f"BEVFusion {metric}: CDF")
@@ -307,6 +308,10 @@ def plot_cdf(metric: str, dataframes: Dict[str, pd.DataFrame], output_path: Path
 
 def sanitize_filename(name: str) -> str:
     return name.replace("/", "_")
+
+
+def format_bag_label(bag_name: str) -> str:
+    return bag_name.replace("_slow", "(r=0.1)")
 
 
 def print_metric_summary(metric: str, summary_df: pd.DataFrame) -> None:
