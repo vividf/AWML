@@ -41,6 +41,7 @@ import torch
 from onnx import TensorProto, helper, numpy_helper
 
 from deployment.projects.bevfusion.export.onnx_fuse_implicit_gemm_activation import (
+    _normalize_attr,
     _try_get_constant_numpy,
 )
 
@@ -759,25 +760,11 @@ def _implicit_gemm_filter_c_out(model: onnx.ModelProto, node: onnx.NodeProto) ->
     return c_out
 
 
-def _normalize_onnx_attr_field_name(name: str) -> str:
-    """Map ONNX attribute storage name to logical name.
-
-    Some exporters store ``output_scale_f`` as the literal ``AttributeProto.name``; TensorRT's
-    ONNX→plugin mapper expects ``output_scale`` (matching ``PluginField`` names). Netron often
-    shows ``input_scale_f`` meaning *float* attribute ``input_scale`` — but if the protobuf name
-    actually ends with ``_f`` / ``_i``, strip it so we merge with standard keys.
-    """
-    for suf in ("_f", "_i", "_s", "_l"):
-        if name.endswith(suf) and len(name) > len(suf):
-            return name[: -len(suf)]
-    return name
-
-
 def _implicit_gemm_attrs_from_node(node: onnx.NodeProto) -> Dict[str, object]:
     """Read ``ImplicitGemm`` attributes into a dict keyed by normalized names (no ``_f``/``_i``)."""
     out: Dict[str, object] = {}
     for attr in node.attribute:
-        base = _normalize_onnx_attr_field_name(attr.name)
+        base = _normalize_attr(attr.name)
         if attr.type == onnx.AttributeProto.FLOAT:
             out[base] = float(attr.f)
         elif attr.type == onnx.AttributeProto.INT:

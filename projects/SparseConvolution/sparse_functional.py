@@ -26,19 +26,14 @@ _do_sort: bool = True
 
 
 def set_do_sort(value: bool) -> None:
-    """Set the `do_sort` value used at ONNX export and in the PyTorch forward
-    path for pair-mask argsort. Called by deploy CLIs from ``deploy_cfg.spconv_do_sort``."""
+    """Set ``do_sort`` used at ONNX export and in the PyTorch forward path for
+    pair-mask argsort. Called by deploy CLIs from ``deploy_cfg.spconv_do_sort``."""
     global _do_sort
     _do_sort = bool(value)
 
 
-def _resolve_do_sort() -> bool:
-    return _do_sort
-
-
 def _gemm_activation_to_onnx_int(act_type: Any) -> int:
-    """Map ``tv.gemm.Activation`` to :cpp:enum:`tv::gemm::Activation` integer (see cumm ``constants.h``)."""
-
+    """Map ``tv.gemm.Activation`` to its integer value (see cumm ``constants.h``)."""
     if act_type is None:
         return 0
     if isinstance(act_type, int):
@@ -246,7 +241,6 @@ class IndiceConvFunction(Function):
 
 
 class GetIndicePairsImplicitGemm(Function):
-
     @staticmethod
     def symbolic(
         g,
@@ -279,7 +273,7 @@ class GetIndicePairsImplicitGemm(Function):
             subm_i=subm,
             transpose_i=transpose,
             is_train_i=is_train,
-            do_sort_i=int(_resolve_do_sort()),
+            do_sort_i=int(_do_sort),
             outputs=5,
         )
         indices_shape = _get_tensor_sizes(indices)
@@ -336,7 +330,7 @@ class GetIndicePairsImplicitGemm(Function):
 
         num_out_act_bound: int = -1
         direct_table: bool = SPCONV_USE_DIRECT_TABLE
-        do_sort = _resolve_do_sort()
+        do_sort = _do_sort
 
         stream = get_current_stream()
 
