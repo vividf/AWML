@@ -35,6 +35,23 @@ from deployment.projects.bevfusion.io.model_loader import setup_quantization_for
 logger = logging.getLogger(__name__)
 
 
+def _normalize_sparse_coors_for_autoware(coors: torch.Tensor) -> torch.Tensor:
+    """Normalize sparse coordinates to the legacy Autoware export contract.
+
+    Legacy `projects/BEVFusion/deploy/containers.py` expected incoming coors as
+    [z, y, x] (no batch) and flipped to [x, y, z] before prepending batch index.
+    Keep the same behavior in the new deployment framework so exported ONNX
+    matches the historical Autoware runtime expectation.
+    """
+    coors = coors.to(dtype=torch.int32)
+    if coors.shape[1] == 3:
+        num_points = coors.shape[0]
+        coors = coors.flip(dims=[-1]).contiguous()  # [z, y, x] -> [x, y, z]
+        batch_coors = torch.zeros(num_points, 1, dtype=torch.int32, device=coors.device)
+        coors = torch.cat([batch_coors, coors], dim=1).contiguous()
+    return coors
+
+
 def _head_dict_to_export_outputs(outputs: dict) -> tuple:
     """Match ``BEVFusionMainBodyWrapper`` post-processing (ONNX outputs)."""
     import torch.nn.functional as F
@@ -66,11 +83,7 @@ class BEVFusionSparseWrapper(nn.Module):
         num_points_per_voxel: torch.Tensor,
     ) -> torch.Tensor:
         voxels = voxels.to(dtype=torch.float32)
-        coors = coors.to(dtype=torch.int32)
-        if coors.shape[1] == 3:
-            num_points = coors.shape[0]
-            batch_coors = torch.zeros(num_points, 1, dtype=torch.int32, device=coors.device)
-            coors = torch.cat([batch_coors, coors], dim=1).contiguous()
+        coors = _normalize_sparse_coors_for_autoware(coors)
 
         return self.mod.extract_pts_feat(voxels, coors, num_points_per_voxel, points=None)
 
@@ -117,11 +130,7 @@ class BEVFusionMainBodyWrapper(nn.Module):
         # yields float tensor and can CUDA fault in implicit_gemm.
         # INT8 sparse path: quantize_per_tensor only accepts float; keep voxels FP32.
         voxels = voxels.to(dtype=torch.float32)
-        coors = coors.to(dtype=torch.int32)
-        if coors.shape[1] == 3:
-            num_points = coors.shape[0]
-            batch_coors = torch.zeros(num_points, 1, dtype=torch.int32, device=coors.device)
-            coors = torch.cat([batch_coors, coors], dim=1).contiguous()
+        coors = _normalize_sparse_coors_for_autoware(coors)
 
         batch_inputs_dict = {
             "voxels": {"voxels": voxels, "coors": coors, "num_points_per_voxel": num_points_per_voxel},

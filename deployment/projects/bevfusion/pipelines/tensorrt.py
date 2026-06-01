@@ -76,6 +76,19 @@ def _np_tensor_stats(arr: np.ndarray, name: str) -> str:
     )
 
 
+def _normalize_coors_for_legacy_main_body_contract(coors: torch.Tensor) -> torch.Tensor:
+    """Match legacy BEVFusion main-body deploy input convention.
+
+    Historical `projects/BEVFusion/deploy/voxel_detection.py` passes coors as
+    [z, y, x] (without batch), and legacy ONNX main_body wrapper flips inside
+    graph before concatenating batch index. To keep runtime evaluation aligned
+    with that contract, normalize here before feeding TRT/ONNX backends.
+    """
+    if coors.ndim == 2 and coors.shape[1] == 3:
+        return coors.flip(dims=[-1]).contiguous()
+    return coors
+
+
 def _list_trt_io_names(engine: trt.ICudaEngine) -> Tuple[List[str], List[str]]:
     """Return (input_names, output_names) in TensorRT tensor index order."""
     inputs: List[str] = []
@@ -577,7 +590,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         profiler: _TRTLayerProfiler | None = None,
     ) -> List[torch.Tensor]:
         voxels_np = self.to_numpy(voxels, dtype=np.float32)
-        coors_np = self.to_numpy(coors, dtype=np.int32)
+        coors_np = self.to_numpy(_normalize_coors_for_legacy_main_body_contract(coors), dtype=np.int32)
         num_points_np = self.to_numpy(num_points_per_voxel, dtype=np.int32)
         # Match ``extract_pts_feat`` / PTQ: mean-pool must not divide by zero (NaN BEV → dense NaN).
         num_points_np = np.maximum(num_points_np, 1)

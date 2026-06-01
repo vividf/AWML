@@ -34,6 +34,7 @@ Numbered filenames follow **creation time** (filesystem birth time, with mtime t
 | **14** | [**`14_trt_split_map_zero_debug.md`**](./14_trt_split_map_zero_debug.md) | **Split TRT 有預測但 mAP=0：管線對照、原因歸納、`BEVFUSION_TRT_*` / `DEBUG_POSTPROCESS` 除錯** |
 | **18** | [**`18_SPARSE_PROFILE_INT8_VS_FP16_COMPARISON.md`**](./18_SPARSE_PROFILE_INT8_VS_FP16_COMPARISON.md) | **Priority A：同一輸入下 INT8 vs FP16 sparse engine 對照；為何 ImplicitGemm 時間相近；Nsight 下沉拆 kernel** |
 | **21** | [**`21_README_IMPLICITGEMM_FP_TRT_PLUGIN_ISSUES.md`**](./21_README_IMPLICITGEMM_FP_TRT_PLUGIN_ISSUES.md) | **FP `ImplicitGemm` TRT 外掛：`num_inputs` 5/6、fork assert、bias FP32 vs FP16（tensorview／spconv）、timing 警告與處置** |
+| **25** | [**`25_README_AUTOWARE_COORD_CONTRACT_AND_EVAL_ALIGNMENT.md`**](./25_README_AUTOWARE_COORD_CONTRACT_AND_EVAL_ALIGNMENT.md) | **`coors` 契約對齊 Autoware：為何舊/新 ONNX 都能在 evaluation 正常、與 ROS `x/y/z` 的關聯與邊界** |
 | — | [**`README_PTQ_INT8_SPCONV_DEPLOYMENT.md`**](./README_PTQ_INT8_SPCONV_DEPLOYMENT.md) | **PTQ → ONNX → TRT 全流程詳解；與 spconv 官方、CUDA-BEVFusion（libspconv）對照** |
 | — | [**`README_INT8_WHERE_AND_HOW.md`**](./README_INT8_WHERE_AND_HOW.md) | **哪裡 FP16／哪裡真 INT8；Path B 與 `ConvGemmOps::implicit_gemm`、`is_int8_inference`、spconv `ops.py` 對照** |
 

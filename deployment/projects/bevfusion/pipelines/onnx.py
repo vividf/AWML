@@ -21,6 +21,13 @@ from deployment.projects.bevfusion.pipelines.bevfusion_pipeline import BEVFusion
 logger = logging.getLogger(__name__)
 
 
+def _normalize_coors_for_legacy_main_body_contract(coors: torch.Tensor) -> torch.Tensor:
+    """Match legacy BEVFusion main-body deploy input convention."""
+    if coors.ndim == 2 and coors.shape[1] == 3:
+        return coors.flip(dims=[-1]).contiguous()
+    return coors
+
+
 class BEVFusionONNXPipeline(BEVFusionDeploymentPipeline):
     """ONNXRuntime-based BEVFusion pipeline.
 
@@ -108,7 +115,7 @@ class BEVFusionONNXPipeline(BEVFusionDeploymentPipeline):
 
         assert self.session is not None
         voxels_np = self.to_numpy(voxels, dtype=np.float32)
-        coors_np = self.to_numpy(coors, dtype=np.int32)
+        coors_np = self.to_numpy(_normalize_coors_for_legacy_main_body_contract(coors), dtype=np.int32)
         num_points_np = self.to_numpy(num_points_per_voxel, dtype=np.int32)
 
         input_names = [inp.name for inp in self.session.get_inputs()]
@@ -135,7 +142,7 @@ class BEVFusionONNXPipeline(BEVFusionDeploymentPipeline):
         assert self._session_sparse is not None and self._session_dense is not None
 
         voxels_np = self.to_numpy(voxels, dtype=np.float32)
-        coors_np = self.to_numpy(coors, dtype=np.int32)
+        coors_np = self.to_numpy(_normalize_coors_for_legacy_main_body_contract(coors), dtype=np.int32)
         num_points_np = self.to_numpy(num_points_per_voxel, dtype=np.int32)
 
         s_in = [inp.name for inp in self._session_sparse.get_inputs()]
