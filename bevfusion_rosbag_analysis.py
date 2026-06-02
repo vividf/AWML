@@ -14,7 +14,7 @@ import rclpy
 from autoware_internal_debug_msgs.msg import Float64Stamped
 from rclpy.serialization import deserialize_message
 
-DEFAULT_ROSBAG_ROOT = Path("/media/yihsiangfang/VIVID/model/bevfusion_2_7/ros2bag_test")
+DEFAULT_ROSBAG_ROOT = Path("/media/yihsiangfang/VIVID/model/bevfusion_2_7/rosbag/rosbag_6_2")
 
 METRIC_TOPICS = {
     "inference_ms": "/perception/object_recognition/detection/bevfusion/bevfusion/debug/processing_time/inference_ms",

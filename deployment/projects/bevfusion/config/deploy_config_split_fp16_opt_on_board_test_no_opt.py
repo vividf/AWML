@@ -25,7 +25,7 @@ CLI::
         <your_model_cfg.py>
 """
 
-spconv_do_sort = False
+spconv_do_sort = True
 
 # ============================================================================
 # FP16 ``autoware::ImplicitGemm`` plugin: optional CUDA timing (stderr)
@@ -44,11 +44,11 @@ implicit_gemm_plugin_timing_max_logs = 1000
 # - True  : bake activation into ImplicitGemm (act_type / optional 6th bias input)
 # - False : keep explicit Relu/Add nodes
 # ============================================================================
-spconv_fuse_implicit_gemm_relu = True
+spconv_fuse_implicit_gemm_relu = False
 
 # Fuse SparseConv + BN in ``pts_middle_encoder`` before ONNX export (same as PTQ load path).
 # Aligns FP16 sparse subgraph with INT8 deploy / fair latency vs mAP comparison.
-fuse_spconv_bn = True
+fuse_spconv_bn = False
 
 # ============================================================================
 # Checkpoint Path
@@ -63,9 +63,9 @@ devices = dict(
 )
 
 export = dict(
-    mode="none",
-    work_dir="work_dirs/bevfusion_deployment_2_7_on_board_test",
-    onnx_path="work_dirs/bevfusion_deployment_2_7_on_board_test/onnx",
+    mode="both",
+    work_dir="work_dirs/bevfusion_deployment_2_7_on_board_test_no_opt",
+    onnx_path="work_dirs/bevfusion_deployment_2_7_on_board_test_no_opt/onnx",
 )
 
 
@@ -175,7 +175,7 @@ tensorrt_config = dict(
 
 evaluation = dict(
     enabled=True,
-    num_samples=-1,
+    num_samples=10,
     num_warmup_samples=2,
     verbose=True,
     backends=dict(

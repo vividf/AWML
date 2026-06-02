@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "../autoware.universe"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../TensorRT"
+		}
+	]
+}
