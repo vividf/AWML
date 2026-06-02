@@ -49,7 +49,7 @@ if coors.shape[1] == 3:
 
 ### 3.1 ONNX export：明確保留 legacy contract
 
-在新 framework 的 ONNX wrapper 中加入與舊版一致的正規化：
+在新 framework 的 ONNX wrapper 中加入與舊版一致的正規化。
 
 - 檔案：`deployment/projects/bevfusion/export/onnx_export_pipeline.py`
 - 函式：`_normalize_sparse_coors_for_autoware()`
@@ -59,7 +59,7 @@ if coors.shape[1] == 3:
 
 ### 3.2 ONNX / TRT runtime pipeline：餵入前對齊同一契約
 
-在 framework inference backend（非 metric/evaluator）端加入同樣契約對齊：
+在 framework inference backend（非 metric/evaluator）端加入同樣契約對齊。
 
 - `deployment/projects/bevfusion/pipelines/onnx.py`
 - `deployment/projects/bevfusion/pipelines/tensorrt.py`
@@ -73,9 +73,50 @@ if coors.shape[1] == 3:
 `evaluator` 只應負責 metrics，不應修改模型輸入語義。  
 flip 必須放在模型邊界（export wrapper / backend preprocess），且只做一次。
 
+### 3.4 `5132ce649385e0a32ddc9b35821b29e5e69eed66` 的具體改動
+
+該 commit（`chore: temp fix`）實際做了以下 5 項：
+
+1. 新增 `deployment/projects/bevfusion/io/coors_contract.py`
+   - 統一定義兩個轉換函式：
+     - `voxel_indices_xyz_to_graph_input_zyx()`
+     - `graph_input_zyx_to_model_indices_xyz()`
+2. 修改 `deployment/projects/bevfusion/export/onnx_export_pipeline.py`
+   - `_normalize_sparse_coors_for_autoware()` 改為呼叫 `coors_contract`，而非散落的 `flip`
+   - `_voxelize()` 明確把 voxel layer 輸出的 `[x,y,z]` 轉成 graph input `[z,y,x]`
+3. 修改 `deployment/projects/bevfusion/pipelines/onnx.py`
+   - backend 餵入前改用 `coors_contract` 做 `xyz -> zyx`
+4. 修改 `deployment/projects/bevfusion/pipelines/tensorrt.py`
+   - backend 餵入前改用 `coors_contract` 做 `xyz -> zyx`
+5. 新增測試型 config
+   - `deployment/projects/bevfusion/config/deploy_config_split_fp16_opt_on_board_test.py`
+
 ---
 
-## 4. 為什麼這樣改後 `original` 和 `new export` 都能正常
+## 4. `5132ce64` 是否合理（判斷）
+
+### 4.1 合理的部分（建議保留）
+
+- **把契約集中到單一模組 `coors_contract.py` 是正確方向**  
+  可避免 export / ORT / TRT 各自手寫 `flip`，降低再度漂移風險。
+- **在 `_voxelize()` 明確標註與轉換 `xyz -> zyx` 是關鍵修正**  
+  這一步把「voxelization 真實輸出順序」與「legacy graph input 契約」橋接清楚，對消除 `PyTorch OK / TRT ~0` 很重要。
+- **ORT/TRT backend 同步使用同一轉換**  
+  保證 runtime 行為一致，不會某 backend 正常、某 backend 失真。
+
+### 4.2 需要注意的部分（不一定錯，但要標記）
+
+- commit message 是 `temp fix`，但內容其實是**正式契約修正**；建議後續用更明確訊息（例如 `fix: align BEVFusion coors contract with legacy autoware main_body`）。
+- 新增的 `*_on_board_test.py` 是測試配置，建議在文件中註明用途，避免被誤當 production baseline。
+
+### 4.3 總結判斷
+
+`5132ce64` 對核心問題是**合理且必要**的：  
+它不是「為了拉高單次指標的 overfit hack」，而是把 `coors` 契約明文化並在 export/runtime 一致落地。
+
+---
+
+## 5. 為什麼這樣改後 `original` 和 `new export` 都能正常
 
 修正後，三者契約一致：
 
@@ -87,7 +128,7 @@ flip 必須放在模型邊界（export wrapper / backend preprocess），且只�
 
 ---
 
-## 5. 這件事跟 ROS `x/y/z` 有沒有關係？
+## 6. 這件事跟 ROS `x/y/z` 有沒有關係？
 
 ### 5.1 有關的部分
 
@@ -110,7 +151,7 @@ flip 必須放在模型邊界（export wrapper / backend preprocess），且只�
 
 ---
 
-## 6. 如何驗證契約是否一致
+## 7. 如何驗證契約是否一致
 
 ### 6.1 ONNX 檢查（legacy flip 是否存在）
 
@@ -129,7 +170,7 @@ flip 必須放在模型邊界（export wrapper / backend preprocess），且只�
 
 ---
 
-## 7. 設計原則（後續維護）
+## 8. 設計原則（後續維護）
 
 1. **單一路徑契約**：不要同時維護「evaluation 專用語義」與「Autoware 實車語義」兩套邏輯。
 2. **翻轉只在模型邊界做**：不得在 evaluator 裡補救。
@@ -137,7 +178,7 @@ flip 必須放在模型邊界（export wrapper / backend preprocess），且只�
 
 ---
 
-## 8. 結論
+## 9. 結論
 
 本次修正不是單純「讓分數變好」，而是把 evaluation 對齊回 legacy Autoware-compatible ONNX contract。  
 核心是 `coors` 欄位順序契約一致化；ROS `x/y/z` 是背景語意，但本次直接修復點是 tensor index order 對齊，而非改動物理座標系定義。

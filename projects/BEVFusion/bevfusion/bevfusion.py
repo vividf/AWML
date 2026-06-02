@@ -141,18 +141,14 @@ class BEVFusion(Base3DDetector):
         register_pts_middle_encoder_float_input_hook(self.pts_middle_encoder)
 
     def _align_lidar_bev_to_head_grid(self, feats):
-        """Resize pts_backbone+neck BEV maps to match ``bbox_head.bev_pos`` resolution.
+        """Strictly validate pts_backbone+neck BEV maps against head grid resolution.
 
         ``BEVFusionHead`` builds ``bev_pos`` from ``test_cfg['grid_size'] // out_size_factor``
         (e.g. 1440//8 → 180). Heatmap/top-k indices assume ``H*W == len(bev_pos)``.
 
-        If the sparse tower exposes **full voxel resolution** (e.g. 1440×1440) into SECOND
-        (``dense()`` / ``spatial_shape`` bugs), FPN output can be hundreds of pixels
-        per side while ``bev_pos`` stays 180×180 → ``gather`` uses out-of-range indices
-        (CUDA scatter/gather assert) and later ops may report missing backends.
-
-        Pooling here only runs when ``H,W`` differ from the head grid; normal training paths
-        keep the correct encoder stride and are unchanged.
+        In strict mode, any mismatch is treated as an upstream contract error
+        (sparse tower stride/layout mismatch) and raises immediately instead of
+        silently applying pooling.
         """
         head = getattr(self, "bbox_head", None)
         if head is None or not hasattr(head, "test_cfg") or head.test_cfg is None:
@@ -165,18 +161,26 @@ class BEVFusion(Base3DDetector):
         except Exception:
             return feats
 
-        def _pool(t: Tensor) -> Tensor:
+        def _assert_grid(t: Tensor, *, name: str) -> Tensor:
             if t.dim() != 4:
-                return t
+                raise AssertionError(f"{name}: expected 4D BEV tensor, got shape={tuple(t.shape)}")
             _, _, h, w = t.shape
-            if int(h) == gh and int(w) == gw:
-                return t
-            return F.adaptive_avg_pool2d(t, (gh, gw))
+            assert int(h) == gh and int(w) == gw, (
+                f"{name}: BEV shape mismatch, got (H,W)=({int(h)},{int(w)}), "
+                f"expected ({gh},{gw}) from bbox_head.test_cfg grid_size/out_size_factor."
+            )
+            return t
 
         if isinstance(feats, Tensor):
-            return _pool(feats)
+            return _assert_grid(feats, name="lidar_bev")
         if isinstance(feats, (list, tuple)):
-            return type(feats)(_pool(t) if isinstance(t, Tensor) else t for t in feats)
+            out = []
+            for idx, t in enumerate(feats):
+                if isinstance(t, Tensor):
+                    out.append(_assert_grid(t, name=f"lidar_bev[{idx}]"))
+                else:
+                    out.append(t)
+            return type(feats)(out)
         return feats
 
     def _forward(

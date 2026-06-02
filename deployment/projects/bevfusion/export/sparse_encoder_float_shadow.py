@@ -135,6 +135,7 @@ def build_float_sparse_encoder_shadow(
     device: torch.device,
     *,
     cfg_overrides: Optional[Dict[str, Any]] = None,
+    fuse_spconv_bn: bool = True,
 ) -> nn.Module:
     """Construct a fused FP32 ``BEVFusionSparseEncoder`` and load weights from ``gm`` state_dict.
 
@@ -214,9 +215,12 @@ def build_float_sparse_encoder_shadow(
     enc.to(device)
     enc.eval()
 
-    from deployment.projects.bevfusion.quantization.spconv_int8 import _fuse_spconv_bn_in_encoder
+    if fuse_spconv_bn:
+        from deployment.projects.bevfusion.quantization.spconv_int8 import _fuse_spconv_bn_in_encoder
 
-    _fuse_spconv_bn_in_encoder(enc)
+        _fuse_spconv_bn_in_encoder(enc)
+    else:
+        logger.info("Sparse ONNX float shadow: keep SparseConv+BN unfused (fuse_spconv_bn=False).")
 
     gm_sd = gm.state_dict()
     enc_sd = enc.state_dict()

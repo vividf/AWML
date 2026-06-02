@@ -219,7 +219,15 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
 
         ensure_spconv_quantize_per_tensor_float_activations()
         self.logger.info("Running torch.onnx.export...")
-        self._export_to_onnx(model, voxels, coors, num_points_per_voxel, str(temp_path), onnx_cfg)
+        self._export_to_onnx(
+            model,
+            voxels,
+            coors,
+            num_points_per_voxel,
+            str(temp_path),
+            onnx_cfg,
+            fuse_spconv_bn=bool(config.deploy_cfg.get("fuse_spconv_bn", False)),
+        )
 
         num_proposals = self._get_num_proposals(model)
         self._fix_topk(str(temp_path), str(output_path), num_proposals)
@@ -281,7 +289,14 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         )
         self.logger.info("Running torch.onnx.export (sparse)...")
         self._export_to_onnx(
-            model, voxels, coors, num_points_per_voxel, str(sparse_onnx), onnx_cfg_sparse, wrapper="sparse"
+            model,
+            voxels,
+            coors,
+            num_points_per_voxel,
+            str(sparse_onnx),
+            onnx_cfg_sparse,
+            wrapper="sparse",
+            fuse_spconv_bn=bool(config.deploy_cfg.get("fuse_spconv_bn", False)),
         )
         if self._should_auto_transform_sparse_onnx_int8(config=config):
             self._postprocess_sparse_onnx_int8(config=config, sparse_onnx_path=sparse_onnx)
@@ -686,6 +701,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         onnx_cfg: Dict[str, Any],
         *,
         wrapper: str = "main",
+        fuse_spconv_bn: bool = False,
     ) -> None:
         """Export voxel-based subgraph to ONNX (full main_body or sparse-only)."""
         model_device = next(model.parameters()).device
@@ -749,6 +765,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
                         gm_src,
                         trace_dev,
                         cfg_overrides=cfg_ov if cfg_ov else None,
+                        fuse_spconv_bn=bool(fuse_spconv_bn),
                     )
 
             if wrapper == "sparse":
