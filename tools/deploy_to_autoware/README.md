@@ -56,3 +56,28 @@ projects/TransFusion/config/deploy/target_param_config_file.yaml
     voxel_size: {vocel_size}
     num_proposals: {num_proposal}
 ```
+
+## Compare CenterPoint export equivalence
+
+Compare two CenterPoint work dirs end-to-end:
+
+- ONNX file hash, opset, node count, initializer count/hash.
+- ONNXRuntime numerical output difference.
+- TensorRT rebuild (FP16, fixed shapes, fixed workspace) and output difference.
+
+```sh
+python tools/deploy_to_autoware/compare_centerpoint_exports.py \
+  work_dirs/centerpoint_2_6_fp16_copy \
+  work_dirs/centerpoint_2_6_fp16 \
+  --workspace-mib 1024 \
+  --report-json /tmp/centerpoint_compare_report.json
+```
+
+If you only need ONNX + ORT comparison:
+
+```sh
+python tools/deploy_to_autoware/compare_centerpoint_exports.py \
+  work_dirs/centerpoint_2_6_fp16_copy \
+  work_dirs/centerpoint_2_6_fp16 \
+  --skip-trt
+```
