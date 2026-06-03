@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import os.path as osp
+import re
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -223,87 +224,116 @@ def _summarize_sparse_layers(layer_times: List[Tuple[str, float]]) -> Dict[str, 
     return sums
 
 
-def _aggregate_trt_layers_to_stages(layer_times: List[Tuple[str, float]]) -> Dict[str, float]:
-    """Map TensorRT layer names to BEVFusion stages and sum times (ms).
+# ============================================================================
+# Unified BEVFusion stage attribution (merged & split use the SAME logic).
+# ----------------------------------------------------------------------------
+# Grounded in the BEVFusion ONNX module hierarchy, which is IDENTICAL for the
+# merged full graph and the split dense graph (the merged graph only adds
+# ``sparse/`` and ``dense/`` prefixes):
+#   pts_middle_encoder / spconv / ImplicitGemm ... -> sparse encoder
+#   pts_backbone (``blocks``)                      -> backbone
+#   pts_neck     (``deblocks``)                    -> neck
+#   bbox_head    (decoder / prediction_heads / heatmap_head) -> head
+#   score ops    (sigmoid / one_hot / query_*)     -> post scoring
+#
+# Classification is per-layer and ORDER-INDEPENDENT. This is the critical
+# property: TensorRT freely fuses/reorders layers, so the previous order-based
+# state machine mis-attributed cost (e.g. one early ``bbox_head`` layer flipped
+# the whole stream to "head" and starved backbone/neck). A pure substring
+# bucket per layer is stable regardless of fusion/order.
+# ============================================================================
 
-    Uses substring matching on layer names (e.g. from ONNX export).
-    Order of patterns matters: first match wins. Unmatched layers go to bevfusion_ms.
+_BEVFUSION_DENSE_SUBSTAGE_KEYS: Tuple[str, ...] = (
+    "backbone_ms",
+    "neck_ms",
+    "head_ms",
+    "post_scoring_ms",
+)
+_STAGE_OTHER = "other_ms"
+
+
+def _classify_bevfusion_layer(layer_name: str) -> str:
+    """Classify one TensorRT layer into a BEVFusion stage key (order-independent).
+
+    Returns one of: ``sparse_encoder_ms``, ``backbone_ms``, ``neck_ms``,
+    ``head_ms``, ``post_scoring_ms``, or ``other_ms`` (shape/glue, ~0 GPU time).
     """
-    stage_sums: Dict[str, float] = {
-        "voxel_encoder_ms": 0.0,
+    n = layer_name.lower()
+    # Normalize separators so ``ImplicitGemm``/``implicit_gemm``/``getindicepairs`` all match.
+    nn = n.replace("_", "").replace("-", "").replace(" ", "")
+
+    if any(
+        k in n
+        for k in (
+            "pts_middle_encoder",
+            "middle_encoder",
+            "spconv",
+            "sparse_conv",
+            "subm",
+            "encoder_layer",
+            "conv_input",
+            "conv_out",
+        )
+    ) or any(k in nn for k in ("implicitgemm", "getindicepairs", "scatternd")):
+        return "sparse_encoder_ms"
+
+    # Neck before backbone: ``deblocks`` contains the substring ``blocks``.
+    if "pts_neck" in n or "deblocks" in n:
+        return "neck_ms"
+
+    if "pts_backbone" in n or re.search(r"(^|[/.])blocks([/.]|$)", n):
+        return "backbone_ms"
+
+    # ``bbox_head`` covers the transformer decoder, prediction_heads and heatmap_head.
+    if "bbox_head" in n:
+        return "head_ms"
+
+    # Post-scoring ops typically live OUTSIDE bbox_head (top-level sigmoid/one_hot/query_*).
+    if any(k in nn for k in ("queryheatmapscore", "querylabels", "onehot")) or any(
+        k in n for k in ("sigmoid", "/topk", "argmax")
+    ):
+        return "post_scoring_ms"
+
+    return _STAGE_OTHER
+
+
+def _sum_layers_by_stage(layer_times: List[Tuple[str, float]]) -> Dict[str, float]:
+    """Sum profiler layer times into BEVFusion stage buckets (order-independent)."""
+    sums: Dict[str, float] = {
         "sparse_encoder_ms": 0.0,
         "backbone_ms": 0.0,
         "neck_ms": 0.0,
         "head_ms": 0.0,
         "post_scoring_ms": 0.0,
-        "bevfusion_ms": 0.0,
+        _STAGE_OTHER: 0.0,
     }
-    # Patterns (substring in layer name) -> stage key. Check in order.
-    # Spconv / plugin-heavy names first (single full-graph engines often omit pts_middle_encoder).
-    stage_patterns: List[Tuple[str, str]] = [
-        ("pts_middle_encoder", "sparse_encoder_ms"),
-        ("middle_encoder", "sparse_encoder_ms"),
-        ("spconv", "sparse_encoder_ms"),
-        ("sparse_conv", "sparse_encoder_ms"),
-        ("subm", "sparse_encoder_ms"),
-        ("implicitgemm", "sparse_encoder_ms"),
-        ("scatternd", "sparse_encoder_ms"),
-        ("encoder_layer", "sparse_encoder_ms"),
-        ("conv_input", "sparse_encoder_ms"),
-        ("pts_neck", "neck_ms"),
-        ("neck", "neck_ms"),
-        ("deblocks", "neck_ms"),
-        # Keep this after deblocks/neck rules; "deblocks.*" also contains "blocks.".
-        ("pts_backbone", "backbone_ms"),
-        ("backbone", "backbone_ms"),
-        ("blocks.", "backbone_ms"),
-        ("bbox_head", "head_ms"),
-        ("heatmap", "head_ms"),
-        ("shared_conv", "head_ms"),
-        ("sigmoid", "post_scoring_ms"),
-        ("query_labels", "post_scoring_ms"),
-        ("post_scoring", "post_scoring_ms"),
-        ("voxel", "voxel_encoder_ms"),
-    ]
     for layer_name, ms in layer_times:
-        name_lower = layer_name.lower()
-        assigned = False
-        for pattern, stage_key in stage_patterns:
-            if pattern.lower() in name_lower or (pattern in layer_name):
-                stage_sums[stage_key] += ms
-                assigned = True
-                break
-        if not assigned:
-            stage_sums["bevfusion_ms"] += ms
-    return stage_sums
+        sums[_classify_bevfusion_layer(layer_name)] += ms
+    return sums
 
 
-def _aggregate_dense_layers_by_stage_boundaries(layer_times: List[Tuple[str, float]]) -> Dict[str, float]:
-    """Split dense-engine layer times by stage boundaries (not per-layer keyword bucketing).
+def _scale_dense_substages(stage_sums: Dict[str, float], dense_total_ms: float) -> Dict[str, float]:
+    """Distribute the (CUDA-timed) dense total across backbone/neck/head/post_scoring.
 
-    We only use a few anchor transitions to determine where stages start:
-    backbone -> neck -> head -> post_scoring.
-    All layers are then assigned by order, so no dense time is dropped.
+    The per-layer profiler sums give the RELATIVE weight of each dense stage; we
+    rescale them so they add up exactly to ``dense_total_ms`` (the authoritative
+    GPU interval). ``other`` (shape/glue, ~0 GPU time) is absorbed proportionally,
+    so ``dense_unattributed_ms`` stays 0 whenever named stages are present.
     """
-    stage_sums: Dict[str, float] = {
-        "backbone_ms": 0.0,
-        "neck_ms": 0.0,
-        "head_ms": 0.0,
-        "post_scoring_ms": 0.0,
-    }
-    stage = "backbone_ms"
-    for layer_name, ms in layer_times:
-        n = layer_name.lower()
-        if stage == "backbone_ms" and ("pts_neck" in n or "deblocks" in n):
-            stage = "neck_ms"
-        if stage in ("backbone_ms", "neck_ms") and ("bbox_head" in n or "shared_conv" in n):
-            stage = "head_ms"
-        if stage != "post_scoring_ms" and (
-            "query_heatmap_score" in n or "query_labels" in n or "sigmoid" in n or "one_hot" in n
-        ):
-            stage = "post_scoring_ms"
-        stage_sums[stage] += ms
-    return stage_sums
+    out: Dict[str, float] = {k: 0.0 for k in _BEVFUSION_DENSE_SUBSTAGE_KEYS}
+    out["dense_unattributed_ms"] = 0.0
+    if dense_total_ms <= 0.0:
+        return out
+
+    named_sum = sum(stage_sums.get(k, 0.0) for k in _BEVFUSION_DENSE_SUBSTAGE_KEYS)
+    if named_sum > 0.0:
+        scale = dense_total_ms / named_sum
+        for k in _BEVFUSION_DENSE_SUBSTAGE_KEYS:
+            out[k] = stage_sums.get(k, 0.0) * scale
+        out["dense_unattributed_ms"] = 0.0
+    else:
+        out["dense_unattributed_ms"] = dense_total_ms
+    return out
 
 
 class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
@@ -803,7 +833,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         return [torch.from_numpy(output_arrays[name]).to(self.torch_device) for name in ordered_names]
 
     # Stage keys aligned with BEVFusionPyTorchPipeline for consistent Stage-wise Latency Breakdown.
-    # ``dense_engine_ms`` is TensorRT split-mode only (backbone+neck+head graph GPU time).
+    # ``dense_engine_ms`` is the dense branch GPU time (split: CUDA events, merged: derived residual).
     BEVFUSION_STAGE_KEYS = (
         "voxel_encoder_ms",
         "sparse_encoder_ms",
@@ -828,48 +858,54 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
             profiler=profiler,
         )
 
+        # ------------------------------------------------------------------
+        # Step 1: authoritative top-line GPU intervals (CUDA events).
+        #   - bevfusion_ms : total TRT GPU time for the BEVFusion model.
+        #   - sparse_encoder_ms / dense_engine_ms : the two top-level branches.
+        # Split has two physical engines (separate CUDA-event intervals). Merged
+        # is one engine, so we split its single interval by the per-layer profiler
+        # proportions (same classifier as the sub-stages below) — keeping every
+        # number on one clock and one naming contract.
+        # ------------------------------------------------------------------
+        stage_sums = _sum_layers_by_stage(profiler.layer_times) if profiler.layer_times else None
+
         if self._split:
             sparse_ms = self._last_split_sparse_gpu_ms
             dense_ms = self._last_split_dense_gpu_ms
-            stage_latencies["sparse_encoder_ms"] = sparse_ms
-            stage_latencies["dense_engine_ms"] = dense_ms
             stage_latencies["bevfusion_ms"] = sparse_ms + dense_ms
         else:
             self._end_event.synchronize()
-            stage_latencies["bevfusion_ms"] = float(self._end_event.time_since(self._start_event))
-
-        if profiler.layer_times:
-            aggregated = _aggregate_trt_layers_to_stages(profiler.layer_times)
-            for k in self.BEVFUSION_STAGE_KEYS:
-                if k in ("bevfusion_ms", "dense_engine_ms"):
-                    continue
-                if self._split and k == "sparse_encoder_ms":
-                    continue
-                if k in aggregated and aggregated[k] > 0:
-                    stage_latencies[k] = aggregated[k]
-        if self._split:
-            dense_total = stage_latencies.get("dense_engine_ms", 0.0)
-            if profiler.layer_times:
-                dense_split = _aggregate_dense_layers_by_stage_boundaries(profiler.layer_times)
-                dense_profile_total = (
-                    dense_split["backbone_ms"]
-                    + dense_split["neck_ms"]
-                    + dense_split["head_ms"]
-                    + dense_split["post_scoring_ms"]
-                )
-                if dense_profile_total > 0.0 and dense_total > 0.0:
-                    # Align profiler-stage sum to CUDA-event dense total.
-                    scale = dense_total / dense_profile_total
-                    stage_latencies["backbone_ms"] = dense_split["backbone_ms"] * scale
-                    stage_latencies["neck_ms"] = dense_split["neck_ms"] * scale
-                    stage_latencies["head_ms"] = dense_split["head_ms"] * scale
-                    stage_latencies["post_scoring_ms"] = dense_split["post_scoring_ms"] * scale
-                    stage_latencies["dense_unattributed_ms"] = 0.0
-                else:
-                    stage_latencies["dense_unattributed_ms"] = dense_total
+            bevfusion_ms = float(self._end_event.time_since(self._start_event))
+            stage_latencies["bevfusion_ms"] = bevfusion_ms
+            if stage_sums is not None:
+                total_raw = sum(stage_sums.values())
+                sparse_frac = (stage_sums["sparse_encoder_ms"] / total_raw) if total_raw > 0.0 else 0.0
+                sparse_ms = bevfusion_ms * sparse_frac
             else:
-                stage_latencies["dense_unattributed_ms"] = dense_total
-        # bevfusion_ms: total TRT GPU (split = sparse + dense). Sub-stages from profiler when names match.
+                sparse_ms = 0.0
+            dense_ms = max(bevfusion_ms - sparse_ms, 0.0)
+
+        stage_latencies["sparse_encoder_ms"] = sparse_ms
+        stage_latencies["dense_engine_ms"] = dense_ms
+
+        # ------------------------------------------------------------------
+        # Step 2: dense sub-stage breakdown — IDENTICAL path for merged & split.
+        # Per-layer (order-independent) classification gives the relative weight
+        # of backbone/neck/head/post_scoring, rescaled to the dense GPU interval.
+        # ------------------------------------------------------------------
+        if stage_sums is not None:
+            dense_dist = _scale_dense_substages(stage_sums, dense_ms)
+            stage_latencies["backbone_ms"] = dense_dist["backbone_ms"]
+            stage_latencies["neck_ms"] = dense_dist["neck_ms"]
+            stage_latencies["head_ms"] = dense_dist["head_ms"]
+            stage_latencies["post_scoring_ms"] = dense_dist["post_scoring_ms"]
+            stage_latencies["dense_unattributed_ms"] = dense_dist["dense_unattributed_ms"]
+        else:
+            stage_latencies["dense_unattributed_ms"] = dense_ms
+
+        # Align "Model" with the same interval semantics across merged/split TensorRT:
+        # report model_ms as the BEVFusion TRT GPU segment (not wall-clock Python overhead).
+        stage_latencies["model_ms"] = stage_latencies.get("bevfusion_ms", 0.0)
 
         return outputs, stage_latencies
 

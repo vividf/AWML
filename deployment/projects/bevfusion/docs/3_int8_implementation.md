@@ -341,7 +341,7 @@ docker run --rm --gpus all --shm-size=8g \
 
 每個 stage 使用 `torch.cuda.synchronize()` + `time.perf_counter()` 確保 GPU 計時準確。
 
-**TensorRT**：`pipelines/tensorrt.py` 使用 `IProfiler` 收集 engine 內各 layer 執行時間，再以 `_aggregate_trt_layers_to_stages` 依 layer 名稱對應到 Sparse Encoder / Backbone / Neck / Head 等 stage；您看到的 Stage-wise Latency Breakdown（INT8 vs FP16）即為 TensorRT 推論結果。
+**TensorRT**：`pipelines/tensorrt.py` 使用 `IProfiler` 收集 engine 內各 layer 執行時間，再以 `_classify_bevfusion_layer` / `_sum_layers_by_stage`（per-layer、與 layer 順序無關的分類）依 layer 名稱對應到 Sparse Encoder / Backbone / Neck / Head 等 stage，最後用 `_scale_dense_substages` 對齊到 CUDA event 量到的 dense GPU 區間；merged 與 split 走相同邏輯。您看到的 Stage-wise Latency Breakdown（INT8 vs FP16）即為 TensorRT 推論結果。
 
 ---
 
