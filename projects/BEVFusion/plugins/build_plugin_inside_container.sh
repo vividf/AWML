@@ -17,7 +17,7 @@ INSTALL_PLUGINS_DIR="${INSTALL_PLUGINS_DIR:-/opt/plugins}"
 # (e.g. upstream autowarefoundation/autoware.universe main for an A/B build).
 AUTOWARE_UNIVERSE_REPO="${AUTOWARE_UNIVERSE_REPO:-https://github.com/vividf/autoware.universe.git}"
 # AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF:-feat/spconv-do-sort-attribute}"
-AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF:-feat/fuse_activation}"
+AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF:-feat/implicit_gemm_int8}"
 
 echo "[build_plugin] Script dir: $SCRIPT_DIR"
 echo "[build_plugin] Build dir: $BUILD_DIR"
