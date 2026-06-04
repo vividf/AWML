@@ -46,13 +46,26 @@ from deployment.projects.bevfusion.export.onnx_fuse_implicit_gemm_activation imp
 )
 
 
+def deploy_cfg_fuse_implicit_gemm_relu(deploy_cfg: Any, *, default: bool = True) -> bool:
+    """Read unified ``spconv_fuse_implicit_gemm_relu`` (FP + INT8 sparse ONNX paths).
+
+    Falls back to deprecated ``spconv_int8_fuse_implicit_gemm_relu`` when only the legacy
+    key is set.
+    """
+    val = deploy_cfg.get("spconv_fuse_implicit_gemm_relu", None)
+    if val is not None:
+        return bool(val)
+    legacy = deploy_cfg.get("spconv_int8_fuse_implicit_gemm_relu", None)
+    if legacy is not None:
+        return bool(legacy)
+    return default
+
+
 @dataclass
 class DeployTransformOptions:
     """Optional transform knobs loaded from a BEVFusion deploy_config."""
 
     fp16_layer_patterns: List[str]
-    plugin_timing_enabled: bool
-    plugin_timing_max_logs: int
     fuse_implicit_gemm_relu: bool
 
 
@@ -61,14 +74,10 @@ def _load_deploy_transform_options(deploy_cfg_path: Optional[str]) -> DeployTran
 
     Supported keys:
     - spconv_int8_fp16_layers
-    - implicit_gemm_int8_plugin_timing
-    - implicit_gemm_int8_plugin_timing_max_logs
-    - spconv_int8_fuse_implicit_gemm_relu
+    - spconv_fuse_implicit_gemm_relu (FP + INT8; legacy: spconv_int8_fuse_implicit_gemm_relu)
     """
     default = DeployTransformOptions(
         fp16_layer_patterns=[],
-        plugin_timing_enabled=False,
-        plugin_timing_max_logs=1000,
         fuse_implicit_gemm_relu=True,
     )
     if not deploy_cfg_path:
@@ -90,9 +99,7 @@ def _load_deploy_transform_options(deploy_cfg_path: Optional[str]) -> DeployTran
 
     return DeployTransformOptions(
         fp16_layer_patterns=[str(p) for p in cfg_list if str(p).strip()],
-        plugin_timing_enabled=bool(deploy_cfg.get("implicit_gemm_int8_plugin_timing", False)),
-        plugin_timing_max_logs=int(deploy_cfg.get("implicit_gemm_int8_plugin_timing_max_logs", 1000)),
-        fuse_implicit_gemm_relu=bool(deploy_cfg.get("spconv_int8_fuse_implicit_gemm_relu", True)),
+        fuse_implicit_gemm_relu=deploy_cfg_fuse_implicit_gemm_relu(deploy_cfg, default=True),
     )
 
 
@@ -720,9 +727,36 @@ def _get_initializer_data(model: onnx.ModelProto, name: str) -> Optional[np.ndar
     return None
 
 
+def _implicit_gemm_node_precision(node: onnx.NodeProto) -> int:
+    """Read the ``precision`` attribute of an ``ImplicitGemm`` node (0 = FP, 1 = INT8, default 0)."""
+    for attr in node.attribute:
+        if _normalize_attr(attr.name) == "precision" and attr.type == onnx.AttributeProto.INT:
+            return int(attr.i)
+    return 0
+
+
+def _set_implicit_gemm_node_precision(node: onnx.NodeProto, value: int) -> None:
+    """Set/overwrite the ``precision`` attribute on an ``ImplicitGemm`` node.
+
+    The Autoware plugin treats a missing ``precision`` as FP (0), but we stamp it
+    explicitly on FP-kept nodes too so the output ONNX is self-describing (every
+    ``ImplicitGemm`` carries precision=0 for FP16 / precision=1 for INT8).
+    """
+    kept = [a for a in node.attribute if _normalize_attr(a.name) != "precision"]
+    del node.attribute[:]
+    node.attribute.extend(kept)
+    node.attribute.append(helper.make_attribute("precision", int(value)))
+
+
 def _implicit_gemm_to_int8_path(node: onnx.NodeProto, fp16_patterns_norm: List[str]) -> bool:
-    """Whether this ``autoware::ImplicitGemm`` should be replaced by ``ImplicitGemmInt8``."""
+    """Whether this ``autoware::ImplicitGemm`` (FP) should be converted to the INT8 path.
+
+    INT8 nodes keep op_type ``ImplicitGemm`` but carry ``precision=1``; such already-converted
+    nodes are skipped so the transform stays idempotent.
+    """
     if node.op_type != "ImplicitGemm" or node.domain != "autoware":
+        return False
+    if _implicit_gemm_node_precision(node) == 1:
         return False
     if _implicit_gemm_matches_fp16_pattern(node, fp16_patterns_norm) is not None:
         return False
@@ -778,7 +812,12 @@ def _append_implicit_gemm_int8_plugin_attributes(
     int8_node: onnx.NodeProto,
     attrs: Dict[str, object],
 ) -> None:
-    """Set plugin fields exactly as TensorRT ``ImplicitGemmInt8PluginCreator`` expects (no ``_f`` names)."""
+    """Set plugin fields exactly as the Autoware ``ImplicitGemm`` plugin INT8 path expects.
+
+    The node keeps op_type ``ImplicitGemm`` (same op/creator as FP16); ``precision=1`` switches the
+    plugin into its INT8 branch. The two extra FP32 inputs (channel_scale, bias_scaled) plus the
+    scalar ``input_scale`` / ``output_scale`` attributes drive the in-plugin quantization.
+    """
 
     def _f(key: str, default: float) -> float:
         v = attrs.get(key, default)
@@ -795,9 +834,9 @@ def _append_implicit_gemm_int8_plugin_attributes(
             helper.make_attribute("is_subm", _i("is_subm", 0)),
             helper.make_attribute("output_scale", _f("output_scale", 1.0)),
             helper.make_attribute("input_scale", _f("input_scale", 1.0)),
-            helper.make_attribute("timing_enabled", _i("timing_enabled", 0)),
-            helper.make_attribute("timing_max_logs", _i("timing_max_logs", 1000)),
             helper.make_attribute("act_type", _i("act_type", 0)),
+            # precision=1 → Autoware ImplicitGemm plugin runs its INT8 branch.
+            helper.make_attribute("precision", 1),
         ]
     )
     # Keep Autoware ImplicitGemm extras if present (shape / legacy parsers).
@@ -822,8 +861,6 @@ def transform_onnx_int8(
     override_terminal_absmax: Optional[float] = None,
     audit_records: Optional[List[Dict[str, Any]]] = None,
     fp16_layer_patterns: Optional[List[str]] = None,
-    plugin_timing_enabled: bool = False,
-    plugin_timing_max_logs: int = 1000,
     fuse_implicit_gemm_trailing_relu: bool = True,
 ) -> onnx.ModelProto:
     """Replace ImplicitGemm nodes with ImplicitGemmInt8 nodes.
@@ -844,10 +881,6 @@ def transform_onnx_int8(
             **kept as FP16** ``ImplicitGemm`` (skipped INT8 replacement). Driven by
             ``spconv_int8_fp16_layers`` in the BEVFusion deploy_config. ``conv_out`` follows
             the same rule as other layers (no ONNX special-case skip).
-        plugin_timing_enabled: When True, ONNX attributes ``timing_enabled`` / ``timing_max_logs``
-            are set on each ``ImplicitGemmInt8`` so the TensorRT plugin logs CUDA-event splits
-            (deploy_config: ``implicit_gemm_int8_plugin_timing``).
-        plugin_timing_max_logs: Upper bound on timing log lines (stderr); same key in deploy_config.
         fuse_implicit_gemm_trailing_relu: When True, run ``fuse_autoware_implicit_gemm_trailing_relu``
             so standalone ``Relu`` chains on sparse conv outputs become ``ImplicitGemm.act_type=kReLU``.
 
@@ -872,12 +905,21 @@ def transform_onnx_int8(
             fuse_autoware_implicit_gemm_trailing_relu,
         )
 
+        n_relu_in = sum(1 for n in model.graph.node if n.op_type == "Relu")
         n_fused = fuse_autoware_implicit_gemm_trailing_relu(model)
         if n_fused:
             print(
-                f"  [onnx-fuse] Merged {n_fused} ImplicitGemm→Relu chain(s): "
-                "act_type=kReLU (1), Relu nodes removed."
+                f"  [onnx-fuse] spconv_fuse_implicit_gemm_relu=True: merged {n_fused} "
+                "ImplicitGemm→Relu chain(s): act_type=kReLU (1), Relu nodes removed."
             )
+        else:
+            print(
+                "  [onnx-fuse] spconv_fuse_implicit_gemm_relu=True but fused 0 chains "
+                f"(Relu nodes in graph={n_relu_in}). No direct ImplicitGemm→Relu adjacency was "
+                "found — check for BatchNorm/Add nodes sitting between ImplicitGemm and Relu."
+            )
+    else:
+        print("  [onnx-fuse] spconv_fuse_implicit_gemm_relu=False: skipping ImplicitGemm→Relu fusion.")
 
     graph = model.graph
     layer_stems = list(layer_scales.keys())
@@ -969,12 +1011,19 @@ def transform_onnx_int8(
             new_nodes.append(node)
             continue
 
+        # Already-converted INT8 node (precision=1) from a prior run — keep as-is (idempotent).
+        if _implicit_gemm_node_precision(node) == 1:
+            new_nodes.append(node)
+            continue
+
         matched_fp16 = _implicit_gemm_matches_fp16_pattern(node, fp16_patterns_norm)
         if matched_fp16 is not None:
             fp16_pattern_hits[matched_fp16] += 1
+            # Stamp precision=0 explicitly so the FP-kept node is self-describing in the ONNX.
+            _set_implicit_gemm_node_precision(node, 0)
             print(
                 f"  [int8] Keep FP16 ImplicitGemm per spconv_int8_fp16_layers "
-                f"(pattern={matched_fp16!r}): name={node.name!r}"
+                f"(pattern={matched_fp16!r}): name={node.name!r} (precision=0)"
             )
             new_nodes.append(node)
             continue
@@ -1063,8 +1112,6 @@ def transform_onnx_int8(
         attrs = _implicit_gemm_attrs_from_node(node)
         attrs["output_scale"] = float(si["output_scale"])
         attrs["input_scale"] = float(si["input_scale"])
-        attrs["timing_enabled"] = int(bool(plugin_timing_enabled))
-        attrs["timing_max_logs"] = int(plugin_timing_max_logs)
 
         # Fused FP16 export may have 6 inputs (optional per-channel bias); Int8 uses 5 sparse + scales.
         if len(node.input) not in (5, 6):
@@ -1074,8 +1121,10 @@ def transform_onnx_int8(
             )
         sparse_in = list(node.input[:5])
 
+        # Keep op_type "ImplicitGemm" (same Autoware plugin/creator as FP16); precision=1 attr +
+        # the two extra FP32 scale inputs switch the plugin into INT8 mode. Avoids a second plugin.
         int8_node = helper.make_node(
-            "ImplicitGemmInt8",
+            "ImplicitGemm",
             inputs=sparse_in + [cs_name, bs_name],
             outputs=list(node.output),
             domain="autoware",
@@ -1139,17 +1188,17 @@ def transform_onnx_int8(
     final_fp16_nodes: List[str] = []
     final_int8_nodes: List[str] = []
     for n in graph.node:
-        if n.domain != "autoware":
+        if n.domain != "autoware" or n.op_type != "ImplicitGemm":
             continue
-        if n.op_type == "ImplicitGemm":
-            final_fp16_nodes.append(n.name or "<unnamed>")
-        elif n.op_type == "ImplicitGemmInt8":
+        if _implicit_gemm_node_precision(n) == 1:
             final_int8_nodes.append(n.name or "<unnamed>")
+        else:
+            final_fp16_nodes.append(n.name or "<unnamed>")
     print("\n  [int8-census] Final autoware::ImplicitGemm node types in output ONNX:")
-    print(f"  [int8-census]   ImplicitGemm     (FP16, kept): {len(final_fp16_nodes)}")
+    print(f"  [int8-census]   ImplicitGemm precision=0 (FP16, kept): {len(final_fp16_nodes)}")
     for nm in final_fp16_nodes:
         print(f"  [int8-census]     - {nm}")
-    print(f"  [int8-census]   ImplicitGemmInt8 (INT8 conv): {len(final_int8_nodes)}")
+    print(f"  [int8-census]   ImplicitGemm precision=1 (INT8 conv): {len(final_int8_nodes)}")
     for nm in final_int8_nodes:
         print(f"  [int8-census]     - {nm}")
 
@@ -1211,11 +1260,7 @@ def main():
     parser.add_argument(
         "--deploy-cfg",
         default=None,
-        help=(
-            "Loads deploy_config .py for "
-            "spconv_int8_fp16_layers, implicit_gemm_int8_plugin_timing, and "
-            "implicit_gemm_int8_plugin_timing_max_logs."
-        ),
+        help="Loads deploy_config .py for spconv_int8_fp16_layers.",
     )
     args = parser.parse_args()
 
@@ -1260,11 +1305,6 @@ def main():
     if fp16_layer_patterns:
         print(f"  FP16 keep-list ({len(fp16_layer_patterns)}): {fp16_layer_patterns}")
     print(
-        f"  ImplicitGemmInt8 plugin CUDA timing attrs: timing_enabled={deploy_opts.plugin_timing_enabled} "
-        f"timing_max_logs={deploy_opts.plugin_timing_max_logs}"
-        + (f" (from deploy_cfg {deploy_cfg_path!r})" if deploy_cfg_path else "")
-    )
-    print(
         "  ImplicitGemm ReLU/Add ONNX fuse: "
         f"{'enabled' if deploy_opts.fuse_implicit_gemm_relu else 'disabled'}"
         + (f" (from deploy_cfg {deploy_cfg_path!r})" if deploy_cfg_path else " (default)")
@@ -1279,8 +1319,6 @@ def main():
         override_terminal_absmax=args.pathb_terminal_absmax,
         audit_records=audit_records if args.audit_report else None,
         fp16_layer_patterns=fp16_layer_patterns,
-        plugin_timing_enabled=deploy_opts.plugin_timing_enabled,
-        plugin_timing_max_logs=deploy_opts.plugin_timing_max_logs,
         fuse_implicit_gemm_trailing_relu=deploy_opts.fuse_implicit_gemm_relu,
     )
 

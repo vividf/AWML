@@ -30,12 +30,24 @@ def _get_initializer_array(model: "onnx.ModelProto", name: str) -> Optional[np.n
     return None
 
 
+def _node_is_int8(node) -> bool:
+    """INT8 nodes keep op_type ``ImplicitGemm`` but carry ``precision=1``."""
+    if node.op_type != "ImplicitGemm":
+        return False
+    import onnx  # local import; module is optional in some debug envs
+
+    for attr in node.attribute:
+        if attr.name in ("precision", "precision_i") and attr.type == onnx.AttributeProto.INT:
+            return int(attr.i) == 1
+    return False
+
+
 def _find_int8_node_for_stem(model: "onnx.ModelProto", stem: str):
-    """Pick ``ImplicitGemmInt8`` whose name or inputs reference ``stem`` (e.g. ``conv_input.0``)."""
+    """Pick INT8 ``ImplicitGemm`` (precision=1) whose name/inputs reference ``stem``."""
     stem_l = stem.lower()
     alt = stem.replace(".", "/").lower()
     for node in model.graph.node:
-        if node.op_type != "ImplicitGemmInt8":
+        if not _node_is_int8(node):
             continue
         blob = ((node.name or "") + " " + " ".join(node.input)).lower()
         if stem_l in blob or alt in blob:

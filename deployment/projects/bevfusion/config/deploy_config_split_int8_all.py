@@ -96,25 +96,13 @@ checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_dense_exp1.
 spconv_do_sort = False
 
 # ============================================================================
-# ImplicitGemmInt8 TRT plugin: optional per-kernel CUDA timing to stderr
-# ----------------------------------------------------------------------------
-# Baked into each ``ImplicitGemmInt8`` ONNX node at Path B
-# (``sparse_int8_onnx_transform --deploy-cfg ...`` pointing to this file).
-# Re-export ONNX and
-# rebuild the sparse engine after changing. When enabled, each enqueue may
-# ``cudaEventSynchronize`` (profile only; not for production latency).
-# ============================================================================
-implicit_gemm_int8_plugin_timing = False
-implicit_gemm_int8_plugin_timing_max_logs = 1000
-
-# ============================================================================
 # Sparse ONNX transform: fuse ImplicitGemm with trailing Relu / Add(const)+Relu.
 # ----------------------------------------------------------------------------
 # Consumed by ``sparse_int8_onnx_transform --deploy-cfg ...``.
 # - True  (default): run ONNX fusion passes and bake act_type / merged bias.
 # - False          : keep explicit Relu/Add nodes (debug / ablation).
 # ============================================================================
-spconv_int8_fuse_implicit_gemm_relu = True
+spconv_fuse_implicit_gemm_relu = True
 
 # ============================================================================
 # Sparse INT8: per-layer FP16 keep-list (accuracy knob).

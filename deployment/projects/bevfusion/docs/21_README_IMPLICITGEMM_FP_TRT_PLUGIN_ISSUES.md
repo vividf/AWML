@@ -106,7 +106,7 @@ python -m deployment.projects.bevfusion.export.sparse_int8_onnx_transform \
 | **`--onnx`** | 輸入：deploy 匯出的 **稀疏** ONNX（含 **`autoware::ImplicitGemm`**）。 |
 | **`--checkpoint`** | PTQ **`.pth`**（內含 **`_amax`**；Path B 亦用 **bias** 等）。 |
 | **`--output`** | 輸出 ONNX 路徑。 |
-| **`--deploy-cfg`** | 載入 **deploy 設定**：**`spconv_int8_fp16_layers`**（哪些層保留 FP **`ImplicitGemm`**）、**`implicit_gemm_int8_plugin_timing`**、**`implicit_gemm_int8_plugin_timing_max_logs`**（烘焙進 **`ImplicitGemmInt8`**，可減少 TRT **timing_*** 警告）、**`spconv_int8_fuse_implicit_gemm_relu`**（控制是否做 ImplicitGemm/ImplicitGemmInt8 的 Relu/Add 融合）。 |
+| **`--deploy-cfg`** | 載入 **deploy 設定**：**`spconv_int8_fp16_layers`**（哪些層保留 FP **`ImplicitGemm`**）、**`implicit_gemm_int8_plugin_timing`**、**`implicit_gemm_int8_plugin_timing_max_logs`**（烘焙進 **`ImplicitGemmInt8`**，可減少 TRT **timing_*** 警告）、**`spconv_fuse_implicit_gemm_relu`**（控制是否做 ImplicitGemm 尾端 Relu 融合；FP 與 INT8 共用）。 |
 | **`--fp16-layers`** | 逗號分隔 **字串子串**，匹配 **`ImplicitGemm` `node.name`**，該節點不換成 Int8（與 deploy 清單 **合併**）。 |
 | **`--verbose`** | 印 stem 匹配、尺度鏈等診斷（stem 衝突時必開）。 |
 | **`--audit-report`** | 輸出 JSON，記錄各層 INT8 scale 摘要。 |

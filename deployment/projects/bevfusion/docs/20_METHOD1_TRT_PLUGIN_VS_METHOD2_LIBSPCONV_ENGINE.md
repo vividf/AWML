@@ -46,7 +46,7 @@
 | **1** | PTQ，產含 `_amax` 的 `.pth` | `python deployment/quantization/bevfusion_quantization.py ptq ... --deploy-cfg deployment/projects/bevfusion/config/deploy_config_split_int8.py ...`；若只要稀疏塔校準、與 **Preset C** 一致，建議加 **`--sparse-int8-only`**（見 deploy 檔頭註解） |
 | **2** | 只匯 ONNX（FP16 `ImplicitGemm`） | 在 deploy 設 **`export.mode = "onnx"`**（或 **`"both"`** 會同時建 TRT，一般不用于「先 transform 再建 engine」）後執行：`python -m deployment.cli.main bevfusion <deploy_cfg> <mmconfig>` |
 | **3** | 保留乾淨 FP16 稀疏 ONNX 備份 | 例如：`mv .../onnx/bevfusion_sparse.onnx .../bevfusion_sparse_fp16.onnx`（避免覆寫後無法重跑 transform） |
-| **4** | ONNX 後處理：換成 `ImplicitGemmInt8` + scale | `python -m deployment.projects.bevfusion.export.sparse_int8_onnx_transform --onnx ..._fp16.onnx --checkpoint <同 PTQ> --output .../onnx/bevfusion_sparse.onnx`；**Option2**：加 **`--deploy-cfg`** 讀取 `spconv_int8_fp16_layers`、`spconv_int8_fuse_implicit_gemm_relu` 等 deploy 設定 |
+| **4** | ONNX 後處理：換成 `ImplicitGemmInt8` + scale | `python -m deployment.projects.bevfusion.export.sparse_int8_onnx_transform --onnx ..._fp16.onnx --checkpoint <同 PTQ> --output .../onnx/bevfusion_sparse.onnx`；**Option2**：加 **`--deploy-cfg`** 讀取 `spconv_int8_fp16_layers`、`spconv_fuse_implicit_gemm_relu` 等 deploy 設定 |
 | **5** | 只建 TensorRT、不重匯 ONNX | 設 **`export.mode = "trt"`**，再跑同一 `deployment.cli.main bevfusion ...`；會依現有 ONNX 建 `bevfusion_sparse.engine` / `bevfusion_dense.engine` |
 
 **已在程式層支援、無需你再「發明」的項目**：  

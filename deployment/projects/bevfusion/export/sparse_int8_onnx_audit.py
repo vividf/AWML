@@ -20,22 +20,23 @@ import onnx
 from deployment.projects.bevfusion.export.sparse_int8_onnx_transform import (
     _get_initializer_data,
     _implicit_gemm_attrs_from_node,
+    _implicit_gemm_node_precision,
 )
 
 
 def audit_implicit_gemm_int8_onnx(model: onnx.ModelProto, *, stream=sys.stdout) -> int:
-    """Print one line per ``autoware::ImplicitGemmInt8`` node. Returns node count."""
+    """Print one line per INT8 ``autoware::ImplicitGemm`` node (precision=1). Returns node count."""
     graph = model.graph
     count = 0
     for node in graph.node:
-        if node.op_type != "ImplicitGemmInt8" or node.domain != "autoware":
+        if node.op_type != "ImplicitGemm" or node.domain != "autoware":
+            continue
+        if _implicit_gemm_node_precision(node) != 1:
             continue
         count += 1
         attrs = _implicit_gemm_attrs_from_node(node)
         in_s = float(attrs.get("input_scale", 0.0) or 0.0)
         out_s = float(attrs.get("output_scale", 0.0) or 0.0)
-        te = int(attrs.get("timing_enabled", 0) or 0)
-        tml = int(attrs.get("timing_max_logs", 1000) or 1000)
         cs_name = node.input[5] if len(node.input) > 5 else ""
         bs_name = node.input[6] if len(node.input) > 6 else ""
         cs = _get_initializer_data(model, cs_name) if cs_name else None
@@ -46,17 +47,16 @@ def audit_implicit_gemm_int8_onnx(model: onnx.ModelProto, *, stream=sys.stdout) 
             cs_line = "channel_scale=(missing or not initializer)"
         print(
             f"[ImplicitGemmInt8] name={node.name!r} in_scale={in_s:.6g} out_scale={out_s:.6g} "
-            f"timing_enabled={te} timing_max_logs={tml} "
             f"{cs_line} cs_tensor={cs_name!r} bias_scaled_tensor={bs_name!r}",
             file=stream,
         )
     if count == 0:
         print(
-            "No autoware::ImplicitGemmInt8 nodes found (expect Path-B INT8 ONNX).",
+            "No INT8 autoware::ImplicitGemm (precision=1) nodes found (expect Path-B INT8 ONNX).",
             file=stream,
         )
     else:
-        print(f"\nTotal ImplicitGemmInt8 nodes: {count}", file=stream)
+        print(f"\nTotal INT8 ImplicitGemm (precision=1) nodes: {count}", file=stream)
     return count
 
 

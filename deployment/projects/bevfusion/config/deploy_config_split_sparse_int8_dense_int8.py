@@ -79,8 +79,8 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 #
 # 評測：註解 Preset A，改為下方三項（checkpoint 指向上列 output；dense 三關必須 False 與 PTQ 一致）
 # ============================================================================
-# checkpoint_path = "work_dirs/bevfusion/bevfusion_epoch_30_ptq_sparse_only_exp3.pth"
-checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28_ptq_sparse_int8_dense_int8.pth"
+checkpoint_path = "work_dirs/bevfusion/best_epoch_28_ptq_sparse_int8_dense_int8.pth"
+# checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28_ptq_sparse_int8_dense_int8.pth"
 
 
 # ============================================================================
@@ -98,25 +98,26 @@ checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28_ptq_sparse
 spconv_do_sort = False
 
 # ============================================================================
-# ImplicitGemmInt8 TRT plugin: optional per-kernel CUDA timing to stderr
+# Sparse BN fold into spconv at ONNX export (float shadow encoder).
 # ----------------------------------------------------------------------------
-# Baked into each ``ImplicitGemmInt8`` ONNX node at Path B
-# (``sparse_int8_onnx_transform --deploy-cfg ...`` pointing to this file).
-# Re-export ONNX and
-# rebuild the sparse engine after changing. When enabled, each enqueue may
-# ``cudaEventSynchronize`` (profile only; not for production latency).
+# The PTQ checkpoint is already BN-folded (no sparse BN running buffers), and the
+# INT8 channel_scale is derived from the folded weight _amax. If this is False,
+# the export float-shadow rebuilds *fresh, untrained* BatchNorm1d nodes (γ=1,β=0,
+# mean=0,var=1 ≈ identity) that the checkpoint cannot fill, leaving 21 useless BN
+# nodes in the ONNX that also block the ImplicitGemm→Relu fusion. Set True so the
+# shadow folds BN → Identity (matches the folded checkpoint, keeps INT8 scales
+# consistent) and ImplicitGemm→Relu becomes fuseable.
 # ============================================================================
-implicit_gemm_int8_plugin_timing = False
-implicit_gemm_int8_plugin_timing_max_logs = 1000
+fuse_spconv_bn = True
 
 # ============================================================================
-# Sparse ONNX transform: fuse ImplicitGemm with trailing Relu / Add(const)+Relu.
+# Sparse ONNX: fuse ImplicitGemm with trailing Relu (FP export + INT8 transform).
 # ----------------------------------------------------------------------------
-# Consumed by ``sparse_int8_onnx_transform --deploy-cfg ...``.
-# - True  (default): run ONNX fusion passes and bake act_type / merged bias.
-# - False          : keep explicit Relu/Add nodes (debug / ablation).
+# - True  (default): bake act_type=ReLU into ImplicitGemm, remove standalone Relu nodes.
+# - False          : keep explicit Relu nodes (debug / ablation).
+# Requires fuse_spconv_bn=True for INT8 so ImplicitGemm→Relu is directly adjacent.
 # ============================================================================
-spconv_int8_fuse_implicit_gemm_relu = True
+spconv_fuse_implicit_gemm_relu = True
 
 # ============================================================================
 # Sparse INT8: per-layer FP16 keep-list (accuracy knob).
@@ -207,9 +208,9 @@ devices = dict(
 )
 
 export = dict(
-    mode="none",
-    work_dir="work_dirs/bevfusion_deployment_2_7_sparse_int8_dense_int8_test",
-    onnx_path="work_dirs/bevfusion_deployment_2_7_sparse_int8_dense_int8_test/onnx",
+    mode="both",
+    work_dir="work_dirs/bevfusion_deployment_2_7_sparse_int8_dense_int8_6_4",
+    onnx_path="work_dirs/bevfusion_deployment_2_7_sparse_int8_dense_int8_6_4/onnx",
     # onnx_path=None,
 )
 
@@ -286,7 +287,8 @@ components = dict(
 )
 
 runtime_io = dict(
-    info_file="info/kokseang_2_6_1/t4dataset_j6gen2_base_infos_test.pkl",
+    # info_file="info/kokseang_2_6_1/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=0,
 )
 
@@ -302,9 +304,10 @@ onnx_config = dict(
 tensorrt_config = dict(
     precision_policy="fp16",
     max_workspace_size=1 << 32,
+    # INT8 sparse conv now lives in the single Autoware plugin library (ImplicitGemm with
+    # precision=1). No separate libimplicit_gemm_int8_plugin.so is needed anymore.
     plugin_libraries=[
         "/opt/plugins/libautoware_tensorrt_plugins.so",
-        "/workspace/deployment/projects/bevfusion/cpp/int8_plugin/build/libimplicit_gemm_int8_plugin.so",
     ],
 )
 

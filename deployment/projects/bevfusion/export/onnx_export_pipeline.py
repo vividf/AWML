@@ -366,6 +366,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         from deployment.projects.bevfusion.export.sparse_int8_onnx_transform import (
             _build_layer_scale_map,
             _load_amax_from_checkpoint,
+            deploy_cfg_fuse_implicit_gemm_relu,
             transform_onnx_int8,
         )
 
@@ -388,9 +389,7 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         fp16_patterns = [
             str(p) for p in (config.deploy_cfg.get("spconv_int8_fp16_layers", []) or []) if str(p).strip()
         ]
-        plugin_timing_enabled = bool(config.deploy_cfg.get("implicit_gemm_int8_plugin_timing", False))
-        plugin_timing_max_logs = int(config.deploy_cfg.get("implicit_gemm_int8_plugin_timing_max_logs", 1000))
-        fuse_implicit_gemm_relu = bool(config.deploy_cfg.get("spconv_int8_fuse_implicit_gemm_relu", True))
+        fuse_implicit_gemm_relu = deploy_cfg_fuse_implicit_gemm_relu(config.deploy_cfg, default=True)
 
         model_fp = onnx.load(str(backup_fp16))
         model_int8 = transform_onnx_int8(
@@ -400,8 +399,6 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             verbose=bool(config.deploy_cfg.get("spconv_int8_transform_verbose", False)),
             amax_dict=amax_dict,
             fp16_layer_patterns=fp16_patterns,
-            plugin_timing_enabled=plugin_timing_enabled,
-            plugin_timing_max_logs=plugin_timing_max_logs,
             fuse_implicit_gemm_trailing_relu=fuse_implicit_gemm_relu,
         )
         onnx.save_model(model_int8, str(sparse_onnx_path))
@@ -413,7 +410,11 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
 
     def _postprocess_sparse_onnx_fp(self, *, config: BaseDeploymentConfig, sparse_onnx_path: Path) -> None:
         """Optional FP sparse ONNX postprocess (ImplicitGemm activation fusion)."""
-        enable_fuse = bool(config.deploy_cfg.get("spconv_fuse_implicit_gemm_relu", False))
+        from deployment.projects.bevfusion.export.sparse_int8_onnx_transform import (
+            deploy_cfg_fuse_implicit_gemm_relu,
+        )
+
+        enable_fuse = deploy_cfg_fuse_implicit_gemm_relu(config.deploy_cfg, default=False)
         if not enable_fuse:
             self.logger.info("Sparse ONNX postprocess: ImplicitGemm ReLU fuse disabled by deploy config.")
             return
