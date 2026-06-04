@@ -24,6 +24,7 @@ Usage:
     # Returns: {"mAP_center_distance_bev_0.5": 0.7, ...}
 """
 
+import gc
 import logging
 import re
 import time
@@ -199,6 +200,8 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
         self.gt_count_by_label: Dict[str, int] = {}
         self.pred_count_by_label: Dict[str, int] = {}
         self._last_metrics_by_eval_name: Dict[str, MetricsScore] = {}
+        self._cached_frames: List[Dict[str, Any]] = []
+        self._cached_metrics: Optional[Dict[str, float]] = None
 
     def _create_evaluators(self, config: Detection3DMetricsConfig) -> None:
         """Create multiple evaluators for different distance ranges (like T4MetricV2)."""
@@ -248,13 +251,9 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
 
     def reset(self) -> None:
         """Reset the interface for a new evaluation session."""
-        # Reset all evaluators
-        for eval_name, eval_data in self.evaluators.items():
-            eval_data["evaluator"] = PerceptionEvaluationManager(
-                evaluation_config=eval_data["evaluator_config"],
-                load_ground_truth=False,
-                metric_output_dir=None,
-            )
+        # Evaluators are created on-demand in compute_metrics() to keep memory usage low.
+        for eval_data in self.evaluators.values():
+            eval_data["evaluator"] = None
 
         self._frame_count = 0
         self.gt_count_total = 0
@@ -262,6 +261,8 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
         self.gt_count_by_label = {}
         self.pred_count_by_label = {}
         self._last_metrics_by_eval_name = {}
+        self._cached_frames = []
+        self._cached_metrics = None
 
     def _convert_index_to_label(self, label_index: int) -> Label:
         """Convert a label index to a Label object.
@@ -428,11 +429,10 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
                 - num_lidar_pts: int (optional)
             frame_name: Optional name for the frame.
         """
-        needs_reset = any(eval_data["evaluator"] is None for eval_data in self.evaluators.values())
-        if needs_reset:
-            self.reset()
+        if self._frame_count == 0 and self._cached_frames:
+            # Defensive consistency check for unusual call sequences.
+            self._cached_frames = []
 
-        unix_time = time.time()
         if frame_name is None:
             frame_name = str(self._frame_count)
 
@@ -457,31 +457,16 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
                 name = self.class_names[label]
                 self.gt_count_by_label[name] = self.gt_count_by_label.get(name, 0) + 1
 
-        # Convert predictions to DynamicObject
-        estimated_objects = self._predictions_to_dynamic_objects(predictions, unix_time)
-
-        # Convert ground truths to FrameGroundTruth
-        frame_ground_truth = self._ground_truths_to_frame_ground_truth(ground_truths, unix_time, frame_name)
-
-        # Add frame result to all evaluators
-        try:
-            for eval_name, eval_data in self.evaluators.items():
-                if eval_data["evaluator"] is None:
-                    eval_data["evaluator"] = PerceptionEvaluationManager(
-                        evaluation_config=eval_data["evaluator_config"],
-                        load_ground_truth=False,
-                        metric_output_dir=None,
-                    )
-                eval_data["evaluator"].add_frame_result(
-                    unix_time=unix_time,
-                    ground_truth_now_frame=frame_ground_truth,
-                    estimated_objects=estimated_objects,
-                    critical_object_filter_config=eval_data["critical_object_filter_config"],
-                    frame_pass_fail_config=eval_data["frame_pass_fail_config"],
-                )
-            self._frame_count += 1
-        except Exception as e:
-            logger.warning("Failed to add frame %s: %s", frame_name, e)
+        # Keep one copy of raw frame data. Per-range evaluators are built sequentially in compute_metrics().
+        self._cached_frames.append(
+            {
+                "frame_name": frame_name,
+                "predictions": predictions,
+                "ground_truths": ground_truths,
+            }
+        )
+        self._frame_count += 1
+        self._cached_metrics = None
 
     def compute_metrics(self) -> Dict[str, float]:
         """Compute metrics from all added frames.
@@ -505,19 +490,41 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
             logger.warning("No frames to evaluate")
             return {}
 
+        if self._cached_metrics is not None and self._last_metrics_by_eval_name:
+            return dict(self._cached_metrics)
+
         try:
-            # Cache scene results to avoid recomputing
+            # Compute each distance bucket sequentially to avoid holding all evaluator frame results in memory.
             scene_results = {}
             for eval_name, eval_data in self.evaluators.items():
-                evaluator = eval_data["evaluator"]
-                if evaluator is None:
-                    continue
-
+                evaluator = PerceptionEvaluationManager(
+                    evaluation_config=eval_data["evaluator_config"],
+                    load_ground_truth=False,
+                    metric_output_dir=None,
+                )
                 try:
+                    for frame_idx, frame in enumerate(self._cached_frames):
+                        unix_time = time.time() + frame_idx * 1e-3
+                        estimated_objects = self._predictions_to_dynamic_objects(frame["predictions"], unix_time)
+                        frame_ground_truth = self._ground_truths_to_frame_ground_truth(
+                            frame["ground_truths"], unix_time, frame["frame_name"]
+                        )
+                        evaluator.add_frame_result(
+                            unix_time=unix_time,
+                            ground_truth_now_frame=frame_ground_truth,
+                            estimated_objects=estimated_objects,
+                            critical_object_filter_config=eval_data["critical_object_filter_config"],
+                            frame_pass_fail_config=eval_data["frame_pass_fail_config"],
+                        )
+
                     metrics_score = evaluator.get_scene_result()
                     scene_results[eval_name] = metrics_score
                 except Exception as e:
                     logger.warning("Error computing metrics for %s: %s", eval_name, e)
+                finally:
+                    eval_data["evaluator"] = None
+                    del evaluator
+                    gc.collect()
 
             # Process cached metrics with evaluator name prefix
             all_metrics = {}
@@ -527,6 +534,7 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
 
             # Cache results for reuse by format_metrics_report() and summary property
             self._last_metrics_by_eval_name = scene_results
+            self._cached_metrics = dict(all_metrics)
 
             return all_metrics
 
@@ -639,7 +647,10 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
 
         Only uses metrics from the last distance bucket.
         """
-        metrics = self.compute_metrics()
+        if not self._last_metrics_by_eval_name:
+            metrics = self.compute_metrics()
+        else:
+            metrics = dict(self._cached_metrics) if self._cached_metrics is not None else self.compute_metrics()
 
         if not self._bev_distance_ranges:
             return DetectionSummary(
