@@ -21,26 +21,25 @@ class TensorRTExporter(BaseExporter):
     def __init__(
         self,
         config: TensorRTExportConfig,
+        logger: logging.Logger,
         model_wrapper: Optional[Any] = None,
-        logger: logging.Logger = None,
     ) -> None:
         """
         Initialize TensorRT exporter.
 
         Args:
             config: TensorRT export configuration dataclass instance.
+            logger: Logger instance for export progress and diagnostics.
             model_wrapper: Optional model wrapper class (usually not needed for TensorRT)
-            logger: Optional logger instance
         """
-        super().__init__(config, model_wrapper=model_wrapper, logger=logger)
-        self.logger = logger or logging.getLogger(__name__)
+        super().__init__(config, logger=logger, model_wrapper=model_wrapper)
 
     def export(
         self,
-        model: torch.nn.Module,  # Not used for TensorRT, kept for interface compatibility
+        model: Optional[torch.nn.Module],  # Not used for TensorRT, kept for interface compatibility
         sample_input: Any,
         output_path: str,
-        onnx_path: str = None,
+        onnx_path: str,
     ) -> Artifact:
         """
         Export ONNX model to TensorRT engine.
@@ -56,11 +55,7 @@ class TensorRTExporter(BaseExporter):
 
         Raises:
             RuntimeError: If export fails
-            ValueError: If ONNX path is missing
         """
-        if onnx_path is None:
-            raise ValueError("onnx_path is required for TensorRT export")
-
         precision_policy = self.config.precision_policy
         self.logger.info("Building TensorRT engine with precision policy: %s", precision_policy)
         self.logger.info("  ONNX source: %s", onnx_path)
@@ -98,8 +93,8 @@ class TensorRTExporter(BaseExporter):
         try:
             builder_config, network, parser = self._create_builder_and_network(builder, trt_logger)
             try:
-                self._parse_onnx(parser, network, onnx_path)
-                self._configure_input_profiles(builder, builder_config, network, sample_input)
+                self._parse_onnx(parser, onnx_path)
+                self._configure_input_profiles(builder, builder_config, sample_input)
                 serialized_engine = self._build_engine(builder, builder_config, network)
                 self._save_engine(serialized_engine, output_path)
                 return Artifact(path=output_path)
@@ -155,15 +150,13 @@ class TensorRTExporter(BaseExporter):
     def _parse_onnx(
         self,
         parser: trt.OnnxParser,
-        network: trt.INetworkDefinition,
         onnx_path: str,
     ) -> None:
         """
-        Parse ONNX model into TensorRT network.
+        Parse ONNX model into the TensorRT network bound to `parser`.
 
         Args:
             parser: TensorRT ONNX parser instance
-            network: TensorRT network definition
             onnx_path: Path to ONNX model file
 
         Raises:
@@ -179,7 +172,6 @@ class TensorRTExporter(BaseExporter):
         self,
         builder: trt.Builder,
         builder_config: trt.IBuilderConfig,
-        network: trt.INetworkDefinition,
         sample_input: Any,
     ) -> None:
         """
@@ -208,7 +200,6 @@ class TensorRTExporter(BaseExporter):
         Args:
             builder: TensorRT builder instance
             builder_config: TensorRT builder config
-            network: TensorRT network definition
             sample_input: Sample input for shape configuration (typically obtained via
                          BaseDataLoader.get_shape_sample())
         """

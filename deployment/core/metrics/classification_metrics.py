@@ -25,7 +25,6 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 from perception_eval.common.dataset import FrameGroundTruth
-from perception_eval.common.label import AutowareLabel, Label
 from perception_eval.common.object2d import DynamicObject2D
 from perception_eval.common.schema import FrameID
 from perception_eval.config.perception_evaluation_config import PerceptionEvaluationConfig
@@ -37,26 +36,13 @@ from perception_eval.evaluation.result.perception_frame_config import (
 from perception_eval.manager import PerceptionEvaluationManager
 
 from deployment.core.metrics.base_metrics_interface import (
+    VALID_2D_FRAME_IDS,
     BaseMetricsConfig,
     BaseMetricsInterface,
     ClassificationSummary,
 )
 
 logger = logging.getLogger(__name__)
-
-# Valid 2D frame IDs for camera-based classification
-VALID_2D_FRAME_IDS = [
-    "cam_front",
-    "cam_front_right",
-    "cam_front_left",
-    "cam_front_lower",
-    "cam_back",
-    "cam_back_left",
-    "cam_back_right",
-    "cam_traffic_light_near",
-    "cam_traffic_light_far",
-    "cam_traffic_light",
-]
 
 
 @dataclass(frozen=True)
@@ -176,16 +162,6 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
         )
         self._frame_count = 0
 
-    def _convert_index_to_label(self, label_index: int) -> Label:
-        """Convert a label index to a Label object."""
-        if 0 <= label_index < len(self.class_names):
-            class_name = self.class_names[label_index]
-        else:
-            class_name = "unknown"
-
-        autoware_label = AutowareLabel.__members__.get(class_name.upper(), AutowareLabel.UNKNOWN)
-        return Label(label=autoware_label, name=class_name)
-
     def _create_dynamic_object_2d(
         self,
         label_index: int,
@@ -272,11 +248,8 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
         try:
             metrics_score: MetricsScore = self.evaluator.get_scene_result()
             return self._process_metrics_score(metrics_score)
-        except Exception as e:
-            logger.error("Error computing metrics: %s", e)
-            import traceback
-
-            traceback.print_exc()
+        except Exception:
+            logger.exception("Error computing metrics")
             return {}
 
     def _process_metrics_score(self, metrics_score: MetricsScore) -> Dict[str, float]:

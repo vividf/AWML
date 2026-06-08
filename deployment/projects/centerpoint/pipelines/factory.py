@@ -2,16 +2,15 @@
 CenterPoint Pipeline Factory.
 
 Registers CenterPoint pipelines into the global pipeline_registry so evaluators can create pipelines
-via `deployment.pipelines.factory.PipelineFactory`.
+via `pipeline_registry.create_pipeline(...)`.
 """
 
 import logging
-from typing import Mapping, Optional
 
 import torch
 from typing_extensions import override
 
-import deployment.configs.schema as ComponentsConfig
+from deployment.configs.schema import ComponentsConfig
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
 from deployment.core.evaluation.evaluator_types import ModelSpec

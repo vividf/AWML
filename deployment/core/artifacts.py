@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +48,6 @@ class Artifact:
 # ============================================================================
 # Path Resolution Functions
 # ============================================================================
-
-# File extension mapping
-FILE_EXTENSIONS: Dict[str, str] = {
-    "onnx_file": ".onnx",
-    "engine_file": ".engine",
-}
 
 
 def resolve_artifact_path(
@@ -167,59 +161,3 @@ def _get_filename_from_config(
     if isinstance(filename, str) and filename:
         return filename
     return None
-
-
-def get_component_files(
-    components_cfg: Mapping[str, Any],
-    file_key: str,
-) -> Dict[str, str]:
-    """Get all component filenames for a given file type.
-
-    Useful for multi-component models to enumerate all artifacts.
-
-    Args:
-        components_cfg: The `components` dict from deploy_config
-        file_key: Key to look up ('onnx_file' or 'engine_file')
-
-    Returns:
-        Dict mapping component name to filename
-
-    Example:
-        >>> components = {"pts_voxel_encoder": {"onnx_file": "pts_voxel_encoder.onnx"},
-        ...               "pts_backbone_neck_head": {"onnx_file": "pts_backbone_neck_head.onnx"}}
-        >>> get_component_files(components, "onnx_file")
-        {"pts_voxel_encoder": "pts_voxel_encoder.onnx", "pts_backbone_neck_head": "pts_backbone_neck_head.onnx"}
-    """
-    result = {}
-    for component_name, component_cfg in components_cfg.items():
-        if isinstance(component_cfg, Mapping) and file_key in component_cfg:
-            result[component_name] = component_cfg[file_key]
-    return result
-
-
-def resolve_onnx_path(
-    base_dir: str,
-    components_cfg: Optional[Mapping[str, Any]] = None,
-    component_name: str = "model",
-) -> str:
-    """Convenience function for resolving ONNX paths."""
-    return resolve_artifact_path(
-        base_dir=base_dir,
-        components_cfg=components_cfg,
-        component_name=component_name,
-        file_key="onnx_file",
-    )
-
-
-def resolve_engine_path(
-    base_dir: str,
-    components_cfg: Optional[Mapping[str, Any]] = None,
-    component_name: str = "model",
-) -> str:
-    """Convenience function for resolving TensorRT engine paths."""
-    return resolve_artifact_path(
-        base_dir=base_dir,
-        components_cfg=components_cfg,
-        component_name=component_name,
-        file_key="engine_file",
-    )

@@ -15,6 +15,7 @@ from deployment.core.device import DeviceSpec
 from deployment.core.evaluation.base_evaluator import BaseEvaluator
 from deployment.core.evaluation.evaluator_types import ModelSpec
 from deployment.core.io.base_data_loader import BaseDataLoader
+from deployment.pipelines.gpu_resource_mixin import clear_cuda_memory
 from deployment.runtime.artifact_manager import ArtifactManager
 
 
@@ -102,8 +103,6 @@ class EvaluationOrchestrator:
                 self.logger.error("Evaluation failed for %s: %s", backend.value, e, exc_info=True)
                 all_results[backend.value] = {"error": str(e)}
             finally:
-                from deployment.pipelines.gpu_resource_mixin import clear_cuda_memory
-
                 clear_cuda_memory()
 
         if len(all_results) > 1:

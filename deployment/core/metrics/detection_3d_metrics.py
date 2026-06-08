@@ -32,7 +32,6 @@ from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 from perception_eval.common.dataset import FrameGroundTruth
-from perception_eval.common.label import AutowareLabel, Label
 from perception_eval.common.object import DynamicObject
 from perception_eval.common.shape import Shape, ShapeType
 from perception_eval.config.perception_evaluation_config import PerceptionEvaluationConfig
@@ -139,8 +138,6 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
     compute mAP, mAPH, and other detection metrics that are consistent with
     the T4MetricV2 used during training.
     """
-
-    _UNKNOWN = "unknown"
 
     def __init__(
         self,
@@ -265,22 +262,16 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
         self.pred_count_by_label = {}
         self._last_metrics_by_eval_name = {}
 
-    def _convert_index_to_label(self, label_index: int) -> Label:
-        """Convert a label index to a Label object.
-
-        Args:
-            label_index: Index of the label in class_names.
-
-        Returns:
-            Label object with AutowareLabel.
-        """
-        if 0 <= label_index < len(self.class_names):
-            class_name = self.class_names[label_index]
-        else:
-            class_name = self._UNKNOWN
-
-        autoware_label = AutowareLabel.__members__.get(class_name.upper(), AutowareLabel.UNKNOWN)
-        return Label(label=autoware_label, name=class_name)
+    def _count_labels(self, objects: List[Dict[str, Any]], counts: Dict[str, int]) -> None:
+        """Accumulate per-class object counts into `counts`, ignoring invalid labels."""
+        for obj in objects:
+            try:
+                label = int(obj.get("label", -1))
+            except (TypeError, ValueError):
+                label = -1
+            if 0 <= label < len(self.class_names):
+                name = self.class_names[label]
+                counts[name] = counts.get(name, 0) + 1
 
     def _predictions_to_dynamic_objects(
         self,
@@ -440,24 +431,8 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
 
         self.pred_count_total += len(predictions)
         self.gt_count_total += len(ground_truths)
-
-        for p in predictions:
-            try:
-                label = int(p.get("label", -1))
-            except Exception:
-                label = -1
-            if 0 <= label < len(self.class_names):
-                name = self.class_names[label]
-                self.pred_count_by_label[name] = self.pred_count_by_label.get(name, 0) + 1
-
-        for g in ground_truths:
-            try:
-                label = int(g.get("label", -1))
-            except Exception:
-                label = -1
-            if 0 <= label < len(self.class_names):
-                name = self.class_names[label]
-                self.gt_count_by_label[name] = self.gt_count_by_label.get(name, 0) + 1
+        self._count_labels(predictions, self.pred_count_by_label)
+        self._count_labels(ground_truths, self.gt_count_by_label)
 
         # Convert predictions to DynamicObject
         estimated_objects = self._predictions_to_dynamic_objects(predictions, unix_time)
@@ -532,11 +507,8 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
 
             return all_metrics
 
-        except Exception as e:
-            logger.error("Error computing metrics: %s", e)
-            import traceback
-
-            traceback.print_exc()
+        except Exception:
+            logger.exception("Error computing metrics")
             return {}
 
     def format_metrics_report(self) -> str:

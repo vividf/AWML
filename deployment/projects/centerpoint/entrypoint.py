@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 
 from mmengine.config import Config
 

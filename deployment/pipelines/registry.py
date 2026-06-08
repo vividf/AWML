@@ -83,8 +83,7 @@ class PipelineRegistry:
     ) -> BaseInferencePipeline:
         """Create a project-specific pipeline instance using the registered factory.
 
-        This is the central instantiation path used by evaluators and by the
-        convenience wrapper `deployment.pipelines.factory.PipelineFactory`.
+        This is the central instantiation path used by evaluators.
         """
         factory = self.get_factory(project_name)
         return factory.create_pipeline(

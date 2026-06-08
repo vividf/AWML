@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 import torch
 
+from deployment.core.artifacts import Artifact
 from deployment.exporters.common.configs import BaseExporterConfig
 from deployment.exporters.common.model_wrappers import BaseModelWrapper
 
@@ -30,8 +31,8 @@ class BaseExporter(ABC):
     def __init__(
         self,
         config: BaseExporterConfig,
+        logger: logging.Logger,
         model_wrapper: Optional[BaseModelWrapper] = None,
-        logger: Optional[logging.Logger] = None,
     ) -> None:
         """
         Initialize exporter.
@@ -39,13 +40,13 @@ class BaseExporter(ABC):
         Args:
             config: Typed export configuration dataclass (e.g., ``ONNXExportConfig``,
                 ``TensorRTExportConfig``). This ensures type safety and clear schema.
+            logger: Logger instance for export progress and diagnostics.
             model_wrapper: Optional model wrapper class or callable.
                          If a class is provided, it will be instantiated with the model.
                          If an instance is provided, it should be a callable that takes a model.
-            logger: Optional logger instance
         """
         self.config: BaseExporterConfig = config
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger
         self._model_wrapper = model_wrapper
 
     def prepare_model(self, model: torch.nn.Module) -> torch.nn.Module:
@@ -66,7 +67,7 @@ class BaseExporter(ABC):
         return self._model_wrapper(model)
 
     @abstractmethod
-    def export(self, model: torch.nn.Module, sample_input: Any, output_path: str) -> None:
+    def export(self, model: torch.nn.Module, sample_input: Any, output_path: str) -> Optional["Artifact"]:
         """
         Export model to target format.
 
@@ -74,6 +75,10 @@ class BaseExporter(ABC):
             model: PyTorch model to export
             sample_input: Example model input(s) for tracing/shape inference
             output_path: Path to save exported model
+
+        Returns:
+            Artifact representing the exported model, or None if the exporter
+            does not produce one (the model is written to `output_path` either way).
 
         Raises:
             RuntimeError: If export fails

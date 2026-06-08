@@ -14,7 +14,23 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from perception_eval.common.label import AutowareLabel, Label
+
 logger = logging.getLogger(__name__)
+
+# Valid 2D frame IDs for camera-based tasks (2D detection, classification)
+VALID_2D_FRAME_IDS = [
+    "cam_front",
+    "cam_front_right",
+    "cam_front_left",
+    "cam_front_lower",
+    "cam_back",
+    "cam_back_left",
+    "cam_back_right",
+    "cam_traffic_light_near",
+    "cam_traffic_light_far",
+    "cam_traffic_light",
+]
 
 
 @dataclass(frozen=True)
@@ -105,6 +121,8 @@ class BaseMetricsInterface(ABC):
         metrics = interface.compute_metrics()
     """
 
+    _UNKNOWN = "unknown"
+
     def __init__(self, config: BaseMetricsConfig) -> None:
         """
         Initialize the metrics interface.
@@ -164,6 +182,23 @@ class BaseMetricsInterface(ABC):
     def frame_count(self) -> int:
         """Return the number of frames added so far."""
         return self._frame_count
+
+    def _convert_index_to_label(self, label_index: int) -> Label:
+        """Convert a label index to a perception_eval Label object.
+
+        Args:
+            label_index: Index of the label in class_names.
+
+        Returns:
+            Label object with AutowareLabel (UNKNOWN for out-of-range indices).
+        """
+        if 0 <= label_index < len(self.class_names):
+            class_name = self.class_names[label_index]
+        else:
+            class_name = self._UNKNOWN
+
+        autoware_label = AutowareLabel.__members__.get(class_name.upper(), AutowareLabel.UNKNOWN)
+        return Label(label=autoware_label, name=class_name)
 
     def format_metrics_report(self) -> Optional[str]:
         """Format the metrics report as a human-readable string.

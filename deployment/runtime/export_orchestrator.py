@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Type
+from typing import Any, Callable, Optional, Type
 
 import torch
 
@@ -164,6 +164,10 @@ class ExportOrchestrator:
             self.logger.error("Failed to load PyTorch model: %s", e)
             return None
 
+    def _resolve_sample_idx(self, context: ExportContext) -> int:
+        """Resolve the sample index, preferring an explicit context value over the config default."""
+        return context.sample_idx if context.sample_idx != 0 else self.config.runtime_config.sample_idx
+
     def _run_onnx_export(self, pytorch_model: Any, context: ExportContext) -> Optional[str]:
         """
         Run the ONNX export workflow.
@@ -244,7 +248,7 @@ class ExportOrchestrator:
         if self._onnx_pipeline is None and self._onnx_wrapper_cls is None:
             raise RuntimeError("ONNX export requested but no wrapper class or export pipeline provided.")
 
-        sample_idx = context.sample_idx if context.sample_idx != 0 else self.config.runtime_config.sample_idx
+        sample_idx = self._resolve_sample_idx(context)
         onnx_dir = Path(self.config.export_config.work_dir) / self.ONNX_DIR_NAME
         onnx_dir.mkdir(parents=True, exist_ok=True)
 
@@ -331,7 +335,7 @@ class ExportOrchestrator:
         torch.cuda.set_device(device_id)
         self.logger.info("Using CUDA device for TensorRT export: %s", cuda_device)
 
-        sample_idx = context.sample_idx if context.sample_idx != 0 else self.config.runtime_config.sample_idx
+        sample_idx = self._resolve_sample_idx(context)
         sample_input = self.data_loader.get_shape_sample(sample_idx)
 
         if self._tensorrt_pipeline is not None:
@@ -422,27 +426,11 @@ class ExportOrchestrator:
             attr_name: Attribute name to set in the result
         """
         eval_models = self.config.evaluation_config.models
-        artifact_path = self._get_backend_entry(eval_models, backend)
+        # Backend is a str Enum, so a str-keyed lookup matches both str and Backend keys.
+        artifact_path = eval_models.get(backend.value) if eval_models else None
 
         if artifact_path and Path(artifact_path).exists():
             setattr(result, attr_name, artifact_path)
             self.artifact_manager.register_artifact(backend, Artifact(path=artifact_path))
         elif artifact_path:
             self.logger.warning("%s file from config does not exist: %s", backend.value, artifact_path)
-
-    @staticmethod
-    def _get_backend_entry(mapping: Optional[Mapping[Any, Any]], backend: Backend) -> Any:
-        """
-        Get a backend entry from a mapping.
-
-        Args:
-            mapping: Mapping to get the backend entry from
-            backend: Backend to get the entry for
-        Returns:
-            Backend entry from the mapping
-        """
-        if not mapping:
-            return None
-        if backend.value in mapping:
-            return mapping[backend.value]
-        return mapping.get(backend)

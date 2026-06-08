@@ -128,8 +128,8 @@ class CenterPointONNXExportPipeline(OnnxExportPipeline):
         self.logger.info("Extracting features from sample data...")
         try:
             return self.sample_adapter.extract_sample(model, data_loader, sample_idx)
-        except Exception:
-            raise RuntimeError("Feature extraction failed")
+        except Exception as exc:
+            raise RuntimeError(f"Feature extraction failed: {exc}") from exc
 
     def _export_components(
         self,

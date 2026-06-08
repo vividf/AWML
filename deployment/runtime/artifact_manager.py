@@ -7,7 +7,7 @@ ONNX models, TensorRT engines) across different backends.
 
 import logging
 from collections.abc import Mapping
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.artifacts import Artifact
@@ -92,7 +92,8 @@ class ArtifactManager:
             Configuration path for the given backend
         """
         eval_backends = self.config.evaluation_config.backends
-        backend_cfg = self._get_backend_entry(eval_backends, backend)
+        # Backend is a str Enum, so a str-keyed lookup matches both str and Backend keys.
+        backend_cfg = eval_backends.get(backend.value) if eval_backends else None
         if backend_cfg and isinstance(backend_cfg, Mapping):
             if backend == Backend.ONNX:
                 path = backend_cfg.get("model_dir")
@@ -109,23 +110,3 @@ class ArtifactManager:
             return self.config.export_config.onnx_path
 
         return None
-
-    @staticmethod
-    def _get_backend_entry(mapping: Optional[Mapping], backend: Backend) -> Any:
-        """
-        Get a backend entry from a mapping.
-
-        Args:
-            mapping: Mapping to get the backend entry from
-            backend: Backend to get the entry for
-        Returns:
-            Backend entry from the mapping
-        """
-        if not mapping:
-            return None
-
-        value = mapping.get(backend.value)
-        if value is not None:
-            return value
-
-        return mapping.get(backend)

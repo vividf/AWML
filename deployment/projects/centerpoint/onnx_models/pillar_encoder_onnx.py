@@ -17,8 +17,6 @@ Provided encoder variants include:
   use with exported CenterPoint models.
 """
 
-from typing import Optional
-
 import torch
 from mmdet3d.models.voxel_encoders.pillar_encoder import PillarFeatureNet
 from mmdet3d.models.voxel_encoders.utils import get_paddings_indicator

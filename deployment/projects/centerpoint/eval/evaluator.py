@@ -23,7 +23,7 @@ from deployment.core.metrics.detection_3d_metrics import (
     Detection3DMetricsInterface,
 )
 from deployment.pipelines.base_pipeline import BaseInferencePipeline
-from deployment.pipelines.factory import PipelineFactory
+from deployment.pipelines.registry import pipeline_registry
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ class CenterPointEvaluator(BaseEvaluator):
         Returns:
             CenterPoint pipeline instance (PyTorch, ONNX, or TensorRT).
         """
-        return PipelineFactory.create(
+        return pipeline_registry.create_pipeline(
             project_name="centerpoint",
             model_spec=model_spec,
             pytorch_model=self.pytorch_model,

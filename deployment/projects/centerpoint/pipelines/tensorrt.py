@@ -348,10 +348,7 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
             "_voxel_encoder_end_event",
         ):
             if hasattr(self, attr):
-                try:
-                    delattr(self, attr)
-                except Exception:
-                    pass
+                delattr(self, attr)
 
         release_tensorrt_resources(
             engines=getattr(self, "_engines", None),

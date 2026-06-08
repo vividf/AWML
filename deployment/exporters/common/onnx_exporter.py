@@ -26,18 +26,18 @@ class ONNXExporter(BaseExporter):
     def __init__(
         self,
         config: ONNXExportConfig,
+        logger: logging.Logger,
         model_wrapper: Optional[Any] = None,
-        logger: logging.Logger = None,
     ) -> None:
         """
         Initialize ONNX exporter.
 
         Args:
             config: ONNX export configuration dataclass instance.
+            logger: Logger instance for export progress and diagnostics.
             model_wrapper: Optional model wrapper class (e.g., YOLOXOptElanONNXWrapper)
-            logger: Optional logger instance
         """
-        super().__init__(config, model_wrapper=model_wrapper, logger=logger)
+        super().__init__(config, logger=logger, model_wrapper=model_wrapper)
         self._validate_config(config)
 
     def _validate_config(self, config: ONNXExportConfig) -> None:
