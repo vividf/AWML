@@ -14,7 +14,7 @@ import rclpy
 from autoware_internal_debug_msgs.msg import Float64Stamped
 from rclpy.serialization import deserialize_message
 
-DEFAULT_ROSBAG_ROOT = Path("/media/yihsiangfang/VIVID/model/bevfusion_2_7/rosbag/rosbag_6_2")
+DEFAULT_ROSBAG_ROOT = Path("/media/yihsiangfang/VIVID/model/bevfusion_2_7/rosbag/rosbag_6_5_kambe_merge")
 
 METRIC_TOPICS = {
     "inference_ms": "/perception/object_recognition/detection/bevfusion/bevfusion/debug/processing_time/inference_ms",
@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("./bevfusion_latency_analysis1"),
+        default=Path("./bevfusion_latency_analysis_slow"),
         help="Directory for generated CSV and plots.",
     )
     parser.add_argument(

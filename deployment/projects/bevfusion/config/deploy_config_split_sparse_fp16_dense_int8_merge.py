@@ -200,8 +200,8 @@ devices = dict(
 
 export = dict(
     mode="both",
-    work_dir="work_dirs/bevfusion_deployment_2_7_sparse_fp16_dense_int8_merge",
-    onnx_path="work_dirs/bevfusion_deployment_2_7_sparse_fp16_dense_int8_merge/onnx",
+    work_dir="work_dirs/bevfusion_deployment_2_7_sparse_fp16_dense_int8_6_4",
+    onnx_path="work_dirs/bevfusion_deployment_2_7_sparse_fp16_dense_int8_6_4/onnx",
     # onnx_path=None,
 )
 
@@ -307,13 +307,12 @@ tensorrt_config = dict(
     max_workspace_size=1 << 32,
     plugin_libraries=[
         "/opt/plugins/libautoware_tensorrt_plugins.so",
-        "/workspace/deployment/projects/bevfusion/cpp/int8_plugin/build/libimplicit_gemm_int8_plugin.so",
     ],
 )
 
 evaluation = dict(
     enabled=True,
-    num_samples=20,
+    num_samples=-1,
     num_warmup_samples=2,
     verbose=True,
     backends=dict(

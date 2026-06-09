@@ -79,8 +79,8 @@ BEVFusion deploy config — **split ONNX / TensorRT + PTQ INT8** (路線 1 + 量
 #
 # 評測：註解 Preset A，改為下方三項（checkpoint 指向上列 output；dense 三關必須 False 與 PTQ 一致）
 # ============================================================================
-checkpoint_path = "work_dirs/bevfusion/best_epoch_28_ptq_sparse_int8_dense_int8.pth"
-# checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28_ptq_sparse_int8_dense_int8.pth"
+# checkpoint_path = "work_dirs/bevfusion/best_epoch_28_ptq_sparse_int8_dense_int8.pth"
+checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28_ptq_sparse_int8_dense_int8.pth"
 
 
 # ============================================================================
@@ -287,8 +287,8 @@ components = dict(
 )
 
 runtime_io = dict(
-    # info_file="info/kokseang_2_6_1/t4dataset_j6gen2_base_infos_test.pkl",
-    info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
+    info_file="info/kokseang_2_6_1/t4dataset_j6gen2_base_infos_test.pkl",
+    # info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
     sample_idx=0,
 )
 
@@ -313,7 +313,7 @@ tensorrt_config = dict(
 
 evaluation = dict(
     enabled=True,
-    num_samples=5,
+    num_samples=-1,
     num_warmup_samples=2,
     verbose=True,
     backends=dict(
