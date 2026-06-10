@@ -147,17 +147,36 @@ def verify_spconv_int8_encoder(model: torch.nn.Module) -> Dict[str, Any]:
         for _name, mod in enc.named_modules():
             if hasattr(mod, "_input_quantizer") and hasattr(mod, "_weight_quantizer"):
                 n_quant_convs += 1
-    out: Dict[str, Any] = {
+    return {
         "is_int8": n_quant_convs > 0,
         "encoder_type": type(enc).__name__ if enc is not None else "None",
-        "is_graph_module": False,
         "nvidia_quantized_sparse_conv_count": n_quant_convs,
-        "quantized_param_count": 0,
         "total_param_count": sum(p.numel() for p in enc.parameters()) if enc is not None else 0,
-        "quantized_module_types": set(),
-        "quant_activation_buffer_keys": 0,
     }
-    return out
+
+
+def _log_load_state_dict_result(result) -> None:
+    """Log missing/unexpected keys from ``load_state_dict``, split by sparse vs. dense."""
+
+    def _split(keys):
+        sparse = [k for k in keys if k.startswith("pts_middle_encoder")]
+        other = [k for k in keys if not k.startswith("pts_middle_encoder")]
+        return sparse, other
+
+    logger.info(
+        "[load-state-dict] missing=%d, unexpected=%d",
+        len(result.missing_keys),
+        len(result.unexpected_keys),
+    )
+    for kind, keys in (("missing", result.missing_keys), ("unexpected", result.unexpected_keys)):
+        if not keys:
+            continue
+        sparse, other = _split(keys)
+        logger.info("[load-state-dict] sparse %s=%d, other %s=%d", kind, len(sparse), kind, len(other))
+        if sparse:
+            logger.info("[load-state-dict] sparse %s sample: %s", kind, sparse[:10])
+        if other:
+            logger.info("[load-state-dict] other %s sample: %s", kind, other[:10])
 
 
 def _verify_spconv_scale_buffers(model: torch.nn.Module, ckpt_state_dict: dict) -> None:
@@ -167,7 +186,7 @@ def _verify_spconv_scale_buffers(model: torch.nn.Module, ckpt_state_dict: dict) 
     """
     enc = getattr(model, "pts_middle_encoder", None)
     if enc is None:
-        print("[spconv-quant-check] NO pts_middle_encoder found!")
+        logger.warning("[spconv-quant-check] NO pts_middle_encoder found!")
         return
 
     ckpt_sparse_keys = [k for k in ckpt_state_dict if k.startswith("pts_middle_encoder.")]
@@ -175,30 +194,29 @@ def _verify_spconv_scale_buffers(model: torch.nn.Module, ckpt_state_dict: dict) 
     ckpt_scale_keys = [k for k in ckpt_sparse_keys if "scale" in k or "zero_point" in k]
 
     if ckpt_amax_keys:
-        print(f"[spconv-quant-check] NVIDIA approach: checkpoint has {len(ckpt_amax_keys)} _amax keys")
-        for k in ckpt_amax_keys[:5]:
-            v = ckpt_state_dict[k]
-            t = v.flatten().tolist()[:3]
-            print(f"  {k} shape={tuple(v.shape)} first3={t}")
+        logger.info("[spconv-quant-check] NVIDIA approach: checkpoint has %d _amax keys", len(ckpt_amax_keys))
+        sample_keys = ckpt_amax_keys[:5]
     elif ckpt_scale_keys:
-        print(f"[spconv-quant-check] legacy approach: checkpoint has {len(ckpt_scale_keys)} scale/zp keys")
-        for k in ckpt_scale_keys[:5]:
-            v = ckpt_state_dict[k]
-            t = v.flatten().tolist()[:3]
-            print(f"  {k} shape={tuple(v.shape)} first3={t}")
+        logger.info("[spconv-quant-check] legacy approach: checkpoint has %d scale/zp keys", len(ckpt_scale_keys))
+        sample_keys = ckpt_scale_keys[:5]
     else:
-        print(
-            f"[spconv-quant-check] WARNING: no _amax or scale/zp keys in checkpoint "
-            f"(has {len(ckpt_sparse_keys)} pts_middle_encoder keys total)"
+        logger.warning(
+            "[spconv-quant-check] no _amax or scale/zp keys in checkpoint (has %d pts_middle_encoder keys total)",
+            len(ckpt_sparse_keys),
         )
+        sample_keys = []
+    for k in sample_keys:
+        v = ckpt_state_dict[k]
+        logger.info("  %s shape=%s first3=%s", k, tuple(v.shape), v.flatten().tolist()[:3])
+
     if ckpt_scale_keys:
-        print(f"[spconv-scale-check] ckpt scale/zp keys sample: {ckpt_scale_keys[:5]}")
+        logger.info("[spconv-scale-check] ckpt scale/zp keys sample: %s", ckpt_scale_keys[:5])
 
     model_all_keys = [f"pts_middle_encoder.{k}" for k in dict(enc.named_parameters())]
     model_all_keys += [f"pts_middle_encoder.{k}" for k in dict(enc.named_buffers())]
     model_scale_keys = [k for k in model_all_keys if "scale" in k or "zero_point" in k]
     if model_scale_keys:
-        print(f"[spconv-scale-check] model scale/zp keys sample: {model_scale_keys[:5]}")
+        logger.info("[spconv-scale-check] model scale/zp keys sample: %s", model_scale_keys[:5])
 
 
 def _register_bevfusion_modules() -> None:
@@ -366,24 +384,7 @@ def _load_with_quantization(
             _permute_sparse_encoder_weights_to_match_model(state_dict, model)
 
         result = model.load_state_dict(state_dict, strict=False)
-
-        print(f"[load-state-dict] missing={len(result.missing_keys)}, " f"unexpected={len(result.unexpected_keys)}")
-        if result.missing_keys:
-            sparse_miss = [k for k in result.missing_keys if k.startswith("pts_middle_encoder")]
-            other_miss = [k for k in result.missing_keys if not k.startswith("pts_middle_encoder")]
-            print(f"[load-state-dict] sparse missing={len(sparse_miss)}, other missing={len(other_miss)}")
-            if sparse_miss:
-                print(f"[load-state-dict] sparse missing sample: {sparse_miss[:10]}")
-            if other_miss:
-                print(f"[load-state-dict] other missing sample: {other_miss[:10]}")
-        if result.unexpected_keys:
-            sparse_unexp = [k for k in result.unexpected_keys if k.startswith("pts_middle_encoder")]
-            other_unexp = [k for k in result.unexpected_keys if not k.startswith("pts_middle_encoder")]
-            print(f"[load-state-dict] sparse unexpected={len(sparse_unexp)}, other unexpected={len(other_unexp)}")
-            if sparse_unexp:
-                print(f"[load-state-dict] sparse unexpected sample: {sparse_unexp[:10]}")
-            if other_unexp:
-                print(f"[load-state-dict] other unexpected sample: {other_unexp[:10]}")
+        _log_load_state_dict_result(result)
 
         if quantization.get("spconv_int8", False):
             _verify_spconv_scale_buffers(model, state_dict)
@@ -538,15 +539,7 @@ def _apply_dense_quantization(
 
 
 def _fuse_dense_bn_standalone(model: torch.nn.Module) -> None:
-    """Standalone BN fusion that doesn't require pytorch_quantization.
-
-    Uses torch.nn.utils.fusion if available, otherwise skips.
-    """
-    try:
-        from torch.ao.nn.utils import fuse as torch_fuse
-    except ImportError:
-        pass
-
+    """Standalone BN fusion that doesn't require pytorch_quantization."""
     import torch.nn as nn
 
     def _fuse_conv_bn_eval(conv, bn):

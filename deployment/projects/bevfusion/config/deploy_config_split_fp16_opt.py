@@ -27,14 +27,6 @@ CLI::
 
 spconv_do_sort = False
 
-# ============================================================================
-# FP16 ``autoware::ImplicitGemm`` plugin: optional CUDA timing (stderr)
-# ----------------------------------------------------------------------------
-# Baked into ONNX via ``patch_implicit_gemm_onnx_timing`` before TRT build.
-# Re-export / patch ONNX and rebuild ``bevfusion_sparse.engine`` after changes.
-# ============================================================================
-implicit_gemm_plugin_timing = True
-implicit_gemm_plugin_timing_max_logs = 1000
 
 # ============================================================================
 # Sparse ONNX postprocess (FP): fuse ImplicitGemm with trailing Relu/Add(const)+Relu.

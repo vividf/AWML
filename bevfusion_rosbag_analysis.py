@@ -14,7 +14,7 @@ import rclpy
 from autoware_internal_debug_msgs.msg import Float64Stamped
 from rclpy.serialization import deserialize_message
 
-DEFAULT_ROSBAG_ROOT = Path("/media/yihsiangfang/VIVID/model/bevfusion_2_7/rosbag/rosbag_6_5_kambe_merge")
+DEFAULT_ROSBAG_ROOT = Path("/media/yihsiangfang/VIVID/model/bevfusion_2_7/rosbag/rosbag_release_comparison")
 
 METRIC_TOPICS = {
     "inference_ms": "/perception/object_recognition/detection/bevfusion/bevfusion/debug/processing_time/inference_ms",
@@ -276,7 +276,7 @@ def plot_histogram(metric: str, dataframes: Dict[str, pd.DataFrame], output_path
 
 
 def plot_boxplot(metric: str, dataframes: Dict[str, pd.DataFrame], output_path: Path) -> None:
-    labels = list(dataframes.keys())
+    labels = sorted(dataframes.keys(), key=lambda name: dataframes[name]["latency_ms"].mean(), reverse=True)
     display_labels = [format_bag_label(name) for name in labels]
     values = [dataframes[name]["latency_ms"].to_numpy() for name in labels]
     plt.figure(figsize=(10, 6))

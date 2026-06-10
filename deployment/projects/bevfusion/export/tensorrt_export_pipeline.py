@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import torch
 
@@ -51,7 +51,7 @@ class BEVFusionTensorRTExportPipeline(TensorRTExportPipeline):
         output_dir_path.mkdir(parents=True, exist_ok=True)
 
         if is_split_bevfusion_components(self._components_cfg):
-            return self._export_split_engines(onnx_dir, output_dir_path, config, device)
+            return self._export_split_engines(onnx_dir, output_dir_path, config)
 
         component_cfg = self._components_cfg.get_component("bevfusion_main_body")
         onnx_file = onnx_dir / component_cfg.onnx_file
@@ -89,7 +89,6 @@ class BEVFusionTensorRTExportPipeline(TensorRTExportPipeline):
         onnx_dir: Path,
         output_dir_path: Path,
         config: BaseDeploymentConfig,
-        device: DeviceSpec,
     ) -> Artifact:
         if not onnx_dir.is_dir():
             raise ValueError(f"Split TensorRT export expects ONNX directory, got: {onnx_dir}")

@@ -6,19 +6,20 @@ Replicates the logic from projects/BEVFusion/deploy/ within the new deployment f
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
 import warnings
-from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import onnx
 import onnx_graphsurgeon as gs
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.artifacts import Artifact
@@ -55,9 +56,7 @@ def _normalize_sparse_coors_for_autoware(coors: torch.Tensor) -> torch.Tensor:
 
 
 def _head_dict_to_export_outputs(outputs: dict) -> tuple:
-    """Match ``BEVFusionMainBodyWrapper`` post-processing (ONNX outputs)."""
-    import torch.nn.functional as F
-
+    """Turn the detection-head output dict into the (bbox_pred, score, label) ONNX outputs."""
     score = outputs["heatmap"].sigmoid()
     one_hot = F.one_hot(outputs["query_labels"], num_classes=score.size(1)).permute(0, 2, 1)
     score = score * outputs["query_heatmap_score"] * one_hot
@@ -126,8 +125,6 @@ class BEVFusionMainBodyWrapper(nn.Module):
         coors: torch.Tensor,
         num_points_per_voxel: torch.Tensor,
     ) -> tuple:
-        import torch.nn.functional as F
-
         # spconv requires int32 indices; float batch column (torch.zeros default) + int coors
         # yields float tensor and can CUDA fault in implicit_gemm.
         # INT8 sparse path: quantize_per_tensor only accepts float; keep voxels FP32.
@@ -139,18 +136,7 @@ class BEVFusionMainBodyWrapper(nn.Module):
         }
 
         outputs = self.mod._forward(batch_inputs_dict, using_image_features=True)
-
-        score = outputs["heatmap"].sigmoid()
-        one_hot = F.one_hot(outputs["query_labels"], num_classes=score.size(1)).permute(0, 2, 1)
-        score = score * outputs["query_heatmap_score"] * one_hot
-        score = score[0].max(dim=0)[0]
-
-        bbox_pred = torch.cat(
-            [outputs["center"][0], outputs["height"][0], outputs["dim"][0], outputs["rot"][0], outputs["vel"][0]],
-            dim=0,
-        )
-
-        return bbox_pred, score, outputs["query_labels"][0]
+        return _head_dict_to_export_outputs(outputs)
 
 
 class BEVFusionONNXExportPipeline(OnnxExportPipeline):
@@ -649,6 +635,67 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
                         ) from e
                     raise
 
+    def _resolve_trace_device(
+        self,
+        model_device: torch.device,
+        onnx_cfg: Dict[str, Any],
+        *,
+        warn_on_cpu: bool = False,
+    ) -> torch.device:
+        """Resolve the tracing device from ``onnx_cfg``, coercing CPU back to the model's GPU.
+
+        CUDA-built spconv implicit_gemm cannot run with CPU indices (merge_sort illegal
+        address), so a requested ``cpu`` trace device is overridden to the model's CUDA device.
+        """
+        raw_td = onnx_cfg.get("trace_device") or "auto"
+        trace_dev = model_device if raw_td in ("auto", "", None) else torch.device(raw_td)
+
+        if model_device.type == "cuda" and trace_dev.type == "cpu":
+            if warn_on_cpu:
+                self.logger.warning(
+                    "trace_device=cpu while model is on %s: CUDA spconv implicit_gemm does not support "
+                    "CPU indices (merge_sort illegal address). Tracing on %s instead. "
+                    "For large dense() OOM, use a larger GPU or export elsewhere; do not use CPU trace with CUDA spconv.",
+                    model_device,
+                    model_device,
+                )
+            trace_dev = model_device
+        return trace_dev
+
+    @contextlib.contextmanager
+    def _model_on_trace_device(
+        self,
+        model: torch.nn.Module,
+        model_device: torch.device,
+        trace_dev: torch.device,
+    ):
+        """Temporarily move ``model`` to ``trace_dev`` for tracing, restoring it afterward."""
+        moved = trace_dev != model_device
+        if moved:
+            self.logger.info(
+                "Moving model to %s for ONNX tracing (model was on %s; avoids GPU OOM from sparse dense()).",
+                trace_dev,
+                model_device,
+            )
+            model.to(trace_dev)
+        try:
+            yield
+        finally:
+            if moved:
+                try:
+                    model.to(model_device)
+                except Exception as e:
+                    self.logger.warning(
+                        "Could not move model back to %s after ONNX export (GPU may be in error state): %s",
+                        model_device,
+                        e,
+                    )
+                if model_device.type == "cuda":
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+
     def _export_dense_to_onnx(
         self,
         model: torch.nn.Module,
@@ -658,37 +705,14 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
     ) -> None:
         """Export pts_backbone + neck + head (+ postprocess) to ONNX."""
         model_device = next(model.parameters()).device
-        raw_td = onnx_cfg.get("trace_device") or "auto"
-        if raw_td in ("auto", "", None):
-            trace_dev = model_device
-        else:
-            trace_dev = torch.device(raw_td)
+        trace_dev = self._resolve_trace_device(model_device, onnx_cfg)
 
-        if model_device.type == "cuda" and trace_dev.type == "cpu":
-            trace_dev = model_device
-
-        moved_for_trace = trace_dev != model_device
-        if moved_for_trace:
-            model.to(trace_dev)
-
-        try:
+        with self._model_on_trace_device(model, model_device, trace_dev):
             wrapper = BEVFusionDenseWrapper(model)
             wrapper.eval()
             wrapper.to(trace_dev)
             bev = lidar_bev.to(trace_dev)
-
             self._torch_onnx_export_module(wrapper, (bev,), output_path, onnx_cfg)
-        finally:
-            if moved_for_trace:
-                try:
-                    model.to(model_device)
-                except Exception as e:
-                    self.logger.warning("Could not move model back after dense ONNX export: %s", e)
-                if model_device.type == "cuda":
-                    try:
-                        torch.cuda.empty_cache()
-                    except Exception:
-                        pass
 
         self.logger.info("Exported dense ONNX to %s", output_path)
 
@@ -706,104 +730,90 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
     ) -> None:
         """Export voxel-based subgraph to ONNX (full main_body or sparse-only)."""
         model_device = next(model.parameters()).device
-        raw_td = onnx_cfg.get("trace_device") or "auto"
-        if raw_td in ("auto", "", None):
-            trace_dev = model_device
-        else:
-            trace_dev = torch.device(raw_td)
+        trace_dev = self._resolve_trace_device(model_device, onnx_cfg, warn_on_cpu=True)
 
-        if model_device.type == "cuda" and trace_dev.type == "cpu":
-            self.logger.warning(
-                "trace_device=cpu while model is on %s: CUDA spconv implicit_gemm does not support "
-                "CPU indices (merge_sort illegal address). Tracing on %s instead. "
-                "For large dense() OOM, use a larger GPU or export elsewhere; do not use CPU trace with CUDA spconv.",
-                model_device,
-                model_device,
-            )
-            trace_dev = model_device
-
-        moved_for_trace = trace_dev != model_device
-        if moved_for_trace:
-            self.logger.info(
-                "Moving model to %s for ONNX tracing (model was on %s; avoids GPU OOM from sparse dense()).",
-                trace_dev,
-                model_device,
-            )
-            model.to(trace_dev)
-
-        orig_sparse_encoder: Optional[nn.Module] = None
-        try:
-            enc = getattr(model, "pts_middle_encoder", None)
-            if enc is not None:
-                from deployment.projects.bevfusion.export.sparse_encoder_float_shadow import (
-                    build_float_sparse_encoder_shadow,
-                    encoder_has_nvidia_tensor_quantizers,
-                    resolve_sparse_onnx_shadow,
+        with self._model_on_trace_device(model, model_device, trace_dev):
+            orig_sparse_encoder: Optional[nn.Module] = None
+            try:
+                orig_sparse_encoder = self._maybe_swap_in_float_shadow_encoder(
+                    model, trace_dev, fuse_spconv_bn=fuse_spconv_bn
                 )
 
-                gm_src, cfg_ov = resolve_sparse_onnx_shadow(enc, model)
-                if gm_src is not None:
-                    nvidia_shadow = gm_src is enc and encoder_has_nvidia_tensor_quantizers(enc)
-                    if nvidia_shadow:
-                        self.logger.info(
-                            "Sparse tower (NVIDIA TensorQuantizer path, scheme A): using a fused FP32 "
-                            "shadow encoder for torch.onnx.export so sparse ONNX has no Q/DQ around "
-                            "ImplicitGemm. PTQ _amax stay in checkpoint for Path B transform. See "
-                            "docs/11_int8_pathb_autoware_plugin.md §8-4."
-                        )
-                    else:
-                        self.logger.info(
-                            "Sparse tower: using fused FP32 shadow encoder for ONNX export "
-                            "(weights copied from source sparse encoder)."
-                        )
-                    if cfg_ov:
-                        self.logger.info(
-                            "Shadow rebuild merges %d attribute(s) from model.cfg pts_middle_encoder.",
-                            len(cfg_ov),
-                        )
-                    orig_sparse_encoder = enc
-                    model.pts_middle_encoder = build_float_sparse_encoder_shadow(
-                        gm_src,
-                        trace_dev,
-                        cfg_overrides=cfg_ov if cfg_ov else None,
-                        fuse_spconv_bn=bool(fuse_spconv_bn),
-                    )
+                if wrapper == "sparse":
+                    wrapper_mod: nn.Module = BEVFusionSparseWrapper(model)
+                elif wrapper == "main":
+                    wrapper_mod = BEVFusionMainBodyWrapper(model)
+                else:
+                    raise ValueError(f"Unknown wrapper '{wrapper}' for ONNX export")
 
-            if wrapper == "sparse":
-                wrapper_mod: nn.Module = BEVFusionSparseWrapper(model)
-            elif wrapper == "main":
-                wrapper_mod = BEVFusionMainBodyWrapper(model)
-            else:
-                raise ValueError(f"Unknown wrapper '{wrapper}' for ONNX export")
+                model_inputs = (
+                    voxels.to(trace_dev),
+                    coors.to(device=trace_dev, dtype=torch.int32),
+                    num_points_per_voxel.to(trace_dev),
+                )
+                wrapper_mod.eval()
+                wrapper_mod.to(trace_dev)
 
-            model_inputs = (
-                voxels.to(trace_dev),
-                coors.to(device=trace_dev, dtype=torch.int32),
-                num_points_per_voxel.to(trace_dev),
-            )
-            wrapper_mod.eval()
-            wrapper_mod.to(trace_dev)
-
-            self._torch_onnx_export_module(wrapper_mod, model_inputs, output_path, onnx_cfg)
-        finally:
-            if orig_sparse_encoder is not None:
-                model.pts_middle_encoder = orig_sparse_encoder
-            if moved_for_trace:
-                try:
-                    model.to(model_device)
-                except Exception as e:
-                    self.logger.warning(
-                        "Could not move model back to %s after ONNX export (GPU may be in error state): %s",
-                        model_device,
-                        e,
-                    )
-                if model_device.type == "cuda":
-                    try:
-                        torch.cuda.empty_cache()
-                    except Exception:
-                        pass
+                self._torch_onnx_export_module(wrapper_mod, model_inputs, output_path, onnx_cfg)
+            finally:
+                if orig_sparse_encoder is not None:
+                    model.pts_middle_encoder = orig_sparse_encoder
 
         self.logger.info("Exported ONNX to %s", output_path)
+
+    def _maybe_swap_in_float_shadow_encoder(
+        self,
+        model: torch.nn.Module,
+        trace_dev: torch.device,
+        *,
+        fuse_spconv_bn: bool,
+    ) -> Optional[nn.Module]:
+        """Swap ``pts_middle_encoder`` for a fused FP32 shadow used only during tracing.
+
+        Returns the original encoder (to restore after export) or ``None`` if no swap
+        was needed. INT8 (NVIDIA TensorQuantizer) encoders trace via the shadow so the
+        sparse ONNX has no Q/DQ around ImplicitGemm; PTQ ``_amax`` stay in the checkpoint
+        for the Path-B transform. See docs/11_int8_pathb_autoware_plugin.md §8-4.
+        """
+        enc = getattr(model, "pts_middle_encoder", None)
+        if enc is None:
+            return None
+
+        from deployment.projects.bevfusion.export.sparse_encoder_float_shadow import (
+            build_float_sparse_encoder_shadow,
+            encoder_has_nvidia_tensor_quantizers,
+            resolve_sparse_onnx_shadow,
+        )
+
+        gm_src, cfg_ov = resolve_sparse_onnx_shadow(enc, model)
+        if gm_src is None:
+            return None
+
+        if gm_src is enc and encoder_has_nvidia_tensor_quantizers(enc):
+            self.logger.info(
+                "Sparse tower (NVIDIA TensorQuantizer path, scheme A): using a fused FP32 "
+                "shadow encoder for torch.onnx.export so sparse ONNX has no Q/DQ around "
+                "ImplicitGemm. PTQ _amax stay in checkpoint for Path B transform. See "
+                "docs/11_int8_pathb_autoware_plugin.md §8-4."
+            )
+        else:
+            self.logger.info(
+                "Sparse tower: using fused FP32 shadow encoder for ONNX export "
+                "(weights copied from source sparse encoder)."
+            )
+        if cfg_ov:
+            self.logger.info(
+                "Shadow rebuild merges %d attribute(s) from model.cfg pts_middle_encoder.",
+                len(cfg_ov),
+            )
+
+        model.pts_middle_encoder = build_float_sparse_encoder_shadow(
+            gm_src,
+            trace_dev,
+            cfg_overrides=cfg_ov if cfg_ov else None,
+            fuse_spconv_bn=bool(fuse_spconv_bn),
+        )
+        return enc
 
     def _get_num_proposals(self, model: torch.nn.Module) -> int:
         """Extract num_proposals from the BEVFusion model config."""

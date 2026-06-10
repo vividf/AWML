@@ -87,13 +87,74 @@ onnx.save_model(gs.export_onnx(merged_graph), str(merged_path))
 
 ## 3. 為什麼「分開 trace」會比較少 `Shape/Gather/Unsqueeze`
 
-不是因為模型少算了，而是因為：
+### 3.1 這串節點在做什麼
 
-1. dense 子圖把 `lidar_bev` 當作**外部輸入張量**，不需要再從 sparse 內部形狀推導。
-2. merge 是「圖級連接」而非「重新 trace 一次全圖」，因此不會強迫保留舊單圖 trace 的所有動態 shape 子圖。
-3. cleanup 可刪掉已無引用或可靜態化的 shape-path。
+`Shape -> Gather -> Unsqueeze -> Concat` 是 ONNX 表達「**在 runtime 才讀取某個維度的值**」的方式。
 
-簡單說：  
+在 `_conv_out_to_bev`（`sparse_encoder.py`）：
+
+```python
+x = out_tensor.dense()          # (N, C, H, W, D)
+n = int(x.shape[0])             # ← 這行是關鍵：讀取 batch size
+t = x.permute(0, 1, 4, 2, 3)
+return t.view(n, c * int(d), int(h), int(w))
+```
+
+當 `n` 是「要到 runtime 才知道的值」，ONNX 沒辦法寫死 `Reshape(t, [n, 256, 180, 180])`，
+必須展開成完整的 shape 讀取鏈：
+
+```
+Shape(x)  →  [N, C, H, W, D]
+   ↓
+Gather(index=0)  →  N
+   ↓
+Unsqueeze  →  [N]
+   ↓
+Concat([N], [256], [180], [180])  →  shape vector [N, 256, 180, 180]
+   ↓
+Reshape(t, shape_vector)
+```
+
+### 3.2 dense 子圖：`permute + view` 根本不在 trace 範圍內
+
+`BEVFusionDenseWrapper.forward()` 的入口是 `lidar_bev`：
+
+```python
+def forward(self, lidar_bev: torch.Tensor) -> tuple:
+    x = lidar_bev   # 已經是 (N, C*D, H, W) 的 BEV feature map
+    x = self.mod.pts_backbone(x)
+    ...
+```
+
+**dense 子圖從一開始就接收已整理好的 BEV tensor，從來不會 trace 到 `ScatterND`、
+`dense()`、`permute`、`view` 這些操作。** 因此 dense ONNX 裡根本不存在這串節點，
+不是「被刪掉」，而是「從未被畫進去」。
+
+### 3.3 sparse 子圖：trace 時 batch=1 是靜態值，cleanup 再折疊
+
+export 流程是先跑一次 `BEVFusionSparseWrapper` 的 forward pass 拿到 `lidar_bev`（`onnx_export_pipeline.py:307-313`），
+再用同樣那份 sample trace sparse ONNX。此時 batch=1 是 Python int，
+`n = int(x.shape[0])` = `1`，trace 後 `Reshape` 的 shape 已是靜態常數 `[1, 256, 180, 180]`。
+
+即使 trace 留下一些中介常數節點，`cleanup()` 做 constant folding 後也會把
+`Shape -> Gather -> Unsqueeze -> Concat` 這條鏈折成單一常數向量。
+
+對照單圖 trace：整個圖一次畫完，batch 被宣告為 dynamic axis（或 symbolic 追蹤跨越較多節點邊界），
+`n` 無法靜態化，整串 shape plumbing 就保留下來。
+
+### 3.4 小結
+
+| | `Shape/Gather/Unsqueeze` 存在嗎？ | 原因 |
+|---|---|---|
+| 原始 single-trace ONNX | **有** | 整圖 trace，batch 為動態，`n` 要到 runtime 才讀 |
+| split export 的 **dense 子圖** | **沒有**（完全不含這段程式） | dense 子圖從 `lidar_bev` 開始，`permute+view` 不在 trace 範圍 |
+| split export 的 **sparse 子圖** + merge 後 | **通常沒有或更短** | trace 時 batch=1 為靜態整數；`cleanup()` constant folding |
+
+不是因為模型少算了，而是：
+1. dense 子圖把 `lidar_bev` 當作外部輸入張量，`permute+view` 的 trace 根本不在這裡。
+2. sparse 子圖 trace 時 batch 維度靜態已知，shape plumbing 可被折疊。
+3. `cleanup()` 刪掉已無引用或可靜態化的 shape 節點。
+
 **同一個數學流程，ONNX 可以有不同等價寫法；split trace + compose 通常更短。**
 
 ---
