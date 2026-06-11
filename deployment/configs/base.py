@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping, Optional, Tuple
+from typing import Mapping, Optional, Tuple
 
 import torch
 from mmengine.config import Config
@@ -53,21 +53,21 @@ class BaseDeploymentConfig:
         Args:
             deploy_cfg: MMEngine Config object containing deployment settings
         """
-        self.deploy_cfg = deploy_cfg
+        self._deploy_cfg = deploy_cfg
         self._ensure_required_sections()
 
         checkpoint_path = deploy_cfg.get("checkpoint_path")
-        self._checkpoint_path = self._validate_checkpoint_path(checkpoint_path)
-        self._device_config = DeviceConfig.from_dict(deploy_cfg.get("devices", {}))
+        self.checkpoint_path = self._validate_checkpoint_path(checkpoint_path)
+        self.device_config = DeviceConfig.from_dict(deploy_cfg.get("devices", {}))
         self.components_cfg = ComponentsConfig.from_dict(deploy_cfg.get("components", {}))
-        self._onnx_export_config = OnnxConfig.from_dict(deploy_cfg.get("onnx_config"))
+        self._onnx_config = OnnxConfig.from_dict(deploy_cfg.get("onnx_config"))
 
         # Schema/type validation in each from_dict and __post_init__
         self.export_config = ExportConfig.from_dict(deploy_cfg.get("export", {}))
         self.runtime_config = RuntimeConfig.from_dict(deploy_cfg.get("runtime_io", {}))
-        self.tensorrt_config = TensorRTConfig.from_dict(deploy_cfg.get("tensorrt_config", {}))
-        self._evaluation_config = EvaluationConfig.from_dict(deploy_cfg.get("evaluation", {}))
-        self._verification_config = VerificationConfig.from_dict(deploy_cfg.get("verification", {}))
+        self._tensorrt_config = TensorRTConfig.from_dict(deploy_cfg.get("tensorrt_config", {}))
+        self.evaluation_config = EvaluationConfig.from_dict(deploy_cfg.get("evaluation", {}))
+        self.verification_config = VerificationConfig.from_dict(deploy_cfg.get("verification", {}))
         self._deploy_log_path = self._parse_deploy_log_path(deploy_cfg.get("deploy_log_path", "deployment.log"))
 
         # Runtime/environment validation (torch/cuda)
@@ -75,15 +75,15 @@ class BaseDeploymentConfig:
 
     def _ensure_required_sections(self) -> None:
         """Ensure required deploy config sections exist. Schema/type validation is done by typed configs in from_dict/__post_init__."""
-        if "export" not in self.deploy_cfg:
+        if "export" not in self._deploy_cfg:
             raise ValueError("Missing 'export' section in deploy config.")
-        export_raw = self.deploy_cfg.get("export")
+        export_raw = self._deploy_cfg.get("export")
         if export_raw is not None and not isinstance(export_raw, Mapping):
             raise TypeError("deploy config 'export' must be a dict-like mapping.")
 
-        if "components" not in self.deploy_cfg:
+        if "components" not in self._deploy_cfg:
             raise ValueError("Missing 'components' section in deploy config.")
-        components_raw = self.deploy_cfg.get("components")
+        components_raw = self._deploy_cfg.get("components")
         if components_raw is not None and not isinstance(components_raw, Mapping):
             raise TypeError("deploy config 'components' must be a dict-like mapping.")
 
@@ -115,7 +115,7 @@ class BaseDeploymentConfig:
         if cuda_device is None or device_idx is None:
             raise RuntimeError(
                 "CUDA device is required (TensorRT export/verification/evaluation enabled) but no CUDA device was"
-                " configured in deploy_cfg.devices."
+                " configured in devices."
             )
 
         if not torch.cuda.is_available():
@@ -150,66 +150,15 @@ class BaseDeploymentConfig:
         return False
 
     @property
-    def checkpoint_path(self) -> str:
-        """
-        Get checkpoint path - single source of truth for PyTorch model.
-
-        Validated at config load time (non-empty, file must exist).
-
-        This path is used by:
-        - Export pipeline: to load the PyTorch model for ONNX conversion
-        - Evaluation / verification: companion PyTorch modules for staged backends
-
-        Returns:
-            Path to the PyTorch checkpoint file
-        """
-        return self._checkpoint_path
-
-    @property
-    def evaluation_config(self) -> EvaluationConfig:
-        """Get evaluation configuration."""
-        return self._evaluation_config
-
-    @property
-    def onnx_config(self) -> OnnxConfig:
-        """Get ONNX export configuration (typed)."""
-        return self._onnx_export_config
-
-    @property
-    def verification_config(self) -> VerificationConfig:
-        """Get verification configuration."""
-        return self._verification_config
-
-    @property
-    def device_config(self) -> DeviceConfig:
-        """Get validated device settings."""
-        return self._device_config
-
-    @property
-    def deploy_log_path(self) -> Optional[str]:
-        """Raw deploy_log_path from config (relative names are resolved via `resolved_deploy_log_file`)."""
-        return self._deploy_log_path
-
-    @property
     def resolved_deploy_log_file(self) -> Optional[str]:
         """Absolute path for the deployment log file, or None if file logging is disabled."""
         if self._deploy_log_path is None:
             return None
-        log_path = Path(self._deploy_log_path).expanduser()
+        log_path = Path(self._deploy_log_path).expanduser()  # type: ignore[arg-type]
         if log_path.is_absolute():
             return str(log_path.resolve(strict=False))
         work_dir = Path(self.export_config.work_dir).expanduser()
         return str((work_dir / log_path).resolve(strict=False))
-
-    @property
-    def evaluation_backends(self) -> Mapping[Any, Mapping[str, Any]]:
-        """
-        Get evaluation backends configuration.
-
-        Returns:
-            Dictionary mapping backend names to their configuration
-        """
-        return self.evaluation_config.backends
 
     def get_verification_scenarios(self, export_mode: ExportMode) -> Tuple[VerificationScenario, ...]:
         """
@@ -226,7 +175,7 @@ class BaseDeploymentConfig:
     def get_onnx_settings(self, component_name: str) -> ONNXExportConfig:
         """Get ONNX export settings for a component. I/O and save_file come from ComponentCfg."""
         component_cfg = self.components_cfg.get_component(component_name)
-        onnx_config = self._onnx_export_config
+        onnx_config = self._onnx_config
         input_names = tuple(inp.name for inp in component_cfg.io.inputs)
         output_names = tuple(out.name for out in component_cfg.io.outputs)
         if not input_names:
@@ -254,9 +203,9 @@ class BaseDeploymentConfig:
         if not component_cfg.tensorrt_profile:
             return TensorRTExportConfig.from_mapping(
                 {
-                    "max_workspace_size": self.tensorrt_config.max_workspace_size,
-                    "precision_policy": self.tensorrt_config.precision_policy,
-                    "policy_flags": self.tensorrt_config.precision_flags,
+                    "max_workspace_size": self._tensorrt_config.max_workspace_size,
+                    "precision_policy": self._tensorrt_config.precision_policy,
+                    "policy_flags": self._tensorrt_config.precision_flags,
                     "model_inputs": None,
                 }
             )
@@ -264,9 +213,9 @@ class BaseDeploymentConfig:
         model_inputs = (TensorRTModelInputConfig(input_shapes=MappingProxyType(input_shapes)),)
         return TensorRTExportConfig.from_mapping(
             {
-                "max_workspace_size": self.tensorrt_config.max_workspace_size,
-                "precision_policy": self.tensorrt_config.precision_policy,
-                "policy_flags": self.tensorrt_config.precision_flags,
+                "max_workspace_size": self._tensorrt_config.max_workspace_size,
+                "precision_policy": self._tensorrt_config.precision_policy,
+                "policy_flags": self._tensorrt_config.precision_flags,
                 "model_inputs": model_inputs,
             }
         )

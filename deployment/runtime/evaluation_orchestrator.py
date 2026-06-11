@@ -119,7 +119,7 @@ class EvaluationOrchestrator:
         Returns:
             List of model specifications
         """
-        backends = self.config.evaluation_backends
+        backends = self.config.evaluation_config.backends
         models_to_evaluate: List[ModelSpec] = []
 
         for backend_key, backend_cfg in backends.items():
