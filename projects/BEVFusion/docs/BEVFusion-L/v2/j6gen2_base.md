@@ -235,7 +235,13 @@
 <details>
 <summary> Changes  </summary>
 
-- Optimize ONNX, TensorRT plugin from `BEVFusion-LiDAR base/2.7.1` for better inference speed.
+Optimized the ONNX model and TensorRT plugin from `BEVFusion-LiDAR base/2.7.1` for faster inference, reducing BEVFusion-L latency by ~15%. The speedup comes from three changes to the sparse convolution backbone:
+
+- **Disable Sort**: skip sorting in `GetIndicePairsImplicitGemm`.
+- **SparseConv + BatchNorm fusion**: fold BatchNorm into the preceding sparse convolution.
+- **ImplicitGemm + ReLU fusion**: fuse the ReLU activation into the implicit GEMM kernel.
+
+> **Note**: The optimized ONNX requires the latest `autoware.universe` to run correctly.
 </details>
 
 <details>
