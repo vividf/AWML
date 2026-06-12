@@ -28,6 +28,17 @@ CLI::
 spconv_do_sort = False
 
 # ============================================================================
+# trainStation / data-dependent-shape removal (Route A).
+# Removes the 4 down-sample GetIndicePairsImplicitGemm nodes from the sparse ONNX
+# and exposes their rulebook outputs as graph inputs (precomputed at runtime),
+# eliminating the in-graph DeviceToShapeHostCopy syncs / [trainStationN] segments.
+# Applied by onnx_export_pipeline._postprocess_sparse_onnx_fp. The 16 extra inputs
+# are added to the bevfusion_sparse TensorRT profile at the bottom of this file.
+# Requires a runtime that precomputes + binds the rulebooks (autoware_bevfusion).
+# ============================================================================
+spconv_remove_trainstation = True
+
+# ============================================================================
 # Sparse ONNX postprocess (FP): fuse ImplicitGemm with trailing Relu/Add(const)+Relu.
 # ----------------------------------------------------------------------------
 # Applied automatically by deployment/projects/bevfusion/export/onnx_export_pipeline.py
@@ -55,8 +66,8 @@ devices = dict(
 
 export = dict(
     mode="none",
-    work_dir="work_dirs/bevfusion_deployment_2_7_on_board_test",
-    onnx_path="work_dirs/bevfusion_deployment_2_7_on_board_test/onnx",
+    work_dir="work_dirs/bevfusion_deployment_2_7_on_board_trainstaion",
+    onnx_path="work_dirs/bevfusion_deployment_2_7_on_board_trainstaion/onnx",
 )
 
 
@@ -64,7 +75,7 @@ export = dict(
 # - False: split sparse+dense ONNX/engine (default)
 # - True : one ONNX + one engine + one backend pipeline
 bevfusion_merge = dict(
-    enabled=True,
+    enabled=False,
     onnx_file="bevfusion_lidar_fp16_opt.onnx",
     engine_file="bevfusion_lidar_fp16_opt.engine",
 )
@@ -142,6 +153,35 @@ components = dict(
         ),
     ),
 )
+
+# ============================================================================
+# trainStation removal: TensorRT profile for the 16 precomputed-rulebook graph
+# inputs (4 down-sample stages x {out_indices, pair_fwd, pair_mask, mask_argsort}).
+# Names must match deployment/.../export/sparse_trainstation_transform.py outputs.
+# Shapes: N in [1, 256000] (upper bound = plugin out_indices_num_limit_); KV per stage.
+# ============================================================================
+if spconv_remove_trainstation:
+    _N_OPT, _N_MAX = 64000, 256000
+    _DS_STAGES = [
+        ("/pts_middle_encoder/encoder_layer1/encoder_layer1.2/encoder_layer1.2.0/GetIndicePairsImplicitGemm", 27),
+        ("/pts_middle_encoder/encoder_layer2/encoder_layer2.2/encoder_layer2.2.0/GetIndicePairsImplicitGemm", 27),
+        ("/pts_middle_encoder/encoder_layer3/encoder_layer3.2/encoder_layer3.2.0/GetIndicePairsImplicitGemm", 27),
+        ("/pts_middle_encoder/conv_out/conv_out.0/GetIndicePairsImplicitGemm", 3),
+    ]
+    _sparse_profile = components["bevfusion_sparse"]["tensorrt_profile"]
+    for _base, _kv in _DS_STAGES:
+        _sparse_profile[f"{_base}_output_0"] = dict(  # out_indices [N,4]
+            min_shape=[1, 4], opt_shape=[_N_OPT, 4], max_shape=[_N_MAX, 4]
+        )
+        _sparse_profile[f"{_base}_output_1"] = dict(  # pair_fwd [KV,N]
+            min_shape=[_kv, 1], opt_shape=[_kv, _N_OPT], max_shape=[_kv, _N_MAX]
+        )
+        _sparse_profile[f"{_base}_output_2"] = dict(  # pair_mask [N,1]
+            min_shape=[1, 1], opt_shape=[_N_OPT, 1], max_shape=[_N_MAX, 1]
+        )
+        _sparse_profile[f"{_base}_output_3"] = dict(  # mask_argsort [N]
+            min_shape=[1], opt_shape=[_N_OPT], max_shape=[_N_MAX]
+        )
 
 runtime_io = dict(
     info_file="info/t4dataset_j6gen2_base_infos_test.pkl",

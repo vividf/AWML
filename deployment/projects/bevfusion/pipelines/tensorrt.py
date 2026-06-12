@@ -517,9 +517,11 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
     ) -> Dict[str, np.ndarray]:
         input_map: Dict[str, np.ndarray] = {}
         output_names: List[str] = []
+        input_names: List[str] = []
         for i in range(engine.num_io_tensors):
             name = engine.get_tensor_name(i)
             if engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+                input_names.append(name)
                 ln = name.lower()
                 if "voxel" in ln and "num" not in ln:
                     input_map[name] = voxels_np
@@ -529,6 +531,17 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
                     input_map[name] = num_points_np
             else:
                 output_names.append(name)
+
+        # trainStation-stripped engine: supply the 4 precomputed down-sample rulebooks as
+        # graph inputs (see export/sparse_trainstation_transform.py + sparse_rulebook_precompute.py).
+        from deployment.projects.bevfusion.pipelines.sparse_rulebook_precompute import (
+            compute_rulebook_inputs,
+            has_rulebook_inputs,
+        )
+
+        if has_rulebook_inputs(input_names):
+            input_map.update(compute_rulebook_inputs(coors_np, input_names, device=self.torch_device))
+
         return self._trt_infer_bound(engine, context, input_map, output_names, profiler, gpu_interval_events)
 
     def _trt_infer_named_input(

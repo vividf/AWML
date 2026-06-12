@@ -395,7 +395,26 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
         )
 
     def _postprocess_sparse_onnx_fp(self, *, config: BaseDeploymentConfig, sparse_onnx_path: Path) -> None:
-        """Optional FP sparse ONNX postprocess (ImplicitGemm activation fusion)."""
+        """Optional FP sparse ONNX postprocess (trainStation/DDS removal, ImplicitGemm fusion)."""
+        # --- trainStation / data-dependent-shape removal (independent of ReLU fusion) ---
+        if bool(config.deploy_cfg.get("spconv_remove_trainstation", False)):
+            if not sparse_onnx_path.exists():
+                raise FileNotFoundError(f"Sparse ONNX not found for trainStation removal: {sparse_onnx_path}")
+            from deployment.projects.bevfusion.export.sparse_trainstation_transform import (
+                remove_trainstation_dds,
+            )
+
+            model = onnx.load(str(sparse_onnx_path))
+            model, new_inputs = remove_trainstation_dds(model)
+            onnx.checker.check_model(model)
+            onnx.save_model(model, str(sparse_onnx_path))
+            self.logger.info(
+                "Sparse ONNX postprocess: trainStation/DDS removal done "
+                "(removed 4 down-sample GetIndicePairs, added %d rulebook graph inputs): %s",
+                len(new_inputs),
+                sparse_onnx_path,
+            )
+
         from deployment.projects.bevfusion.export.sparse_int8_onnx_transform import (
             deploy_cfg_fuse_implicit_gemm_relu,
         )
