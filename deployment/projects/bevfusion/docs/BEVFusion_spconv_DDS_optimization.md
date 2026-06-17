@@ -375,7 +375,7 @@ confounded because the baseline ran `mode="both"` — a heavy engine build right
   number must include the precompute cost in preprocessing. The decisive, hardware-independent result
   is structural: trainStations 6→0 and mAP unchanged.
 
-### Slice 2b — autoware_bevfusion C++/CUDA runtime ✅ implemented (build pending in autoware env)
+### Slice 2b — autoware_bevfusion C++/CUDA runtime ✅ implemented (see Slice 2c for build/verify)
 
 Ported the validated Python precompute to the on-vehicle node. New + edited files in
 `autoware.universe/perception/autoware_bevfusion/`:
@@ -402,6 +402,69 @@ Not built/verified here (autoware.universe is not mounted in the awml-bevfusion 
 colcon/autoware + spconv build). The `.cu` faithfully mirrors the proven plugin `enqueue` and the
 validated Python cascade; integration points to confirm on first build: exact `SpconvOps` API
 signatures, the `coors` order (`sparse_coors_is_zyx_`), and the spconv workspace sizing.
+
+### Slice 2c — first autoware-env build + end-to-end run ✅ PROVEN (pilot-auto.x2)
+
+Built `autoware_bevfusion` in `pilot-auto.x2` against the merged single-file engine
+(`bevfusion_lidar.onnx`, exported with `spconv_remove_trainstation=True`) and ran it end-to-end on a
+real `concatenated/pointcloud` rosbag. Three issues surfaced — all three were exactly the
+"confirm on first build" points flagged in Slice 2b — plus the config needed to enable the path.
+Fixes (in `autoware.universe/perception/autoware_bevfusion/`):
+
+1. **`SpconvOps` API signature — `std::string` vs `const char*` (compile error).**
+   `network_trt_ptr_->setTensorAddress(...)` / `setInputShape(...)` in `bevfusion_trt.cpp`
+   (`bindSparseRulebookAddresses` / `setSparseRulebookInputShapes`) were called with
+   `s.onnx_base + "_output_N"` (a `std::string`), but the installed `autoware_tensorrt_common`
+   only exposes `(const char*, ...)` / `(int32_t, ...)` overloads — no implicit `std::string`
+   conversion. **Fix:** wrap each name in `(...).c_str()` (8 call sites).
+
+2. **Merged-engine tensor-name prefix (engine builds, but profiles set on the wrong tensors).**
+   `onnx.compose.merge_models` namespaces the sparse subgraph with `sparse/`, and the merge step only
+   renamed the 3 *declared* `io.inputs` (`voxels`/`coors`/`num_points_per_voxel`) back — so the 16
+   trainStation rulebook inputs (added later by `sparse_trainstation_transform`) kept the prefix and
+   came out as `sparse//pts_middle_encoder/.../GetIndicePairsImplicitGemm_output_*` (double `//`). The
+   runtime's hardcoded `default_bevfusion_downsample_stages()` base names have no prefix, so the
+   optimization profiles were registered for non-existent tensors and the real inputs were left
+   without a profile → `Error Code 4: ... is missing dimensions in profile 0`.
+   **Fix (export side, keeps the runtime clean):** in `onnx_export_pipeline._merge_split_onnx`, after
+   the declared-input/output rename, strip the `sparse/` namespace from every remaining graph input
+   so the rulebook inputs keep their original un-prefixed `GetIndicePairsImplicitGemm` node names
+   (`gs` renames by object identity, so consumers update too). The merged ONNX input names then match
+   both the runtime's hardcoded stage names and the deploy-cfg `tensorrt_profile` names. No runtime
+   prefix knob is needed — `autoware_bevfusion` binds the names as-is. (AWML eval is unaffected:
+   `sparse_rulebook_precompute.has_rulebook_inputs` / `compute_rulebook_inputs` match by the
+   `GetIndicePairsImplicitGemm_output_` marker + node `infix`, both prefix-agnostic.)
+   *Requires re-exporting the ONNX with the fixed pipeline and rebuilding the engine.*
+
+3. **spconv workspace under-sized for the down-sample stages (runtime abort on first frame).**
+   `SparseRulebookPrecompute` passed `N` (= `out_indices_num_limit_`, 256000) as `max_act_out_in_theory`
+   to `get_indice_gen_workspace_size` / `get_indice_gen_tensors_from_workspace`, so the internal
+   `indice_pairs_uniq` buffer was carved at `N*1.1 = 281600`. The first stage actually needs
+   `get_handcrafted_max_act_out(num_in, ...) ≈ 808121`, tripping the spconv `StaticAllocator`
+   `res.nbytes() >= total ... assert faild. alloc failed, tensor size too small [2, 808121] [2, 281600]`.
+   The plugin's `enqueue` sizes this from `SpconvOps::get_handcrafted_max_act_out(num_act_in, ...)`,
+   not `N`. **Fix:** mirror the plugin — `computeStage()` derives
+   `max_act_out_theory = get_handcrafted_max_act_out(num_in, ksize, stride, padding, dilation)` and
+   feeds it to both workspace-size and tensor-carving calls; `allocateStageBuffers()` sizes the shared
+   workspace for the worst case (max over stages of `get_handcrafted_max_act_out(N, ...)`), which bounds
+   every per-stage carve since runtime `num_in ≤ N`.
+
+**Config required to enable the path** (in the *loaded* ml-package param file — for the default launch
+that is `~/autoware_data/bevfusion/ml_package_bevfusion_lidar.param.yaml`, resolved from
+`model_path = $(data_path)/bevfusion`, **not** the package `config/` copy):
+
+```yaml
+sparse_remove_trainstation: true
+```
+
+**Verified:** engine builds with all 16 `sparse//...GetIndicePairsImplicitGemm_output_*` profiles set
+(`Engine generation completed`), node loads it, and replaying the pointcloud rosbag drives inference
+with **no crash** and populated `/objects` detections (the `compatibleCallback` PointCloud2 path —
+the one that previously aborted on frame 0).
+
+> Build note (this machine): the shell auto-activates conda base, whose `colcon` lacks `colcon_core`.
+> Drop miniconda from `PATH` (and unset `PYTHONPATH`/`CONDA_PREFIX`) before `colcon build`, else the
+> build silently no-ops before compiling.
 
 ### Next slices (pending)
 

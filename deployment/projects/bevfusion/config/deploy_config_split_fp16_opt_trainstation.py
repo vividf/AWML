@@ -65,7 +65,7 @@ devices = dict(
 )
 
 export = dict(
-    mode="none",
+    mode="onnx",
     work_dir="work_dirs/bevfusion_deployment_2_7_on_board_trainstaion",
     onnx_path="work_dirs/bevfusion_deployment_2_7_on_board_trainstaion/onnx",
 )
@@ -75,9 +75,9 @@ export = dict(
 # - False: split sparse+dense ONNX/engine (default)
 # - True : one ONNX + one engine + one backend pipeline
 bevfusion_merge = dict(
-    enabled=False,
-    onnx_file="bevfusion_lidar_fp16_opt.onnx",
-    engine_file="bevfusion_lidar_fp16_opt.engine",
+    enabled=True,
+    onnx_file="bevfusion_lidar.onnx",
+    engine_file="bevfusion_lidar.engine",
 )
 
 
@@ -204,7 +204,7 @@ tensorrt_config = dict(
 )
 
 evaluation = dict(
-    enabled=True,
+    enabled=False,
     num_samples=-1,
     num_warmup_samples=2,
     verbose=True,

@@ -517,6 +517,18 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             if i < len(merged_graph.outputs):
                 merged_graph.outputs[i].name = name
 
+        # trainStation rulebook inputs (added by sparse_trainstation_transform, so not in the declared
+        # io.inputs above) otherwise keep the "sparse/" namespace that merge_models prepends to every
+        # sparse tensor. Strip it so the graph-input names stay the original GetIndicePairsImplicitGemm
+        # node names (e.g. /pts_middle_encoder/.../GetIndicePairsImplicitGemm_output_0) — the on-board
+        # runtime (autoware_bevfusion) then binds them with no prefix needed, and the deploy-cfg
+        # tensorrt_profile names (also un-prefixed) match. gs renames by object identity, so the
+        # consuming nodes are updated too.
+        _SPARSE_NS = "sparse/"
+        for inp in merged_graph.inputs:
+            if inp.name.startswith(_SPARSE_NS):
+                inp.name = inp.name[len(_SPARSE_NS) :]
+
         merged_graph.cleanup().toposort()
         onnx.save_model(gs.export_onnx(merged_graph), str(merged_path))
         self.logger.info("Merged split ONNX -> %s", merged_path)
