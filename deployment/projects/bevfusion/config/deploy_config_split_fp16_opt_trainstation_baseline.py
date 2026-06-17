@@ -162,24 +162,21 @@ components = dict(
 # ============================================================================
 if spconv_remove_trainstation:
     _N_OPT, _N_MAX = 64000, 256000
-    _DS_STAGES = [
-        ("/pts_middle_encoder/encoder_layer1/encoder_layer1.2/encoder_layer1.2.0/GetIndicePairsImplicitGemm", 27),
-        ("/pts_middle_encoder/encoder_layer2/encoder_layer2.2/encoder_layer2.2.0/GetIndicePairsImplicitGemm", 27),
-        ("/pts_middle_encoder/encoder_layer3/encoder_layer3.2/encoder_layer3.2.0/GetIndicePairsImplicitGemm", 27),
-        ("/pts_middle_encoder/conv_out/conv_out.0/GetIndicePairsImplicitGemm", 3),
-    ]
+    # (short stage tag, kernel volume). Names: rulebook/<tag>/<slot> — must match
+    # export/sparse_trainstation_transform.py:rulebook_input_name().
+    _DS_STAGES = [("l1", 27), ("l2", 27), ("l3", 27), ("out", 3)]
     _sparse_profile = components["bevfusion_sparse"]["tensorrt_profile"]
-    for _base, _kv in _DS_STAGES:
-        _sparse_profile[f"{_base}_output_0"] = dict(  # out_indices [N,4]
+    for _tag, _kv in _DS_STAGES:
+        _sparse_profile[f"rulebook/{_tag}/out_indices"] = dict(  # [N,4]
             min_shape=[1, 4], opt_shape=[_N_OPT, 4], max_shape=[_N_MAX, 4]
         )
-        _sparse_profile[f"{_base}_output_1"] = dict(  # pair_fwd [KV,N]
+        _sparse_profile[f"rulebook/{_tag}/pair_fwd"] = dict(  # [KV,N]
             min_shape=[_kv, 1], opt_shape=[_kv, _N_OPT], max_shape=[_kv, _N_MAX]
         )
-        _sparse_profile[f"{_base}_output_2"] = dict(  # pair_mask [N,1]
+        _sparse_profile[f"rulebook/{_tag}/pair_mask"] = dict(  # [N,1]
             min_shape=[1, 1], opt_shape=[_N_OPT, 1], max_shape=[_N_MAX, 1]
         )
-        _sparse_profile[f"{_base}_output_3"] = dict(  # mask_argsort [N]
+        _sparse_profile[f"rulebook/{_tag}/mask_argsort"] = dict(  # [N]
             min_shape=[1], opt_shape=[_N_OPT], max_shape=[_N_MAX]
         )
 

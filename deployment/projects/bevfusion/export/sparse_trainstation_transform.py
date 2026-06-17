@@ -36,7 +36,7 @@ coordinates and bind them to the new inputs; see §7.2 of the design doc.
 from __future__ import annotations
 
 import logging
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import onnx
 from onnx import TensorProto, helper
@@ -44,6 +44,25 @@ from onnx import TensorProto, helper
 logger = logging.getLogger(__name__)
 
 _GET_INDICE_PAIRS_OP = "GetIndicePairsImplicitGemm"
+
+# Clean, hierarchical names for the promoted rulebook graph inputs. The leading
+# ``rulebook/<stage>/`` segment makes Netron group all 16 inputs into one
+# collapsible ``rulebook`` box (with ``l1``/``l2``/``l3``/``out`` sub-boxes)
+# instead of 16 dangling ``…GetIndicePairsImplicitGemm_output_N`` tensors that
+# look like outputs of a node no longer in the graph. The slot order is the
+# fixed output order of ``GetIndicePairsImplicitGemm`` (see sparse_functional.py):
+#   0=out_indices, 1=pair_fwd, 2=pair_mask, 3=mask_argsort (out[4]=num_act_out unused).
+_INPUT_NAMESPACE = "rulebook"
+_SLOTS = ("out_indices", "pair_fwd", "pair_mask", "mask_argsort")
+
+
+def rulebook_input_name(stage_tag: str, slot: str) -> str:
+    """Canonical graph-input name for a rulebook tensor, e.g. ``rulebook/l1/pair_fwd``.
+
+    This is the single source of truth for the name shared by the export side and
+    both runtimes (AWML eval ``sparse_rulebook_precompute`` and autoware_bevfusion).
+    """
+    return f"{_INPUT_NAMESPACE}/{stage_tag}/{slot}"
 
 
 def _attr(node: onnx.NodeProto, name: str):
@@ -79,12 +98,18 @@ def remove_trainstation_dds(
     """Delete down-sampling GetIndicePairs nodes and expose their outputs as inputs.
 
     Returns the modified model and the ordered list of new graph-input names. The
-    new inputs (per down-sampling stage ``i``, with shared symbolic dim ``N_i``):
+    new inputs (per down-sampling stage with short tag ``l1``/``l2``/``l3``/``out``
+    and shared symbolic dim ``N``):
 
-      * ``<prefix>_out_indices``  : ``[N_i, 4]``   (out[0])
-      * ``<prefix>_pair_fwd``     : ``[KV, N_i]``  (out[1])
-      * ``<prefix>_pair_mask``    : ``[N_i, 1]``   (out[2])
-      * ``<prefix>_mask_argsort`` : ``[N_i]``      (out[3])
+      * ``rulebook/<tag>/out_indices``  : ``[N, 4]``   (out[0])
+      * ``rulebook/<tag>/pair_fwd``     : ``[KV, N]``  (out[1])
+      * ``rulebook/<tag>/pair_mask``    : ``[N, 1]``   (out[2])
+      * ``rulebook/<tag>/mask_argsort`` : ``[N]``      (out[3])
+
+    The original outputs of the removed nodes are intermediate tensors named after
+    the (now-gone) node path (``…/GetIndicePairsImplicitGemm_output_N``); every
+    consumer edge is rewritten to the clean ``rulebook/<tag>/<slot>`` name so the
+    graph stays valid and Netron groups the inputs under one ``rulebook`` box.
 
     out[4] (``num_act_out`` scalar) is dropped — it has no consumer in the graph.
     """
@@ -97,6 +122,7 @@ def remove_trainstation_dds(
 
     new_inputs: List[onnx.ValueInfoProto] = []
     new_input_names: List[str] = []
+    rename: Dict[str, str] = {}  # old intermediate tensor name -> new graph-input name
 
     for node in downs:
         ksize = _attr(node, "ksize")
@@ -109,30 +135,46 @@ def remove_trainstation_dds(
         size_dim = f"{size_dim_prefix}_{tag}_n"
 
         # out[0..3] are consumed; out[4] (scalar num_act_out) is not.
-        specs = [
-            (node.output[0], [size_dim, 4]),  # out_indices
-            (node.output[1], [kernel_volume, size_dim]),  # pair_fwd
-            (node.output[2], [size_dim, 1]),  # pair_mask
-            (node.output[3], [size_dim]),  # mask_argsort
-        ]
-        for tensor_name, dims in specs:
-            new_inputs.append(_make_input(tensor_name, dims))
-            new_input_names.append(tensor_name)
+        dims_per_slot = {
+            "out_indices": [size_dim, 4],
+            "pair_fwd": [kernel_volume, size_dim],
+            "pair_mask": [size_dim, 1],
+            "mask_argsort": [size_dim],
+        }
+        for slot_idx, slot in enumerate(_SLOTS):
+            old_name = node.output[slot_idx]
+            new_name = rulebook_input_name(tag, slot)
+            rename[old_name] = new_name
+            new_inputs.append(_make_input(new_name, dims_per_slot[slot]))
+            new_input_names.append(new_name)
 
         logger.info(
-            "trainStation DDS removal: promoting %s (KV=%d, dim=%s) outputs to graph inputs",
+            "trainStation DDS removal: promoting %s (KV=%d, dim=%s) outputs to graph inputs %s",
             tag,
             kernel_volume,
             size_dim,
+            rulebook_input_name(tag, "*"),
         )
 
     for node in downs:
         g.node.remove(node)
 
+    # Rewrite every consumer edge from the old intermediate name to the new input name.
+    for n in g.node:
+        for i, inp in enumerate(n.input):
+            if inp in rename:
+                n.input[i] = rename[inp]
+
+    # Drop now-orphaned value_info for the old intermediate tensors (they are graph
+    # inputs now, typed via make_tensor_value_info — stale entries would duplicate them).
+    stale_vi = [vi for vi in g.value_info if vi.name in rename]
+    for vi in stale_vi:
+        g.value_info.remove(vi)
+
     g.input.extend(new_inputs)
 
     logger.info(
-        "Removed %d down-sampling %s nodes; added %d graph inputs.",
+        "Removed %d down-sampling %s nodes; added %d graph inputs (rulebook/*).",
         len(downs),
         _GET_INDICE_PAIRS_OP,
         len(new_inputs),

@@ -20,13 +20,14 @@ from typing import Dict, List
 import numpy as np
 import torch
 
-# Per down-sample stage: (onnx node-name infix used to match graph inputs, kernel attrs).
+# Per down-sample stage: (short tag matching the rulebook graph-input names, kernel attrs).
+# The export side (export/sparse_trainstation_transform.py) names the promoted inputs
+# ``rulebook/<tag>/<slot>`` with tag in {l1,l2,l3,out}; we match on that tag.
 # spatial_shape cascade is model-specific (sparse_shape [1440,1440,41], stride-2 xy down-samples
 # + conv_out stride (1,1,2)); matches the BEVFusion-L 120m config used for the trainStation deploy.
 _DOWNSAMPLE_STAGES = [
     dict(
-        tag="encoder_layer1",
-        infix="/encoder_layer1/encoder_layer1.2/encoder_layer1.2.0/",
+        tag="l1",
         ksize=[3, 3, 3],
         stride=[2, 2, 2],
         padding=[1, 1, 1],
@@ -34,8 +35,7 @@ _DOWNSAMPLE_STAGES = [
         spatial=[1440, 1440, 41],
     ),
     dict(
-        tag="encoder_layer2",
-        infix="/encoder_layer2/encoder_layer2.2/encoder_layer2.2.0/",
+        tag="l2",
         ksize=[3, 3, 3],
         stride=[2, 2, 2],
         padding=[1, 1, 1],
@@ -43,8 +43,7 @@ _DOWNSAMPLE_STAGES = [
         spatial=[720, 720, 21],
     ),
     dict(
-        tag="encoder_layer3",
-        infix="/encoder_layer3/encoder_layer3.2/encoder_layer3.2.0/",
+        tag="l3",
         ksize=[3, 3, 3],
         stride=[2, 2, 2],
         padding=[1, 1, 0],
@@ -52,8 +51,7 @@ _DOWNSAMPLE_STAGES = [
         spatial=[360, 360, 11],
     ),
     dict(
-        tag="conv_out",
-        infix="/conv_out/conv_out.0/",
+        tag="out",
         ksize=[1, 1, 3],
         stride=[1, 1, 2],
         padding=[0, 0, 0],
@@ -62,11 +60,29 @@ _DOWNSAMPLE_STAGES = [
     ),
 ]
 
-_RULEBOOK_MARKER = "GetIndicePairsImplicitGemm_output_"
+# Graph-input naming contract shared with export/sparse_trainstation_transform.py:
+# ``[<prefix>/]rulebook/<tag>/<slot>`` (a ``sparse/`` prefix may be present in the
+# merged single-file ONNX; matching is prefix-agnostic). Slot order = the fixed
+# GetIndicePairsImplicitGemm output order.
+_RULEBOOK_NAMESPACE = "rulebook"
+_SLOTS = ("out_indices", "pair_fwd", "pair_mask", "mask_argsort")
+
+
+def _parse_rulebook_name(name: str):
+    """``…/rulebook/<tag>/<slot>`` -> (tag, slot_index), or None if not a rulebook input."""
+    parts = name.split("/")
+    try:
+        i = parts.index(_RULEBOOK_NAMESPACE)
+        tag, slot = parts[i + 1], parts[i + 2]
+    except (ValueError, IndexError):
+        return None
+    if slot not in _SLOTS:
+        return None
+    return tag, _SLOTS.index(slot)
 
 
 def has_rulebook_inputs(input_names: List[str]) -> bool:
-    return any(_RULEBOOK_MARKER in n for n in input_names)
+    return any(_parse_rulebook_name(n) is not None for n in input_names)
 
 
 def _zyx_to_xyz(coors: torch.Tensor) -> torch.Tensor:
@@ -91,7 +107,7 @@ def compute_rulebook_inputs(
 
     from projects.SparseConvolution.sparse_functional import GetIndicePairsImplicitGemm
 
-    rb_names = [n for n in input_names if _RULEBOOK_MARKER in n]
+    rb_names = [n for n in input_names if _parse_rulebook_name(n) is not None]
     if not rb_names:
         return {}
 
@@ -131,9 +147,8 @@ def compute_rulebook_inputs(
 
     out: Dict[str, np.ndarray] = {}
     for name in rb_names:
-        oi = int(name.rsplit(_RULEBOOK_MARKER, 1)[1])
-        tag = next((d["tag"] for d in _DOWNSAMPLE_STAGES if d["infix"] in name), None)
-        if tag is None:
+        tag, slot_idx = _parse_rulebook_name(name)
+        if tag not in by_tag:
             raise KeyError(f"Could not match rulebook input to a down-sample stage: {name}")
-        out[name] = by_tag[tag][oi].detach().cpu().numpy()
+        out[name] = by_tag[tag][slot_idx].detach().cpu().numpy()
     return out

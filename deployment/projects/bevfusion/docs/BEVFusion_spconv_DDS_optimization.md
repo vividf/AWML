@@ -14,6 +14,293 @@ active output sites after a downsampling sparse convolution is not known until t
 it, so TensorRT must copy that shape back to the host (`DeviceToShapeHostCopy`) before it can
 configure and launch the next segment. Each such boundary breaks pipelining and leaves the GPU idle.
 
+## 1.5 Reading the `GetIndicePairsImplicitGemm` outputs in the ONNX graph
+
+In the exported ONNX you will see nodes such as
+`/pts_middle_encoder/encoder_layer1/encoder_layer1.2/encoder_layer1.2.0/GetIndicePairsImplicitGemm`
+with outputs `_output_0 / _output_1 / _output_2 / _output_3`. These come from spconv's
+**index / geometry stage**. spconv deliberately splits a sparse convolution into two ops:
+
+1. **`GetIndicePairsImplicitGemm`** — builds the *rulebook* from voxel **geometry only** (which
+   cells are occupied); it does **not** look at feature values.
+2. **`ImplicitGemm`** — consumes the rulebook + features and does the actual matrix multiply.
+
+The op emits **5 outputs** (`outputs=5` in `sparse_functional.py`); the forward returns the tuple
+`(out_inds, pair_fwd, pair_mask_fwd, mask_argsort_fwd, num_act_out)`:
+
+| Output | Meaning | Shape |
+|--------|---------|-------|
+| `_output_0` = **out_indices** | Active voxel coordinates `[batch, x, y, z]` after this downsample. The next layer's input coords are exactly this. | `[N, 4]` |
+| `_output_1` = **pair_fwd** | The **rulebook** itself: for each kernel offset, the input→output voxel index pairs. `KV` = kernel volume. | `[KV, N]` (KV=27 for 3×3×3; KV=3 for `conv_out` 1×1×3) |
+| `_output_2` = **pair_mask** | Per output site, a bitmask of which kernel offsets actually have a matching input. | `[N, 1]` |
+| `_output_3` = **mask_argsort** | Argsort of the mask, so the implicit-GEMM kernel reads sites efficiently. | `[N]` |
+| `_output_4` = **num_act_out** | The **count** of active output sites N after this downsample (a scalar). | `[]` |
+
+`N` is the number of active voxels after the downsample. **`_output_4` (num_act_out) is the DDS
+source**: N is only known after the GPU finishes the unique/sort step, which is why TensorRT inserts
+the `DeviceToShapeHostCopy` and the `[trainStation]` segment boundary here. Submanifold layers
+(`conv1`/`conv2`) keep the active-site set unchanged, so they produce no shape copy.
+
+The node you are looking at, `encoder_layer1.2` (the 3rd sublayer of `encoder_layer1`, a stride-2
+downsample), is one of the **4 DDS layers** in §2.1.
+
+**Why this matters for the optimization (Route A):** because the rulebook depends only on geometry,
+it can be precomputed in preprocessing. Export then **deletes** the 4 downsample
+`GetIndicePairsImplicitGemm` nodes and promotes their `_output_0..3` to **graph inputs**
+(`_output_4`/num_act_out has no consumer and is dropped). The size tensor disappears, all 6
+trainStations collapse to 0, and `ImplicitGemm` needs no change (its output shape is already derived
+from an input dim). See §7.0 and §8 Slice 1.
+
+> **Graph-input naming.** The 4 promoted tensors per stage are renamed to a clean, hierarchical
+> `rulebook/<tag>/<slot>` scheme (`tag` ∈ `l1,l2,l3,out`; `slot` ∈ `out_indices,pair_fwd,pair_mask,
+> mask_argsort`), e.g. `rulebook/l1/pair_fwd`. This is purely a readability change: the leading
+> `rulebook/` segment makes Netron group all 16 inputs into one collapsible box instead of 16
+> dangling `…/GetIndicePairsImplicitGemm_output_N` tensors that look like outputs of a node that is
+> no longer in the graph. The name is the contract between the export transform
+> (`rulebook_input_name()`) and both runtimes; see §8 "Rulebook graph-input naming".
+
+### 1.5 (中文) 解讀 ONNX 圖裡的 `GetIndicePairsImplicitGemm` 輸出
+
+在匯出的 ONNX 中你會看到類似
+`/pts_middle_encoder/encoder_layer1/encoder_layer1.2/encoder_layer1.2.0/GetIndicePairsImplicitGemm`
+的節點，輸出為 `_output_0 / _output_1 / _output_2 / _output_3`。它們來自 spconv 的
+**索引 / 幾何計算階段**。spconv 故意把稀疏卷積拆成兩個 op：
+
+1. **`GetIndicePairsImplicitGemm`** — 只根據體素的**幾何**（哪些格子有點）算出 *rulebook（規則簿）*，
+   **完全不看 feature 數值**。
+2. **`ImplicitGemm`** — 拿規則簿 + feature 做真正的矩陣乘法。
+
+此 op 輸出 **5 個 tensor**（`sparse_functional.py` 中 `outputs=5`）；forward 回傳的 tuple 是
+`(out_inds, pair_fwd, pair_mask_fwd, mask_argsort_fwd, num_act_out)`：
+
+| 輸出 | 含意 | 形狀 |
+|------|------|------|
+| `_output_0` = **out_indices** | 這層下採樣後的**活躍體素座標** `[batch, x, y, z]`。下一層的輸入座標就是它。 | `[N, 4]` |
+| `_output_1` = **pair_fwd** | **規則簿本體**：對每個 kernel offset，記錄「輸入體素 → 輸出體素」的配對索引。`KV` = kernel 體積。 | `[KV, N]`（3×3×3 時 KV=27；`conv_out` 1×1×3 時 KV=3） |
+| `_output_2` = **pair_mask** | 每個輸出位置上，哪些 kernel offset 真的有對應輸入（bitmask）。 | `[N, 1]` |
+| `_output_3` = **mask_argsort** | 把 mask 排序後的索引，讓 implicit-GEMM kernel 能有效率地讀取。 | `[N]` |
+| `_output_4` = **num_act_out** | 這層下採樣後**活躍體素的數量** N（scalar）。 | `[]` |
+
+`N` 就是該層下採樣後的活躍體素數。**`_output_4`（num_act_out）正是 DDS 的來源**：N 要等 GPU 算完
+unique/sort 才知道，所以 TensorRT 必須在此插入 `DeviceToShapeHostCopy` 並切出一個 `[trainStation]`
+段界。submanifold 層（`conv1`/`conv2`）不改變活躍體素集合，因此不會產生 shape copy。
+
+你看到的這個節點 `encoder_layer1.2`（`encoder_layer1` 的第 3 個 sublayer，stride-2 下採樣層），正是
+§2.1 中 **4 個 DDS 層** 之一。
+
+**這對優化（Route A）為何重要：** 因為規則簿只依賴幾何，可以在 preprocessing 先算好。匯出時就把這 4 個
+下採樣的 `GetIndicePairsImplicitGemm` 節點**刪掉**，並把它們的 `_output_0..3` 提升為**圖的輸入**
+（`_output_4`/num_act_out 沒有 consumer，直接丟棄）。size tensor 隨之消失、6 個 trainStation 全部歸 0，
+而 `ImplicitGemm` 完全不用改（它的輸出 shape 本來就從輸入 dim 推導）。詳見 §7.0 與 §8 Slice 1。
+
+> **Graph-input 命名。** 每個 stage 被提升的 4 個 tensor 會改名成乾淨的階層式 `rulebook/<tag>/<slot>`
+> （`tag` ∈ `l1,l2,l3,out`；`slot` ∈ `out_indices,pair_fwd,pair_mask,mask_argsort`），例如
+> `rulebook/l1/pair_fwd`。這純粹是可讀性的改動：開頭的 `rulebook/` 讓 Netron 把 16 個 input 收進一個
+> 可摺疊的方框，而不是 16 個看似「某個已不存在的節點的輸出」的 `…/GetIndicePairsImplicitGemm_output_N`。
+> 這個名字是 export transform（`rulebook_input_name()`）與兩端 runtime 之間的契約；見 §8
+> 「Rulebook graph-input naming」。
+
+## 1.6 What the rulebook tensors do, how `act` is precomputed, and how they reach `ImplicitGemm`
+
+This section explains the four rulebook tensors mechanically, and the exact path by which the
+precomputed values drive the `ImplicitGemm` conv in the trainStation-free graph.
+
+### 1.6.1 What each tensor is (spconv MaskImplicitGemm convention)
+
+A sparse convolution turns into a **gather + batched matmul**: for every active *output* voxel,
+gather the input voxels that fall under each kernel tap, multiply by that tap's weight, and sum.
+The four tensors are exactly the bookkeeping that makes this matmul possible **without dense
+spatial loops**. Let `N` = number of active output voxels, `KV` = kernel volume (`prod(ksize)`;
+27 for a 3×3×3, 3 for `conv_out` 1×1×3), `C_in`/`C_out` = input/output channels.
+
+| Tensor | Shape | Role |
+|--------|-------|------|
+| **out_indices** | `[N, 4]` int32 | The coordinates `[batch, x, y, z]` of each active output voxel. This is the *output geometry* — the set of occupied cells after the stride-2 downsample. It is **not** consumed by this layer's GEMM; it is the **input coordinate set of the next layer** (and feeds the final scatter to dense BEV). |
+| **pair_fwd** | `[KV, N]` int32 | The **rulebook** proper. `pair_fwd[k, j]` = the row index into the **input** feature matrix of the voxel that feeds output voxel `j` through kernel tap `k`, or `-1` if that tap has no input there. This is the gather table: `out[j] = Σ_k W[k] · in[pair_fwd[k, j]]` over the taps where `pair_fwd[k, j] ≠ -1`. |
+| **pair_mask** | `[N, 1]` uint32 | Per output voxel, a **bitmask over the `KV` kernel taps**: bit `k` set ⇔ `pair_fwd[k, j] ≠ -1`. It lets the kernel know, per output row, which taps are active so it skips the empty ones. `KV ≤ 32` (27 or 3 here), so one `uint32` holds the whole mask. |
+| **mask_argsort** | `[N]` int32 | A permutation of the `N` output voxels that **groups rows with the same mask bit-pattern together**. The implicit-GEMM kernel walks rows in this order so each GEMM tile contains voxels with an identical active-tap set → dense, uniform tiles instead of ragged ones. Pure scheduling/ordering; no geometry of its own. |
+| *(num_act_out)* | scalar | `= N`. The active-output count. **Dropped as a graph input** — see §1.6.3 for why the engine doesn't need it explicitly. |
+
+Key property repeated from §3: **all four depend only on voxel coordinates, never on feature
+values.** `pair_fwd`/`pair_mask`/`mask_argsort` are derived purely from which input cells are
+occupied and the kernel geometry; `out_indices` is just the resulting occupied output cells. That
+is what makes precomputation legal.
+
+### 1.6.2 How `act` (the active-voxel count `N`) is precomputed
+
+`act` is the data-dependent quantity (`num_act_out`) that originally forced the
+`DeviceToShapeHostCopy` / trainStation. In Route A it is produced in **preprocessing**, before the
+engine runs, by a **coordinate-only cascade** over the 4 downsample stages
+(`pipelines/sparse_rulebook_precompute.py` for AWML eval; `preprocess/sparse_rulebook_precompute.cu`
+for autoware_bevfusion):
+
+1. Start from the voxel coordinates `coors` produced by voxelization (`[N0, 3]`, order `[z, y, x]`),
+   convert to spconv's `[batch, x, y, z]`.
+2. For each downsample stage `i` (`l1→l2→l3→out`), call the **same** spconv routine the in-graph
+   plugin used, `SpconvOps::get_indice_pairs_implicit_gemm(coords_i, spatial_shape_i, ksize, stride,
+   padding, …)`. This runs the unique/sort over generated output coordinates and returns the stage's
+   `out_indices`, `pair_fwd`, `pair_mask`, `mask_argsort`, **and the count `N_i = num_act_out`**.
+3. **Thread `out_indices` forward**: stage `i`'s `out_indices` is the input coordinate set of stage
+   `i+1` (the submanifold layers between downsamples don't change the coordinate set, so they are
+   skipped in the cascade). The spatial shape shrinks `1440→720→360→180` accordingly.
+4. Each stage's `get_indice_pairs_implicit_gemm` returns `N_i` **as a host int**, so it performs its
+   own device-to-host readback. Because the cascade is data-dependent (stage `i+1`'s input *is* stage
+   `i`'s output coords + count), these readbacks are **sequential: 4 syncs, one per stage** — the same
+   count of host syncs the baseline did. The win is **where** they happen, not their number: the
+   baseline did them *mid-TRT-graph* (forcing `DeviceToShapeHostCopy` + trainStation segmentation that
+   fragments the whole engine); Route A does them in **preprocessing**, so the TRT engine runs as one
+   un-fragmented, CUDA-graphable block. (A true single combined readback isn't possible here — the
+   geometric cascade dependency forbids it; §4.1's "single sync" was the design intent, not the shape
+   of the implementation.)
+
+The result is, per stage, four device tensors (the rulebooks) plus the integer `N_i`.
+
+### 1.6.3 How the precomputed values reach `ImplicitGemm`
+
+This is the crucial wiring, and the reason `num_act_out` can be dropped:
+
+- **`pair_fwd`, `pair_mask`, `mask_argsort` are bound as the engine's rulebook graph inputs.** In the
+  ONNX, `ImplicitGemm`'s inputs are exactly `[features, filters, pair_fwd, pair_mask, mask_argsort]`
+  (see `ImplicitGemm.symbolic`; `num_activate_out` is **not** an ONNX input). The runtime
+  `setTensorAddress`es each rulebook buffer to the corresponding `rulebook/<stage>/<slot>` input and
+  `setInputShape`s it to `N_i` before `enqueueV3`.
+- **`N` reaches `ImplicitGemm` through a shape, not a value.** The `ImplicitGemm` plugin derives its
+  output extent from an *input* dim: `outputs[0].d[0] = inputs[3].d[0]` (= `pair_mask`'s dim0 = `N`),
+  `outputs[0].d[1] = inputs[1].d[0]` (= `C_out`) — see §7.0. So once `pair_mask` (and the other
+  rulebooks) have shape `N_i` fixed by `setInputShape`, the conv's output `[N_i, C_out]` is fully
+  determined. **No separate `num_act_out` scalar is needed** — which is exactly why `out[4]` has no
+  consumer and is dropped during the graph surgery.
+- **`out_indices` reaches the *next* layer, not this GEMM.** It is bound to the
+  `rulebook/<stage>/out_indices` input and consumed by the following (in-graph, submanifold)
+  `GetIndicePairsImplicitGemm` node as its `indices`, and ultimately by the scatter-to-dense step.
+  This is why the surgery promotes `out[0]` too (4 inputs) on top of the 12 GEMM inputs
+  (4 stages × {pair_fwd, pair_mask, mask_argsort}).
+
+So the end-to-end contract is: **preprocess computes the geometry (rulebooks + `N`) → binds the
+3 GEMM rulebooks (with `N` as their shape) and `out_indices` (for the next layer) → `ImplicitGemm`
+runs the gather-matmul, sizing its output from `pair_mask`'s `N` dim.** The features themselves
+never enter preprocessing; only `ImplicitGemm` sees them, exactly as before — only the geometry it
+needed was moved out of the graph.
+
+### 1.6 (中文) 四個 rulebook tensor 在做什麼、`act` 如何 precompute、又如何餵給 `ImplicitGemm`
+
+#### 1.6.1 每個 tensor 是什麼（spconv MaskImplicitGemm 慣例）
+
+稀疏卷積本質是 **gather + 批次矩陣乘法**：對每個活躍的*輸出*體素，蒐集落在各 kernel tap 下的輸入體素，
+乘上該 tap 的權重再相加。這四個 tensor 就是讓這個矩陣乘法能在**不做密集空間迴圈**下完成的索引簿。設
+`N` = 活躍輸出體素數，`KV` = kernel 體積（`prod(ksize)`；3×3×3 為 27，`conv_out` 1×1×3 為 3），
+`C_in`/`C_out` = 輸入/輸出通道數。
+
+| Tensor | 形狀 | 作用 |
+|--------|------|------|
+| **out_indices** | `[N, 4]` int32 | 每個活躍輸出體素的座標 `[batch, x, y, z]`，即下採樣後的*輸出幾何*（哪些格子被佔用）。它**不**被本層 GEMM 使用，而是**下一層的輸入座標集**（並供最後 scatter 到 dense BEV）。 |
+| **pair_fwd** | `[KV, N]` int32 | 真正的 **rulebook**。`pair_fwd[k, j]` = 透過 kernel tap `k` 餵給輸出體素 `j` 的那個體素，在**輸入** feature 矩陣中的列索引；若該 tap 無對應輸入則為 `-1`。即 gather 表：`out[j] = Σ_k W[k] · in[pair_fwd[k, j]]`（只累加 `pair_fwd[k, j] ≠ -1` 的 tap）。 |
+| **pair_mask** | `[N, 1]` uint32 | 每個輸出體素一個**跨 `KV` 個 tap 的 bitmask**：第 `k` bit 設立 ⇔ `pair_fwd[k, j] ≠ -1`。讓 kernel 知道每列哪些 tap 有效、跳過空 tap。`KV ≤ 32`（此處 27 或 3），一個 `uint32` 即可裝下整個 mask。 |
+| **mask_argsort** | `[N]` int32 | 把 `N` 個輸出體素**依 mask bit-pattern 相同者排在一起**的置換。implicit-GEMM kernel 依此順序走列，使每個 GEMM tile 內的體素具有相同的 active-tap 集合 → 密實、規整的 tile。純排程/排序，本身不含幾何。 |
+| *(num_act_out)* | scalar | `= N`，活躍輸出數。**不作為 graph input**（原因見 §1.6.3）。 |
+
+重申 §3 的關鍵性質：**四者只依賴體素座標，完全不依賴 feature 數值。** 這正是可以 precompute 的前提。
+
+#### 1.6.2 `act`（活躍體素數 `N`）如何 precompute
+
+`act` 就是原本逼出 `DeviceToShapeHostCopy` / trainStation 的那個 data-dependent 量（`num_act_out`）。
+Route A 把它在**引擎執行前的 preprocessing** 以一個**只用座標的 cascade** 算好（AWML eval 在
+`pipelines/sparse_rulebook_precompute.py`；autoware_bevfusion 在
+`preprocess/sparse_rulebook_precompute.cu`）：
+
+1. 從 voxelization 產生的體素座標 `coors`（`[N0, 3]`，順序 `[z, y, x]`）出發，轉成 spconv 的
+   `[batch, x, y, z]`。
+2. 對每個下採樣 stage `i`（`l1→l2→l3→out`），呼叫**與 in-graph plugin 相同**的 spconv 程序
+   `SpconvOps::get_indice_pairs_implicit_gemm(coords_i, spatial_shape_i, ksize, stride, padding, …)`。
+   它對產生的輸出座標做 unique/sort，回傳該 stage 的 `out_indices`、`pair_fwd`、`pair_mask`、
+   `mask_argsort`，**以及計數 `N_i = num_act_out`**。
+3. **把 `out_indices` 往前串**：stage `i` 的 `out_indices` 就是 stage `i+1` 的輸入座標集（下採樣之間的
+   submanifold 層不改座標集，故在 cascade 中略過）。spatial shape 隨之縮小 `1440→720→360→180`。
+4. 每個 stage 的 `get_indice_pairs_implicit_gemm` 會把 `N_i` **以 host int 回傳**，亦即各自做一次
+   device→host 讀回。由於 cascade 有資料相依（stage `i+1` 的輸入*就是* stage `i` 的輸出座標＋計數），
+   這些讀回是**循序的：4 個 sync，每 stage 一個**——數量和 baseline 一樣。差別在**發生的位置**而非數量：
+   baseline 是在 *TRT 圖中間* 做（逼出 `DeviceToShapeHostCopy` + trainStation 切段，把整個 engine 打碎）；
+   Route A 改在 **preprocessing** 做，使 TRT engine 變成一整段不被切斷、可 CUDA-graph 的區塊。（這裡無法真的
+   合併成單一讀回——幾何 cascade 的相依性不允許；§4.1 的「single sync」是設計意圖，不是實作的樣子。）
+
+結果：每個 stage 有四個 device tensor（rulebooks）外加整數 `N_i`。
+
+#### 1.6.3 precompute 出來的值如何餵給 `ImplicitGemm`
+
+這是關鍵接線，也是為何 `num_act_out` 可以被丟掉的原因：
+
+- **`pair_fwd`、`pair_mask`、`mask_argsort` 被綁成引擎的 rulebook graph inputs。** ONNX 裡
+  `ImplicitGemm` 的輸入正是 `[features, filters, pair_fwd, pair_mask, mask_argsort]`（見
+  `ImplicitGemm.symbolic`；`num_activate_out` **不是** ONNX 輸入）。runtime 在 `enqueueV3` 前對每個
+  rulebook buffer 做 `setTensorAddress` 綁到對應的 `rulebook/<stage>/<slot>` 輸入，並 `setInputShape`
+  成 `N_i`。
+- **`N` 是透過 shape、而非數值，傳到 `ImplicitGemm`。** `ImplicitGemm` plugin 的輸出 extent 由*輸入* dim
+  推導：`outputs[0].d[0] = inputs[3].d[0]`（= `pair_mask` 的 dim0 = `N`），`outputs[0].d[1] =
+  inputs[1].d[0]`（= `C_out`）——見 §7.0。所以一旦 `pair_mask`（與其他 rulebook）的 shape 被
+  `setInputShape` 固定為 `N_i`，這層卷積的輸出 `[N_i, C_out]` 就完全確定。**不需要另外的
+  `num_act_out` scalar**——這正是 `out[4]` 沒有 consumer、在圖手術中被丟棄的原因。
+- **`out_indices` 是給*下一層*，不是給本層 GEMM。** 它被綁到 `rulebook/<stage>/out_indices` 輸入，由其後
+  （仍在圖內、submanifold 的）`GetIndicePairsImplicitGemm` 節點當作 `indices` 使用，最後供 scatter-to-dense。
+  這就是為何手術除了 12 個 GEMM 輸入（4 stages × {pair_fwd, pair_mask, mask_argsort}）外，也把 `out[0]`
+  提升成 4 個輸入。
+
+所以端到端契約是：**preprocessing 算出幾何（rulebooks + `N`）→ 綁定 3 個 GEMM rulebook（以 `N` 作為其
+shape）與 `out_indices`（供下一層）→ `ImplicitGemm` 執行 gather-matmul，並用 `pair_mask` 的 `N` 維決定
+輸出大小。** feature 本身從不進入 preprocessing，只有 `ImplicitGemm` 看得到它，與原本一模一樣——被移出圖的
+只有它所需的幾何。
+
+## 1.7 End-to-end flowchart / 端到端流程圖
+
+![BEVFusion sparse encoder trainStation/DDS removal flow](BEVFusion_spconv_DDS_flow.png)
+
+> Source: [`BEVFusion_spconv_DDS_flow.dot`](BEVFusion_spconv_DDS_flow.dot) (render with
+> `dot -Tpng -Gdpi=150 BEVFusion_spconv_DDS_flow.dot -o BEVFusion_spconv_DDS_flow.png`; an
+> [`.svg`](BEVFusion_spconv_DDS_flow.svg) is also provided for zoomable viewing).
+
+The diagram has three lanes. **A (blue)** happens once, offline; **B (purple)** runs every frame;
+**C (red)** is what the engine does internally with the values B supplies.
+
+**Lane A — Export time (one-time graph surgery, AWML).**
+1. PyTorch BEVFusion-L is exported to the split **sparse ONNX**: 21 `GetIndicePairsImplicitGemm`
+   (4 downsample `subm=0` → `declareSizeTensor` → DDS/trainStation; 17 submanifold `subm=1` → no DDS)
+   + 21 `ImplicitGemm`.
+2. `remove_trainstation_dds()` **deletes the 4 downsample `GetIndicePairs` nodes** and **promotes
+   their `out[0..3]`** to graph inputs named `rulebook/<tag>/<slot>` (`out[4]`/`num_act_out` is
+   dropped — no consumer).
+3. It **rewrites the consumer edges** to the new names → graph inputs go 3 → 19 (+16), 12
+   `ImplicitGemm` edges now come from inputs, and Netron groups all 16 under one `rulebook` box.
+4. The sparse graph is merged with the dense graph (the `sparse/` prefix is stripped) and built into
+   a **TensorRT engine with 0 trainStations**; `ImplicitGemm` itself is untouched.
+
+**Lane B — Runtime (per frame).**
+1. Point cloud → voxelization → `coors [N0,3]` (`[z,y,x]`), converted to spconv `[batch,x,y,z]`.
+2. A **coordinate-only cascade** over the 4 downsample stages (`l1→l2→l3→out`) calls the same
+   `SpconvOps::get_indice_pairs_implicit_gemm` the plugin used — **geometry only, no features** —
+   yielding per stage `out_indices / pair_fwd / pair_mask / mask_argsort` and the count `N_i`. Each
+   stage's `out_indices` is threaded forward as the next stage's input coords (spatial
+   `1440→720→360→180`).
+3. Each stage returns `N_i` as a host int → **4 sequential device-to-host readbacks** (the cascade is
+   data-dependent, so they can't be merged). Same sync *count* as the baseline, but now off the
+   engine's critical path (in preprocessing, not mid-TRT-graph).
+4. The runtime `setTensorAddress`es the 16 rulebook buffers and `setInputShape`s each to `N_i`,
+   then `enqueueV3()`.
+
+**Lane C — Inside the engine (per downsample conv).**
+- `pair_fwd` / `pair_mask` / `mask_argsort` feed the unchanged `ImplicitGemm`
+  (`out[j] = Σ_k W[k]·in[pair_fwd[k,j]]` over active taps).
+- **`N` arrives as a shape, not a value**: `outputs[0].d[0] = inputs[3].d[0]` (= `pair_mask`'s dim0
+  = `N`), `outputs[0].d[1] = C_out` → output `[N, C_out]`. That is why no `num_act_out` scalar is
+  needed and `out[4]` was dropped.
+- `out_indices` does **not** feed this GEMM; it is the **next** layer's coordinate set (consumed by
+  the following in-graph submanifold `GetIndicePairs`, and ultimately the scatter-to-dense BEV).
+
+中文摘要：**A 藍色**＝離線一次性的圖手術（刪 4 個下採樣 GetIndicePairs、把 `out[0..3]` 提升為
+`rulebook/<tag>/<slot>` graph inputs、改寫 consumer、合併建 engine，trainStation 歸 0）；**B 紫色**＝
+每幀只用座標 cascade 預先算出 4 個 stage 的 rulebook 與計數 `N_i`（循序 4 次讀回計數，數量同 baseline，但移到
+preprocessing、不再卡在 TRT 圖中間），`setInputShape` 後 `enqueueV3`；**C 紅色**＝engine 內 `ImplicitGemm` 用 `pair_fwd/pair_mask/mask_argsort` 做 gather-matmul，
+`N` 經由 `pair_mask` 的 dim0 以 **shape**（非數值）傳入決定輸出 `[N,C_out]`，而 `out_indices` 是給**下一層**
+的座標。逐欄的細節對應 §1.5（tensor 定義）與 §1.6（資料流）。
+
 ## 2. Profiling Evidence (61 inferences, averaged per inference)
 
 | Metric | Value |
@@ -74,8 +361,11 @@ as inputs with resolvable shapes, removing the in-graph DDS.
    - output active coordinates,
    - index pairs (rulebook),
    - per-stage active-site counts.
-2. Perform **one** `cudaMemcpyAsync` + single sync to bring back the per-stage counts (replaces the
-   4 mid-graph syncs), set the engine's dynamic input shapes from them.
+2. Bring back the per-stage counts to set the engine's dynamic input shapes. *(Design intent was a
+   single combined readback; in practice the geometric cascade is data-dependent — stage `i+1` needs
+   stage `i`'s count — so the counts come back as **4 sequential readbacks**, one per stage. This is
+   the same sync count as the baseline, but moved off the engine's critical path into preprocessing;
+   see §1.6.2.)*
 3. Bind the precomputed rulebooks/coordinates to engine input tensors.
 
 ### 4.2 ONNX export side (analogous to AWML#206)
@@ -135,9 +425,10 @@ missing piece is wiring it through the plugin I/O and the export graph.
 - **Route A — Full precompute (matches §4, PTv3-style).** Run a coordinate-only forward pass of the
   4 downsampling stages in preprocessing → precomputed rulebooks + per-stage counts; feed as engine
   inputs; plugin `getOutputShapes()` derives output dim from an input dim (no `declareSizeTensor`);
-  `enqueue()` consumes `preallocated`. One preprocessing sync replaces 4 in-graph syncs. Cleanest
-  result; largest change (plugin I/O + export graph + runtime preprocess). Sequential geometric
-  cascade (stage N+1 needs stage N coords) makes the preprocess pass more involved than PTv3.
+  `enqueue()` consumes `preallocated`. Moves the 4 syncs into preprocessing (off the engine's
+  critical path); they stay **4 sequential readbacks**, not 1, because the geometric cascade is
+  data-dependent (stage N+1 needs stage N coords) — which also makes the preprocess pass more
+  involved than PTv3. Cleanest result; largest change (plugin I/O + export graph + runtime preprocess).
 - **Route B — Static upper-bound shape (lighter).** `getOutputShapes()` returns a constant per-stage
   bound instead of `declareSizeTensor`; kernels pad/mask to the bound; drop the D2H/H2D. No export
   input-signature change. Removes trainStations but wastes compute on padding (active sites shrink
@@ -200,8 +491,10 @@ layers reuse the prior stage's coordinates (their rulebook is geometry off the s
     `SpconvOps::get_indice_pairs_implicit_gemm(...)` (same call the plugin used,
     `get_indices_pairs_implicit_gemm_plugin.cpp:392/432`) into stable preallocated device buffers,
     threading each downsample layer's `out_indices` as the next layer's input coords.
-  - Collect every layer's `num_act_out`; do **one** `cudaMemcpyAsync`+`cudaStreamSynchronize` for all
-    counts (replaces the 4 in-graph syncs).
+  - Each layer's `get_indice_pairs_implicit_gemm` returns `num_act_out` as a host int (its own D2H);
+    the cascade dependency makes these **4 sequential readbacks** (one per stage). They replace the 4
+    *in-graph* syncs by moving them into preprocessing (off the engine's critical path) — not by
+    merging them into one.
 - **`lib/bevfusion_trt.cpp`**:
   - `initTrt()` (~L141–187): register the new rulebook graph inputs in the optimization profile with
     `[min,opt,max]` (max = `out_indices_num_limit_`), like PTv3's per-stage inputs.
@@ -216,8 +509,9 @@ layers reuse the prior stage's coordinates (their rulebook is geometry off the s
 
 - **`projects/SparseConvolution/sparse_functional.py`** (`GetIndicePairsImplicitGemm.symbolic`
   @243–292): add an `export_precomputed` path that, instead of emitting the
-  `autoware::GetIndicePairsImplicitGemm` op, returns 5 tensors sourced from **named graph inputs**
-  (`rulebook_{i}_out_indices`, `_pair_fwd`, `_pair_mask`, `_mask_argsort`, `_num_act_out`).
+  `autoware::GetIndicePairsImplicitGemm` op, returns 5 tensors sourced from **named graph inputs**.
+  (As implemented in Slice 1 the node is removed by a post-process pass rather than at symbolic time;
+  the inputs are named `rulebook/<tag>/{out_indices,pair_fwd,pair_mask,mask_argsort}` — see §8 Slice 1.)
 - **`projects/BEVFusion/bevfusion/sparse_encoder.py`** (`forward` @147+): in export mode, pull each
   layer's rulebook from the injected inputs rather than computing it; keep the `ImplicitGemm` calls
   unchanged (they already take pair tensors as args).
@@ -265,8 +559,22 @@ Verified in the `awml-bevfusion` container against the baseline
 - `onnx.checker` OK; `shape_inference(strict_mode=True)` OK → graph consistent end-to-end.
 
 New input names per stage (`l1/l2/l3/out`), INT32:
-`…GetIndicePairsImplicitGemm_output_{0,1,2,3}` with shapes
+`rulebook/<tag>/{out_indices,pair_fwd,pair_mask,mask_argsort}` with shapes
 `[N,4] / [KV,N] / [N,1] / [N]` (KV=27 for l1–l3, 3 for conv_out).
+
+> **Rulebook graph-input naming (single source of truth).** The promoted inputs use the clean
+> hierarchical scheme `rulebook/<tag>/<slot>` so Netron groups them under one collapsible `rulebook`
+> box (see §1.5). The name is produced by `sparse_trainstation_transform.rulebook_input_name()` and
+> consumed, by exact match, in three places that must stay in sync:
+> 1. **Export** — `export/sparse_trainstation_transform.py` (transform + consumer-edge rewrite).
+> 2. **AWML eval runtime** — `pipelines/sparse_rulebook_precompute.py` (`_parse_rulebook_name`,
+>    prefix-agnostic so it also matches the `sparse/`-prefixed merged-engine names).
+> 3. **autoware_bevfusion runtime** — `default_bevfusion_downsample_stages()` (`onnx_base =
+>    rulebook/<tag>`) + `bevfusion_trt.cpp` (`onnx_base + "/<slot>"`).
+> Plus the deploy-cfg `tensorrt_profile` keys in
+> `config/deploy_config_split_fp16_opt_trainstation.py`. (Earlier revisions kept the raw
+> `…/GetIndicePairsImplicitGemm_output_N` node-path names; the rename is cosmetic-only and does not
+> change shapes, dtypes, or the precompute logic.)
 
 ### Build / test workflow (this machine)
 
@@ -432,9 +740,15 @@ Fixes (in `autoware.universe/perception/autoware_bevfusion/`):
    (`gs` renames by object identity, so consumers update too). The merged ONNX input names then match
    both the runtime's hardcoded stage names and the deploy-cfg `tensorrt_profile` names. No runtime
    prefix knob is needed — `autoware_bevfusion` binds the names as-is. (AWML eval is unaffected:
-   `sparse_rulebook_precompute.has_rulebook_inputs` / `compute_rulebook_inputs` match by the
-   `GetIndicePairsImplicitGemm_output_` marker + node `infix`, both prefix-agnostic.)
+   `sparse_rulebook_precompute.has_rulebook_inputs` / `compute_rulebook_inputs` match prefix-agnostically.)
    *Requires re-exporting the ONNX with the fixed pipeline and rebuilding the engine.*
+
+   > **Update (rulebook rename).** The promoted inputs were later renamed from the raw node-path
+   > `…/GetIndicePairsImplicitGemm_output_N` to the clean `rulebook/<tag>/<slot>` scheme (§1.5, §8
+   > "Rulebook graph-input naming"). The `sparse/` strip above still applies — after merge they are
+   > `sparse/rulebook/<tag>/<slot>` and the strip yields `rulebook/<tag>/<slot>`. The AWML matcher now
+   > parses `rulebook/<tag>/<slot>` (`_parse_rulebook_name`) and the autoware runtime uses
+   > `onnx_base = rulebook/<tag>` — both still prefix-agnostic.
 
 3. **spconv workspace under-sized for the down-sample stages (runtime abort on first frame).**
    `SparseRulebookPrecompute` passed `N` (= `out_indices_num_limit_`, 256000) as `max_act_out_in_theory`
