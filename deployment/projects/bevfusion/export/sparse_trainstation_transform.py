@@ -35,6 +35,7 @@ coordinates and bind them to the new inputs; see §7.2 of the design doc.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Dict, List, Tuple
 
@@ -94,11 +95,17 @@ def _make_input(name: str, dims) -> onnx.ValueInfoProto:
 
 def remove_trainstation_dds(
     model: onnx.ModelProto, *, size_dim_prefix: str = "sp_dds"
-) -> Tuple[onnx.ModelProto, List[str]]:
+) -> Tuple[onnx.ModelProto, List[str], List[dict]]:
     """Delete down-sampling GetIndicePairs nodes and expose their outputs as inputs.
 
-    Returns the modified model and the ordered list of new graph-input names. The
-    new inputs (per down-sampling stage with short tag ``l1``/``l2``/``l3``/``out``
+    Returns ``(model, new_input_names, stages_meta)`` where ``stages_meta`` is an
+    ordered list of dicts — one per removed node — with the keys ``onnx_base``,
+    ``ksize``, ``stride``, ``padding``, ``dilation``, ``spatial_shape``.  These
+    match the ``SparseDownsampleStage`` fields in ``sparse_rulebook_precompute.hpp``
+    and can be serialised with :func:`write_rulebook_stages_json` so that the
+    Autoware runtime does not need to hard-code stage geometry.
+
+    The new inputs (per down-sampling stage with short tag ``l1``/``l2``/``l3``/``out``
     and shared symbolic dim ``N``):
 
       * ``rulebook/<tag>/out_indices``  : ``[N, 4]``   (out[0])
@@ -118,21 +125,35 @@ def remove_trainstation_dds(
     downs = [n for n in g.node if n.op_type == _GET_INDICE_PAIRS_OP and _attr(n, "subm") == 0]
     if not downs:
         logger.warning("No down-sampling %s nodes found; nothing to do.", _GET_INDICE_PAIRS_OP)
-        return model, []
+        return model, [], []
 
     new_inputs: List[onnx.ValueInfoProto] = []
     new_input_names: List[str] = []
+    stages_meta: List[dict] = []
     rename: Dict[str, str] = {}  # old intermediate tensor name -> new graph-input name
 
+    def _to_list(v) -> List[int]:
+        return v if isinstance(v, list) else [v]
+
     for node in downs:
-        ksize = _attr(node, "ksize")
-        ksize = ksize if isinstance(ksize, list) else [ksize]
+        ksize = _to_list(_attr(node, "ksize"))
         kernel_volume = 1
         for k in ksize:
             kernel_volume *= int(k)
 
         tag = _stage_tag(node.name)
         size_dim = f"{size_dim_prefix}_{tag}_n"
+
+        stages_meta.append(
+            {
+                "onnx_base": f"{_INPUT_NAMESPACE}/{tag}",
+                "ksize": ksize,
+                "stride": _to_list(_attr(node, "stride")),
+                "padding": _to_list(_attr(node, "padding")),
+                "dilation": _to_list(_attr(node, "dilation")),
+                "spatial_shape": _to_list(_attr(node, "spatial_shape")),
+            }
+        )
 
         # out[0..3] are consumed; out[4] (scalar num_act_out) is not.
         dims_per_slot = {
@@ -179,7 +200,31 @@ def remove_trainstation_dds(
         _GET_INDICE_PAIRS_OP,
         len(new_inputs),
     )
-    return model, new_input_names
+    return model, new_input_names, stages_meta
+
+
+_METADATA_KEY = "rulebook_stages"
+
+
+def embed_rulebook_stages_metadata(model: onnx.ModelProto, stages_meta: List[dict]) -> onnx.ModelProto:
+    """Embed ``stages_meta`` into the ONNX model's ``metadata_props``.
+
+    The entry is stored under the key ``"rulebook_stages"`` as a compact JSON
+    string.  The Autoware runtime reads it back via a minimal protobuf field
+    scanner (``load_stages_from_onnx`` in ``bevfusion_trt.cpp``) so that no
+    sidecar file is needed alongside the ONNX.
+
+    Idempotent: any previous ``rulebook_stages`` entry is replaced.
+    """
+    # Remove any existing entry to stay idempotent.
+    for existing in list(model.metadata_props):
+        if existing.key == _METADATA_KEY:
+            model.metadata_props.remove(existing)
+    entry = model.metadata_props.add()
+    entry.key = _METADATA_KEY
+    entry.value = json.dumps(stages_meta, separators=(",", ":"))
+    logger.info("Rulebook stages embedded in ONNX metadata_props (%d stages).", len(stages_meta))
+    return model
 
 
 def _main() -> None:

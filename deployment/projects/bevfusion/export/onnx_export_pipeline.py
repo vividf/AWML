@@ -401,16 +401,19 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
             if not sparse_onnx_path.exists():
                 raise FileNotFoundError(f"Sparse ONNX not found for trainStation removal: {sparse_onnx_path}")
             from deployment.projects.bevfusion.export.sparse_trainstation_transform import (
+                embed_rulebook_stages_metadata,
                 remove_trainstation_dds,
             )
 
             model = onnx.load(str(sparse_onnx_path))
-            model, new_inputs = remove_trainstation_dds(model)
+            model, new_inputs, stages_meta = remove_trainstation_dds(model)
+            model = embed_rulebook_stages_metadata(model, stages_meta)
             onnx.checker.check_model(model)
             onnx.save_model(model, str(sparse_onnx_path))
             self.logger.info(
                 "Sparse ONNX postprocess: trainStation/DDS removal done "
-                "(removed 4 down-sample GetIndicePairs, added %d rulebook graph inputs): %s",
+                "(removed 4 down-sample GetIndicePairs, added %d rulebook graph inputs,"
+                " stages embedded in metadata_props): %s",
                 len(new_inputs),
                 sparse_onnx_path,
             )
@@ -529,7 +532,17 @@ class BEVFusionONNXExportPipeline(OnnxExportPipeline):
                 inp.name = inp.name[len(_SPARSE_NS) :]
 
         merged_graph.cleanup().toposort()
-        onnx.save_model(gs.export_onnx(merged_graph), str(merged_path))
+        final_model = gs.export_onnx(merged_graph)
+
+        # onnx.compose.merge_models and gs.export_onnx both create a fresh ModelProto that
+        # drops metadata_props from component models. Re-copy any props from the sparse model
+        # (which may carry rulebook_stages embedded by embed_rulebook_stages_metadata).
+        for prop in sparse_model.metadata_props:
+            entry = final_model.metadata_props.add()
+            entry.key = prop.key
+            entry.value = prop.value
+
+        onnx.save_model(final_model, str(merged_path))
         self.logger.info("Merged split ONNX -> %s", merged_path)
 
     @staticmethod
