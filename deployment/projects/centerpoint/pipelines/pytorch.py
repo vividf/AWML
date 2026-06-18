@@ -57,24 +57,7 @@ class CenterPointPyTorchPipeline(CenterPointInferencePipeline):
         with torch.no_grad():
             voxel_features = self.pytorch_model.pts_voxel_encoder(input_features)
 
-        # Handle various output shapes from different encoder variants
-        if voxel_features.ndim == 3:
-            if voxel_features.shape[1] == 1:
-                voxel_features = voxel_features.squeeze(1)
-            elif voxel_features.shape[2] == 1:
-                voxel_features = voxel_features.squeeze(2)
-            else:
-                raise RuntimeError(
-                    f"Voxel encoder output has unexpected 3D shape: {voxel_features.shape}. "
-                    f"Expected 2D output [N_voxels, feature_dim]. Input was: {input_features.shape}"
-                )
-        elif voxel_features.ndim > 3:
-            raise RuntimeError(
-                f"Voxel encoder output has {voxel_features.ndim}D shape: {voxel_features.shape}. "
-                "Expected 2D output [N_voxels, feature_dim]."
-            )
-
-        return voxel_features
+        return self.squeeze_voxel_features(voxel_features)
 
     @override
     def run_backbone_head(self, spatial_features: torch.Tensor) -> List[torch.Tensor]:

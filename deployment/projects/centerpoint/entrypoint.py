@@ -43,7 +43,6 @@ def run(args: argparse.Namespace) -> int:
     logger.info("=" * 80)
 
     data_loader = CenterPointDataLoader(
-        info_file=config.runtime_config.info_file,
         model_cfg=model_cfg,
     )
     logger.info("Loaded %s samples", data_loader.num_samples)

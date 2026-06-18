@@ -20,7 +20,6 @@ from deployment.configs.schema import (
     EvaluationConfig,
     ExportConfig,
     OnnxConfig,
-    RuntimeConfig,
     TensorRTConfig,
     VerificationConfig,
     VerificationScenario,
@@ -64,7 +63,6 @@ class BaseDeploymentConfig:
 
         # Schema/type validation in each from_dict and __post_init__
         self.export_config = ExportConfig.from_dict(deploy_cfg.get("export", {}))
-        self.runtime_config = RuntimeConfig.from_dict(deploy_cfg.get("runtime_io", {}))
         self._tensorrt_config = TensorRTConfig.from_dict(deploy_cfg.get("tensorrt_config", {}))
         self.evaluation_config = EvaluationConfig.from_dict(deploy_cfg.get("evaluation", {}))
         self.verification_config = VerificationConfig.from_dict(deploy_cfg.get("verification", {}))
@@ -137,7 +135,7 @@ class BaseDeploymentConfig:
 
         if self.evaluation_config.enabled:
             backends_cfg = self.evaluation_config.backends
-            tensorrt_backend = backends_cfg.get(Backend.TENSORRT.value) or backends_cfg.get(Backend.TENSORRT)
+            tensorrt_backend = backends_cfg.get(Backend.TENSORRT.value)
             if tensorrt_backend and tensorrt_backend.get("enabled", False):
                 return True
 
@@ -154,7 +152,7 @@ class BaseDeploymentConfig:
         """Absolute path for the deployment log file, or None if file logging is disabled."""
         if self._deploy_log_path is None:
             return None
-        log_path = Path(self._deploy_log_path).expanduser()  # type: ignore[arg-type]
+        log_path = Path(self._deploy_log_path).expanduser()
         if log_path.is_absolute():
             return str(log_path.resolve(strict=False))
         work_dir = Path(self.export_config.work_dir).expanduser()
@@ -182,40 +180,31 @@ class BaseDeploymentConfig:
             input_names = ("input",)
         if not output_names:
             output_names = ("output",)
-        settings_dict = {
-            "opset_version": onnx_config.opset_version,
-            "do_constant_folding": onnx_config.do_constant_folding,
-            "input_names": input_names,
-            "output_names": output_names,
-            "dynamic_axes": component_cfg.io.dynamic_axes,
-            "export_params": onnx_config.export_params,
-            "keep_initializers_as_inputs": onnx_config.keep_initializers_as_inputs,
-            "verbose": False,
-            "save_file": component_cfg.onnx_file,
-            "batch_size": None,
-            "simplify": onnx_config.simplify,
-        }
-        return ONNXExportConfig.from_mapping(settings_dict)
+        return ONNXExportConfig(
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=component_cfg.io.dynamic_axes,
+            simplify=onnx_config.simplify,
+            opset_version=onnx_config.opset_version,
+            export_params=onnx_config.export_params,
+            keep_initializers_as_inputs=onnx_config.keep_initializers_as_inputs,
+            verbose=False,
+            do_constant_folding=onnx_config.do_constant_folding,
+            save_file=component_cfg.onnx_file,
+            batch_size=None,
+        )
 
     def get_tensorrt_settings(self, component_name: str) -> TensorRTExportConfig:
         """Get TensorRT export settings for a component. Profile and I/O come from ComponentCfg."""
         component_cfg = self.components_cfg.get_component(component_name)
-        if not component_cfg.tensorrt_profile:
-            return TensorRTExportConfig.from_mapping(
-                {
-                    "max_workspace_size": self._tensorrt_config.max_workspace_size,
-                    "precision_policy": self._tensorrt_config.precision_policy,
-                    "policy_flags": self._tensorrt_config.precision_flags,
-                    "model_inputs": None,
-                }
-            )
-        input_shapes = dict(component_cfg.tensorrt_profile)
-        model_inputs = (TensorRTModelInputConfig(input_shapes=MappingProxyType(input_shapes)),)
-        return TensorRTExportConfig.from_mapping(
-            {
-                "max_workspace_size": self._tensorrt_config.max_workspace_size,
-                "precision_policy": self._tensorrt_config.precision_policy,
-                "policy_flags": self._tensorrt_config.precision_flags,
-                "model_inputs": model_inputs,
-            }
+
+        model_input: Optional[TensorRTModelInputConfig] = None
+        if component_cfg.tensorrt_profile:
+            input_shapes = MappingProxyType(dict(component_cfg.tensorrt_profile))
+            model_input = TensorRTModelInputConfig(input_shapes=input_shapes)
+
+        return TensorRTExportConfig(
+            precision_policy=self._tensorrt_config.precision_policy,
+            max_workspace_size=self._tensorrt_config.max_workspace_size,
+            model_input=model_input,
         )

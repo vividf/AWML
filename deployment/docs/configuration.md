@@ -22,13 +22,14 @@ Read the deploy config in this order:
 | `checkpoint_path` | Yes | Path to the PyTorch checkpoint (must exist). Single source for load + PyTorch backend. |
 | `deploy_log_path` | No | File for deployment logs. Default `"deployment.log"`. Relative paths are resolved under `export.work_dir`. `None` or `""` disables file logging. |
 | `devices` | Yes | `cpu` / `cuda` device strings shared by export, verification, and evaluation. |
-| `export` | Yes | Export mode, `work_dir`, optional `onnx_path` (e.g. when `mode="trt"`). |
+| `export` | Yes | Export mode, `work_dir`, optional `onnx_path` (e.g. when `mode="trt"`), and `sample_idx` (dataset index of the sample used to trace/shape the exported model). |
 | `components` | Yes | Multi-component I/O and artifact names (see below). Current runner expects this section. |
-| `runtime_io` | Yes | Paths/indices for runtime data (e.g. `info_file`, `sample_idx`). |
 | `onnx_config` | No | Shared ONNX export flags (`opset_version`, `simplify`, …). Per-component filenames live under `components.*.onnx_file`. |
 | `tensorrt_config` | No | Shared TensorRT build flags. Per-component profiles live under `components.*.tensorrt_profile`. |
 | `evaluation` | No | Backend toggles, sample counts, optional `model_dir` / `engine_dir` for ONNX and TensorRT. |
-| `verification` | No | Scenarios per export mode, tolerance, `devices` map for verification. |
+| `verification` | No | Scenarios per export mode and tolerance. |
+
+> The evaluation/verification dataset is taken from the **model config's** `test_dataloader.dataset` (its `ann_file` is the test info). There is no separate `runtime_io`/`info_file` in the deploy config.
 
 ## Logging (`deploy_log_path`)
 
@@ -59,10 +60,6 @@ export = dict(
     mode="both",
     work_dir="work_dirs/my_deployment",
     onnx_path=None,
-)
-
-runtime_io = dict(
-    info_file="data/info.pkl",
     sample_idx=0,
 )
 
@@ -118,6 +115,7 @@ export = dict(
     mode="both",
     work_dir=_WORK_DIR,
     onnx_path=f"{_WORK_DIR}/onnx",
+    sample_idx=0,
 )
 
 components = dict(
@@ -199,7 +197,7 @@ evaluation = dict(
 )
 ```
 
-Optional `evaluation.models` / `evaluation.devices` exist in the typed schema for advanced overrides.
+Optional `evaluation.models` exists in the typed schema for advanced path overrides.
 
 ## Verification
 
@@ -210,7 +208,6 @@ verification = dict(
     enabled=True,
     tolerance=0.1,
     num_verify_samples=3,
-    devices=devices,
     scenarios=dict(
         both=[
             dict(ref_backend="pytorch", ref_device="cpu", test_backend="onnx", test_device="cpu"),
@@ -229,7 +226,7 @@ verification = dict(
 
 ## Device aliases
 
-Keep a single top-level `devices` dict and reference it from `evaluation.backends` and `verification` so CUDA/CPU strings stay consistent.
+Keep a single top-level `devices` dict and reference it from `evaluation.backends` (and reuse the same CPU/CUDA strings in each `verification` scenario's `ref_device`/`test_device`) so device strings stay consistent.
 
 ## Backend enum
 

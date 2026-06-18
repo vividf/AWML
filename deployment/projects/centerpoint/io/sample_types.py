@@ -74,3 +74,14 @@ class CenterPointFeatureSample:
     @property
     def coors(self) -> torch.Tensor:
         return self.voxel_dict["coors"]
+
+
+def compute_batch_size(coors: torch.Tensor) -> int:
+    """Infer batch size from voxel coordinates.
+
+    Assumes the batch index is column 0 and rows are sorted by batch index (the
+    layout produced by mmdet3d voxelization). Returns 1 for an empty tensor.
+    """
+    if len(coors) == 0:
+        return 1
+    return int(coors[-1, 0].item()) + 1

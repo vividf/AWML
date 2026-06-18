@@ -95,6 +95,7 @@ class EvaluationOrchestrator:
                     data_loader=self.data_loader,
                     num_samples=num_samples,
                     verbose=verbose_mode,
+                    num_warmup=eval_config.num_warmup,
                 )
                 all_results[backend.value] = results
                 self.logger.info("\n%s Results:", backend.value.upper())
@@ -199,7 +200,7 @@ class EvaluationOrchestrator:
             self.logger.info("\n%s:", backend_label.upper())
             if results and "error" not in results:
                 if "accuracy" in results:
-                    self.logger.info("  Accuracy: %.4f", results.get("accuracy", 0))
+                    self.logger.info("  Accuracy: %.4f", results["accuracy"])
                 if "mAP_by_mode" in results:
                     mAP_by_mode = results.get("mAP_by_mode", {})
                     if mAP_by_mode:

@@ -29,11 +29,13 @@ _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
 # mode: "onnx", "trt", "both", "none"
 # work_dir: path to the deployment output root
 # onnx_path: path to the ONNX output directory (if mode="trt" and ONNX already exists)
+# sample_idx: dataset index of the sample used to trace/shape the exported model
 # ============================================================================
 export = dict(
     mode="both",
     work_dir=_DEPLOY_WORK_DIR,
     onnx_path=_ONNX_DIR,
+    sample_idx=0,
 )
 
 
@@ -110,15 +112,6 @@ components = dict(
 )
 
 # ============================================================================
-# Runtime I/O settings
-# ============================================================================
-runtime_io = dict(
-    # This should be a path relative to `data_root` in the model config.
-    info_file="info/t4dataset_j6gen2_base_infos_test.pkl",
-    sample_idx=5,
-)
-
-# ============================================================================
 # ONNX Export Settings (shared across all components)
 # ============================================================================
 onnx_config = dict(
@@ -144,6 +137,7 @@ tensorrt_config = dict(
 evaluation = dict(
     enabled=True,
     num_samples=1,
+    num_warmup=3,
     verbose=True,
     backends=dict(
         pytorch=dict(

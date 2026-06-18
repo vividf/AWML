@@ -67,7 +67,13 @@ class BaseExporter(ABC):
         return self._model_wrapper(model)
 
     @abstractmethod
-    def export(self, model: torch.nn.Module, sample_input: Any, output_path: str) -> Optional["Artifact"]:
+    def export(
+        self,
+        model: torch.nn.Module,
+        sample_input: Any,
+        output_path: str,
+        onnx_path: Optional[str] = None,
+    ) -> Optional["Artifact"]:
         """
         Export model to target format.
 
@@ -75,6 +81,9 @@ class BaseExporter(ABC):
             model: PyTorch model to export
             sample_input: Example model input(s) for tracing/shape inference
             output_path: Path to save exported model
+            onnx_path: Path to a source ONNX model, for exporters that convert from
+                ONNX (e.g. TensorRT). Ignored by exporters that export directly from
+                a PyTorch model.
 
         Returns:
             Artifact representing the exported model, or None if the exporter

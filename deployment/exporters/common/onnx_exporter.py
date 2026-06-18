@@ -19,7 +19,6 @@ class ONNXExporter(BaseExporter):
     Exports PyTorch models to ONNX format with:
     - Optional model wrapping for ONNX-specific output formats
     - Optional model simplification
-    - Multi-file export support for complex models
     - Configuration override capability
     """
 
@@ -70,6 +69,7 @@ class ONNXExporter(BaseExporter):
         model: torch.nn.Module,
         sample_input: Any,
         output_path: str,
+        onnx_path: Optional[str] = None,
     ) -> None:
         """Export model to ONNX format.
 
@@ -77,6 +77,7 @@ class ONNXExporter(BaseExporter):
             model: PyTorch model to export
             sample_input: Sample input tensor
             output_path: Path to save ONNX model
+            onnx_path: Unused; accepted for interface compatibility with BaseExporter.
 
         Raises:
             RuntimeError: If export fails

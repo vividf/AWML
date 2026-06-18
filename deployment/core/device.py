@@ -53,6 +53,7 @@ class DeviceSpec:
                 if not suffix.isdigit():
                     raise ValueError(f"Invalid CUDA device index in '{value}'.")
                 return cls(kind="cuda", index=int(suffix))
+            raise ValueError(f"Unrecognized device string '{value}'.")
 
         raise TypeError(f"Unsupported device value type: {type(value)}")
 
@@ -69,12 +70,6 @@ class DeviceSpec:
         if self.is_cuda:
             return ["CUDAExecutionProvider", "CPUExecutionProvider"]
         return ["CPUExecutionProvider"]
-
-    def to_trt_device_str(self) -> str:
-        """Return TensorRT-compatible CUDA device string."""
-        if not self.is_cuda:
-            raise ValueError("TensorRT requires CUDA device.")
-        return str(self)
 
     def __str__(self) -> str:
         if self.is_cuda:

@@ -14,12 +14,31 @@ DEFAULT_WORKSPACE_SIZE = 1 << 30  # 1 GB
 
 
 class PrecisionPolicy(str, Enum):
-    """Precision policy options for TensorRT."""
+    """Precision policy options for TensorRT.
+
+    The concrete TensorRT flags each policy maps to are applied by the TensorRT
+    exporter (see ``TensorRTExporter._apply_precision_policy``); this enum is the
+    single source of truth for the policy itself.
+    """
 
     AUTO = "auto"
     FP16 = "fp16"
     FP32_TF32 = "fp32_tf32"
     STRONGLY_TYPED = "strongly_typed"
+
+    @classmethod
+    def from_value(cls, value: Optional[Union[str, PrecisionPolicy]]) -> PrecisionPolicy:
+        """Parse strings or enum members into PrecisionPolicy (defaults to AUTO)."""
+        if value is None:
+            return cls.AUTO
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            for member in cls:
+                if member.value == normalized:
+                    return member
+        raise ValueError(f"Invalid precision_policy '{value}'. Must be one of {[m.value for m in cls]}.")
 
 
 class ExportMode(str, Enum):
@@ -43,12 +62,3 @@ class ExportMode(str, Enum):
                 if member.value == normalized:
                     return member
         raise ValueError(f"Invalid export mode '{value}'. Must be one of {[m.value for m in cls]}.")
-
-
-# Precision policy mapping for TensorRT
-PRECISION_POLICIES = {
-    PrecisionPolicy.AUTO.value: {},  # No special flags, TensorRT decides
-    PrecisionPolicy.FP16.value: {"FP16": True},
-    PrecisionPolicy.FP32_TF32.value: {"TF32": True},  # TF32 for FP32 operations
-    PrecisionPolicy.STRONGLY_TYPED.value: {"STRONGLY_TYPED": True},  # Network creation flag
-}

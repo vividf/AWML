@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from abc import abstractmethod
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import torch
@@ -20,6 +20,7 @@ from typing_extensions import override
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
 from deployment.pipelines.base_pipeline import BaseInferencePipeline
+from deployment.projects.centerpoint.io.sample_types import compute_batch_size
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +75,9 @@ class CenterPointInferencePipeline(BaseInferencePipeline):
             device=device,
         )
 
-        self.num_classes = len(class_names)
         self.class_names: List[str] = class_names
-        self.point_cloud_range: Optional[List[float]] = point_cloud_range
-        self.voxel_size: Optional[List[float]] = voxel_size
+        self.point_cloud_range: List[float] = point_cloud_range
+        self.voxel_size: List[float] = voxel_size
         self.pytorch_model: torch.nn.Module = pytorch_model
 
     def to_device_tensor(self, data: Union[torch.Tensor, np.ndarray]) -> torch.Tensor:
@@ -107,6 +107,18 @@ class CenterPointInferencePipeline(BaseInferencePipeline):
         if not arr.flags["C_CONTIGUOUS"]:
             arr = np.ascontiguousarray(arr)
         return arr
+
+    @staticmethod
+    def squeeze_voxel_features(voxel_features: torch.Tensor) -> torch.Tensor:
+        """Collapse the singleton channel of the voxel-encoder output ``[N, 1, F] -> [N, F]``.
+
+        All backends (PyTorch/ONNX/TensorRT) emit ``[N, 1, F]`` for CenterPoint; the guard
+        fails loud if a future model variant changes that, instead of silently squeezing
+        the wrong axis.
+        """
+        if voxel_features.ndim != 3 or voxel_features.shape[1] != 1:
+            raise RuntimeError(f"Expected voxel encoder output [N, 1, F], got shape {tuple(voxel_features.shape)}.")
+        return voxel_features.squeeze(1)
 
     @override
     def preprocess(
@@ -139,7 +151,6 @@ class CenterPointInferencePipeline(BaseInferencePipeline):
         num_points = voxel_dict["num_points"]
         coors = voxel_dict["coors"]
 
-        input_features: Optional[torch.Tensor] = None
         with torch.no_grad():
             input_features = self.pytorch_model.pts_voxel_encoder.get_input_features(voxels, num_points, coors)
 
@@ -174,7 +185,7 @@ class CenterPointInferencePipeline(BaseInferencePipeline):
         voxel_features = self.to_device_tensor(voxel_features)
         coors = self.to_device_tensor(coors)
 
-        batch_size = int(coors[-1, 0].item()) + 1 if len(coors) > 0 else 1
+        batch_size = compute_batch_size(coors)
 
         with torch.no_grad():
             spatial_features = self.pytorch_model.pts_middle_encoder(voxel_features, coors, batch_size)

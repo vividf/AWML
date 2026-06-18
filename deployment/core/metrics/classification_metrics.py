@@ -21,7 +21,7 @@ Usage:
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from perception_eval.common.dataset import FrameGroundTruth
@@ -203,7 +203,7 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
 
         # Get confidence score from probabilities if available
         score = 1.0
-        if probabilities is not None and len(probabilities) > prediction:
+        if probabilities is not None and 0 <= prediction < len(probabilities):
             score = float(probabilities[prediction])
 
         # Create prediction and ground truth objects
@@ -252,19 +252,33 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
             logger.exception("Error computing metrics")
             return {}
 
+    @staticmethod
+    def _summarize_classification_score(classification_score: Any) -> Tuple[float, float, float, float]:
+        """Read overall (accuracy, precision, recall, f1) from a perception_eval score."""
+        summarize = getattr(classification_score, "_summarize", None)
+        if not callable(summarize):
+            raise AttributeError(
+                "perception_eval classification score no longer exposes '_summarize'; "
+                "update ClassificationMetricsInterface to the current perception_eval API."
+            )
+        return summarize()
+
+    @staticmethod
+    def _finite_or_zero(value: float) -> float:
+        """Coerce inf/nan (e.g. from empty divisions or 0/0) to 0.0."""
+        return float(value) if np.isfinite(value) else 0.0
+
     def _process_metrics_score(self, metrics_score: MetricsScore) -> Dict[str, float]:
         """Process MetricsScore into a flat dictionary."""
         metric_dict = {}
 
         for classification_score in metrics_score.classification_scores:
             # Get overall metrics
-            accuracy, precision, recall, f1score = classification_score._summarize()
-
-            # Handle inf values (replace with 0.0)
-            metric_dict["accuracy"] = 0.0 if accuracy == float("inf") else accuracy
-            metric_dict["precision"] = 0.0 if precision == float("inf") else precision
-            metric_dict["recall"] = 0.0 if recall == float("inf") else recall
-            metric_dict["f1score"] = 0.0 if f1score == float("inf") else f1score
+            accuracy, precision, recall, f1score = self._summarize_classification_score(classification_score)
+            metric_dict["accuracy"] = self._finite_or_zero(accuracy)
+            metric_dict["precision"] = self._finite_or_zero(precision)
+            metric_dict["recall"] = self._finite_or_zero(recall)
+            metric_dict["f1score"] = self._finite_or_zero(f1score)
 
             # Process per-class metrics
             for acc in classification_score.accuracies:
@@ -274,10 +288,10 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
                 target_label = acc.target_labels[0]
                 class_name = getattr(target_label, "name", str(target_label))
 
-                metric_dict[f"{class_name}_accuracy"] = 0.0 if acc.accuracy == float("inf") else acc.accuracy
-                metric_dict[f"{class_name}_precision"] = 0.0 if acc.precision == float("inf") else acc.precision
-                metric_dict[f"{class_name}_recall"] = 0.0 if acc.recall == float("inf") else acc.recall
-                metric_dict[f"{class_name}_f1score"] = 0.0 if acc.f1score == float("inf") else acc.f1score
+                metric_dict[f"{class_name}_accuracy"] = self._finite_or_zero(acc.accuracy)
+                metric_dict[f"{class_name}_precision"] = self._finite_or_zero(acc.precision)
+                metric_dict[f"{class_name}_recall"] = self._finite_or_zero(acc.recall)
+                metric_dict[f"{class_name}_f1score"] = self._finite_or_zero(acc.f1score)
                 metric_dict[f"{class_name}_tp"] = acc.num_tp
                 metric_dict[f"{class_name}_fp"] = acc.num_fp
                 metric_dict[f"{class_name}_num_gt"] = acc.num_ground_truth

@@ -119,22 +119,17 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         return model
 
     def _extract_rot_y_axis_reference(self, context: ExportContext) -> bool:
-        """Extract rot_y_axis_reference from export context.
+        """Extract rot_y_axis_reference from the export context.
 
         Args:
-            context: Export context (typed or dict-like).
+            context: Export context; must be a ``CenterPointExportContext``.
 
         Returns:
             Boolean value for rot_y_axis_reference.
         """
-        if isinstance(context, CenterPointExportContext):
-            return context.rot_y_axis_reference
-        if "rot_y_axis_reference" not in context.extra:
-            raise KeyError(
-                "CenterPoint export requires 'rot_y_axis_reference' in context. "
-                "Use CenterPointExportContext or pass it in ExportContext.extra."
-            )
-        return bool(context.extra["rot_y_axis_reference"])
+        if not isinstance(context, CenterPointExportContext):
+            raise TypeError(f"CenterPoint export requires a CenterPointExportContext, got {type(context).__name__}.")
+        return context.rot_y_axis_reference
 
     def _setup_evaluator(self, model: torch.nn.Module, export_model_cfg: Config) -> None:
         """Wire evaluator to the loaded model and its export-time MMEngine config.

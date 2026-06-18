@@ -61,8 +61,8 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
 
         self.tensorrt_dir = tensorrt_dir
         self._components_cfg = components_cfg
-        self._engines: dict = {}
-        self._contexts: dict = {}
+        self._engines: Dict[str, trt.ICudaEngine] = {}
+        self._contexts: Dict[str, trt.IExecutionContext] = {}
         self._logger = trt.Logger(trt.Logger.WARNING)
 
         # Create CUDA events for GPU timing measurements
@@ -200,8 +200,7 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
             manager.synchronize()
 
         voxel_features = torch.from_numpy(output_array).to(self.torch_device)
-        voxel_features = voxel_features.squeeze(1)
-        return voxel_features
+        return self.squeeze_voxel_features(voxel_features)
 
     @override
     def run_backbone_head(self, spatial_features: torch.Tensor) -> List[torch.Tensor]:

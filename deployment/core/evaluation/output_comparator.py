@@ -165,12 +165,12 @@ class OutputComparator:
             )
             return _fail(path, f"shape mismatch {ref_np.shape} vs {test_np.shape}")
 
-        diff = np.abs(ref_np - test_np)
+        diff = np.abs(ref_np.astype(np.float64) - test_np.astype(np.float64))
         max_diff = float(np.max(diff)) if diff.size else 0.0
         mean_diff = float(np.mean(diff)) if diff.size else 0.0
         num_elements = int(diff.size)
 
-        passed = max_diff < tolerance
+        passed = max_diff <= tolerance
         reason = (
             None if passed else f"{path}: max_diff={max_diff:.6f} > tolerance={tolerance:.6f} (shape={ref_np.shape})"
         )

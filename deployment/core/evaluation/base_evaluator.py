@@ -206,6 +206,7 @@ class BaseEvaluator(ABC):
         data_loader: BaseDataLoader,
         num_samples: int,
         verbose: bool = False,
+        num_warmup: int = 0,
     ) -> EvalResultDict:
         """Run inference over samples and compute task metrics via ``metrics_interface``.
 
@@ -214,6 +215,9 @@ class BaseEvaluator(ABC):
             data_loader: Provides ``load_sample(i)`` with ``ground_truth`` for each sample.
             num_samples: Requested batch count (capped by ``data_loader.num_samples``).
             verbose: If True, log progress every :data:`LOG_INTERVAL` samples.
+            num_warmup: Number of warm-up inferences to run before timing begins. These
+                prime GPU/CUDA/TensorRT state and are excluded from latency and metrics,
+                so they do not affect the ``num_samples`` totals.
 
         Returns:
             Task-specific evaluation dict from ``_build_results``.
@@ -233,35 +237,64 @@ class BaseEvaluator(ABC):
 
         actual_samples = min(num_samples, data_loader.num_samples)
 
-        for idx in range(actual_samples):
-            if verbose and idx % LOG_INTERVAL == 0:
-                logger.info("Processing sample %s/%s", idx + 1, actual_samples)
-
-            sample = data_loader.load_sample(idx)
-            inference_input = self._prepare_input(sample, data_loader, model.device)
-
-            if "ground_truth" not in sample:
-                raise KeyError("DataLoader.load_sample() must return 'ground_truth' for evaluation.")
-            ground_truths = self._parse_ground_truths(sample["ground_truth"])
-
-            infer_result = pipeline.infer(inference_input.data, metadata=inference_input.metadata)
-            latencies.append(infer_result.latency_ms)
-            if infer_result.breakdown:
-                latency_breakdowns.append(infer_result.breakdown)
-
-            predictions = self._parse_predictions(infer_result.output)
-            self._add_to_interface(predictions, ground_truths)
-
-            if model.backend is Backend.TENSORRT and idx % GPU_CLEANUP_INTERVAL == 0:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-
         try:
-            pipeline.cleanup()
-        except Exception as e:
-            logger.warning("Error during pipeline cleanup: %s", e)
+            self._run_warmup(pipeline, data_loader, model, num_warmup, verbose)
+
+            for idx in range(actual_samples):
+                if verbose and idx % LOG_INTERVAL == 0:
+                    logger.info("Processing sample %s/%s", idx + 1, actual_samples)
+
+                sample = data_loader.load_sample(idx)
+                inference_input = self._prepare_input(sample, data_loader, model.device)
+
+                if "ground_truth" not in sample:
+                    raise KeyError("DataLoader.load_sample() must return 'ground_truth' for evaluation.")
+                ground_truths = self._parse_ground_truths(sample["ground_truth"])
+
+                infer_result = pipeline.infer(inference_input.data, metadata=inference_input.metadata)
+                latencies.append(infer_result.latency_ms)
+                if infer_result.breakdown:
+                    latency_breakdowns.append(infer_result.breakdown)
+
+                predictions = self._parse_predictions(infer_result.output)
+                self._add_to_interface(predictions, ground_truths)
+
+                if model.backend is Backend.TENSORRT and idx > 0 and idx % GPU_CLEANUP_INTERVAL == 0:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+        finally:
+            try:
+                pipeline.cleanup()
+            except Exception as e:
+                logger.warning("Error during pipeline cleanup: %s", e)
 
         return self._build_results(latencies, latency_breakdowns, actual_samples)
+
+    def _run_warmup(
+        self,
+        pipeline: BaseInferencePipeline,
+        data_loader: BaseDataLoader,
+        model: ModelSpec,
+        num_warmup: int,
+        verbose: bool,
+    ) -> None:
+        """Run throwaway inferences to prime GPU/CUDA/TensorRT state before timing.
+
+        Reuses the first ``num_warmup`` samples (capped by dataset size). Outputs,
+        latency, and metrics are intentionally discarded so warm-up does not affect the
+        measured ``num_samples`` results.
+        """
+        warmup_count = min(num_warmup, data_loader.num_samples)
+        if warmup_count <= 0:
+            return
+
+        if verbose:
+            logger.info("Warming up on %s sample(s) (excluded from metrics/latency)...", warmup_count)
+
+        for idx in range(warmup_count):
+            sample = data_loader.load_sample(idx)
+            inference_input = self._prepare_input(sample, data_loader, model.device)
+            pipeline.infer(inference_input.data, metadata=inference_input.metadata)
 
     # ================== Verification ==================
 

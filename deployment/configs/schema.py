@@ -10,7 +10,6 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from deployment.configs.enums import (
     DEFAULT_WORKSPACE_SIZE,
-    PRECISION_POLICIES,
     ExportMode,
     PrecisionPolicy,
 )
@@ -36,6 +35,7 @@ class ExportConfig:
     mode: ExportMode = ExportMode.BOTH
     work_dir: str = "work_dirs"
     onnx_path: Optional[str] = None
+    sample_idx: int = 0
 
     @classmethod
     def from_dict(cls, config_dict: Mapping[str, Any]) -> ExportConfig:
@@ -44,6 +44,7 @@ class ExportConfig:
             mode=ExportMode.from_value(config_dict.get("mode", ExportMode.BOTH)),
             work_dir=config_dict.get("work_dir", cls.work_dir),
             onnx_path=config_dict.get("onnx_path"),
+            sample_idx=config_dict.get("sample_idx", cls.sample_idx),
         )
 
     @property
@@ -100,22 +101,6 @@ class DeviceConfig:
 
 
 @dataclass(frozen=True)
-class RuntimeConfig:
-    """Configuration for runtime I/O settings."""
-
-    info_file: str = ""
-    sample_idx: int = 0
-
-    @classmethod
-    def from_dict(cls, config_dict: Mapping[str, Any]) -> RuntimeConfig:
-        """Create RuntimeConfig from dictionary."""
-        return cls(
-            info_file=config_dict.get("info_file", ""),
-            sample_idx=config_dict.get("sample_idx", 0),
-        )
-
-
-@dataclass(frozen=True)
 class OnnxConfig:
     """ONNX export settings (shared across all components)."""
 
@@ -155,28 +140,15 @@ class TensorRTConfig:
         The deploy config key for this section is **`tensorrt_config`**.
     """
 
-    precision_policy: str = PrecisionPolicy.AUTO.value
+    precision_policy: PrecisionPolicy = PrecisionPolicy.AUTO
     max_workspace_size: int = DEFAULT_WORKSPACE_SIZE
-
-    def __post_init__(self) -> None:
-        """Validate TensorRT precision policy at construction time."""
-        if self.precision_policy not in PRECISION_POLICIES:
-            raise ValueError(
-                f"Invalid precision_policy '{self.precision_policy}'. "
-                f"Must be one of {list(PRECISION_POLICIES.keys())}"
-            )
 
     @classmethod
     def from_dict(cls, config_dict: Mapping[str, Any]) -> TensorRTConfig:
         return cls(
-            precision_policy=config_dict.get("precision_policy", PrecisionPolicy.AUTO.value),
+            precision_policy=PrecisionPolicy.from_value(config_dict.get("precision_policy")),
             max_workspace_size=config_dict.get("max_workspace_size", DEFAULT_WORKSPACE_SIZE),
         )
-
-    @property
-    def precision_flags(self) -> Mapping[str, bool]:
-        """TensorRT precision flags for the configured policy."""
-        return PRECISION_POLICIES[self.precision_policy]
 
 
 # -----------------------------------------------------------------------------
@@ -360,10 +332,10 @@ class EvaluationConfig:
 
     enabled: bool = False
     num_samples: int = 10
+    num_warmup: int = 0
     verbose: bool = False
     backends: Mapping[Any, Mapping[str, Any]] = field(default_factory=_empty_mapping)
     models: Mapping[Any, Any] = field(default_factory=_empty_mapping)
-    devices: Mapping[str, DeviceSpec] = field(default_factory=_empty_mapping)
 
     @classmethod
     def from_dict(cls, config_dict: Mapping[str, Any]) -> EvaluationConfig:
@@ -380,21 +352,13 @@ class EvaluationConfig:
         if not isinstance(models_raw, Mapping):
             raise TypeError(f"evaluation.models must be a dict-like mapping, got {type(models_raw).__name__}")
 
-        devices_raw = config_dict.get("devices", None)
-        if devices_raw is None:
-            devices_raw = {}
-        if not isinstance(devices_raw, Mapping):
-            raise TypeError(f"evaluation.devices must be a dict-like mapping, got {type(devices_raw).__name__}")
-
-        normalized_devices = {str(key): DeviceSpec.from_value(value) for key, value in devices_raw.items()}
-
         return cls(
             enabled=config_dict.get("enabled", False),
             num_samples=config_dict.get("num_samples", 10),
+            num_warmup=config_dict.get("num_warmup", 0),
             verbose=config_dict.get("verbose", False),
             backends=MappingProxyType(backends_frozen),
             models=MappingProxyType(dict(models_raw)),
-            devices=MappingProxyType(normalized_devices),
         )
 
 
@@ -428,7 +392,6 @@ class VerificationConfig:
     enabled: bool = True
     num_verify_samples: int = 3
     tolerance: float = 0.1
-    devices: Mapping[str, DeviceSpec] = field(default_factory=_empty_mapping)
     scenarios: Mapping[ExportMode, Tuple[VerificationScenario, ...]] = field(default_factory=_empty_mapping)
 
     @classmethod
@@ -451,19 +414,10 @@ class VerificationConfig:
             scenario_entries = tuple(VerificationScenario.from_dict(entry) for entry in scenario_list)
             scenario_map[mode] = scenario_entries
 
-        devices_raw = config_dict.get("devices")
-        if devices_raw is None:
-            devices_raw = {}
-        if not isinstance(devices_raw, Mapping):
-            raise TypeError(f"verification.devices must be a dict-like mapping, got {type(devices_raw).__name__}")
-
-        normalized_devices = {str(key): DeviceSpec.from_value(value) for key, value in devices_raw.items()}
-
         return cls(
             enabled=config_dict.get("enabled", True),
             num_verify_samples=config_dict.get("num_verify_samples", 3),
             tolerance=config_dict.get("tolerance", 0.1),
-            devices=MappingProxyType(normalized_devices),
             scenarios=MappingProxyType(scenario_map),
         )
 

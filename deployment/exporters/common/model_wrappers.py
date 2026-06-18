@@ -54,9 +54,6 @@ class IdentityWrapper(BaseModelWrapper):
     This is the default wrapper for most models.
     """
 
-    def __init__(self, model: nn.Module) -> None:
-        super().__init__(model)
-
     def forward(self, *args) -> Any:
         """Forward pass without modification."""
         return self.model(*args)

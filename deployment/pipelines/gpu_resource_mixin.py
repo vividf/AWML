@@ -114,36 +114,13 @@ class TensorRTResourceManager:
 def release_tensorrt_resources(
     engines: Optional[Dict[str, Any]] = None,
     contexts: Optional[Dict[str, Any]] = None,
-    cuda_buffers: Optional[List[Any]] = None,
 ) -> None:
-    """Best-effort release of TensorRT engines/contexts and CUDA buffers.
+    """Drop references to TensorRT engines/contexts so they are released.
 
-    This is defensive cleanup for cases where objects need explicit deletion and
-    CUDA buffers need manual `free()`.
+    Contexts are cleared before engines (TensorRT requires execution contexts to be
+    released before their parent engine). Destruction itself is refcount/GC-driven.
     """
     if contexts:
-        for _, context in list(contexts.items()):
-            if context is not None:
-                try:
-                    del context
-                except Exception:
-                    pass
         contexts.clear()
-
     if engines:
-        for _, engine in list(engines.items()):
-            if engine is not None:
-                try:
-                    del engine
-                except Exception:
-                    pass
         engines.clear()
-
-    if cuda_buffers:
-        for buffer in cuda_buffers:
-            if buffer is not None:
-                try:
-                    buffer.free()
-                except Exception:
-                    pass
-        cuda_buffers.clear()

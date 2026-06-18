@@ -6,7 +6,6 @@ Pipeline is run once per sample in load_sample(), avoiding redundant computation
 """
 
 import copy
-from typing import List
 
 import mmdet3d.datasets.transforms  # noqa: F401 - registers transforms
 import torch
@@ -36,28 +35,24 @@ class CenterPointDataLoader(BaseDataLoader):
 
     def __init__(
         self,
-        info_file: str,
         model_cfg: Config,
     ) -> None:
         """Initialize CenterPoint data loader.
 
         Args:
-            info_file: Path to dataset info file (e.g. pkl) used as ann_file.
-            model_cfg: MMEngine model config; must have test_dataloader.dataset.
+            model_cfg: MMEngine model config; must have test_dataloader.dataset
+                (its ``ann_file`` is the test info used for evaluation).
         """
         super().__init__()
 
         self.model_cfg = model_cfg
-        self.device = "cpu"
-        self.info_file = info_file
-        self.dataset = self._build_dataset(model_cfg, info_file)
+        self.dataset = self._build_dataset(model_cfg)
 
-    def _build_dataset(self, model_cfg: Config, info_file: str) -> torch.utils.data.Dataset:
-        """Build MMDet3D Dataset from config, overriding ann_file.
+    def _build_dataset(self, model_cfg: Config) -> torch.utils.data.Dataset:
+        """Build MMDet3D Dataset from the model config's test_dataloader.
 
         Args:
             model_cfg: MMEngine model config with test_dataloader.dataset.
-            info_file: Path to dataset info file (e.g. pkl) used as ann_file.
 
         Returns:
             Built MMDet3D Dataset instance.
@@ -69,7 +64,6 @@ class CenterPointDataLoader(BaseDataLoader):
         init_default_scope("mmdet3d")
         dataset_cfg = copy.deepcopy(model_cfg.test_dataloader.dataset)
 
-        dataset_cfg["ann_file"] = info_file
         dataset_cfg["test_mode"] = True
 
         # Build dataset
@@ -145,20 +139,3 @@ class CenterPointDataLoader(BaseDataLoader):
     def num_samples(self) -> int:
         """Return the number of samples in the dataset."""
         return len(self.dataset)
-
-    @property
-    def class_names(self) -> List[str]:
-        """Return class names from dataset metainfo or model_cfg.
-
-        Returns:
-            List of class name strings.
-
-        Raises:
-            AttributeError: If required metainfo/config attributes are missing.
-            KeyError: If ``classes`` key is missing in dataset metainfo.
-        """
-        # Get from dataset's metainfo or model_cfg
-        if "classes" in self.dataset.metainfo:
-            return list(self.dataset.metainfo["classes"])
-
-        return list(self.model_cfg.class_names)

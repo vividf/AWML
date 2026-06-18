@@ -82,7 +82,7 @@ class CenterPointONNXPipeline(CenterPointInferencePipeline):
         # Configure session options
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-        so.log_severity_level = 0  # Verbose
+        so.log_severity_level = 2  # Warning
 
         # Select execution providers based on device
         providers = self.device.to_ort_provider()
@@ -115,10 +115,7 @@ class CenterPointONNXPipeline(CenterPointInferencePipeline):
 
         voxel_features = torch.from_numpy(outputs[0]).to(self.torch_device)
 
-        # Squeeze [N, 1, 32] to [N, 32]
-        voxel_features = voxel_features.squeeze(1)
-
-        return voxel_features
+        return self.squeeze_voxel_features(voxel_features)
 
     @override
     def run_backbone_head(self, spatial_features: torch.Tensor) -> List[torch.Tensor]:

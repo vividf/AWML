@@ -10,9 +10,10 @@ engine to ensure consistency between training (T4MetricV2) and deployment evalua
 """
 
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from perception_eval.common.label import AutowareLabel, Label
 
@@ -178,11 +179,6 @@ class BaseMetricsInterface(ABC):
         """
         pass
 
-    @property
-    def frame_count(self) -> int:
-        """Return the number of frames added so far."""
-        return self._frame_count
-
     def _convert_index_to_label(self, label_index: int) -> Label:
         """Convert a label index to a perception_eval Label object.
 
@@ -199,6 +195,21 @@ class BaseMetricsInterface(ABC):
 
         autoware_label = AutowareLabel.__members__.get(class_name.upper(), AutowareLabel.UNKNOWN)
         return Label(label=autoware_label, name=class_name)
+
+    @staticmethod
+    def _extract_matching_modes(metrics: Mapping[str, float]) -> List[str]:
+        """Extract matching modes from metric keys, preserving order and de-duping.
+
+        Handles both non-prefixed (``mAP_center_distance_bev``) and prefixed
+        (``bev_center_0.0-50.0_mAP_center_distance_bev``) key formats.
+        """
+        pat = re.compile(r"(?:^|_)mAP_(.+)$")
+        modes: List[str] = []
+        for key in metrics.keys():
+            match = pat.search(key)
+            if match:
+                modes.append(match.group(1))
+        return list(dict.fromkeys(modes))
 
     def format_metrics_report(self) -> Optional[str]:
         """Format the metrics report as a human-readable string.

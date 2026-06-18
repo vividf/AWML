@@ -227,6 +227,10 @@ class Detection2DMetricsInterface(BaseMetricsInterface):
             # Extract bbox components [x1, y1, x2, y2]
             x1, y1, x2, y2 = bbox[0], bbox[1], bbox[2], bbox[3]
 
+            if x2 <= x1 or y2 <= y1:
+                logger.warning("Skipping prediction with degenerate bbox: %s", bbox)
+                continue
+
             # Convert [x1, y1, x2, y2] to [xmin, ymin, width, height] format
             # as required by DynamicObject2D.roi
             xmin = int(x1)
@@ -281,6 +285,11 @@ class Detection2DMetricsInterface(BaseMetricsInterface):
 
             # Extract bbox components [x1, y1, x2, y2]
             x1, y1, x2, y2 = bbox[0], bbox[1], bbox[2], bbox[3]
+
+            # Skip degenerate/inverted boxes (see prediction loop above).
+            if x2 <= x1 or y2 <= y1:
+                logger.warning("Skipping ground truth with degenerate bbox: %s", bbox)
+                continue
 
             # Convert [x1, y1, x2, y2] to [xmin, ymin, width, height] format
             # as required by DynamicObject2D.roi
@@ -423,12 +432,7 @@ class Detection2DMetricsInterface(BaseMetricsInterface):
         """Get a summary of the evaluation including mAP and per-class metrics for all matching modes."""
         metrics = self.compute_metrics()
 
-        # Extract matching modes from metrics
-        modes = []
-        for k in metrics.keys():
-            if k.startswith("mAP_") and k != "mAP":
-                modes.append(k[len("mAP_") :])
-        modes = list(dict.fromkeys(modes))  # Remove duplicates while preserving order
+        modes = self._extract_matching_modes(metrics)
 
         if not modes:
             return DetectionSummary(

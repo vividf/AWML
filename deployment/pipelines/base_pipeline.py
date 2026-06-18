@@ -113,9 +113,6 @@ class BaseInferencePipeline(ABC):
         Returns:
             InferenceResult with `output`, total latency, and per-stage breakdown.
         """
-        if metadata is None:
-            metadata = {}
-
         latency_breakdown: Dict[str, float] = {}
 
         try:
@@ -124,7 +121,8 @@ class BaseInferencePipeline(ABC):
             model_input, preprocess_metadata = self.preprocess(input_data)
             preprocess_time = time.perf_counter()
             latency_breakdown["preprocessing_ms"] = (preprocess_time - start_time) * 1000
-            metadata.update(preprocess_metadata)
+            # Build a new dict
+            metadata = {**(metadata or {}), **preprocess_metadata}
 
             # Run model
             model_start = time.perf_counter()

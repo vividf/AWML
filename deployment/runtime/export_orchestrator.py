@@ -122,12 +122,10 @@ class ExportOrchestrator:
         external_onnx_path = self.config.export_config.onnx_path
 
         pytorch_model = self._load_and_register_pytorch_model(self.config.checkpoint_path, context)
-        if pytorch_model is None:
-            return result
         result.pytorch_model = pytorch_model
 
         if should_export_onnx:
-            result.onnx_path = self._run_onnx_export(pytorch_model, context)
+            result.onnx_path = self._run_onnx_export(pytorch_model)
 
         if should_export_trt:
             onnx_path = self._resolve_onnx_path_for_trt(result.onnx_path, external_onnx_path)
@@ -135,12 +133,12 @@ class ExportOrchestrator:
                 return result
             result.onnx_path = onnx_path
             self._register_external_onnx_artifact(onnx_path)
-            result.tensorrt_path = self._run_tensorrt_export(onnx_path, context)
+            result.tensorrt_path = self._run_tensorrt_export(onnx_path)
 
         self._resolve_external_artifacts(result)
         return result
 
-    def _load_and_register_pytorch_model(self, checkpoint_path: str, context: ExportContext) -> Optional[Any]:
+    def _load_and_register_pytorch_model(self, checkpoint_path: str, context: ExportContext) -> Any:
         """
         Load and register a PyTorch model from checkpoint.
 
@@ -148,7 +146,9 @@ class ExportOrchestrator:
             checkpoint_path: Path to the PyTorch checkpoint
             context: Export context with sample index
         Returns:
-            Loaded PyTorch model or None if loading failed
+            Loaded PyTorch model
+        Raises:
+            RuntimeError: If the checkpoint cannot be loaded.
         """
         self.logger.info("\nLoading PyTorch model...")
         try:
@@ -161,24 +161,18 @@ class ExportOrchestrator:
 
             return pytorch_model
         except Exception as e:
-            self.logger.error("Failed to load PyTorch model: %s", e)
-            return None
+            raise RuntimeError(f"Failed to load PyTorch model from '{checkpoint_path}': {e}") from e
 
-    def _resolve_sample_idx(self, context: ExportContext) -> int:
-        """Resolve the sample index, preferring an explicit context value over the config default."""
-        return context.sample_idx if context.sample_idx != 0 else self.config.runtime_config.sample_idx
-
-    def _run_onnx_export(self, pytorch_model: Any, context: ExportContext) -> Optional[str]:
+    def _run_onnx_export(self, pytorch_model: Any) -> Optional[str]:
         """
         Run the ONNX export workflow.
 
         Args:
             pytorch_model: PyTorch model to export
-            context: Export context with sample index
         Returns:
             Path to the exported ONNX artifact or None if export failed
         """
-        onnx_artifact = self._export_onnx(pytorch_model, context)
+        onnx_artifact = self._export_onnx(pytorch_model)
         if onnx_artifact:
             return onnx_artifact.path
         self.logger.error("ONNX export requested but no artifact was produced.")
@@ -216,29 +210,27 @@ class ExportOrchestrator:
             return
         self.artifact_manager.register_artifact(Backend.ONNX, Artifact(path=onnx_path))
 
-    def _run_tensorrt_export(self, onnx_path: str, context: ExportContext) -> Optional[str]:
+    def _run_tensorrt_export(self, onnx_path: str) -> Optional[str]:
         """
         Run the TensorRT export workflow.
 
         Args:
             onnx_path: Path to the ONNX artifact
-            context: Export context with sample index
         Returns:
             Path to the exported TensorRT engine or None if export failed
         """
-        trt_artifact = self._export_tensorrt(onnx_path, context)
+        trt_artifact = self._export_tensorrt(onnx_path)
         if trt_artifact:
             return trt_artifact.path
         self.logger.error("TensorRT export requested but no artifact was produced.")
         return None
 
-    def _export_onnx(self, pytorch_model: Any, context: ExportContext) -> Optional[Artifact]:
+    def _export_onnx(self, pytorch_model: Any) -> Optional[Artifact]:
         """
         Export a PyTorch model to ONNX.
 
         Args:
             pytorch_model: PyTorch model to export
-            context: Export context with sample index
         Returns:
             Artifact representing the exported ONNX model or None if export is not configured
         """
@@ -248,7 +240,7 @@ class ExportOrchestrator:
         if self._onnx_pipeline is None and self._onnx_wrapper_cls is None:
             raise RuntimeError("ONNX export requested but no wrapper class or export pipeline provided.")
 
-        sample_idx = self._resolve_sample_idx(context)
+        sample_idx = self.config.export_config.sample_idx
         onnx_dir = Path(self.config.export_config.work_dir) / self.ONNX_DIR_NAME
         onnx_dir.mkdir(parents=True, exist_ok=True)
 
@@ -301,13 +293,12 @@ class ExportOrchestrator:
         self.logger.info("ONNX export successful: %s", artifact.path)
         return artifact
 
-    def _export_tensorrt(self, onnx_path: str, context: ExportContext) -> Optional[Artifact]:
+    def _export_tensorrt(self, onnx_path: str) -> Optional[Artifact]:
         """
         Export an ONNX model to TensorRT.
 
         Args:
             onnx_path: Path to the ONNX artifact
-            context: Export context with sample index
         Returns:
             Artifact representing the exported TensorRT engine or None if export is not configured
         """
@@ -335,7 +326,7 @@ class ExportOrchestrator:
         torch.cuda.set_device(device_id)
         self.logger.info("Using CUDA device for TensorRT export: %s", cuda_device)
 
-        sample_idx = self._resolve_sample_idx(context)
+        sample_idx = self.config.export_config.sample_idx
         sample_input = self.data_loader.get_shape_sample(sample_idx)
 
         if self._tensorrt_pipeline is not None:
@@ -351,7 +342,7 @@ class ExportOrchestrator:
 
         component_names = list(self.config.components_cfg.component_names())
         for component_name in component_names:
-            output_path = self._get_tensorrt_output_path(onnx_path, str(tensorrt_dir))
+            output_path = self._get_tensorrt_output_path(onnx_path, str(tensorrt_dir), component_name)
             exporter = self._build_tensorrt_exporter(component_name)
             self.logger.info("Exporting component '%s' → %s", component_name, output_path)
             exporter.export(
@@ -385,22 +376,30 @@ class ExportOrchestrator:
             component_name=component_name,
         )
 
-    def _get_tensorrt_output_path(self, onnx_path: str, tensorrt_dir: str) -> str:
+    def _get_tensorrt_output_path(
+        self, onnx_path: str, tensorrt_dir: str, component_name: Optional[str] = None
+    ) -> str:
         """
         Get the output path for the TensorRT engine.
 
         Args:
             onnx_path: Path to the ONNX artifact
             tensorrt_dir: Directory for TensorRT output
+            component_name: Component being exported. When provided, the engine filename
+                comes from that component's ``engine_file`` so multiple components do not
+                overwrite each other.
         Returns:
             Path to the TensorRT engine file
         """
-        onnx_path_obj = Path(onnx_path)
         tensorrt_dir_obj = Path(tensorrt_dir)
+        if component_name is not None:
+            engine_file = self.config.components_cfg.get_component(component_name).engine_file
+            return str(tensorrt_dir_obj / Path(engine_file).name)
+
+        onnx_path_obj = Path(onnx_path)
         if onnx_path_obj.is_dir():
             return str(tensorrt_dir_obj / self.DEFAULT_ENGINE_FILENAME)
-        onnx_filename = onnx_path_obj.name
-        engine_filename = onnx_filename.replace(".onnx", ".engine")
+        engine_filename = onnx_path_obj.with_suffix(".engine").name
         return str(tensorrt_dir_obj / engine_filename)
 
     def _resolve_external_artifacts(self, result: ExportResult) -> None:

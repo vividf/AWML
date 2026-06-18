@@ -12,7 +12,7 @@ import torch
 
 from deployment.configs.schema import ComponentsConfig
 from deployment.exporters.export_pipelines.interfaces import ExportableComponent, ModelComponentBuilder
-from deployment.projects.centerpoint.io.sample_types import CenterPointFeatureSample
+from deployment.projects.centerpoint.io.sample_types import CenterPointFeatureSample, compute_batch_size
 from deployment.projects.centerpoint.onnx_models.centerpoint_onnx import CenterPointHeadONNX
 
 
@@ -122,7 +122,7 @@ class CenterPointComponentBuilder(ModelComponentBuilder):
         with torch.no_grad():
             voxel_features = model.pts_voxel_encoder(sample.input_features).squeeze(1)
             coors = sample.coors
-            batch_size = int(coors[-1, 0].item()) + 1 if len(coors) > 0 else 1
+            batch_size = compute_batch_size(coors)
             spatial_features = model.pts_middle_encoder(voxel_features, coors, batch_size)
         return spatial_features
 

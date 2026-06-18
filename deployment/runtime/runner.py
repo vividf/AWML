@@ -10,7 +10,7 @@ Project-agnostic runtime runner that orchestrates:
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Type
 
 from mmengine.config import Config
@@ -36,9 +36,6 @@ class DeploymentResult:
     tensorrt_path: Optional[str] = None
     verification_results: Dict[str, Any] = field(default_factory=dict)
     evaluation_results: Dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
 
 
 class BaseDeploymentRunner:

@@ -36,11 +36,12 @@ The reference deploy config is `deployment/projects/centerpoint/config/deploy_co
 Adjust at least:
 
 - `checkpoint_path`
-- `export.work_dir` and `export.mode`
+- `export.work_dir`, `export.mode`, and `export.sample_idx`
 - `components`
-- `runtime_io`
 
 Required component keys are `pts_voxel_encoder` and `pts_backbone_neck_head`.
+
+The evaluation/verification dataset comes from the **model config's** `test_dataloader.dataset.ann_file` (the test info), not from the deploy config.
 
 ## Project layout
 

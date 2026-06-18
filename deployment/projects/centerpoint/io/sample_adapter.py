@@ -19,9 +19,9 @@ class CenterPointSampleAdapter(ExportSampleAdapter):
         """Initialize the sample adapter.
 
         Args:
-            logger: Optional logger; defaults to module logger if not provided.
+            logger: Logger for diagnostics.
         """
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger
 
     def extract_sample(
         self,

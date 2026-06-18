@@ -3,7 +3,7 @@ Typed context objects for deployment workflows.
 
 Usage:
     # Create context for export
-    ctx = ExportContext(sample_idx=0)
+    ctx = ExportContext()
 
     # Project-specific context
     ctx = CenterPointExportContext(rot_y_axis_reference=True)
@@ -14,9 +14,8 @@ Usage:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from types import MappingProxyType
-from typing import Any, Mapping, Optional
+from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -24,21 +23,9 @@ class ExportContext:
     """
     Base context for export operations.
 
-    This context carries parameters needed during the export workflow,
-    including model loading and ONNX/TensorRT export settings.
-
-    Attributes:
-        sample_idx: Index of sample to use for tracing/shape inference (default: 0)
-        extra: Dictionary for project-specific or debug-only options that don't
-               warrant a dedicated field. Use sparingly.
+    Marker base class for export contexts; project-specific subclasses (e.g.
+    ``CenterPointExportContext``) add typed fields for their export parameters.
     """
-
-    sample_idx: int = 0
-    extra: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Get a value from extra dict with a default."""
-        return self.extra.get(key, default)
 
 
 @dataclass(frozen=True)
@@ -47,8 +34,8 @@ class YOLOXExportContext(ExportContext):
     YOLOX-specific export context.
 
     Attributes:
-        model_cfg_path: Path to model configuration file. If None, attempts
-                        to extract from model_cfg.filename.
+        model_cfg: Path to model configuration file. If None, attempts
+                   to extract from model_cfg.filename.
     """
 
     model_cfg: Optional[str] = None

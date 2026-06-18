@@ -51,17 +51,6 @@ class ArtifactManager:
         self.artifacts[backend.value] = artifact
         self.logger.debug("Registered %s artifact: %s", backend.value, artifact.path)
 
-    def get_artifact(self, backend: Backend) -> Optional[Artifact]:
-        """
-        Get an artifact for a given backend.
-
-        Args:
-            backend: Backend to get the artifact for
-        Returns:
-            Artifact for the given backend
-        """
-        return self.artifacts.get(backend.value)
-
     def resolve_artifact(self, backend: Backend) -> Tuple[Optional[Artifact], bool]:
         """
         Resolve an artifact for a given backend.

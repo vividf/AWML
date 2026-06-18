@@ -146,42 +146,45 @@ class VerificationRunner:
 
         self._log_header(reference, test, ref_device, test_device, num_samples, tolerance)
 
-        logger.info("\nInitializing %s reference pipeline...", reference.backend.value)
-        self._hooks._ensure_model_on_device(ref_device)
-        ref_pipeline = self._hooks._create_pipeline(reference, ref_device)
-
-        logger.info("\nInitializing %s test pipeline...", test.backend.value)
-        self._hooks._ensure_model_on_device(test_device)
-        test_pipeline = self._hooks._create_pipeline(test, test_device)
-
         actual_samples = min(num_samples, data_loader.num_samples)
         sample_results: List[SampleVerificationResult] = []
-        for i in range(actual_samples):
-            sr = self._run_single_sample(
-                i,
-                ref_pipeline,
-                test_pipeline,
-                data_loader,
-                ref_device,
-                test_device,
-                reference.backend,
-                test.backend,
-                tolerance,
-            )
-            sample_results.append(sr)
-            results["samples"][f"sample_{i}"] = sr.passed
-            self._log_sample_result(sr)
+        ref_pipeline = None
+        test_pipeline = None
+        try:
+            logger.info("\nInitializing %s reference pipeline...", reference.backend.value)
+            self._hooks._ensure_model_on_device(ref_device)
+            ref_pipeline = self._hooks._create_pipeline(reference, ref_device)
 
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            logger.info("\nInitializing %s test pipeline...", test.backend.value)
+            self._hooks._ensure_model_on_device(test_device)
+            test_pipeline = self._hooks._create_pipeline(test, test_device)
 
-        for pipeline in (ref_pipeline, test_pipeline):
-            if pipeline is None:
-                continue
-            try:
-                pipeline.cleanup()
-            except Exception as e:
-                logger.warning("Error during pipeline cleanup in verification: %s", e)
+            for i in range(actual_samples):
+                sr = self._run_single_sample(
+                    i,
+                    ref_pipeline,
+                    test_pipeline,
+                    data_loader,
+                    ref_device,
+                    test_device,
+                    reference.backend,
+                    test.backend,
+                    tolerance,
+                )
+                sample_results.append(sr)
+                results["samples"][f"sample_{i}"] = sr.passed
+                self._log_sample_result(sr)
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        finally:
+            for pipeline in (ref_pipeline, test_pipeline):
+                if pipeline is None:
+                    continue
+                try:
+                    pipeline.cleanup()
+                except Exception as e:
+                    logger.warning("Error during pipeline cleanup in verification: %s", e)
 
         passed_count = sum(1 for r in sample_results if r.passed)
         failed_count = sum(1 for r in sample_results if not r.passed)

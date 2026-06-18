@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Optional, Tuple
+
+from deployment.configs.enums import PrecisionPolicy
 
 
 @dataclass(frozen=True)
@@ -29,35 +30,12 @@ class TensorRTProfileConfig:
             return tuple()
         return tuple(int(dim) for dim in shape)
 
-    @property
-    def has_complete_profile(self) -> bool:
-        """Whether all three shape profiles (min, opt, max) are configured."""
-        return bool(self.min_shape and self.opt_shape and self.max_shape)
-
 
 @dataclass(frozen=True)
 class TensorRTModelInputConfig:
     """TensorRT model input shape settings."""
 
     input_shapes: Mapping[str, TensorRTProfileConfig] = field(default_factory=dict)
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> TensorRTModelInputConfig:
-        input_shapes_raw = data.get("input_shapes")
-        if input_shapes_raw is None:
-            input_shapes_raw = {}
-        if not isinstance(input_shapes_raw, Mapping):
-            raise TypeError(f"input_shapes must be a dict-like mapping, got {type(input_shapes_raw).__name__}")
-
-        profile_map = {}
-        for name, shape_dict in input_shapes_raw.items():
-            if shape_dict is None:
-                shape_dict = {}
-            elif not isinstance(shape_dict, Mapping):
-                raise TypeError(f"input_shapes.{name} must be a dict-like mapping, got {type(shape_dict).__name__}")
-            profile_map[name] = TensorRTProfileConfig.from_dict(shape_dict)
-
-        return cls(input_shapes=MappingProxyType(profile_map))
 
 
 class BaseExporterConfig:
@@ -102,23 +80,6 @@ class ONNXExportConfig(BaseExporterConfig):
     save_file: str = "model.onnx"
     batch_size: Optional[int] = None
 
-    @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> ONNXExportConfig:
-        """Instantiate config from a plain mapping."""
-        return cls(
-            input_names=tuple(data.get("input_names", cls.input_names)),
-            output_names=tuple(data.get("output_names", cls.output_names)),
-            dynamic_axes=data.get("dynamic_axes"),
-            simplify=data.get("simplify", cls.simplify),
-            opset_version=data.get("opset_version", cls.opset_version),
-            export_params=data.get("export_params", cls.export_params),
-            keep_initializers_as_inputs=data.get("keep_initializers_as_inputs", cls.keep_initializers_as_inputs),
-            verbose=data.get("verbose", cls.verbose),
-            do_constant_folding=data.get("do_constant_folding", cls.do_constant_folding),
-            save_file=data.get("save_file", cls.save_file),
-            batch_size=data.get("batch_size", cls.batch_size),
-        )
-
 
 @dataclass(frozen=True)
 class TensorRTExportConfig(BaseExporterConfig):
@@ -126,31 +87,15 @@ class TensorRTExportConfig(BaseExporterConfig):
     Typed schema describing TensorRT exporter configuration.
 
     Attributes:
-        precision_policy: Name of the precision policy (matches PrecisionPolicy enum).
-        policy_flags: Mapping of TensorRT builder/network flags.
+        precision_policy: Precision policy; the exporter maps it to concrete TensorRT flags.
         max_workspace_size: Workspace size in bytes.
-        model_inputs: Tuple of TensorRTModelInputConfig entries describing shapes.
+        model_input: Per-input optimization-profile shapes. A single config already maps
+            multiple named inputs via ``input_shapes``; None means no dynamic profile.
     """
 
-    precision_policy: str = "auto"
-    policy_flags: Mapping[str, bool] = field(default_factory=dict)
+    precision_policy: PrecisionPolicy = PrecisionPolicy.AUTO
     max_workspace_size: int = 1 << 30
-    model_inputs: Tuple[TensorRTModelInputConfig, ...] = field(default_factory=tuple)
-
-    @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> TensorRTExportConfig:
-        """Instantiate config from a plain mapping."""
-        inputs_raw = data.get("model_inputs") or ()
-        parsed_inputs = tuple(
-            entry if isinstance(entry, TensorRTModelInputConfig) else TensorRTModelInputConfig.from_dict(entry)
-            for entry in inputs_raw
-        )
-        return cls(
-            precision_policy=str(data.get("precision_policy", cls.precision_policy)),
-            policy_flags=MappingProxyType(data.get("policy_flags", {})),
-            max_workspace_size=int(data.get("max_workspace_size", cls.max_workspace_size)),
-            model_inputs=parsed_inputs,
-        )
+    model_input: Optional[TensorRTModelInputConfig] = None
 
 
 __all__ = [
