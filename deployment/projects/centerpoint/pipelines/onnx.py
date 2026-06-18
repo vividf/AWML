@@ -125,45 +125,20 @@ class CenterPointONNXPipeline(CenterPointInferencePipeline):
             spatial_features: Spatial features [B, C, H, W].
 
         Returns:
-            List of 6 head output tensors.
+            List of head output tensors in configured order.
 
         Raises:
-            ValueError: If output count is not 6.
+            ValueError: If the ONNX outputs don't match the configured head outputs.
         """
         input_array = self.to_numpy(spatial_features, dtype=np.float32)
 
         input_name = self.backbone_head_session.get_inputs()[0].name
         onnx_output_names = [output.name for output in self.backbone_head_session.get_outputs()]
-
         expected_output_names = [
             out.name for out in self._components_cfg.get_component("pts_backbone_neck_head").io.outputs
         ]
-
-        # Validate outputs: check for missing or extra outputs
-        onnx_output_set = set(onnx_output_names)
-        expected_output_set = set(expected_output_names)
-
-        missing_outputs = expected_output_set - onnx_output_set
-        if missing_outputs:
-            raise ValueError(
-                f"Missing outputs in ONNX model: {sorted(missing_outputs)}. "
-                f"Expected: {sorted(expected_output_set)}, Got: {sorted(onnx_output_set)}"
-            )
-
-        extra_outputs = onnx_output_set - expected_output_set
-        if extra_outputs:
-            raise ValueError(
-                f"Extra outputs in ONNX model: {sorted(extra_outputs)}. "
-                f"Expected: {sorted(expected_output_set)}, Got: {sorted(onnx_output_set)}"
-            )
-
-        output_names = expected_output_names
+        output_names = self.order_head_outputs(onnx_output_names, expected_output_names)
 
         # Run inference with ordered output names (ONNX Runtime returns outputs in the same order)
         outputs = self.backbone_head_session.run(output_names, {input_name: input_array})
-        head_outputs = [torch.from_numpy(out).to(self.torch_device) for out in outputs]
-
-        if len(head_outputs) != 6:
-            raise ValueError(f"Expected 6 head outputs, got {len(head_outputs)}")
-
-        return head_outputs
+        return [torch.from_numpy(out).to(self.torch_device) for out in outputs]

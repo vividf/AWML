@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from abc import abstractmethod
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -119,6 +119,24 @@ class CenterPointInferencePipeline(BaseInferencePipeline):
         if voxel_features.ndim != 3 or voxel_features.shape[1] != 1:
             raise RuntimeError(f"Expected voxel encoder output [N, 1, F], got shape {tuple(voxel_features.shape)}.")
         return voxel_features.squeeze(1)
+
+    @staticmethod
+    def order_head_outputs(actual_names: Sequence[str], expected_names: Sequence[str]) -> List[str]:
+        """Validate backbone-head output names and return them in the configured order.
+
+        ONNX/TensorRT may report outputs in arbitrary order, but CenterPoint postprocess
+        depends on the exact head order from the component config. This checks for any
+        missing/extra outputs and returns ``expected_names`` (the config order).
+        """
+        expected_set, actual_set = set(expected_names), set(actual_names)
+        missing = expected_set - actual_set
+        extra = actual_set - expected_set
+        if missing or extra:
+            raise ValueError(
+                f"Backbone-head output mismatch: missing={sorted(missing)}, extra={sorted(extra)}; "
+                f"expected={sorted(expected_set)}, got={sorted(actual_set)}."
+            )
+        return list(expected_names)
 
     @override
     def preprocess(
@@ -264,9 +282,9 @@ class CenterPointInferencePipeline(BaseInferencePipeline):
         }
         preds_dicts = ([preds_dict],)
 
-        if "box_type_3d" not in sample_meta:
-            sample_meta["box_type_3d"] = LiDARInstance3DBoxes
-        batch_input_metas = [sample_meta]
+        # Build a new dict instead of mutating the caller's metadata (the same sample_meta
+        # may be reused across backends for the same frame).
+        batch_input_metas = [{**sample_meta, "box_type_3d": sample_meta.get("box_type_3d", LiDARInstance3DBoxes)}]
 
         with torch.no_grad():
             predictions_list = self.pytorch_model.pts_bbox_head.predict_by_feat(

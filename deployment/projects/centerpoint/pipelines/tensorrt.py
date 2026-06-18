@@ -71,6 +71,10 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
         self._voxel_encoder_start_event = cuda.Event()
         self._voxel_encoder_end_event = cuda.Event()
 
+        # Per-stage pure-GPU times (ms), filled by each stage while its CUDA stream is
+        # still alive and read back in run_model.
+        self._gpu_stage_ms: Dict[str, float] = {}
+
         self._load_tensorrt_engines()
         logger.info("TensorRT pipeline initialized with engines from: %s", tensorrt_dir)
 
@@ -199,6 +203,12 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
             cuda.memcpy_dtoh_async(output_array, d_output, stream)
             manager.synchronize()
 
+            # Read GPU timing while the stream is still alive (events are complete after
+            # synchronize); avoids reading across a stream that has been released.
+            self._gpu_stage_ms["voxel_encoder_ms"] = self._voxel_encoder_end_event.time_since(
+                self._voxel_encoder_start_event
+            )
+
         voxel_features = torch.from_numpy(output_array).to(self.torch_device)
         return self.squeeze_voxel_features(voxel_features)
 
@@ -214,7 +224,7 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
 
         Raises:
             RuntimeError: If context is None (initialization failed).
-            ValueError: If output count is not 6.
+            ValueError: If the engine outputs don't match the configured head outputs.
         """
         engine = self._engines["pts_backbone_neck_head"]
         context = self._contexts["pts_backbone_neck_head"]
@@ -229,29 +239,8 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
         expected_output_names = [
             out.name for out in self._components_cfg.get_component("pts_backbone_neck_head").io.outputs
         ]
-
-        # Validate outputs: check for missing or extra outputs
-        trt_output_set = set(trt_output_names)
-        expected_output_set = set(expected_output_names)
-
-        missing_outputs = expected_output_set - trt_output_set
-        if missing_outputs:
-            raise ValueError(
-                f"Missing outputs in TensorRT engine: {sorted(missing_outputs)}. "
-                f"Expected: {sorted(expected_output_set)}, Got: {sorted(trt_output_set)}"
-            )
-
-        extra_outputs = trt_output_set - expected_output_set
-        if extra_outputs:
-            raise ValueError(
-                f"Extra outputs in TensorRT engine: {sorted(extra_outputs)}. "
-                f"Expected: {sorted(expected_output_set)}, Got: {sorted(trt_output_set)}"
-            )
-
-        # Use expected order to sort outputs (critical for CenterPoint head ordering)
-        # After validation, we know expected_output_names == trt_output_names (as sets)
-        # So we can use expected_output_names directly to maintain the correct order
-        output_names = expected_output_names
+        # Validate and order outputs (CenterPoint postprocess depends on the config order).
+        output_names = self.order_head_outputs(trt_output_names, expected_output_names)
 
         output_arrays = {}
         for output_name in output_names:
@@ -284,12 +273,10 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
 
             manager.synchronize()
 
-        head_outputs = [torch.from_numpy(output_arrays[name]).to(self.torch_device) for name in output_names]
+            # Read GPU timing while the stream is still alive (see run_voxel_encoder).
+            self._gpu_stage_ms["backbone_head_ms"] = self._backbone_end_event.time_since(self._backbone_start_event)
 
-        if len(head_outputs) != 6:
-            raise ValueError(f"Expected 6 head outputs, got {len(head_outputs)}")
-
-        return head_outputs
+        return [torch.from_numpy(output_arrays[name]).to(self.torch_device) for name in output_names]
 
     @override
     def run_model(
@@ -316,25 +303,20 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
                 - 'middle_encoder_ms': Wall-clock time (PyTorch)
                 - 'backbone_head_ms': Pure GPU inference time (CUDA events)
         """
-        # Use local variable for thread safety
         stage_latencies: Dict[str, float] = {}
 
-        # Stage 1: Voxel Encoder
+        # Stage 1: Voxel Encoder (pure-GPU time recorded inside run_voxel_encoder).
         voxel_features = self.run_voxel_encoder(preprocessed_input["input_features"])
-        self._voxel_encoder_end_event.synchronize()
-        voxel_encoder_gpu_time_ms = self._voxel_encoder_end_event.time_since(self._voxel_encoder_start_event)
-        stage_latencies["voxel_encoder_ms"] = voxel_encoder_gpu_time_ms
+        stage_latencies["voxel_encoder_ms"] = self._gpu_stage_ms["voxel_encoder_ms"]
 
-        # Stage 2: Middle Encoder
+        # Stage 2: Middle Encoder (PyTorch, wall-clock).
         start = time.perf_counter()
         spatial_features = self.process_middle_encoder(voxel_features, preprocessed_input["coors"])
         stage_latencies["middle_encoder_ms"] = (time.perf_counter() - start) * 1000
 
-        # Stage 3: Backbone + Head
+        # Stage 3: Backbone + Head (pure-GPU time recorded inside run_backbone_head).
         head_outputs = self.run_backbone_head(spatial_features)
-        self._backbone_end_event.synchronize()
-        backbone_head_gpu_time_ms = self._backbone_end_event.time_since(self._backbone_start_event)
-        stage_latencies["backbone_head_ms"] = backbone_head_gpu_time_ms
+        stage_latencies["backbone_head_ms"] = self._gpu_stage_ms["backbone_head_ms"]
 
         return head_outputs, stage_latencies
 
