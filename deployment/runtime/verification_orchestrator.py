@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.backend import Backend
-from deployment.core.evaluation.base_evaluator import BaseEvaluator
+from deployment.core.evaluation.backend_verifier import BackendVerifier
 from deployment.core.evaluation.evaluator_types import ModelSpec
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.runtime.artifact_manager import ArtifactManager
@@ -31,7 +31,7 @@ class VerificationOrchestrator:
     def __init__(
         self,
         config: BaseDeploymentConfig,
-        evaluator: BaseEvaluator,
+        verifier: BackendVerifier,
         data_loader: BaseDataLoader,
         artifact_manager: ArtifactManager,
         logger: logging.Logger,
@@ -41,13 +41,13 @@ class VerificationOrchestrator:
 
         Args:
             config: Deployment configuration
-            evaluator: Evaluator instance for running verification
+            verifier: Backend verifier that runs reference-vs-test comparisons
             data_loader: Data loader for loading samples
             artifact_manager: Artifact manager for resolving model paths
             logger: Logger instance
         """
         self.config = config
-        self.evaluator = evaluator
+        self.verifier = verifier
         self.data_loader = data_loader
         self.artifact_manager = artifact_manager
         self.logger = logger
@@ -125,7 +125,7 @@ class VerificationOrchestrator:
             reference_spec = ModelSpec(backend=policy.ref_backend, device=ref_device, artifact=ref_artifact)
             test_spec = ModelSpec(backend=policy.test_backend, device=test_device, artifact=test_artifact)
 
-            verification_results = self.evaluator.verify(
+            verification_results = self.verifier.run(
                 reference=reference_spec,
                 test=test_spec,
                 data_loader=self.data_loader,

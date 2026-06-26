@@ -3,13 +3,12 @@ CenterPoint Evaluator for deployment.
 """
 
 import logging
-from typing import Dict, List, Mapping, Optional
+from typing import Dict, List, Mapping
 
 import numpy as np
 from mmengine.config import Config
 from typing_extensions import override
 
-from deployment.configs.schema import ComponentsConfig
 from deployment.core.evaluation.backend_executor import BackendExecutor
 from deployment.core.evaluation.base_evaluator import (
     BaseEvaluator,
@@ -31,8 +30,6 @@ class CenterPointEvaluator(BaseEvaluator):
     Args:
         model_cfg: Model configuration with class_names
         metrics_config: Configuration for 3D detection metrics
-        components_cfg: Unified components configuration (ComponentsConfig).
-                       Used to get output names from pts_backbone_neck_head.io.outputs
         executor: Backend execution primitives (a `CenterPointExecutor`), shared with
                   the verification runner.
     """
@@ -41,15 +38,13 @@ class CenterPointEvaluator(BaseEvaluator):
         self,
         model_cfg: Config,
         metrics_config: Detection3DMetricsConfig,
-        components_cfg: ComponentsConfig,
         executor: BackendExecutor,
     ) -> None:
-        """Initialize CenterPoint evaluator with model config, metrics config, components config, and executor.
+        """Initialize CenterPoint evaluator with model config, metrics config, and executor.
 
         Args:
             model_cfg: Model configuration; must have class_names.
             metrics_config: Configuration for 3D detection metrics (e.g. T4MetricV2).
-            components_cfg: Unified components config; used for output names of pts_backbone_neck_head.
             executor: Backend execution primitives shared with the verification runner.
 
         Raises:
@@ -58,7 +53,6 @@ class CenterPointEvaluator(BaseEvaluator):
         if not hasattr(model_cfg, "class_names"):
             raise ValueError("class_names must be provided via model_cfg.class_names.")
 
-        self._components_cfg = components_cfg
         metrics_interface = Detection3DMetricsInterface(metrics_config)
 
         super().__init__(
@@ -66,11 +60,6 @@ class CenterPointEvaluator(BaseEvaluator):
             model_cfg=model_cfg,
             executor=executor,
         )
-
-    @override
-    def _get_output_names(self) -> Optional[List[str]]:
-        """Get head output names from components config."""
-        return [out.name for out in self._components_cfg.get_component("pts_backbone_neck_head").io.outputs]
 
     @override
     def _parse_predictions(self, pipeline_output: object) -> List[Dict]:

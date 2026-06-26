@@ -57,7 +57,6 @@ def run(args: argparse.Namespace) -> int:
     evaluator = CenterPointEvaluator(
         model_cfg=model_cfg,
         metrics_config=metrics_config,
-        components_cfg=config.components_cfg,
         executor=executor,
     )
 

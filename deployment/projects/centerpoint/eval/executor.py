@@ -7,7 +7,7 @@ runner via `~deployment.core.evaluation.backend_executor.BackendExecutor`.
 """
 
 import logging
-from typing import Mapping
+from typing import List, Mapping, Optional
 
 from typing_extensions import override
 
@@ -33,6 +33,11 @@ class CenterPointExecutor(BackendExecutor):
     def __init__(self, components_cfg: ComponentsConfig) -> None:
         super().__init__()
         self._components_cfg = components_cfg
+
+    @override
+    def get_output_names(self) -> Optional[List[str]]:
+        """Return the head output names from the components config for verification logging."""
+        return [out.name for out in self._components_cfg.get_component("pts_backbone_neck_head").io.outputs]
 
     @override
     def create_pipeline(self, model_spec: ModelSpec, device: DeviceSpec) -> BaseInferencePipeline:

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Mapping
+from typing import Any, List, Mapping, Optional
 
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
@@ -64,6 +64,20 @@ class BackendExecutor(ABC):
         if backend.requires_cuda and not device.is_cuda:
             raise ValueError(f"{backend.value} verification requires CUDA, got '{device}'.")
         return device
+
+    def get_output_names(self) -> Optional[List[str]]:
+        """Optional names for list/tuple raw outputs during verification comparison.
+
+        Override when the backend's pipeline returns a sequence of tensors with known
+        semantic names (e.g. detection heads). The names are forwarded to the
+        `~deployment.core.evaluation.output_comparator.OutputComparator` to label
+        positions in diagnostic paths.
+
+        Returns:
+            Names aligned with output index order, or `None` to fall back to
+            `output_0`, `output_1`, ...
+        """
+        return None
 
     @abstractmethod
     def create_pipeline(self, model_spec: ModelSpec, device: DeviceSpec) -> BaseInferencePipeline:

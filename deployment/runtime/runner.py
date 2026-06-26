@@ -18,7 +18,9 @@ from mmengine.config import Config
 from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.contexts import ExportContext
 from deployment.core.evaluation.backend_executor import BackendExecutor
+from deployment.core.evaluation.backend_verifier import BackendVerifier
 from deployment.core.evaluation.base_evaluator import BaseEvaluator
+from deployment.core.evaluation.output_comparator import OutputComparator
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.exporters.common.model_wrappers import BaseModelWrapper
 from deployment.exporters.export_pipelines.base import OnnxExportPipeline, TensorRTExportPipeline
@@ -73,8 +75,10 @@ class BaseDeploymentRunner:
             onnx_pipeline=onnx_pipeline,
             tensorrt_pipeline=tensorrt_pipeline,
         )
+        comparator = OutputComparator(output_names=executor.get_output_names())
+        verifier = BackendVerifier(executor, comparator)
         self.verification_orchestrator = VerificationOrchestrator(
-            config, evaluator, data_loader, self.artifact_manager, logger
+            config, verifier, data_loader, self.artifact_manager, logger
         )
         self.evaluation_orchestrator = EvaluationOrchestrator(
             config, evaluator, data_loader, self.artifact_manager, logger

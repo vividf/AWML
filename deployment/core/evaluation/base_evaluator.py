@@ -5,7 +5,6 @@ All project evaluators should extend `BaseEvaluator` and implement the
 required hooks for their specific task. The base class provides:
 
 - A unified evaluation loop (iterate samples -> infer -> accumulate -> metrics)
-- A `verify()` entry point that delegates to `BackendVerifier`
 - Common utilities (latency stats, model device management)
 
 Module constants:
@@ -18,21 +17,18 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping
 
 import numpy as np
 from mmengine.config import Config
 
 from deployment.core.evaluation.backend_executor import BackendExecutor
-from deployment.core.evaluation.backend_verifier import BackendVerifier
 from deployment.core.evaluation.evaluator_types import (
     EvalResultDict,
     LatencyBreakdown,
     LatencyStats,
     ModelSpec,
-    VerifyResultDict,
 )
-from deployment.core.evaluation.output_comparator import OutputComparator
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.core.metrics.base_metrics_interface import BaseMetricsInterface
 from deployment.pipelines.base_pipeline import BaseInferencePipeline
@@ -55,11 +51,6 @@ class BaseEvaluator(ABC):
     - _add_to_interface: Feed a single frame to the metrics interface
     - _build_results: Construct final results dict from interface metrics
     - print_results: Format and display results
-
-    Subclasses may optionally override:
-
-    - `_get_output_names`: Provide meaningful names for list/tuple outputs
-      during verification comparison.
     """
 
     def __init__(
@@ -126,20 +117,6 @@ class BaseEvaluator(ABC):
         if latency is not None:
             lines.append(f"  Latency: {latency.mean_ms:.2f} ± {latency.std_ms:.2f} ms")
         return lines
-
-    def _get_output_names(self) -> Optional[List[str]]:
-        """Optional names for list/tuple raw outputs during verification logging.
-
-        Override in subclasses when the pipeline returns a sequence of tensors with
-        known semantic names (e.g. detection heads). The names are forwarded to the
-        `~deployment.core.evaluation.output_comparator.OutputComparator` to
-        label positions in diagnostic paths.
-
-        Returns:
-            Names aligned with output index order, or `None` to fall back to
-            `output_0`, `output_1`, ...
-        """
-        return None
 
     # ================== Core Evaluation Loop ==================
 
@@ -236,35 +213,6 @@ class BaseEvaluator(ABC):
             sample = data_loader.load_sample(idx)
             inference_input = self._executor.prepare_input(sample, data_loader, model.device)
             pipeline.infer(inference_input.data, metadata=inference_input.metadata)
-
-    # ================== Verification ==================
-
-    def verify(
-        self,
-        reference: ModelSpec,
-        test: ModelSpec,
-        data_loader: BaseDataLoader,
-        num_samples: int = 1,
-        tolerance: float = 0.1,
-    ) -> VerifyResultDict:
-        """Compare raw outputs of two `ModelSpec` backends.
-
-        Thin wrapper: assembles an `OutputComparator` and a `BackendVerifier`,
-        then delegates the actual work.
-
-        Args:
-            reference: Reference backend (typically PyTorch).
-            test: Backend under verification.
-            data_loader: Verification samples (same schema as evaluation).
-            num_samples: Requested sample count (capped by loader length).
-            tolerance: Maximum allowed absolute per-element difference.
-
-        Returns:
-            `VerifyResultDict` from the runner.
-        """
-        comparator = OutputComparator(output_names=self._get_output_names())
-        verifier = BackendVerifier(self._executor, comparator)
-        return verifier.run(reference, test, data_loader, num_samples, tolerance)
 
     # ================== Utilities ==================
 
