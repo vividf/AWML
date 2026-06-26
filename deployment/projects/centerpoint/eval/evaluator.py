@@ -171,6 +171,17 @@ class CenterPointEvaluator(BaseEvaluator):
         return result
 
     @override
+    def summarize_for_comparison(self, results: EvalResultDict) -> List[str]:
+        """Summarize mAP/mAPH per mode for the cross-backend comparison."""
+        lines: List[str] = []
+        for mode, map_value in (results.get("mAP_by_mode") or {}).items():
+            lines.append(f"  mAP ({mode}): {map_value:.4f}")
+        for mode, maph_value in (results.get("mAPH_by_mode") or {}).items():
+            lines.append(f"  mAPH ({mode}): {maph_value:.4f}")
+        lines.extend(super().summarize_for_comparison(results))
+        return lines
+
+    @override
     def print_results(self, results: EvalResultDict) -> None:
         """Log evaluation results including metrics, latency, and breakdown.
 

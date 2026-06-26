@@ -39,6 +39,9 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
         tensorrt_dir: Directory containing TensorRT engine files.
     """
 
+    # Free the CUDA cache every N evaluated samples
+    _GPU_CLEANUP_INTERVAL = 10
+
     def __init__(
         self,
         pytorch_model: torch.nn.Module,
@@ -315,6 +318,12 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
         stage_latencies["backbone_head_ms"] = self._gpu_stage_ms["backbone_head_ms"]
 
         return head_outputs, stage_latencies
+
+    @override
+    def periodic_cleanup(self, sample_idx: int) -> None:
+        """Free the CUDA cache every ``_GPU_CLEANUP_INTERVAL`` samples during long eval loops."""
+        if sample_idx > 0 and sample_idx % self._GPU_CLEANUP_INTERVAL == 0 and torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _release_gpu_resources(self) -> None:
         """Release TensorRT resources (engines and contexts)."""

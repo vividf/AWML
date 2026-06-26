@@ -272,6 +272,29 @@ class ComponentsConfig:
             parsed[component_name] = cls._parse_component(comp_raw, component_name)
         return cls(_components=MappingProxyType(parsed))
 
+    @staticmethod
+    def _parse_io_specs(
+        raw_specs: Iterable[Any],
+        component_name: str,
+        io_kind: str,
+        spec_cls: type,
+    ) -> List[Any]:
+        """Parse an ``io.inputs``/``io.outputs`` list into typed name/dtype specs.
+
+        Inputs and outputs are validated identically (both are name/dtype records);
+        ``io_kind`` ('inputs' or 'outputs') only shapes the error messages, and
+        ``spec_cls`` selects `InputSpec` or `OutputSpec`.
+        """
+        specs: List[Any] = []
+        for i, raw in enumerate(raw_specs):
+            if not isinstance(raw, Mapping) or "name" not in raw:
+                raise KeyError(f"components['{component_name}'].io.{io_kind}[{i}] must define 'name'.")
+            name = raw["name"]
+            if not name or not isinstance(name, str):
+                raise ValueError(f"components['{component_name}'].io.{io_kind}[{i}].name must be a non-empty string.")
+            specs.append(spec_cls(name=name, dtype=raw.get("dtype", "float32")))
+        return specs
+
     @classmethod
     def _parse_component(cls, comp_raw: Any, component_name: str) -> ComponentCfg:
         if not isinstance(comp_raw, Mapping):
@@ -287,22 +310,8 @@ class ComponentsConfig:
             raise KeyError(f"components['{component_name}'].io.outputs must be a non-empty list.")
         if "inputs" not in io_raw or not io_raw["inputs"]:
             raise KeyError(f"components['{component_name}'].io.inputs must be a non-empty list.")
-        outputs = []
-        for i, out in enumerate(io_raw["outputs"]):
-            if not isinstance(out, Mapping) or "name" not in out:
-                raise KeyError(f"components['{component_name}'].io.outputs[{i}] must define 'name'.")
-            output_name = out["name"]
-            if not output_name or not isinstance(output_name, str):
-                raise ValueError(f"components['{component_name}'].io.outputs[{i}].name must be a non-empty string.")
-            outputs.append(OutputSpec(name=output_name, dtype=out.get("dtype", "float32")))
-        inputs = []
-        for i, inp in enumerate(io_raw["inputs"]):
-            if not isinstance(inp, Mapping) or "name" not in inp:
-                raise KeyError(f"components['{component_name}'].io.inputs[{i}] must define 'name'.")
-            n = inp["name"]
-            if not n or not isinstance(n, str):
-                raise ValueError(f"components['{component_name}'].io.inputs[{i}].name must be a non-empty string.")
-            inputs.append(InputSpec(name=n, dtype=inp.get("dtype", "float32")))
+        outputs = cls._parse_io_specs(io_raw["outputs"], component_name, "outputs", OutputSpec)
+        inputs = cls._parse_io_specs(io_raw["inputs"], component_name, "inputs", InputSpec)
         dynamic_axes = cls._validate_dynamic_axes(io_raw.get("dynamic_axes") or {})
         io = ComponentIO(
             inputs=inputs,

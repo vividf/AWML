@@ -150,6 +150,14 @@ class BaseInferencePipeline(ABC):
             logger.exception("Inference failed.")
             raise
 
+    def periodic_cleanup(self, sample_idx: int) -> None:
+        """Per-sample cleanup hook, always called once per sample by the evaluation loop.
+
+        The default does nothing; overriding is optional. Backends with their own
+        caching concerns (e.g. TensorRT freeing the CUDA cache every N samples)
+        override this so the loop never has to special-case a backend.
+        """
+
     def cleanup(self) -> None:
         """Release resources owned by the pipeline.
 

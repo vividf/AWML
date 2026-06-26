@@ -17,21 +17,32 @@ from deployment.core.device import DeviceSpec
 
 class EvalResultDict(TypedDict, total=False):
     """
-    Structured evaluation result used across deployments.
+    Structured evaluation result produced by ``BaseEvaluator._build_results``.
+
+    Every key is optional (``total=False``): each task surfaces only the subset
+    relevant to it (detection emits ``mAP_*``; classification emits ``accuracy``).
 
     Attributes:
-        primary_metric: Main scalar metric for quick ranking (e.g., accuracy, mAP).
-        metrics: Flat dictionary of additional scalar metrics.
-        per_class: Optional nested metrics keyed by class/label name.
-        latency: Latency statistics as returned by compute_latency_stats().
-        metadata: Arbitrary metadata that downstream components might need.
+        mAP_by_mode: Detection mAP keyed by evaluation mode/distance bucket.
+        mAPH_by_mode: Detection mAPH (heading-aware) keyed by mode.
+        per_class_ap_by_mode: Per-class AP nested by mode.
+        accuracy: Top-line scalar for classification tasks.
+        detailed_metrics: Raw task-specific metric payload for deep inspection.
+        latency: End-to-end latency statistics from ``compute_latency_stats``.
+        latency_breakdown: Per-stage latency statistics (optional).
+        num_samples: Number of samples actually evaluated.
+        error: Set instead of metrics when evaluation failed for this backend.
     """
 
-    primary_metric: float
-    metrics: Dict[str, float]
-    per_class: Dict[str, Any]
-    latency: Dict[str, float]
-    metadata: Dict[str, Any]
+    mAP_by_mode: Dict[str, float]
+    mAPH_by_mode: Dict[str, float]
+    per_class_ap_by_mode: Dict[str, Any]
+    accuracy: float
+    detailed_metrics: Dict[str, Any]
+    latency: "LatencyStats"
+    latency_breakdown: "LatencyBreakdown"
+    num_samples: int
+    error: str
 
 
 class VerifyResultDict(TypedDict, total=False):

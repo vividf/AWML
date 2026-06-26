@@ -7,7 +7,7 @@ This module handles cross-backend evaluation with consistent metrics.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional
 
 from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.backend import Backend
@@ -72,8 +72,8 @@ class EvaluationOrchestrator:
         self.logger.info("Running Evaluation")
         self.logger.info("=" * 80)
 
-        models_to_evaluate = self._get_models_to_evaluate()
-        if not models_to_evaluate:
+        model_specs = self._resolve_model_specs()
+        if not model_specs:
             self.logger.warning("No models found for evaluation")
             return {}
 
@@ -81,21 +81,18 @@ class EvaluationOrchestrator:
         if num_samples == -1:
             num_samples = self.data_loader.num_samples
 
-        verbose_mode = eval_config.verbose
+        verbose = eval_config.verbose
         all_results: Dict[str, Any] = {}
 
-        for spec in models_to_evaluate:
-            backend = spec.backend
-            backend_device = self._resolve_device_for_backend(backend, spec.device)
-            resolved_spec = ModelSpec(backend=backend, device=backend_device, artifact=spec.artifact)
-
-            self.logger.info("\nEvaluating %s on %s...", backend.value, backend_device)
+        for model_spec in model_specs:
+            backend = model_spec.backend
+            self.logger.info("\nEvaluating %s on %s...", backend.value, model_spec.device)
             try:
                 results = self.evaluator.evaluate(
-                    model=resolved_spec,
+                    model=model_spec,
                     data_loader=self.data_loader,
                     num_samples=num_samples,
-                    verbose=verbose_mode,
+                    verbose=verbose,
                     num_warmup=eval_config.num_warmup,
                 )
                 all_results[backend.value] = results
@@ -112,28 +109,29 @@ class EvaluationOrchestrator:
 
         return all_results
 
-    def _get_models_to_evaluate(self) -> List[ModelSpec]:
+    def _resolve_model_specs(self) -> List[ModelSpec]:
         """
-        Get the models to evaluate from the configuration.
+        Resolve the model specs to evaluate from the configuration.
+
+        For each enabled backend, resolves its device and artifact, keeping only
+        backends whose artifact exists on disk.
 
         Returns:
             List of model specifications
         """
-        backends = self.config.evaluation_config.backends
-        models_to_evaluate: List[ModelSpec] = []
+        backend_configs = self.config.evaluation_config.backends
+        model_specs: List[ModelSpec] = []
 
-        for backend_key, backend_cfg in backends.items():
+        for backend_key, backend_cfg in backend_configs.items():
             backend_enum = Backend.from_value(backend_key)
             if not backend_cfg.get("enabled", False):
                 continue
 
-            raw_device = backend_cfg.get("device") or self._get_default_device(backend_enum)
-            device = DeviceSpec.from_value(raw_device)
-            artifact, is_valid = self.artifact_manager.resolve_artifact(backend_enum)
+            device = self._resolve_device_for_backend(backend_enum, backend_cfg.get("device"))
+            artifact, artifact_exists = self.artifact_manager.resolve_artifact(backend_enum)
 
-            if is_valid and artifact:
-                spec = ModelSpec(backend=backend_enum, device=device, artifact=artifact)
-                models_to_evaluate.append(spec)
+            if artifact_exists and artifact:
+                model_specs.append(ModelSpec(backend=backend_enum, device=device, artifact=artifact))
                 self.logger.info("  - %s: %s (device: %s)", backend_enum.value, artifact.path, device)
             elif artifact is not None:
                 self.logger.warning(
@@ -142,28 +140,32 @@ class EvaluationOrchestrator:
                     artifact.path,
                 )
 
-        return models_to_evaluate
+        return model_specs
 
-    def _resolve_device_for_backend(self, backend: Backend, device: DeviceSpec) -> DeviceSpec:
+    def _resolve_device_for_backend(self, backend: Backend, configured_device: Optional[Any]) -> DeviceSpec:
         """
-        Resolve the device a backend will run on.
+        Resolve the single device a backend will run on (called once per backend).
 
-        Fills in the backend default when no device is configured, and enforces backend
-        constraints: TensorRT requires CUDA, so a non-CUDA device is overridden (with a
-        warning) to the default CUDA device.
+        Falls back to the backend default when nothing is configured, and enforces
+        backend constraints: a CUDA-only backend handed a non-CUDA device is overridden
+        (with a warning) to the default CUDA device.
 
         Args:
             backend: Backend the device is being resolved for
-            device: Configured device, or a falsy value to use the backend default
+            configured_device: Raw device from config (e.g. "cuda:0"), or None/blank to
+                use the backend default
         Returns:
             The device the backend will actually use
         """
-        resolved_device = device or self._get_default_device(backend)
+        resolved_device = (
+            DeviceSpec.from_value(configured_device) if configured_device else self._get_default_device(backend)
+        )
 
-        if backend is Backend.TENSORRT and not resolved_device.is_cuda:
+        if backend.requires_cuda and not resolved_device.is_cuda:
             default_device = self._get_default_device(backend)
             self.logger.warning(
-                "TensorRT evaluation requires CUDA device. Overriding device from '%s' to '%s'.",
+                "%s evaluation requires CUDA device. Overriding device from '%s' to '%s'.",
+                backend.value,
                 resolved_device,
                 default_device,
             )
@@ -178,7 +180,7 @@ class EvaluationOrchestrator:
         Args:
             backend: Backend to get the default device for
         Returns:
-            Default device string
+            Default device (DeviceSpec) for the backend
         """
         if backend is Backend.TENSORRT:
             if self.config.device_config.cuda is None:
@@ -200,22 +202,7 @@ class EvaluationOrchestrator:
         for backend_label, results in all_results.items():
             self.logger.info("\n%s:", backend_label.upper())
             if results and "error" not in results:
-                if "accuracy" in results:
-                    self.logger.info("  Accuracy: %.4f", results["accuracy"])
-                if "mAP_by_mode" in results:
-                    mAP_by_mode = results.get("mAP_by_mode", {})
-                    if mAP_by_mode:
-                        for mode, map_value in mAP_by_mode.items():
-                            self.logger.info("  mAP (%s): %.4f", mode, map_value)
-
-                if "mAPH_by_mode" in results:
-                    mAPH_by_mode = results.get("mAPH_by_mode", {})
-                    if mAPH_by_mode:
-                        for mode, maph_value in mAPH_by_mode.items():
-                            self.logger.info("  mAPH (%s): %.4f", mode, maph_value)
-
-                if "latency" in results:
-                    latency = results["latency"]
-                    self.logger.info("  Latency: %.2f ± %.2f ms", latency.mean_ms, latency.std_ms)
+                for line in self.evaluator.summarize_for_comparison(results):
+                    self.logger.info(line)
             else:
                 self.logger.info("  No results available")

@@ -39,5 +39,13 @@ class Backend(str, Enum):
 
         raise TypeError(f"Backend must be a string or Backend enum, got {type(value)}")
 
+    @property
+    def requires_cuda(self) -> bool:
+        """Whether this backend can only run on a CUDA device.
+
+        Single source of truth for the runtime constraint enforced by config validation, evaluation, and verification.
+        """
+        return self is Backend.TENSORRT
+
     def __str__(self) -> str:  # pragma: no cover - convenience for logging
         return self.value

@@ -140,11 +140,10 @@ class ExportOrchestrator:
             # raise above). In trt-only mode fall back to the externally configured ONNX path.
             onnx_path = result.onnx_path if should_export_onnx else external_onnx_path
             if not onnx_path:
-                self.logger.error(
-                    "TensorRT export requires an ONNX path. "
-                    "Please set export.onnx_path in config or enable ONNX export."
+                raise RuntimeError(
+                    "TensorRT export requires an ONNX path but none is available. "
+                    "Set export.onnx_path in config or enable ONNX export (export.mode)."
                 )
-                return result
             result.onnx_path = onnx_path
             self._register_external_onnx_artifact(onnx_path)
             result.tensorrt_path = self._run_tensorrt_export(onnx_path)
@@ -220,11 +219,8 @@ class ExportOrchestrator:
         Args:
             pytorch_model: PyTorch model to export
         Returns:
-            Artifact representing the exported ONNX model or None if export is not configured
+            Artifact representing the exported ONNX model
         """
-        if not self.config.export_config.should_export_onnx:
-            return None
-
         if self._onnx_pipeline is None and self._onnx_wrapper_cls is None:
             raise RuntimeError("ONNX export requested but no wrapper class or export pipeline provided.")
 
@@ -288,15 +284,8 @@ class ExportOrchestrator:
         Args:
             onnx_path: Path to the ONNX artifact
         Returns:
-            Artifact representing the exported TensorRT engine or None if export is not configured
+            Artifact representing the exported TensorRT engine
         """
-        if not self.config.export_config.should_export_tensorrt:
-            return None
-
-        if not onnx_path:
-            self.logger.warning("ONNX path not available, skipping TensorRT export")
-            return None
-
         self.logger.info("=" * 80)
         if self._tensorrt_pipeline:
             self.logger.info("Exporting to TensorRT via pipeline (%s)", type(self._tensorrt_pipeline).__name__)

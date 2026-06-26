@@ -61,8 +61,8 @@ class BackendExecutor(ABC):
 
     def validate_device(self, backend: Backend, device: DeviceSpec) -> DeviceSpec:
         """Validate backend runtime constraints on a concrete DeviceSpec and return it."""
-        if backend is Backend.TENSORRT and not device.is_cuda:
-            raise ValueError(f"TensorRT verification requires CUDA, got '{device}'.")
+        if backend.requires_cuda and not device.is_cuda:
+            raise ValueError(f"{backend.value} verification requires CUDA, got '{device}'.")
         return device
 
     @abstractmethod

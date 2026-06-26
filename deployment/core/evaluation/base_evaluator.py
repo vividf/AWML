@@ -12,8 +12,6 @@ Module constants:
 
     LOG_INTERVAL
         Sample interval for verbose progress logs in `BaseEvaluator.evaluate`.
-    GPU_CLEANUP_INTERVAL
-        Sample interval for optional GPU cache clears when running TensorRT during `BaseEvaluator.evaluate`.
 """
 
 from __future__ import annotations
@@ -23,10 +21,8 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
-import torch
 from mmengine.config import Config
 
-from deployment.core.backend import Backend
 from deployment.core.evaluation.backend_executor import BackendExecutor
 from deployment.core.evaluation.backend_verifier import BackendVerifier
 from deployment.core.evaluation.evaluator_types import (
@@ -43,9 +39,8 @@ from deployment.pipelines.base_pipeline import BaseInferencePipeline
 
 logger = logging.getLogger(__name__)
 
-# Verbose ``evaluate()`` logs every LOG_INTERVAL samples; TensorRT empty_cache every GPU_CLEANUP_INTERVAL.
+# Verbose ``evaluate()`` logs every LOG_INTERVAL samples.
 LOG_INTERVAL = 50
-GPU_CLEANUP_INTERVAL = 10
 
 
 class BaseEvaluator(ABC):
@@ -116,6 +111,21 @@ class BaseEvaluator(ABC):
     def print_results(self, results: EvalResultDict) -> None:
         """Render ``results`` for human-readable logs (prefer ``logging``, not ``print``)."""
         raise NotImplementedError
+
+    def summarize_for_comparison(self, results: EvalResultDict) -> List[str]:
+        """Return metric lines for the cross-backend comparison table.
+
+        Args:
+            results: A successful ``EvalResultDict``.
+
+        Returns:
+            Pre-formatted, indented log lines (may be empty).
+        """
+        lines: List[str] = []
+        latency = results.get("latency")
+        if latency is not None:
+            lines.append(f"  Latency: {latency.mean_ms:.2f} ± {latency.std_ms:.2f} ms")
+        return lines
 
     def _get_output_names(self) -> Optional[List[str]]:
         """Optional names for list/tuple raw outputs during verification logging.
@@ -192,9 +202,7 @@ class BaseEvaluator(ABC):
                 predictions = self._parse_predictions(infer_result.output)
                 self._add_to_interface(predictions, ground_truths)
 
-                if model.backend is Backend.TENSORRT and idx > 0 and idx % GPU_CLEANUP_INTERVAL == 0:
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                pipeline.periodic_cleanup(idx)
         finally:
             try:
                 pipeline.cleanup()
