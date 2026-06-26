@@ -106,6 +106,7 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             Loaded PyTorch model.
         """
         rot_y_axis_reference = self._extract_rot_y_axis_reference(context)
+        self.logger.info("Export option rot_y_axis_reference = %s", rot_y_axis_reference)
 
         model, export_model_cfg = build_centerpoint_onnx_model(
             base_model_cfg=self.model_cfg,

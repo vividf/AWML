@@ -19,13 +19,14 @@ class TensorRTProfileConfig:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> TensorRTProfileConfig:
         return cls(
-            min_shape=cls._normalize_shape(data.get("min_shape")),
-            opt_shape=cls._normalize_shape(data.get("opt_shape")),
-            max_shape=cls._normalize_shape(data.get("max_shape")),
+            min_shape=cls._to_shape_tuple(data.get("min_shape")),
+            opt_shape=cls._to_shape_tuple(data.get("opt_shape")),
+            max_shape=cls._to_shape_tuple(data.get("max_shape")),
         )
 
     @staticmethod
-    def _normalize_shape(shape: Optional[Iterable[int]]) -> Tuple[int, ...]:
+    def _to_shape_tuple(shape: Optional[Iterable[int]]) -> Tuple[int, ...]:
+        """Convert an iterable of dimensions into an int tuple; None becomes an empty tuple."""
         if shape is None:
             return tuple()
         return tuple(int(dim) for dim in shape)
@@ -71,7 +72,7 @@ class ONNXExportConfig(BaseExporterConfig):
     input_names: Tuple[str, ...] = ("input",)
     output_names: Tuple[str, ...] = ("output",)
     dynamic_axes: Optional[Mapping[str, Mapping[int, str]]] = None
-    simplify: bool = True
+    simplify: bool = False
     opset_version: int = 17
     export_params: bool = True
     keep_initializers_as_inputs: bool = False

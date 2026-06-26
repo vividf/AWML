@@ -1,6 +1,8 @@
 """TensorRT model exporter."""
 
 import logging
+import os
+from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple
 
 import tensorrt as trt
@@ -253,8 +255,20 @@ class TensorRTExporter(BaseExporter):
             serialized_engine: Serialized engine bytes
             output_path: Path to save engine file
         """
-        with open(output_path, "wb") as f:
-            f.write(serialized_engine)
+        # Write to a temp file in the same directory, then atomically replace the target.
+        # Building an engine can take many minutes; a crash mid-write must not leave a
+        # truncated .engine that a later run would treat as a valid artifact.
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = output.with_name(f"{output.name}.tmp")
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(serialized_engine)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, output)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
         max_workspace_size = self.config.max_workspace_size
         self.logger.info("TensorRT engine saved to %s", output_path)

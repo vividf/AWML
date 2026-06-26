@@ -100,7 +100,6 @@ class CenterPointTensorRTExportPipeline(TensorRTExportPipeline):
             raise ValueError("components config is empty; nothing to export to TensorRT.")
 
         device_id = self._validate_cuda_device(device)
-        torch.cuda.set_device(device_id)
         self.logger.info("Using CUDA device: %s", device)
 
         output_dir_path = Path(output_dir)
@@ -108,38 +107,41 @@ class CenterPointTensorRTExportPipeline(TensorRTExportPipeline):
 
         onnx_dir_str = str(onnx_dir_path)
         num = len(components)
-        # Start at 1 so progress logs are human-friendly: [1/N] ... [N/N].
-        for i, (component_name, comp) in enumerate(components, 1):
-            onnx_file = resolve_artifact_path(
-                base_dir=onnx_dir_str,
-                components_cfg=self._components_cfg,
-                component_name=component_name,
-                file_key="onnx_file",
-            )
-            trt_path = output_dir_path / comp.engine_file
-            trt_path.parent.mkdir(parents=True, exist_ok=True)
+        # Scope the active CUDA device to this export instead of mutating the process-global
+        # device via torch.cuda.set_device(); this keeps concurrent/repeat exports isolated.
+        with torch.cuda.device(device_id):
+            # Start at 1 so progress logs are human-friendly: [1/N] ... [N/N].
+            for i, (component_name, comp) in enumerate(components, 1):
+                onnx_file = resolve_artifact_path(
+                    base_dir=onnx_dir_str,
+                    components_cfg=self._components_cfg,
+                    component_name=component_name,
+                    file_key="onnx_file",
+                )
+                trt_path = output_dir_path / comp.engine_file
+                trt_path.parent.mkdir(parents=True, exist_ok=True)
 
-            self.logger.info(
-                "\n[%s/%s] Converting %s → %s...",
-                i,
-                num,
-                Path(onnx_file).name,
-                trt_path.name,
-            )
+                self.logger.info(
+                    "\n[%s/%s] Converting %s → %s...",
+                    i,
+                    num,
+                    Path(onnx_file).name,
+                    trt_path.name,
+                )
 
-            exporter = self.exporter_factory.create_tensorrt_exporter(
-                config=config,
-                logger=self.logger,
-                component_name=component_name,
-            )
+                exporter = self.exporter_factory.create_tensorrt_exporter(
+                    config=config,
+                    logger=self.logger,
+                    component_name=component_name,
+                )
 
-            artifact = exporter.export(
-                model=None,
-                sample_input=None,
-                output_path=str(trt_path),
-                onnx_path=onnx_file,
-            )
-            self.logger.info("TensorRT engine saved: %s", artifact.path)
+                artifact = exporter.export(
+                    model=None,
+                    sample_input=None,
+                    output_path=str(trt_path),
+                    onnx_path=onnx_file,
+                )
+                self.logger.info("TensorRT engine saved: %s", artifact.path)
 
         self.logger.info("\nAll TensorRT engines exported successfully to %s", output_dir_path)
         return Artifact(path=str(output_dir_path))

@@ -46,7 +46,8 @@ deployment/
 ├── exporters/     # ONNX / TensorRT exporters and export pipeline bases
 ├── pipelines/     # Inference pipelines and global factory
 ├── runtime/       # BaseDeploymentRunner, orchestrators, ArtifactManager
-└── projects/      # Per-task bundles
+├── projects/      # Per-task bundles
+└── tests/         # CPU-only unit tests (pytest)
 ```
 
 ## License

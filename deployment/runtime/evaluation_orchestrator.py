@@ -85,13 +85,13 @@ class EvaluationOrchestrator:
 
         for spec in models_to_evaluate:
             backend = spec.backend
-            backend_device = self._normalize_device_for_backend(backend, spec.device)
-            normalized_spec = ModelSpec(backend=backend, device=backend_device, artifact=spec.artifact)
+            backend_device = self._resolve_device_for_backend(backend, spec.device)
+            resolved_spec = ModelSpec(backend=backend, device=backend_device, artifact=spec.artifact)
 
             self.logger.info("\nEvaluating %s on %s...", backend.value, backend_device)
             try:
                 results = self.evaluator.evaluate(
-                    model=normalized_spec,
+                    model=resolved_spec,
                     data_loader=self.data_loader,
                     num_samples=num_samples,
                     verbose=verbose_mode,
@@ -145,30 +145,34 @@ class EvaluationOrchestrator:
 
         return models_to_evaluate
 
-    def _normalize_device_for_backend(self, backend: Backend, device: DeviceSpec) -> DeviceSpec:
+    def _resolve_device_for_backend(self, backend: Backend, device: DeviceSpec) -> DeviceSpec:
         """
-        Normalize the device for a backend.
+        Resolve the device a backend will run on.
+
+        Fills in the backend default when no device is configured, and enforces backend
+        constraints: TensorRT requires CUDA, so a non-CUDA device is overridden (with a
+        warning) to the default CUDA device.
 
         Args:
-            backend: Backend to normalize the device for
-            device: Device to normalize
+            backend: Backend the device is being resolved for
+            device: Configured device, or a falsy value to use the backend default
         Returns:
-            Normalized device
+            The device the backend will actually use
         """
-        normalized_device = device or self._get_default_device(backend)
+        resolved_device = device or self._get_default_device(backend)
 
         if backend in (Backend.PYTORCH, Backend.ONNX):
-            return normalized_device
+            return resolved_device
         elif backend is Backend.TENSORRT:
-            if not normalized_device.is_cuda:
+            if not resolved_device.is_cuda:
                 self.logger.warning(
                     "TensorRT evaluation requires CUDA device. Overriding device from '%s' to '%s'.",
-                    normalized_device,
+                    resolved_device,
                     self._get_default_device(backend),
                 )
-                normalized_device = self._get_default_device(backend)
+                resolved_device = self._get_default_device(backend)
 
-        return normalized_device
+        return resolved_device
 
     def _get_default_device(self, backend: Backend) -> DeviceSpec:
         """

@@ -116,7 +116,7 @@ class OnnxConfig:
         if not raw:
             return cls()
         if not isinstance(raw, Mapping):
-            raise TypeError(f"onnx_config must be a dict-like mapping, got {type(raw).__name__}")
+            raise TypeError(f"onnx_config must be a dict, got {type(raw).__name__}")
         return cls(
             opset_version=int(raw.get("opset_version", 17)),
             do_constant_folding=bool(raw.get("do_constant_folding", True)),
@@ -236,12 +236,12 @@ class ComponentsConfig:
 
         if raw is None:
             return {}
-        _require_type(raw, Mapping, "dynamic_axes must be a dict-like mapping")
+        _require_type(raw, Mapping, "dynamic_axes must be a dict")
 
         result: Dict[str, Dict[int, str]] = {}
         for name, axes in raw.items():
             _require_type(name, str, "dynamic_axes key must be str")
-            _require_type(axes, Mapping, f"dynamic_axes['{name}'] must be a dict-like mapping")
+            _require_type(axes, Mapping, f"dynamic_axes['{name}'] must be a dict")
 
             typed_axes: Dict[int, str] = {}
             for axis_idx, axis_name in axes.items():
@@ -255,7 +255,7 @@ class ComponentsConfig:
     def from_dict(cls, raw: Mapping[str, Any]) -> ComponentsConfig:
         """Build ComponentsConfig from deploy_cfg['components'] dict. Generic: any keys allowed."""
         if not isinstance(raw, Mapping):
-            raise TypeError(f"components must be a dict-like mapping, got {type(raw).__name__}")
+            raise TypeError(f"components must be a dict, got {type(raw).__name__}")
         parsed = {}
         for component_name, comp_raw in raw.items():
             parsed[component_name] = cls._parse_component(comp_raw, component_name)
@@ -264,18 +264,14 @@ class ComponentsConfig:
     @classmethod
     def _parse_component(cls, comp_raw: Any, component_name: str) -> ComponentCfg:
         if not isinstance(comp_raw, Mapping):
-            raise TypeError(
-                f"components['{component_name}'] must be a dict-like mapping, got {type(comp_raw).__name__}"
-            )
+            raise TypeError(f"components['{component_name}'] must be a dict, got {type(comp_raw).__name__}")
         for field_name in ("onnx_file", "engine_file", "io"):
             if field_name not in comp_raw:
                 raise KeyError(f"components['{component_name}'] must define '{field_name}'.")
         component_id = component_name
         io_raw = comp_raw["io"]
         if not isinstance(io_raw, Mapping):
-            raise TypeError(
-                f"components['{component_name}'].io must be a dict-like mapping, got {type(io_raw).__name__}"
-            )
+            raise TypeError(f"components['{component_name}'].io must be a dict, got {type(io_raw).__name__}")
         if "outputs" not in io_raw or not io_raw["outputs"]:
             raise KeyError(f"components['{component_name}'].io.outputs must be a non-empty list.")
         if "inputs" not in io_raw or not io_raw["inputs"]:
@@ -304,12 +300,12 @@ class ComponentsConfig:
         )
         profile_raw = comp_raw.get("tensorrt_profile") or {}
         if not isinstance(profile_raw, Mapping):
-            raise TypeError(f"components['{component_name}'].tensorrt_profile must be a dict-like mapping.")
+            raise TypeError(f"components['{component_name}'].tensorrt_profile must be a dict.")
         tensorrt_profile = {}
         for input_name, shape_cfg in profile_raw.items():
             if not isinstance(shape_cfg, Mapping):
                 raise TypeError(
-                    f"components['{component_name}'].tensorrt_profile['{input_name}'] must be a dict-like mapping, got {type(shape_cfg).__name__}."
+                    f"components['{component_name}'].tensorrt_profile['{input_name}'] must be a dict, got {type(shape_cfg).__name__}."
                 )
             tensorrt_profile[input_name] = TensorRTProfileConfig.from_dict(shape_cfg)
         return ComponentCfg(
@@ -335,7 +331,6 @@ class EvaluationConfig:
     num_warmup: int = 0
     verbose: bool = False
     backends: Mapping[Any, Mapping[str, Any]] = field(default_factory=_empty_mapping)
-    models: Mapping[Any, Any] = field(default_factory=_empty_mapping)
 
     @classmethod
     def from_dict(cls, config_dict: Mapping[str, Any]) -> EvaluationConfig:
@@ -343,14 +338,8 @@ class EvaluationConfig:
         if backends_raw is None:
             backends_raw = {}
         if not isinstance(backends_raw, Mapping):
-            raise TypeError(f"evaluation.backends must be a dict-like mapping, got {type(backends_raw).__name__}")
+            raise TypeError(f"evaluation.backends must be a dict, got {type(backends_raw).__name__}")
         backends_frozen = {key: MappingProxyType(dict(value)) for key, value in backends_raw.items()}
-
-        models_raw = config_dict.get("models", None)
-        if models_raw is None:
-            models_raw = {}
-        if not isinstance(models_raw, Mapping):
-            raise TypeError(f"evaluation.models must be a dict-like mapping, got {type(models_raw).__name__}")
 
         return cls(
             enabled=config_dict.get("enabled", False),
@@ -358,7 +347,6 @@ class EvaluationConfig:
             num_warmup=config_dict.get("num_warmup", 0),
             verbose=config_dict.get("verbose", False),
             backends=MappingProxyType(backends_frozen),
-            models=MappingProxyType(dict(models_raw)),
         )
 
 
@@ -400,7 +388,7 @@ class VerificationConfig:
         if scenarios_raw is None:
             scenarios_raw = {}
         if not isinstance(scenarios_raw, Mapping):
-            raise TypeError(f"verification.scenarios must be a dict-like mapping, got {type(scenarios_raw).__name__}")
+            raise TypeError(f"verification.scenarios must be a dict, got {type(scenarios_raw).__name__}")
 
         scenario_map: Dict[ExportMode, Tuple[VerificationScenario, ...]] = {}
         for mode_key, scenario_list in scenarios_raw.items():

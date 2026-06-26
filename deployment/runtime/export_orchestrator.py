@@ -126,10 +126,27 @@ class ExportOrchestrator:
 
         if should_export_onnx:
             result.onnx_path = self._run_onnx_export(pytorch_model)
+            if not result.onnx_path:
+                # ONNX export was explicitly requested for this run but produced nothing.
+                # Failing here is critical: otherwise the TensorRT stage below would silently
+                # fall back to `export.onnx_path` (often the same dir) and build an engine from
+                # a STALE ONNX left by a previous run, yielding an engine that does not match
+                # the current checkpoint with no error surfaced.
+                raise RuntimeError(
+                    "ONNX export was requested (export.mode includes ONNX) but no ONNX artifact "
+                    "was produced. Refusing to continue, as TensorRT export would otherwise reuse "
+                    "a stale ONNX file. Check the ONNX export logs above."
+                )
 
         if should_export_trt:
-            onnx_path = self._resolve_onnx_path_for_trt(result.onnx_path, external_onnx_path)
+            # When this run also produced ONNX, reuse that fresh path (guaranteed present by the
+            # raise above). In trt-only mode fall back to the externally configured ONNX path.
+            onnx_path = result.onnx_path if should_export_onnx else external_onnx_path
             if not onnx_path:
+                self.logger.error(
+                    "TensorRT export requires an ONNX path. "
+                    "Please set export.onnx_path in config or enable ONNX export."
+                )
                 return result
             result.onnx_path = onnx_path
             self._register_external_onnx_artifact(onnx_path)
@@ -177,27 +194,6 @@ class ExportOrchestrator:
             return onnx_artifact.path
         self.logger.error("ONNX export requested but no artifact was produced.")
         return None
-
-    def _resolve_onnx_path_for_trt(
-        self, exported_onnx_path: Optional[str], external_onnx_path: Optional[str]
-    ) -> Optional[str]:
-        """
-        Resolve the ONNX path for TensorRT export.
-
-        Args:
-            exported_onnx_path: Path to an exported ONNX artifact (if any)
-            external_onnx_path: Path to an external ONNX artifact (if any)
-        Returns:
-            Resolved ONNX path or None if resolution failed
-        """
-        onnx_path = exported_onnx_path or external_onnx_path
-        if not onnx_path:
-            self.logger.error(
-                "TensorRT export requires an ONNX path. "
-                "Please set export.onnx_path in config or enable ONNX export."
-            )
-            return None
-        return onnx_path
 
     def _register_external_onnx_artifact(self, onnx_path: str) -> None:
         """
@@ -323,34 +319,36 @@ class ExportOrchestrator:
         if cuda_device is None:
             raise RuntimeError("TensorRT export requires a CUDA device. Set deploy_cfg.devices['cuda'].")
         device_id = cuda_device.index
-        torch.cuda.set_device(device_id)
         self.logger.info("Using CUDA device for TensorRT export: %s", cuda_device)
 
         sample_idx = self.config.export_config.sample_idx
         sample_input = self.data_loader.get_shape_sample(sample_idx)
 
-        if self._tensorrt_pipeline is not None:
-            artifact = self._tensorrt_pipeline.export(
-                onnx_path=onnx_path,
-                output_dir=str(tensorrt_dir),
-                config=self.config,
-                device=cuda_device,
-            )
-            self.artifact_manager.register_artifact(Backend.TENSORRT, artifact)
-            self.logger.info("TensorRT export successful: %s", artifact.path)
-            return artifact
+        # Scope the active CUDA device to this export rather than mutating the process-global
+        # device via torch.cuda.set_device(), so concurrent/repeat exports stay isolated.
+        with torch.cuda.device(device_id):
+            if self._tensorrt_pipeline is not None:
+                artifact = self._tensorrt_pipeline.export(
+                    onnx_path=onnx_path,
+                    output_dir=str(tensorrt_dir),
+                    config=self.config,
+                    device=cuda_device,
+                )
+                self.artifact_manager.register_artifact(Backend.TENSORRT, artifact)
+                self.logger.info("TensorRT export successful: %s", artifact.path)
+                return artifact
 
-        component_names = list(self.config.components_cfg.component_names())
-        for component_name in component_names:
-            output_path = self._get_tensorrt_output_path(onnx_path, str(tensorrt_dir), component_name)
-            exporter = self._build_tensorrt_exporter(component_name)
-            self.logger.info("Exporting component '%s' → %s", component_name, output_path)
-            exporter.export(
-                model=None,
-                sample_input=sample_input,
-                output_path=output_path,
-                onnx_path=onnx_path,
-            )
+            component_names = list(self.config.components_cfg.component_names())
+            for component_name in component_names:
+                output_path = self._get_tensorrt_output_path(onnx_path, str(tensorrt_dir), component_name)
+                exporter = self._build_tensorrt_exporter(component_name)
+                self.logger.info("Exporting component '%s' → %s", component_name, output_path)
+                exporter.export(
+                    model=None,
+                    sample_input=sample_input,
+                    output_path=output_path,
+                    onnx_path=onnx_path,
+                )
 
         artifact = Artifact(path=str(tensorrt_dir))
         self.artifact_manager.register_artifact(Backend.TENSORRT, artifact)
@@ -404,32 +402,33 @@ class ExportOrchestrator:
 
     def _resolve_external_artifacts(self, result: ExportResult) -> None:
         """
-        Resolve and register external artifacts from configuration.
+        Fill in artifact paths not produced by this run from configured fallbacks.
+
+        Config-based artifact lookup is delegated to ``ArtifactManager.resolve_artifact`` so
+        that the resolution rules (registered artifacts, then ``evaluation.backends``, then
+        per-backend fallbacks) live in exactly one place rather than being duplicated here.
 
         Args:
             result: Export result object to store the artifacts
         """
         if not result.onnx_path:
-            self._resolve_and_register_artifact(Backend.ONNX, result, "onnx_path")
+            result.onnx_path = self._resolve_configured_artifact(Backend.ONNX)
 
         if not result.tensorrt_path:
-            self._resolve_and_register_artifact(Backend.TENSORRT, result, "tensorrt_path")
+            result.tensorrt_path = self._resolve_configured_artifact(Backend.TENSORRT)
 
-    def _resolve_and_register_artifact(self, backend: Backend, result: ExportResult, attr_name: str) -> None:
+    def _resolve_configured_artifact(self, backend: Backend) -> Optional[str]:
         """
-        Resolve and register an artifact from configuration.
+        Resolve a backend artifact path from configuration, if one exists on disk.
 
         Args:
             backend: Backend to resolve the artifact for
-            result: Export result object to store the artifact
-            attr_name: Attribute name to set in the result
+        Returns:
+            The artifact path if it is configured and exists, otherwise None.
         """
-        eval_models = self.config.evaluation_config.models
-        # Backend is a str Enum, so a str-keyed lookup matches both str and Backend keys.
-        artifact_path = eval_models.get(backend.value) if eval_models else None
-
-        if artifact_path and Path(artifact_path).exists():
-            setattr(result, attr_name, artifact_path)
-            self.artifact_manager.register_artifact(backend, Artifact(path=artifact_path))
-        elif artifact_path:
-            self.logger.warning("%s file from config does not exist: %s", backend.value, artifact_path)
+        artifact, exists = self.artifact_manager.resolve_artifact(backend)
+        if artifact and exists:
+            return artifact.path
+        if artifact:
+            self.logger.warning("%s artifact path from config does not exist: %s", backend.value, artifact.path)
+        return None

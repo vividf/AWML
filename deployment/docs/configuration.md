@@ -197,7 +197,7 @@ evaluation = dict(
 )
 ```
 
-Optional `evaluation.models` exists in the typed schema for advanced path overrides.
+Optional `num_warmup` (default `0`) adds warmup iterations before latency is measured. Per-backend path overrides live inside each `backends` entry (`model_dir` / `engine_dir`), not in a separate top-level field.
 
 ## Verification
 

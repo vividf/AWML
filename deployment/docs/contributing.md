@@ -2,7 +2,7 @@
 
 Use this page when adding a new project bundle or changing shared deployment infrastructure.
 
-Before changing shared runners, evaluators, `PipelineFactory`, metrics interfaces, or orchestrators, read [architecture.md](./architecture.md). It contains the framework structure and extension contract.
+Before changing shared runners, evaluators, `BasePipelineFactory`, metrics interfaces, or orchestrators, read [architecture.md](./architecture.md). It contains the framework structure and extension contract.
 
 ## Minimal project checklist
 

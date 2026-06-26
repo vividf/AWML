@@ -57,7 +57,7 @@ class BaseEvaluator(ABC):
 
     - _create_pipeline: Create backend-specific pipeline
     - _prepare_input: Prepare model input from sample
-    - _parse_predictions: Normalize pipeline output
+    - _parse_predictions: Convert pipeline output to the format the metrics interface expects
     - _parse_ground_truths: Extract ground truth from sample
     - _add_to_interface: Feed a single frame to the metrics interface
     - _build_results: Construct final results dict from interface metrics
@@ -156,7 +156,7 @@ class BaseEvaluator(ABC):
 
     @abstractmethod
     def _parse_predictions(self, pipeline_output: Any) -> Any:
-        """Normalize raw pipeline output into the shape expected by `_add_to_interface`."""
+        """Convert raw pipeline output into the format `_add_to_interface` expects."""
         raise NotImplementedError
 
     @abstractmethod

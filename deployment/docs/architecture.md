@@ -19,7 +19,7 @@ flowchart TD
     runner --> exportStack["ExportOrchestrator_and_exporters"]
     runner --> verifyEval["Verification_and_Evaluation_orchestrators"]
     verifyEval --> evaluator["BaseEvaluator"]
-    evaluator --> pipelineFactory["PipelineFactory"]
+    evaluator --> pipelineFactory["BasePipelineFactory"]
     pipelineFactory --> projectPipelines["Project_pipelines"]
 ```
 
@@ -50,7 +50,7 @@ flowchart TD
 | --- | --- |
 | `deployment/cli/` | Unified CLI and shared argument helpers |
 | `deployment/configs/` | Typed deployment config and schema |
-| `deployment/core/` | Shared contexts, evaluators, verification mixins, and metrics types |
+| `deployment/core/` | Shared contexts, base evaluator, verification/output-comparison helpers, data-loader base, backend/device types, and metrics interfaces |
 | `deployment/exporters/` | Shared ONNX and TensorRT exporters plus export pipeline bases |
 | `deployment/pipelines/` | Global pipeline registry and factory |
 | `deployment/runtime/` | Base runner, orchestrators, and artifact management |
@@ -69,7 +69,7 @@ This section replaces the old standalone core contract page.
 ### Evaluator responsibilities
 
 - `BaseEvaluator` is the shared base for task evaluators.
-- Evaluators create backend pipelines through `PipelineFactory`.
+- Evaluators create backend pipelines through `BasePipelineFactory`.
 - Evaluators prepare inputs, normalize outputs, compute metrics, and report results.
 - Evaluators should log summaries through `logging`, not `print`.
 
@@ -89,10 +89,10 @@ This section replaces the old standalone core contract page.
 | Dependency | Allowed |
 | --- | --- |
 | Runner -> Evaluator | Yes |
-| Evaluator -> PipelineFactory / Pipelines / Metrics | Yes |
-| PipelineFactory -> Pipelines | Yes |
+| Evaluator -> BasePipelineFactory / Pipelines / Metrics | Yes |
+| BasePipelineFactory -> Pipelines | Yes |
 | Pipelines -> Metrics | No |
-| Metrics -> Runner / PipelineFactory | No |
+| Metrics -> Runner / BasePipelineFactory | No |
 
 ## Project shape
 

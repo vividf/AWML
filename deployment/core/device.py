@@ -31,7 +31,7 @@ class DeviceSpec:
 
     @classmethod
     def from_value(cls, value: Union[str, torch.device, DeviceSpec]) -> "DeviceSpec":
-        """Normalize strings/torch.device/DeviceSpec into DeviceSpec."""
+        """Build a DeviceSpec from a string, a torch.device, or an existing DeviceSpec."""
         if isinstance(value, cls):
             return value
 

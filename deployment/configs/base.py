@@ -77,13 +77,13 @@ class BaseDeploymentConfig:
             raise ValueError("Missing 'export' section in deploy config.")
         export_raw = self._deploy_cfg.get("export")
         if export_raw is not None and not isinstance(export_raw, Mapping):
-            raise TypeError("deploy config 'export' must be a dict-like mapping.")
+            raise TypeError("deploy config 'export' must be a dict.")
 
         if "components" not in self._deploy_cfg:
             raise ValueError("Missing 'components' section in deploy config.")
         components_raw = self._deploy_cfg.get("components")
         if components_raw is not None and not isinstance(components_raw, Mapping):
-            raise TypeError("deploy config 'components' must be a dict-like mapping.")
+            raise TypeError("deploy config 'components' must be a dict.")
 
     @staticmethod
     def _parse_deploy_log_path(raw: Optional[str]) -> Optional[str]:
@@ -98,13 +98,17 @@ class BaseDeploymentConfig:
         path = Path(checkpoint_path).expanduser()
 
         if not path.is_file():
-            raise FileNotFoundError(f"Checkpoint file not found: {path}")
+            raise FileNotFoundError(
+                f"Checkpoint file not found: '{checkpoint_path}' (resolved to '{path.resolve()}'). "
+                f"Deploy-config paths are relative to the current working directory "
+                f"('{Path.cwd()}'); run from the repository root or set an absolute checkpoint_path."
+            )
 
         return str(path)
 
     def _validate_cuda_device(self) -> None:
         """Validate CUDA device availability once at config stage."""
-        if not self._needs_cuda_device():
+        if not self._uses_tensorrt():
             return
 
         cuda_device = self.device_config.cuda
@@ -128,8 +132,8 @@ class BaseDeploymentConfig:
                 f"Requested CUDA device '{cuda_device}' but only {device_count} CUDA device(s) are available."
             )
 
-    def _needs_cuda_device(self) -> bool:
-        """Determine if current deployment config requires a CUDA device."""
+    def _uses_tensorrt(self) -> bool:
+        """Whether TensorRT is used by any stage (export, evaluation, or verification)."""
         if self.export_config.should_export_tensorrt:
             return True
 

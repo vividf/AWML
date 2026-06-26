@@ -1,6 +1,8 @@
 """ONNX model exporter."""
 
 import logging
+import os
+import shutil
 from pathlib import Path
 from typing import Any, Optional
 
@@ -131,14 +133,23 @@ class ONNXExporter(BaseExporter):
         self.logger.info("  Opset version: %s", export_cfg.opset_version)
 
         # Ensure output directory exists
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
 
+        # Export into a private staging directory, then publish the result into place.
+        # torch.onnx.export may emit external-data sidecar files next to the .onnx (for models
+        # whose weights exceed the 2GB protobuf limit). Staging the whole set and publishing it
+        # together means a failed/interrupted export never leaves a partial model in the target
+        # directory, and the .onnx never becomes visible before the data files it references.
+        staging = output.parent / f".{output.name}.staging"
+        produced = staging / output.name
+        self._reset_dir(staging)
         try:
             with torch.no_grad():
                 torch.onnx.export(
                     model,
                     sample_input,
-                    output_path,
+                    str(produced),
                     export_params=export_cfg.export_params,
                     keep_initializers_as_inputs=export_cfg.keep_initializers_as_inputs,
                     opset_version=export_cfg.opset_version,
@@ -148,12 +159,15 @@ class ONNXExporter(BaseExporter):
                     dynamic_axes=export_cfg.dynamic_axes,
                     verbose=export_cfg.verbose,
                 )
+            self._publish(staging, produced, output)
 
             self.logger.info("ONNX export completed: %s", output_path)
 
         except Exception as exc:
             self.logger.exception("ONNX export failed: %s", output_path)
             raise RuntimeError(f"ONNX export failed: {output_path}") from exc
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
     def _simplify_model(self, onnx_path: str) -> None:
         """
@@ -163,12 +177,47 @@ class ONNXExporter(BaseExporter):
             onnx_path: Path to ONNX model file
         """
         self.logger.info("Simplifying ONNX model...")
+        target = Path(onnx_path)
+        # Save into a staging dir and publish, for the same external-data and atomicity reasons
+        # as the export above: never overwrite the valid exported model in place.
+        staging = target.parent / f".{target.name}.simplify.staging"
+        produced = staging / target.name
         try:
             model_simplified, success = onnxsim.simplify(onnx_path)
-            if success:
-                onnx.save(model_simplified, onnx_path)
-                self.logger.info("ONNX model simplified successfully")
-            else:
-                self.logger.warning("ONNX model simplification failed")
+            if not success:
+                self.logger.error("ONNX model simplification failed; keeping unsimplified model")
+                return
+            self._reset_dir(staging)
+            onnx.save(model_simplified, str(produced))
+            self._publish(staging, produced, target)
+            self.logger.info("ONNX model simplified successfully")
         except Exception as e:
-            self.logger.warning("ONNX simplification error: %s", e)
+            self.logger.error("ONNX simplification error: %s", e)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+    @staticmethod
+    def _reset_dir(path: Path) -> None:
+        """Create an empty staging directory, removing any leftovers from a prior run."""
+        shutil.rmtree(path, ignore_errors=True)
+        path.mkdir(parents=True)
+
+    @staticmethod
+    def _publish(staging: Path, produced: Path, target: Path) -> None:
+        """Move a freshly produced ONNX (and any external-data sidecars) into place.
+
+        Sidecar files are moved first and the main ``.onnx`` (``produced``) last, so a reader
+        that observes the model file always sees the data files it references. ``os.replace``
+        is atomic within the destination directory.
+
+        Args:
+            staging: Directory holding the freshly produced files.
+            produced: The main ``.onnx`` file inside ``staging``.
+            target: Final path for the main ``.onnx`` file.
+        """
+        dest_dir = target.parent
+        for item in sorted(staging.iterdir()):
+            if item == produced:
+                continue
+            os.replace(item, dest_dir / item.name)
+        os.replace(produced, target)

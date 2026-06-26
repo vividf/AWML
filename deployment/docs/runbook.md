@@ -38,7 +38,7 @@ More concretely:
 1. `deployment.cli.main` resolves the project adapter and parses shared plus project-specific flags.
 2. The project `entrypoint.py` loads configs, builds the data loader, evaluator, and project runner.
 3. `BaseDeploymentRunner` executes export, verification, and evaluation in sequence.
-4. Evaluators build backend-specific inference pipelines through `PipelineFactory`.
+4. Evaluators build backend-specific inference pipelines through `BasePipelineFactory`.
 
 ## Export modes
 
