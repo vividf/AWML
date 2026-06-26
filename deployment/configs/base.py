@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import MappingProxyType
-from typing import Mapping, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 from mmengine.config import Config
@@ -53,16 +53,13 @@ class BaseDeploymentConfig:
             deploy_cfg: MMEngine Config object containing deployment settings
         """
         self._deploy_cfg = deploy_cfg
-        self._ensure_required_sections()
 
         checkpoint_path = deploy_cfg.get("checkpoint_path")
         self.checkpoint_path = self._validate_checkpoint_path(checkpoint_path)
         self.device_config = DeviceConfig.from_dict(deploy_cfg.get("devices", {}))
-        self.components_cfg = ComponentsConfig.from_dict(deploy_cfg.get("components", {}))
+        self.components_cfg = ComponentsConfig.from_dict(deploy_cfg.get("components"))
         self._onnx_config = OnnxConfig.from_dict(deploy_cfg.get("onnx_config"))
-
-        # Schema/type validation in each from_dict and __post_init__
-        self.export_config = ExportConfig.from_dict(deploy_cfg.get("export", {}))
+        self.export_config = ExportConfig.from_dict(deploy_cfg.get("export"))
         self._tensorrt_config = TensorRTConfig.from_dict(deploy_cfg.get("tensorrt_config", {}))
         self.evaluation_config = EvaluationConfig.from_dict(deploy_cfg.get("evaluation", {}))
         self.verification_config = VerificationConfig.from_dict(deploy_cfg.get("verification", {}))
@@ -71,23 +68,9 @@ class BaseDeploymentConfig:
         # Runtime/environment validation (torch/cuda)
         self._validate_cuda_device()
 
-    def _ensure_required_sections(self) -> None:
-        """Ensure required deploy config sections exist. Schema/type validation is done by typed configs in from_dict/__post_init__."""
-        if "export" not in self._deploy_cfg:
-            raise ValueError("Missing 'export' section in deploy config.")
-        export_raw = self._deploy_cfg.get("export")
-        if export_raw is not None and not isinstance(export_raw, Mapping):
-            raise TypeError("deploy config 'export' must be a dict.")
-
-        if "components" not in self._deploy_cfg:
-            raise ValueError("Missing 'components' section in deploy config.")
-        components_raw = self._deploy_cfg.get("components")
-        if components_raw is not None and not isinstance(components_raw, Mapping):
-            raise TypeError("deploy config 'components' must be a dict.")
-
     @staticmethod
     def _parse_deploy_log_path(raw: Optional[str]) -> Optional[str]:
-        """Normalize deploy_log_path; None or blank disables file logging."""
+        """Parse deploy_log_path; None or blank disables file logging."""
         return raw.strip() or None if raw is not None else None
 
     @staticmethod

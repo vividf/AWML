@@ -79,6 +79,7 @@ class CenterPointInferencePipeline(BaseInferencePipeline):
         self.point_cloud_range: List[float] = point_cloud_range
         self.voxel_size: List[float] = voxel_size
         self.pytorch_model: torch.nn.Module = pytorch_model
+        self._rot_y_axis_reference: bool = pytorch_model.pts_bbox_head.rot_y_axis_reference
 
     def to_device_tensor(self, data: Union[torch.Tensor, np.ndarray]) -> torch.Tensor:
         """Convert data to tensor on the pipeline's device.
@@ -264,13 +265,11 @@ class CenterPointInferencePipeline(BaseInferencePipeline):
 
         heatmap, reg, height, dim, rot, vel = head_outputs
 
-        # Apply rotation axis correction if configured
-        if hasattr(self.pytorch_model, "pts_bbox_head"):
-            rot_y_axis_reference = getattr(self.pytorch_model.pts_bbox_head, "_rot_y_axis_reference", False)
-            if rot_y_axis_reference:
-                dim = dim[:, [1, 0, 2], :, :]
-                rot = rot * (-1.0)
-                rot = rot[:, [1, 0], :, :]
+        # Apply rotation axis correction to mirror the head's export-time convention.
+        if self._rot_y_axis_reference:
+            dim = dim[:, [1, 0, 2], :, :]
+            rot = rot * (-1.0)
+            rot = rot[:, [1, 0], :, :]
 
         preds_dict = {
             "heatmap": heatmap,

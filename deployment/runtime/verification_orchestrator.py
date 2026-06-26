@@ -33,6 +33,7 @@ class VerificationOrchestrator:
         config: BaseDeploymentConfig,
         evaluator: BaseEvaluator,
         data_loader: BaseDataLoader,
+        artifact_manager: ArtifactManager,
         logger: logging.Logger,
     ) -> None:
         """
@@ -42,19 +43,19 @@ class VerificationOrchestrator:
             config: Deployment configuration
             evaluator: Evaluator instance for running verification
             data_loader: Data loader for loading samples
+            artifact_manager: Artifact manager for resolving model paths
             logger: Logger instance
         """
         self.config = config
         self.evaluator = evaluator
         self.data_loader = data_loader
+        self.artifact_manager = artifact_manager
         self.logger = logger
 
-    def run(self, artifact_manager: ArtifactManager) -> Dict[str, Any]:
+    def run(self) -> Dict[str, Any]:
         """
         Run verification on exported models using policy-based verification.
 
-        Args:
-            artifact_manager: Artifact manager for resolving model paths
         Returns:
             Verification results dictionary
         """
@@ -74,7 +75,7 @@ class VerificationOrchestrator:
             )
             return {}
 
-        _, pytorch_valid = artifact_manager.resolve_artifact(Backend.PYTORCH)
+        _, pytorch_valid = self.artifact_manager.resolve_artifact(Backend.PYTORCH)
         if not pytorch_valid:
             self.logger.warning(
                 "PyTorch checkpoint not registered or missing; verification needs it for preprocessing/decode. "
@@ -106,8 +107,8 @@ class VerificationOrchestrator:
                 test_device,
             )
 
-            ref_artifact, ref_valid = artifact_manager.resolve_artifact(policy.ref_backend)
-            test_artifact, test_valid = artifact_manager.resolve_artifact(policy.test_backend)
+            ref_artifact, ref_valid = self.artifact_manager.resolve_artifact(policy.ref_backend)
+            test_artifact, test_valid = self.artifact_manager.resolve_artifact(policy.test_backend)
 
             if not ref_valid or not test_valid:
                 ref_path = ref_artifact.path if ref_artifact else None

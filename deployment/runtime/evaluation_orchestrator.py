@@ -36,6 +36,7 @@ class EvaluationOrchestrator:
         config: BaseDeploymentConfig,
         evaluator: BaseEvaluator,
         data_loader: BaseDataLoader,
+        artifact_manager: ArtifactManager,
         logger: logging.Logger,
     ):
         """
@@ -45,19 +46,19 @@ class EvaluationOrchestrator:
             config: Deployment configuration
             evaluator: Evaluator instance for running evaluation
             data_loader: Data loader for loading samples
+            artifact_manager: Artifact manager for resolving model paths
             logger: Logger instance
         """
         self.config = config
         self.evaluator = evaluator
         self.data_loader = data_loader
+        self.artifact_manager = artifact_manager
         self.logger = logger
 
-    def run(self, artifact_manager: ArtifactManager) -> Dict[str, Any]:
+    def run(self) -> Dict[str, Any]:
         """
         Run the evaluation orchestration.
 
-        Args:
-            artifact_manager: Artifact manager for resolving model paths
         Returns:
             Dictionary of evaluation results
         """
@@ -71,7 +72,7 @@ class EvaluationOrchestrator:
         self.logger.info("Running Evaluation")
         self.logger.info("=" * 80)
 
-        models_to_evaluate = self._get_models_to_evaluate(artifact_manager)
+        models_to_evaluate = self._get_models_to_evaluate()
         if not models_to_evaluate:
             self.logger.warning("No models found for evaluation")
             return {}
@@ -111,12 +112,10 @@ class EvaluationOrchestrator:
 
         return all_results
 
-    def _get_models_to_evaluate(self, artifact_manager: ArtifactManager) -> List[ModelSpec]:
+    def _get_models_to_evaluate(self) -> List[ModelSpec]:
         """
         Get the models to evaluate from the configuration.
 
-        Args:
-            artifact_manager: Artifact manager for resolving model paths
         Returns:
             List of model specifications
         """
@@ -130,7 +129,7 @@ class EvaluationOrchestrator:
 
             raw_device = backend_cfg.get("device") or self._get_default_device(backend_enum)
             device = DeviceSpec.from_value(raw_device)
-            artifact, is_valid = artifact_manager.resolve_artifact(backend_enum)
+            artifact, is_valid = self.artifact_manager.resolve_artifact(backend_enum)
 
             if is_valid and artifact:
                 spec = ModelSpec(backend=backend_enum, device=device, artifact=artifact)
@@ -161,16 +160,14 @@ class EvaluationOrchestrator:
         """
         resolved_device = device or self._get_default_device(backend)
 
-        if backend in (Backend.PYTORCH, Backend.ONNX):
-            return resolved_device
-        elif backend is Backend.TENSORRT:
-            if not resolved_device.is_cuda:
-                self.logger.warning(
-                    "TensorRT evaluation requires CUDA device. Overriding device from '%s' to '%s'.",
-                    resolved_device,
-                    self._get_default_device(backend),
-                )
-                resolved_device = self._get_default_device(backend)
+        if backend is Backend.TENSORRT and not resolved_device.is_cuda:
+            default_device = self._get_default_device(backend)
+            self.logger.warning(
+                "TensorRT evaluation requires CUDA device. Overriding device from '%s' to '%s'.",
+                resolved_device,
+                default_device,
+            )
+            resolved_device = default_device
 
         return resolved_device
 

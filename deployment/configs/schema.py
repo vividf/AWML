@@ -32,16 +32,23 @@ def _empty_mapping() -> Mapping[Any, Any]:
 class ExportConfig:
     """Configuration for model export settings."""
 
-    mode: ExportMode = ExportMode.BOTH
+    mode: ExportMode  # required: caller must explicitly pick what to export
     work_dir: str = "work_dirs"
     onnx_path: Optional[str] = None
     sample_idx: int = 0
 
     @classmethod
-    def from_dict(cls, config_dict: Mapping[str, Any]) -> ExportConfig:
-        """Create ExportConfig from dict."""
+    def from_dict(cls, config_dict: Optional[Mapping[str, Any]]) -> ExportConfig:
+        """Build ExportConfig from deploy_cfg['export']. Required: a dict with a valid `mode`."""
+        if config_dict is None:
+            raise ValueError("Missing 'export' section in deploy config.")
+        if not isinstance(config_dict, Mapping):
+            raise TypeError(f"export must be a dict, got {type(config_dict).__name__}")
+        if "mode" not in config_dict:
+            valid = [m.value for m in ExportMode]
+            raise ValueError(f"export.mode is required; must be one of {valid}.")
         return cls(
-            mode=ExportMode.from_value(config_dict.get("mode", ExportMode.BOTH)),
+            mode=ExportMode.from_value(config_dict["mode"]),
             work_dir=config_dict.get("work_dir", cls.work_dir),
             onnx_path=config_dict.get("onnx_path"),
             sample_idx=config_dict.get("sample_idx", cls.sample_idx),
@@ -252,10 +259,14 @@ class ComponentsConfig:
         return result
 
     @classmethod
-    def from_dict(cls, raw: Mapping[str, Any]) -> ComponentsConfig:
-        """Build ComponentsConfig from deploy_cfg['components'] dict. Generic: any keys allowed."""
+    def from_dict(cls, raw: Optional[Mapping[str, Any]]) -> ComponentsConfig:
+        """Build ComponentsConfig from deploy_cfg['components']. Required: a non-empty dict."""
+        if raw is None:
+            raise ValueError("Missing 'components' section in deploy config.")
         if not isinstance(raw, Mapping):
             raise TypeError(f"components must be a dict, got {type(raw).__name__}")
+        if not raw:
+            raise ValueError("deploy config 'components' must define at least one component.")
         parsed = {}
         for component_name, comp_raw in raw.items():
             parsed[component_name] = cls._parse_component(comp_raw, component_name)

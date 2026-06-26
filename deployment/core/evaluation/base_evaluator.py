@@ -5,7 +5,7 @@ All project evaluators should extend `BaseEvaluator` and implement the
 required hooks for their specific task. The base class provides:
 
 - A unified evaluation loop (iterate samples -> infer -> accumulate -> metrics)
-- A `verify()` entry point that delegates to `VerificationRunner`
+- A `verify()` entry point that delegates to `BackendVerifier`
 - Common utilities (latency stats, model device management)
 
 Module constants:
@@ -27,17 +27,16 @@ import torch
 from mmengine.config import Config
 
 from deployment.core.backend import Backend
-from deployment.core.device import DeviceSpec
+from deployment.core.evaluation.backend_executor import BackendExecutor
+from deployment.core.evaluation.backend_verifier import BackendVerifier
 from deployment.core.evaluation.evaluator_types import (
     EvalResultDict,
-    InferenceInput,
     LatencyBreakdown,
     LatencyStats,
     ModelSpec,
     VerifyResultDict,
 )
 from deployment.core.evaluation.output_comparator import OutputComparator
-from deployment.core.evaluation.verification_runner import VerificationRunner
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.core.metrics.base_metrics_interface import BaseMetricsInterface
 from deployment.pipelines.base_pipeline import BaseInferencePipeline
@@ -53,10 +52,9 @@ class BaseEvaluator(ABC):
     """
     Base class for all task-specific evaluators.
 
-    Subclasses implement task-specific hooks:
+    Backend execution (pipeline creation, input preparation, device handling) is
+    delegated to a `BackendExecutor`. Subclasses implement task-specific metrics hooks:
 
-    - _create_pipeline: Create backend-specific pipeline
-    - _prepare_input: Prepare model input from sample
     - _parse_predictions: Convert pipeline output to the format the metrics interface expects
     - _parse_ground_truths: Extract ground truth from sample
     - _add_to_interface: Feed a single frame to the metrics interface
@@ -73,86 +71,21 @@ class BaseEvaluator(ABC):
         self,
         metrics_interface: BaseMetricsInterface,
         model_cfg: Config,
+        executor: BackendExecutor,
     ) -> None:
-        """Wire task metrics and model configuration into the evaluator.
+        """Wire task metrics, model configuration, and backend executor into the evaluator.
 
         Args:
             metrics_interface: Task-specific metrics accumulator (reset per ``evaluate()`` run).
             model_cfg: MMEngine config for the model (class names, heads, etc.).
+            executor: Backend execution primitives (pipeline / input / device handling),
+                shared with `BackendVerifier`.
         """
         self.metrics_interface = metrics_interface
         self.model_cfg = model_cfg
-        self.pytorch_model: Any = None
-        self.export_model_cfg: Optional[Config] = None
-
-    def set_pytorch_model(self, pytorch_model: Any) -> None:
-        """Attach the loaded PyTorch module used when building ONNX/TRT or for reference runs."""
-        self.pytorch_model = pytorch_model
-
-    def set_export_model_cfg(self, export_model_cfg: Config) -> None:
-        """Attach the MMEngine config that matches the loaded export model (``model.cfg`` after load)."""
-        self.export_model_cfg = export_model_cfg
-
-    def _ensure_model_on_device(self, device: DeviceSpec) -> Any:
-        """Ensure ``pytorch_model`` lives on ``device`` (used before infer / pipeline creation)."""
-        if self.pytorch_model is None:
-            raise RuntimeError(
-                f"{self.__class__.__name__}.pytorch_model is None. "
-                "DeploymentRunner must set evaluator.pytorch_model before calling verify/evaluate."
-            )
-
-        current_device = next(self.pytorch_model.parameters()).device
-        target_device = device.to_torch_device()
-
-        if current_device != target_device:
-            logger.info("Moving PyTorch model from %s to %s", current_device, target_device)
-            self.pytorch_model = self.pytorch_model.to(target_device)
-
-        return self.pytorch_model
-
-    def _validate_verification_device(self, backend: Backend, device: DeviceSpec) -> DeviceSpec:
-        """Validate backend runtime constraints on a concrete DeviceSpec."""
-        if backend is Backend.TENSORRT and not device.is_cuda:
-            raise ValueError(f"TensorRT verification requires CUDA, got '{device}'.")
-        return device
+        self._executor = executor
 
     # ================== Abstract Methods (Task-Specific) ==================
-
-    @abstractmethod
-    def _create_pipeline(self, model_spec: ModelSpec, device: DeviceSpec) -> BaseInferencePipeline:
-        """Create an inference pipeline for ``model_spec.backend`` on ``device``.
-
-        Args:
-            model_spec: Backend, device, and artifact path for the deployment model.
-            device: Concrete device for this run.
-
-        Returns:
-            A ``BaseInferencePipeline`` subclass exposing ``infer()`` and ``cleanup()``.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def _prepare_input(
-        self,
-        sample: Mapping[str, Any],
-        data_loader: BaseDataLoader,
-        device: DeviceSpec,
-    ) -> InferenceInput:
-        """Prepare model input from a sample on the given device.
-
-        Verification calls this once per side (reference and test) with each
-        backend's own device, so implementations should create tensors directly
-        on ``device`` rather than relying on downstream moves.
-
-        Args:
-            sample: Sample data from the data loader.
-            data_loader: Data loader to load the sample from.
-            device: Device to prepare the input on.
-
-        Returns:
-            InferenceInput containing the actual input data and metadata.
-        """
-        raise NotImplementedError
 
     @abstractmethod
     def _parse_predictions(self, pipeline_output: Any) -> Any:
@@ -228,8 +161,8 @@ class BaseEvaluator(ABC):
         logger.info("\nEvaluating %s model: %s", model.backend.value, model.artifact.path)
         logger.info("Number of samples: %s", num_samples)
 
-        self._ensure_model_on_device(model.device)
-        pipeline = self._create_pipeline(model, model.device)
+        self._executor.ensure_model_on_device(model.device)
+        pipeline = self._executor.create_pipeline(model, model.device)
         self.metrics_interface.reset()
 
         latencies: List[float] = []
@@ -245,7 +178,7 @@ class BaseEvaluator(ABC):
                     logger.info("Processing sample %s/%s", idx + 1, actual_samples)
 
                 sample = data_loader.load_sample(idx)
-                inference_input = self._prepare_input(sample, data_loader, model.device)
+                inference_input = self._executor.prepare_input(sample, data_loader, model.device)
 
                 if "ground_truth" not in sample:
                     raise KeyError("DataLoader.load_sample() must return 'ground_truth' for evaluation.")
@@ -293,7 +226,7 @@ class BaseEvaluator(ABC):
 
         for idx in range(warmup_count):
             sample = data_loader.load_sample(idx)
-            inference_input = self._prepare_input(sample, data_loader, model.device)
+            inference_input = self._executor.prepare_input(sample, data_loader, model.device)
             pipeline.infer(inference_input.data, metadata=inference_input.metadata)
 
     # ================== Verification ==================
@@ -308,7 +241,7 @@ class BaseEvaluator(ABC):
     ) -> VerifyResultDict:
         """Compare raw outputs of two `ModelSpec` backends.
 
-        Thin wrapper: assembles an `OutputComparator` and a `VerificationRunner`,
+        Thin wrapper: assembles an `OutputComparator` and a `BackendVerifier`,
         then delegates the actual work.
 
         Args:
@@ -322,8 +255,8 @@ class BaseEvaluator(ABC):
             `VerifyResultDict` from the runner.
         """
         comparator = OutputComparator(output_names=self._get_output_names())
-        runner = VerificationRunner(self, comparator)
-        return runner.run(reference, test, data_loader, num_samples, tolerance)
+        verifier = BackendVerifier(self._executor, comparator)
+        return verifier.run(reference, test, data_loader, num_samples, tolerance)
 
     # ================== Utilities ==================
 

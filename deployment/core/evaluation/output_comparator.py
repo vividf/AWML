@@ -14,7 +14,7 @@ Naming:
       shape, and that tensor's max/mean diff (for per-head logging).
 
 Design notes:
-    - No logging here; callers (e.g. ``VerificationRunner``) render logs.
+    - No logging here; callers (e.g. ``BackendVerifier``) render logs.
     - :meth:`OutputComparator.compare` returns ``(OutputDiffSummary, list of
       TensorDiffDetail)`` in a single traversal.
 """

@@ -74,6 +74,11 @@ class CenterHeadONNX(CenterHead):
             self._rot_y_axis_reference,
         )
 
+    @property
+    def rot_y_axis_reference(self) -> bool:
+        """Whether this head outputs rotation relative to the y-axis."""
+        return self._rot_y_axis_reference
+
     def _export_forward_rot_y_axis_reference(self, head_tensors: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor]:
         """
         TODO(KokSeang): This is a dirty and quick fix, we need to add the same operation to all

@@ -11,6 +11,7 @@ This keeps `deployment/cli/main.py` project-agnostic.
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from typing import Callable, Dict, Tuple
 
@@ -20,8 +21,8 @@ class ProjectAdapter:
     """Minimal adapter interface for a deployment project."""
 
     name: str
-    add_args: Callable  # (argparse.ArgumentParser) -> None
-    run: Callable  # (argparse.Namespace) -> int
+    add_args: Callable[[argparse.ArgumentParser], None]
+    run: Callable[[argparse.Namespace], int]
     required_components: Tuple[str, ...] = ()
 
 

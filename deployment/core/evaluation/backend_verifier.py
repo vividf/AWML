@@ -1,18 +1,10 @@
 """
-Verification orchestration.
+Backend verification.
 
-This module contains `VerificationRunner`, which coordinates the
-per-sample verification loop for a reference/test `ModelSpec` pair.
-
-
-- `VerificationHooks` is the narrow structural contract the runner
-  depends on: pipeline creation, input preparation, and device handling.
-  `~deployment.core.evaluation.base_evaluator.BaseEvaluator` satisfies
-  this protocol implicitly, but the runner does not depend on it directly.
-- `~deployment.core.evaluation.output_comparator.OutputComparator`
-  performs pure structural comparison of raw outputs.
-- `VerificationRunner` wires both together, handles pipeline lifecycle,
-  and owns all verification logging.
+This module contains `BackendVerifier`, which drives the per-sample
+verification loop for a reference/test `ModelSpec` pair: it runs both
+backends, compares their outputs via `OutputComparator`, and owns all
+verification logging.
 """
 
 from __future__ import annotations
@@ -20,14 +12,14 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from typing import Any, List, Mapping, Optional, Protocol
+from typing import List, Optional
 
 import torch
 
 from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
+from deployment.core.evaluation.backend_executor import BackendExecutor
 from deployment.core.evaluation.evaluator_types import (
-    InferenceInput,
     ModelSpec,
     VerifyResultDict,
 )
@@ -45,37 +37,6 @@ logger = logging.getLogger(__name__)
 def _fmt_finite_diff(value: float) -> str:
     """Format a diff for logs; ``inf`` is spelled ``inf`` (not ``inf`` via ``%f`` quirks)."""
     return "inf" if math.isinf(value) else f"{value:.6f}"
-
-
-class VerificationHooks(Protocol):
-    """Minimal structural contract required by `VerificationRunner`.
-
-    Any object exposing these four hooks can drive a verification run.
-    `~deployment.core.evaluation.base_evaluator.BaseEvaluator` satisfies
-    this protocol implicitly; the runner avoids depending on the full evaluator
-    surface to keep responsibilities cleanly separated.
-    """
-
-    def _validate_verification_device(self, backend: Backend, device: DeviceSpec) -> DeviceSpec:
-        """Validate backend runtime constraints and return the resolved device."""
-        ...
-
-    def _ensure_model_on_device(self, device: DeviceSpec) -> Any:
-        """Ensure the reference PyTorch model lives on ``device`` before use."""
-        ...
-
-    def _create_pipeline(self, model_spec: ModelSpec, device: DeviceSpec) -> BaseInferencePipeline:
-        """Create an inference pipeline for ``model_spec.backend`` on ``device``."""
-        ...
-
-    def _prepare_input(
-        self,
-        sample: Mapping[str, Any],
-        data_loader: BaseDataLoader,
-        device: DeviceSpec,
-    ) -> InferenceInput:
-        """Build an `InferenceInput` for ``sample`` on ``device``."""
-        ...
 
 
 @dataclass(frozen=True)
@@ -97,18 +58,17 @@ class SampleVerificationResult:
     reason: Optional[str] = None
 
 
-class VerificationRunner:
+class BackendVerifier:
     """Drive a reference vs test verification run over ``N`` samples.
 
     Args:
-        hooks: Object implementing `VerificationHooks` (pipeline / input /
-            device hooks). Typically a `BaseEvaluator`, but the runner
-            only depends on the narrower protocol.
+        executor: `BackendExecutor` providing pipeline creation, input
+            preparation, and device handling for each side.
         comparator: Pure comparator used on each sample's raw outputs.
     """
 
-    def __init__(self, hooks: VerificationHooks, comparator: OutputComparator) -> None:
-        self._hooks = hooks
+    def __init__(self, executor: BackendExecutor, comparator: OutputComparator) -> None:
+        self._executor = executor
         self._comparator = comparator
 
     def run(
@@ -138,8 +98,8 @@ class VerificationRunner:
         }
 
         try:
-            ref_device = self._hooks._validate_verification_device(reference.backend, reference.device)
-            test_device = self._hooks._validate_verification_device(test.backend, test.device)
+            ref_device = self._executor.validate_device(reference.backend, reference.device)
+            test_device = self._executor.validate_device(test.backend, test.device)
         except ValueError as exc:
             results["error"] = str(exc)
             return results
@@ -152,12 +112,12 @@ class VerificationRunner:
         test_pipeline = None
         try:
             logger.info("\nInitializing %s reference pipeline...", reference.backend.value)
-            self._hooks._ensure_model_on_device(ref_device)
-            ref_pipeline = self._hooks._create_pipeline(reference, ref_device)
+            self._executor.ensure_model_on_device(ref_device)
+            ref_pipeline = self._executor.create_pipeline(reference, ref_device)
 
             logger.info("\nInitializing %s test pipeline...", test.backend.value)
-            self._hooks._ensure_model_on_device(test_device)
-            test_pipeline = self._hooks._create_pipeline(test, test_device)
+            self._executor.ensure_model_on_device(test_device)
+            test_pipeline = self._executor.create_pipeline(test, test_device)
 
             for i in range(actual_samples):
                 sr = self._run_single_sample(
@@ -211,11 +171,11 @@ class VerificationRunner:
     ) -> SampleVerificationResult:
         """Run both pipelines on one sample and compare their raw outputs.
 
-        Each side calls ``_prepare_input`` with its own device so that tensors
+        Each side calls ``prepare_input`` with its own device so that tensors
         are created directly on the right device (no post-hoc ``.to(device)``
         shuffling).
         """
-        hooks = self._hooks
+        executor = self._executor
 
         logger.info("\n%s", "=" * 60)
         logger.info("Verifying sample %s", sample_idx)
@@ -223,8 +183,8 @@ class VerificationRunner:
 
         sample = data_loader.load_sample(sample_idx)
 
-        hooks._ensure_model_on_device(ref_device)
-        ref_input = hooks._prepare_input(sample, data_loader, ref_device)
+        executor.ensure_model_on_device(ref_device)
+        ref_input = executor.prepare_input(sample, data_loader, ref_device)
         ref_label = f"{ref_backend.value} ({ref_device})"
         logger.info("Running %s reference...", ref_label)
         ref_result = ref_pipeline.infer(
@@ -234,8 +194,8 @@ class VerificationRunner:
         )
         logger.info("  %s latency: %.2f ms", ref_label, ref_result.latency_ms)
 
-        hooks._ensure_model_on_device(test_device)
-        test_input = hooks._prepare_input(sample, data_loader, test_device)
+        executor.ensure_model_on_device(test_device)
+        test_input = executor.prepare_input(sample, data_loader, test_device)
         test_label = f"{test_backend.value} ({test_device})"
         logger.info("Running %s test...", test_label)
         test_result = test_pipeline.infer(

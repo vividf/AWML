@@ -65,12 +65,6 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
         self._contexts: Dict[str, trt.IExecutionContext] = {}
         self._logger = trt.Logger(trt.Logger.WARNING)
 
-        # Create CUDA events for GPU timing measurements
-        self._backbone_start_event = cuda.Event()
-        self._backbone_end_event = cuda.Event()
-        self._voxel_encoder_start_event = cuda.Event()
-        self._voxel_encoder_end_event = cuda.Event()
-
         # Per-stage pure-GPU times (ms), filled by each stage while its CUDA stream is
         # still alive and read back in run_model.
         self._gpu_stage_ms: Dict[str, float] = {}
@@ -195,9 +189,11 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
             cuda.memcpy_htod_async(d_input, input_array, stream)
 
             # Record start event and execute inference
-            self._voxel_encoder_start_event.record(stream)
+            start_event = cuda.Event()
+            end_event = cuda.Event()
+            start_event.record(stream)
             context.execute_async_v3(stream_handle=stream.handle)
-            self._voxel_encoder_end_event.record(stream)
+            end_event.record(stream)
 
             # Memory transfer: GPU -> CPU
             cuda.memcpy_dtoh_async(output_array, d_output, stream)
@@ -205,9 +201,7 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
 
             # Read GPU timing while the stream is still alive (events are complete after
             # synchronize); avoids reading across a stream that has been released.
-            self._gpu_stage_ms["voxel_encoder_ms"] = self._voxel_encoder_end_event.time_since(
-                self._voxel_encoder_start_event
-            )
+            self._gpu_stage_ms["voxel_encoder_ms"] = end_event.time_since(start_event)
 
         voxel_features = torch.from_numpy(output_array).to(self.torch_device)
         return self.squeeze_voxel_features(voxel_features)
@@ -263,9 +257,11 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
             cuda.memcpy_htod_async(d_input, input_array, stream)
 
             # Record start event and execute inference
-            self._backbone_start_event.record(stream)
+            start_event = cuda.Event()
+            end_event = cuda.Event()
+            start_event.record(stream)
             context.execute_async_v3(stream_handle=stream.handle)
-            self._backbone_end_event.record(stream)
+            end_event.record(stream)
 
             # Memory transfer: GPU -> CPU
             for output_name in output_names:
@@ -274,7 +270,7 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
             manager.synchronize()
 
             # Read GPU timing while the stream is still alive (see run_voxel_encoder).
-            self._gpu_stage_ms["backbone_head_ms"] = self._backbone_end_event.time_since(self._backbone_start_event)
+            self._gpu_stage_ms["backbone_head_ms"] = end_event.time_since(start_event)
 
         return [torch.from_numpy(output_arrays[name]).to(self.torch_device) for name in output_names]
 
@@ -321,17 +317,8 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
         return head_outputs, stage_latencies
 
     def _release_gpu_resources(self) -> None:
-        """Release TensorRT resources (engines and contexts) and CUDA events."""
-        for attr in (
-            "_backbone_start_event",
-            "_backbone_end_event",
-            "_voxel_encoder_start_event",
-            "_voxel_encoder_end_event",
-        ):
-            if hasattr(self, attr):
-                delattr(self, attr)
-
+        """Release TensorRT resources (engines and contexts)."""
         release_tensorrt_resources(
-            engines=getattr(self, "_engines", None),
-            contexts=getattr(self, "_contexts", None),
+            engines=self._engines,
+            contexts=self._contexts,
         )

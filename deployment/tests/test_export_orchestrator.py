@@ -30,7 +30,6 @@ def _orchestrator(export_config, artifact_manager=None) -> ExportOrchestrator:
         artifact_manager=artifact_manager or Mock(),
         logger=logging.getLogger("test"),
         model_loader=Mock(),
-        evaluator=Mock(),
     )
 
 

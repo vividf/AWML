@@ -66,7 +66,6 @@ class ExportOrchestrator:
         artifact_manager: ArtifactManager,
         logger: logging.Logger,
         model_loader: Callable[..., Any],
-        evaluator: Any,
         onnx_wrapper_cls: Optional[Type[BaseModelWrapper]] = None,
         onnx_pipeline: Optional[OnnxExportPipeline] = None,
         tensorrt_pipeline: Optional[TensorRTExportPipeline] = None,
@@ -80,7 +79,6 @@ class ExportOrchestrator:
             artifact_manager: Artifact manager for resolving model paths
             logger: Logger instance
             model_loader: Model loader for loading PyTorch model
-            evaluator: Evaluator instance for running verification
             onnx_wrapper_cls: ONNX wrapper class for exporting ONNX model
             onnx_pipeline: ONNX export pipeline
             tensorrt_pipeline: TensorRT export pipeline
@@ -90,7 +88,6 @@ class ExportOrchestrator:
         self.artifact_manager = artifact_manager
         self.logger = logger
         self._model_loader = model_loader
-        self._evaluator = evaluator
         self._onnx_wrapper_cls = onnx_wrapper_cls
         self._onnx_pipeline = onnx_pipeline
         self._tensorrt_pipeline = tensorrt_pipeline
@@ -171,11 +168,6 @@ class ExportOrchestrator:
         try:
             pytorch_model = self._model_loader(checkpoint_path, context)
             self.artifact_manager.register_artifact(Backend.PYTORCH, Artifact(path=checkpoint_path))
-
-            if hasattr(self._evaluator, "set_pytorch_model"):
-                self._evaluator.set_pytorch_model(pytorch_model)
-                self.logger.info("Updated evaluator with pre-built PyTorch model via set_pytorch_model()")
-
             return pytorch_model
         except Exception as e:
             raise RuntimeError(f"Failed to load PyTorch model from '{checkpoint_path}': {e}") from e

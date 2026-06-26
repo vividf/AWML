@@ -13,6 +13,7 @@ from mmengine.config import Config
 from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.contexts import CenterPointExportContext, ExportContext
 from deployment.core.device import DeviceSpec
+from deployment.core.evaluation.backend_executor import BackendExecutor
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import IdentityWrapper
@@ -34,7 +35,6 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
 
     Attributes:
         model_cfg: Training MMEngine config (from checkpoint experiment file); not replaced after load.
-        export_model_cfg: Set in ``load_pytorch_model`` to the deployment export MMEngine config.
         evaluator: CenterPoint evaluator instance.
     """
 
@@ -42,6 +42,7 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         self,
         data_loader: BaseDataLoader,
         evaluator: CenterPointEvaluator,
+        executor: BackendExecutor,
         config: BaseDeploymentConfig,
         model_cfg: Config,
         logger: logging.Logger,
@@ -53,23 +54,35 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         Args:
             data_loader: Data loader for loading samples.
             evaluator: Evaluator for computing metrics.
+            executor: Backend execution primitives shared with the evaluator/verification runner.
             config: Deployment configuration.
             model_cfg: MMEngine model configuration.
             logger: Logger instance.
             onnx_pipeline: Optional custom ONNX export pipeline.
             tensorrt_pipeline: Optional custom TensorRT export pipeline.
         """
-        sample_adapter = CenterPointSampleAdapter(
-            logger=logger,
-        )
-        component_builder = CenterPointComponentBuilder(
-            components_cfg=config.components_cfg,
-            logger=logger,
-        )
+
+        if onnx_pipeline is None:
+            sample_adapter = CenterPointSampleAdapter(logger=logger)
+            component_builder = CenterPointComponentBuilder(components_cfg=config.components_cfg, logger=logger)
+            onnx_pipeline = CenterPointONNXExportPipeline(
+                exporter_factory=ExporterFactory,
+                sample_adapter=sample_adapter,
+                component_builder=component_builder,
+                logger=logger,
+            )
+
+        if tensorrt_pipeline is None:
+            tensorrt_pipeline = CenterPointTensorRTExportPipeline(
+                exporter_factory=ExporterFactory,
+                components_cfg=config.components_cfg,
+                logger=logger,
+            )
 
         super().__init__(
             data_loader=data_loader,
             evaluator=evaluator,
+            executor=executor,
             config=config,
             model_cfg=model_cfg,
             logger=logger,
@@ -78,25 +91,8 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             tensorrt_pipeline=tensorrt_pipeline,
         )
 
-        if self._onnx_pipeline is None:
-            self._onnx_pipeline = CenterPointONNXExportPipeline(
-                exporter_factory=ExporterFactory,
-                sample_adapter=sample_adapter,
-                component_builder=component_builder,
-                logger=self.logger,
-            )
-
-        if self._tensorrt_pipeline is None:
-            self._tensorrt_pipeline = CenterPointTensorRTExportPipeline(
-                exporter_factory=ExporterFactory,
-                components_cfg=config.components_cfg,
-                logger=self.logger,
-            )
-
-        self.export_model_cfg: Optional[Config] = None
-
     def load_pytorch_model(self, checkpoint_path: str, context: ExportContext) -> torch.nn.Module:
-        """Load PyTorch model for export.
+        """Load and return the PyTorch model for export.
 
         Args:
             checkpoint_path: Path to the checkpoint file.
@@ -108,15 +104,12 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         rot_y_axis_reference = self._extract_rot_y_axis_reference(context)
         self.logger.info("Export option rot_y_axis_reference = %s", rot_y_axis_reference)
 
-        model, export_model_cfg = build_centerpoint_onnx_model(
+        model, _ = build_centerpoint_onnx_model(
             base_model_cfg=self.model_cfg,
             checkpoint_path=checkpoint_path,
             device=DeviceSpec.from_value("cpu"),
             rot_y_axis_reference=rot_y_axis_reference,
         )
-
-        self.export_model_cfg = export_model_cfg
-        self._setup_evaluator(model, export_model_cfg)
         return model
 
     def _extract_rot_y_axis_reference(self, context: ExportContext) -> bool:
@@ -131,14 +124,3 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         if not isinstance(context, CenterPointExportContext):
             raise TypeError(f"CenterPoint export requires a CenterPointExportContext, got {type(context).__name__}.")
         return context.rot_y_axis_reference
-
-    def _setup_evaluator(self, model: torch.nn.Module, export_model_cfg: Config) -> None:
-        """Wire evaluator to the loaded model and its export-time MMEngine config.
-
-        Args:
-            model: Loaded PyTorch model.
-            export_model_cfg: Config from ``build_centerpoint_onnx_model``; matches ``model.cfg``.
-        """
-        self.evaluator.set_pytorch_model(model)
-        self.evaluator.set_export_model_cfg(export_model_cfg)
-        self.logger.info("Updated evaluator with export_model_cfg")

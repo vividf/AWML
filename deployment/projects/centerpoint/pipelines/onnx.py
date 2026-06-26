@@ -5,7 +5,7 @@ CenterPoint ONNX Pipeline Implementation.
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
 import onnxruntime as ort
@@ -53,14 +53,17 @@ class CenterPointONNXPipeline(CenterPointInferencePipeline):
 
         self.onnx_dir = onnx_dir
         self._components_cfg = components_cfg
-        self._load_onnx_models()
+        self.voxel_encoder_session, self.backbone_head_session = self._load_onnx_models()
         logger.info("ONNX pipeline initialized with models from: %s", onnx_dir)
 
-    def _load_onnx_models(self) -> None:
+    def _load_onnx_models(self) -> Tuple[ort.InferenceSession, ort.InferenceSession]:
         """Load ONNX models for each component (voxel encoder and backbone+head).
 
         Uses self.onnx_dir, self._components_cfg, and self.device to resolve paths
         and select execution providers.
+
+        Returns:
+            The (voxel_encoder_session, backbone_head_session) ONNXRuntime sessions.
 
         Raises:
             FileNotFoundError: If ONNX model files are not found.
@@ -90,12 +93,14 @@ class CenterPointONNXPipeline(CenterPointInferencePipeline):
         logger.info("Using %s execution provider for ONNX", device_message)
 
         try:
-            self.voxel_encoder_session = ort.InferenceSession(voxel_encoder_path, sess_options=so, providers=providers)
+            voxel_encoder_session = ort.InferenceSession(voxel_encoder_path, sess_options=so, providers=providers)
             logger.info("Loaded voxel encoder: %s", voxel_encoder_path)
-            self.backbone_head_session = ort.InferenceSession(backbone_head_path, sess_options=so, providers=providers)
+            backbone_head_session = ort.InferenceSession(backbone_head_path, sess_options=so, providers=providers)
             logger.info("Loaded backbone+head: %s", backbone_head_path)
         except Exception as e:
             raise RuntimeError(f"Failed to load ONNX model: {e}") from e
+
+        return voxel_encoder_session, backbone_head_session
 
     @override
     def run_voxel_encoder(self, input_features: torch.Tensor) -> torch.Tensor:
