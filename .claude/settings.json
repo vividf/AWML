@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(sed -n '/class PrecisionPolicy/,/^PRECISION_POLICIES = {/p' deployment/configs/enums.py)",
-      "Bash(sed -n '/PRECISION_POLICIES = {/,/^}/p' deployment/configs/enums.py)"
-    ]
-  }
-}
