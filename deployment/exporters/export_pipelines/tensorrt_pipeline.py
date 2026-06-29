@@ -23,7 +23,7 @@ import torch
 from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.artifacts import Artifact, resolve_artifact_path
 from deployment.core.device import DeviceSpec
-from deployment.exporters.common.factory import ExporterFactory
+from deployment.exporters.common.tensorrt_exporter import TensorRTExporter
 
 logger = logging.getLogger(__name__)
 
@@ -35,17 +35,6 @@ class TensorRTExportPipeline:
     component's ``onnx_file`` under ``onnx_path``, and builds the corresponding
     ``engine_file`` under ``output_dir``. Handles the single-component case too.
     """
-
-    def __init__(
-        self,
-        exporter_factory: type[ExporterFactory],
-    ) -> None:
-        """Initialize the pipeline with an exporter factory.
-
-        Args:
-            exporter_factory: Factory used to create TensorRT exporters per component.
-        """
-        self.exporter_factory = exporter_factory
 
     def export(
         self,
@@ -110,10 +99,7 @@ class TensorRTExportPipeline:
                     trt_path.name,
                 )
 
-                exporter = self.exporter_factory.create_tensorrt_exporter(
-                    config=config,
-                    component_name=component_name,
-                )
+                exporter = TensorRTExporter(config=config.get_tensorrt_settings(component_name))
 
                 artifact = exporter.export(
                     onnx_path=onnx_file,

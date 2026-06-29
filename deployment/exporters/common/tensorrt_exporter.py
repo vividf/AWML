@@ -3,19 +3,18 @@
 import logging
 import os
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 import tensorrt as trt
 
 from deployment.configs.enums import PrecisionPolicy
 from deployment.core.artifacts import Artifact
-from deployment.exporters.common.base_exporter import BaseExporter
 from deployment.exporters.common.configs import TensorRTExportConfig
 
 logger = logging.getLogger(__name__)
 
 
-class TensorRTExporter(BaseExporter):
+class TensorRTExporter:
     """
     TensorRT model exporter.
 
@@ -25,16 +24,14 @@ class TensorRTExporter(BaseExporter):
     def __init__(
         self,
         config: TensorRTExportConfig,
-        model_wrapper: Optional[Any] = None,
     ) -> None:
         """
         Initialize TensorRT exporter.
 
         Args:
             config: TensorRT export configuration dataclass instance.
-            model_wrapper: Optional model wrapper class (usually not needed for TensorRT)
         """
-        super().__init__(config, model_wrapper=model_wrapper)
+        self.config = config
 
     def export(
         self,

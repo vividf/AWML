@@ -15,7 +15,6 @@ from deployment.core.contexts import ExportContext
 from deployment.core.device import DeviceSpec
 from deployment.core.evaluation.backend_executor import BackendExecutor
 from deployment.core.io.base_data_loader import BaseDataLoader
-from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.export_pipelines.onnx_pipeline import OnnxExportPipeline
 from deployment.exporters.export_pipelines.tensorrt_pipeline import TensorRTExportPipeline
 from deployment.projects.centerpoint.context import CenterPointExportContext
@@ -68,7 +67,6 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         # the components need no ONNX output reshaping.
         if onnx_pipeline is None:
             onnx_pipeline = OnnxExportPipeline(
-                exporter_factory=ExporterFactory,
                 sample_extractor=CenterPointSampleExtractor(),
                 component_builder=CenterPointComponentBuilder(components_cfg=config.components_cfg),
             )

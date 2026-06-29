@@ -22,7 +22,6 @@ from deployment.core.evaluation.backend_verifier import BackendVerifier
 from deployment.core.evaluation.base_evaluator import BaseEvaluator
 from deployment.core.evaluation.output_comparator import OutputComparator
 from deployment.core.io.base_data_loader import BaseDataLoader
-from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import BaseModelWrapper
 from deployment.exporters.export_pipelines.component_builder import DefaultComponentBuilder
 from deployment.exporters.export_pipelines.onnx_pipeline import OnnxExportPipeline
@@ -75,15 +74,12 @@ class BaseDeploymentRunner:
         # builder requires a single-component config and a wrapper class to build.
         if onnx_pipeline is None and onnx_wrapper_cls is not None:
             onnx_pipeline = OnnxExportPipeline(
-                exporter_factory=ExporterFactory,
                 sample_extractor=DefaultSampleExtractor(),
                 component_builder=DefaultComponentBuilder(config.components_cfg),
                 onnx_wrapper_cls=onnx_wrapper_cls,
             )
         if tensorrt_pipeline is None:
-            tensorrt_pipeline = TensorRTExportPipeline(
-                exporter_factory=ExporterFactory,
-            )
+            tensorrt_pipeline = TensorRTExportPipeline()
 
         self.export_orchestrator = ExportOrchestrator(
             config=config,

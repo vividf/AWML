@@ -79,6 +79,20 @@ class BackendExecutor(ABC):
         """
         return None
 
+    def get_supported_backends(self) -> List[Backend]:
+        """Return the backends this executor can instantiate (override to restrict)."""
+        return [Backend.PYTORCH, Backend.ONNX, Backend.TENSORRT]
+
+    def _validate_backend(self, backend: Backend) -> None:
+        """Raise a ValueError if ``backend`` is not supported by this executor."""
+        supported = self.get_supported_backends()
+        if backend not in supported:
+            supported_names = [b.value for b in supported]
+            raise ValueError(
+                f"Unsupported backend '{backend.value}' for {self.__class__.__name__}. "
+                f"Supported backends: {supported_names}"
+            )
+
     @abstractmethod
     def create_pipeline(self, model_spec: ModelSpec, device: DeviceSpec) -> BaseInferencePipeline:
         """Create an inference pipeline for ``model_spec.backend`` on ``device``.

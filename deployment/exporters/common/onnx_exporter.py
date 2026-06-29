@@ -11,13 +11,12 @@ import onnxsim
 import torch
 
 from deployment.core.artifacts import Artifact
-from deployment.exporters.common.base_exporter import BaseExporter
 from deployment.exporters.common.configs import ONNXExportConfig
 
 logger = logging.getLogger(__name__)
 
 
-class ONNXExporter(BaseExporter):
+class ONNXExporter:
     """
     ONNX model exporter with enhanced features.
 
@@ -39,7 +38,8 @@ class ONNXExporter(BaseExporter):
             config: ONNX export configuration dataclass instance.
             model_wrapper: Optional model wrapper class (e.g., YOLOXOptElanONNXWrapper)
         """
-        super().__init__(config, model_wrapper=model_wrapper)
+        self.config = config
+        self._model_wrapper = model_wrapper
         self._validate_config(config)
 
     def _validate_config(self, config: ONNXExportConfig) -> None:
@@ -105,7 +105,9 @@ class ONNXExporter(BaseExporter):
         Returns:
             Prepared model ready for ONNX export
         """
-        model = self.prepare_model(model)
+        if self._model_wrapper is not None:
+            logger.info("Applying model wrapper for export")
+            model = self._model_wrapper(model)
         model.eval()
         return model
 

@@ -34,7 +34,7 @@ Use [runbook.md](./runbook.md) for the execution flow, [configuration.md](./conf
 
 - Pipelines should only own inference mechanics and tensor shaping.
 - Evaluators own metrics, verification input preparation, and result reporting.
-- Register project pipeline factories through `pipeline_registry` so all backends are created consistently.
+- Create project pipelines in the `BackendExecutor.create_pipeline` hook so all backends are created consistently.
 
 ## Troubleshooting
 

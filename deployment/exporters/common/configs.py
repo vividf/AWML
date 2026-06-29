@@ -39,17 +39,8 @@ class TensorRTModelInputConfig:
     input_shapes: Mapping[str, TensorRTProfileConfig] = field(default_factory=dict)
 
 
-class BaseExporterConfig:
-    """
-    Base class for typed exporter configuration dataclasses.
-
-    Concrete configs should extend this class and provide typed fields
-    for all configuration parameters.
-    """
-
-
 @dataclass(frozen=True)
-class ONNXExportConfig(BaseExporterConfig):
+class ONNXExportConfig:
     """
     Typed schema describing ONNX exporter configuration.
 
@@ -81,7 +72,7 @@ class ONNXExportConfig(BaseExporterConfig):
 
 
 @dataclass(frozen=True)
-class TensorRTExportConfig(BaseExporterConfig):
+class TensorRTExportConfig:
     """
     Typed schema describing TensorRT exporter configuration.
 

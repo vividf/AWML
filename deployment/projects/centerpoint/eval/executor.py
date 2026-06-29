@@ -12,12 +12,15 @@ from typing import List, Mapping, Optional
 from typing_extensions import override
 
 from deployment.configs.schema import ComponentsConfig
+from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
 from deployment.core.evaluation.backend_executor import BackendExecutor
 from deployment.core.evaluation.evaluator_types import InferenceInput, ModelSpec
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.pipelines.base_pipeline import BaseInferencePipeline
-from deployment.pipelines.registry import pipeline_registry
+from deployment.projects.centerpoint.pipelines.onnx import CenterPointONNXPipeline
+from deployment.projects.centerpoint.pipelines.pytorch import CenterPointPyTorchPipeline
+from deployment.projects.centerpoint.pipelines.tensorrt import CenterPointTensorRTPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +52,36 @@ class CenterPointExecutor(BackendExecutor):
 
         Returns:
             CenterPoint pipeline instance (PyTorch, ONNX, or TensorRT).
+
+        Raises:
+            ValueError: If ``model_spec.backend`` is not a supported backend.
         """
-        return pipeline_registry.create_pipeline(
-            project_name="centerpoint",
-            model_spec=model_spec,
-            pytorch_model=self.pytorch_model,
-            device=device,
-            components_cfg=self._components_cfg,
-        )
+        backend = model_spec.backend
+        self._validate_backend(backend)
+
+        if backend is Backend.PYTORCH:
+            logger.info("Creating CenterPoint PyTorch pipeline on %s", device)
+            return CenterPointPyTorchPipeline(self.pytorch_model, device=device)
+
+        if backend is Backend.ONNX:
+            logger.info("Creating CenterPoint ONNX pipeline from %s on %s", model_spec.artifact.path, device)
+            return CenterPointONNXPipeline(
+                self.pytorch_model,
+                onnx_dir=model_spec.artifact.path,
+                device=device,
+                components_cfg=self._components_cfg,
+            )
+
+        if backend is Backend.TENSORRT:
+            logger.info("Creating CenterPoint TensorRT pipeline from %s on %s", model_spec.artifact.path, device)
+            return CenterPointTensorRTPipeline(
+                self.pytorch_model,
+                tensorrt_dir=model_spec.artifact.path,
+                device=device,
+                components_cfg=self._components_cfg,
+            )
+
+        raise ValueError(f"Unsupported backend: {backend.value}")
 
     @override
     def prepare_input(

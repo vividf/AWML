@@ -27,7 +27,6 @@ import torch
 from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.artifacts import Artifact
 from deployment.core.io.base_data_loader import BaseDataLoader
-from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import BaseModelWrapper, IdentityWrapper
 from deployment.exporters.common.onnx_exporter import ONNXExporter
 from deployment.exporters.export_pipelines.component_builder import ExportableComponent, ModelComponentBuilder
@@ -48,7 +47,6 @@ class OnnxExportPipeline:
 
     def __init__(
         self,
-        exporter_factory: type[ExporterFactory],
         sample_extractor: SampleExtractor,
         component_builder: ModelComponentBuilder,
         onnx_wrapper_cls: Type[BaseModelWrapper] = IdentityWrapper,
@@ -56,14 +54,12 @@ class OnnxExportPipeline:
         """Initialize the pipeline.
 
         Args:
-            exporter_factory: Factory used to create ONNX exporters per component.
             sample_extractor: Extractor that produces the typed tracing sample.
             component_builder: Builder that turns the model + sample into
                 exportable components.
             onnx_wrapper_cls: Model wrapper applied before ONNX export (defaults
                 to ``IdentityWrapper`` for models needing no output reshaping).
         """
-        self.exporter_factory = exporter_factory
         self.sample_extractor = sample_extractor
         self.component_builder = component_builder
         self._onnx_wrapper_cls = onnx_wrapper_cls
@@ -167,7 +163,7 @@ class OnnxExportPipeline:
         return exported_paths
 
     def _build_onnx_exporter(self, config: BaseDeploymentConfig, component_name: str) -> ONNXExporter:
-        """Create an ONNX exporter for the given component using the factory.
+        """Create an ONNX exporter for the given component.
 
         Args:
             config: Deployment config used to construct the ONNX exporter.
@@ -176,10 +172,9 @@ class OnnxExportPipeline:
         Returns:
             Configured ONNX exporter for the target component.
         """
-        return self.exporter_factory.create_onnx_exporter(
-            config=config,
-            wrapper_cls=self._onnx_wrapper_cls,
-            component_name=component_name,
+        return ONNXExporter(
+            config=config.get_onnx_settings(component_name),
+            model_wrapper=self._onnx_wrapper_cls,
         )
 
     def _log_summary(self, exported_paths: List[str]) -> None:

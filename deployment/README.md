@@ -44,7 +44,7 @@ deployment/
 ├── configs/       # Typed deploy config schema
 ├── core/          # Shared types, evaluators, verification mixins
 ├── exporters/     # ONNX / TensorRT exporters and export pipeline bases
-├── pipelines/     # Inference pipelines and global factory
+├── pipelines/     # Shared inference pipeline base and GPU resource helpers
 ├── runtime/       # BaseDeploymentRunner, orchestrators, ArtifactManager
 ├── projects/      # Per-task bundles
 └── tests/         # CPU-only unit tests (pytest)

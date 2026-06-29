@@ -2,7 +2,7 @@
 
 Use this page when adding a new project bundle or changing shared deployment infrastructure.
 
-Before changing shared runners, evaluators, `BasePipelineFactory`, metrics interfaces, or orchestrators, read [architecture.md](./architecture.md). It contains the framework structure and extension contract.
+Before changing shared runners, evaluators, `BackendExecutor`, metrics interfaces, or orchestrators, read [architecture.md](./architecture.md). It contains the framework structure and extension contract.
 
 ## Minimal project checklist
 
@@ -11,7 +11,7 @@ Before changing shared runners, evaluators, `BasePipelineFactory`, metrics inter
 3. Add `runner.py` as a thin `BaseDeploymentRunner` subclass.
 4. Add `config/deploy_config.py` with the required deploy config sections described in [configuration.md](./configuration.md).
 5. Add `io/` and `eval/` for project-specific loading and evaluation logic.
-6. Add `pipelines/` with backend-specific inference pipelines and register a project pipeline factory.
+6. Add `pipelines/` with backend-specific inference pipelines, and create them from the project's `BackendExecutor.create_pipeline`.
 7. Add a project `README.md` with the project-specific quick start and links back to shared docs.
 
 Add `export/` only when the project needs multi-stage or multi-file export orchestration.
@@ -33,7 +33,7 @@ Add `export/` only when the project needs multi-stage or multi-file export orche
 ### Inference pipelines
 
 - Add backend-specific pipelines under `deployment/projects/<project>/pipelines/`.
-- Register a project `BasePipelineFactory` subclass with `@pipeline_registry.register`.
+- Construct them in the project's `BackendExecutor.create_pipeline` (one branch per backend); override `get_supported_backends` to restrict which backends the project allows.
 - Use `components_cfg` from `BaseDeploymentConfig` instead of raw config dicts where possible.
 
 ### CLI

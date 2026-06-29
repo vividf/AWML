@@ -9,7 +9,7 @@ data loading are stubbed; these are pure control-flow / path-construction tests.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -35,8 +35,6 @@ def _builder(components: list[ExportableComponent]) -> Mock:
 class TestOnnxExportPipeline:
     def test_exports_one_file_per_component(self, tmp_path):
         exporter = Mock()
-        factory = Mock()
-        factory.create_onnx_exporter.return_value = exporter
 
         voxel_module, head_module = object(), object()
         components = [
@@ -47,7 +45,6 @@ class TestOnnxExportPipeline:
         extractor.extract_sample.return_value = "SAMPLE"
 
         pipeline = OnnxExportPipeline(
-            exporter_factory=factory,
             sample_extractor=extractor,
             component_builder=_builder(components),
             onnx_wrapper_cls=Mock(),
@@ -62,13 +59,17 @@ class TestOnnxExportPipeline:
         model = object()
         data_loader = Mock()
 
-        artifact = pipeline.export(
-            model=model,
-            data_loader=data_loader,
-            output_dir=str(tmp_path),
-            config=config,
-            sample_idx=0,
-        )
+        with patch(
+            "deployment.exporters.export_pipelines.onnx_pipeline.ONNXExporter",
+            return_value=exporter,
+        ):
+            artifact = pipeline.export(
+                model=model,
+                data_loader=data_loader,
+                output_dir=str(tmp_path),
+                config=config,
+                sample_idx=0,
+            )
 
         assert isinstance(artifact, Artifact)
         assert artifact.path == str(tmp_path)
@@ -87,36 +88,36 @@ class TestOnnxExportPipeline:
     def test_component_export_failure_is_wrapped(self, tmp_path):
         exporter = Mock()
         exporter.export.side_effect = RuntimeError("boom")
-        factory = Mock()
-        factory.create_onnx_exporter.return_value = exporter
 
         components = [ExportableComponent(name="model", module=object(), sample_input="IN")]
         extractor = Mock()
         extractor.extract_sample.return_value = "SAMPLE"
 
         pipeline = OnnxExportPipeline(
-            exporter_factory=factory,
             sample_extractor=extractor,
             component_builder=_builder(components),
             onnx_wrapper_cls=Mock(),
         )
         config = _onnx_config({"model": SimpleNamespace(save_file="model.onnx", batch_size=None)})
 
-        with pytest.raises(RuntimeError, match="model ONNX export failed"):
-            pipeline.export(
-                model=object(),
-                data_loader=Mock(),
-                output_dir=str(tmp_path),
-                config=config,
-                sample_idx=0,
-            )
+        with patch(
+            "deployment.exporters.export_pipelines.onnx_pipeline.ONNXExporter",
+            return_value=exporter,
+        ):
+            with pytest.raises(RuntimeError, match="model ONNX export failed"):
+                pipeline.export(
+                    model=object(),
+                    data_loader=Mock(),
+                    output_dir=str(tmp_path),
+                    config=config,
+                    sample_idx=0,
+                )
 
     def test_sample_extraction_failure_is_wrapped(self, tmp_path):
         extractor = Mock()
         extractor.extract_sample.side_effect = ValueError("no sample")
 
         pipeline = OnnxExportPipeline(
-            exporter_factory=Mock(),
             sample_extractor=extractor,
             component_builder=Mock(),
         )
@@ -168,7 +169,7 @@ class TestTensorRTExportPipeline:
     """Guard the input validation that happens before any CUDA/TensorRT work."""
 
     def test_rejects_non_directory_onnx_path(self, tmp_path):
-        pipeline = TensorRTExportPipeline(exporter_factory=Mock())
+        pipeline = TensorRTExportPipeline()
         onnx_file = tmp_path / "model.onnx"
         onnx_file.write_bytes(b"x")
 
@@ -181,7 +182,7 @@ class TestTensorRTExportPipeline:
             )
 
     def test_rejects_empty_components(self, tmp_path):
-        pipeline = TensorRTExportPipeline(exporter_factory=Mock())
+        pipeline = TensorRTExportPipeline()
         onnx_dir = tmp_path / "onnx"
         onnx_dir.mkdir()
 
