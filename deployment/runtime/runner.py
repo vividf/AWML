@@ -26,7 +26,7 @@ from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import BaseModelWrapper
 from deployment.exporters.export_pipelines.component_builder import DefaultComponentBuilder
 from deployment.exporters.export_pipelines.onnx_pipeline import OnnxExportPipeline
-from deployment.exporters.export_pipelines.sample_adapter import DefaultSampleAdapter
+from deployment.exporters.export_pipelines.sample_extractor import DefaultSampleExtractor
 from deployment.exporters.export_pipelines.tensorrt_pipeline import TensorRTExportPipeline
 from deployment.runtime.artifact_manager import ArtifactManager
 from deployment.runtime.evaluation_orchestrator import EvaluationOrchestrator
@@ -76,7 +76,7 @@ class BaseDeploymentRunner:
         if onnx_pipeline is None and onnx_wrapper_cls is not None:
             onnx_pipeline = OnnxExportPipeline(
                 exporter_factory=ExporterFactory,
-                sample_adapter=DefaultSampleAdapter(),
+                sample_extractor=DefaultSampleExtractor(),
                 component_builder=DefaultComponentBuilder(config.components_cfg),
                 onnx_wrapper_cls=onnx_wrapper_cls,
             )

@@ -11,16 +11,17 @@ import torch
 from mmengine.config import Config
 
 from deployment.configs.base import BaseDeploymentConfig
-from deployment.core.contexts import CenterPointExportContext, ExportContext
+from deployment.core.contexts import ExportContext
 from deployment.core.device import DeviceSpec
 from deployment.core.evaluation.backend_executor import BackendExecutor
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.export_pipelines.onnx_pipeline import OnnxExportPipeline
 from deployment.exporters.export_pipelines.tensorrt_pipeline import TensorRTExportPipeline
+from deployment.projects.centerpoint.context import CenterPointExportContext
 from deployment.projects.centerpoint.eval.evaluator import CenterPointEvaluator
 from deployment.projects.centerpoint.export.component_builder import CenterPointComponentBuilder
-from deployment.projects.centerpoint.export.sample_adapter import CenterPointSampleAdapter
+from deployment.projects.centerpoint.export.sample_extractor import CenterPointSampleExtractor
 from deployment.projects.centerpoint.io.model_loader import build_centerpoint_onnx_model
 from deployment.runtime.runner import BaseDeploymentRunner
 
@@ -62,13 +63,13 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
 
         # CenterPoint must be split into two ONNX components (voxel encoder and
         # backbone/neck/head), so it drives the shared OnnxExportPipeline with a
-        # project-specific sample adapter + component builder instead of the
+        # project-specific sample extractor + component builder instead of the
         # whole-model default. IdentityWrapper (the pipeline default) is used as
         # the components need no ONNX output reshaping.
         if onnx_pipeline is None:
             onnx_pipeline = OnnxExportPipeline(
                 exporter_factory=ExporterFactory,
-                sample_adapter=CenterPointSampleAdapter(),
+                sample_extractor=CenterPointSampleExtractor(),
                 component_builder=CenterPointComponentBuilder(components_cfg=config.components_cfg),
             )
         super().__init__(

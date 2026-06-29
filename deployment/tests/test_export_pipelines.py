@@ -1,7 +1,7 @@
 """Unit tests for the unified export pipelines.
 
 Covers the per-component export control flow of ``OnnxExportPipeline``, the
-whole-model default seam (``DefaultSampleAdapter`` / ``DefaultComponentBuilder``),
+whole-model default seam (``DefaultSampleExtractor`` / ``DefaultComponentBuilder``),
 and the input validation of ``TensorRTExportPipeline``. The actual exporters and
 data loading are stubbed; these are pure control-flow / path-construction tests.
 """
@@ -16,7 +16,7 @@ import pytest
 from deployment.core.artifacts import Artifact
 from deployment.exporters.export_pipelines.component_builder import DefaultComponentBuilder, ExportableComponent
 from deployment.exporters.export_pipelines.onnx_pipeline import OnnxExportPipeline
-from deployment.exporters.export_pipelines.sample_adapter import DefaultSampleAdapter
+from deployment.exporters.export_pipelines.sample_extractor import DefaultSampleExtractor
 from deployment.exporters.export_pipelines.tensorrt_pipeline import TensorRTExportPipeline
 
 
@@ -43,12 +43,12 @@ class TestOnnxExportPipeline:
             ExportableComponent(name="voxel", module=voxel_module, sample_input="VOXEL_IN"),
             ExportableComponent(name="head", module=head_module, sample_input="HEAD_IN"),
         ]
-        adapter = Mock()
-        adapter.extract_sample.return_value = "SAMPLE"
+        extractor = Mock()
+        extractor.extract_sample.return_value = "SAMPLE"
 
         pipeline = OnnxExportPipeline(
             exporter_factory=factory,
-            sample_adapter=adapter,
+            sample_extractor=extractor,
             component_builder=_builder(components),
             onnx_wrapper_cls=Mock(),
         )
@@ -74,7 +74,7 @@ class TestOnnxExportPipeline:
         assert artifact.path == str(tmp_path)
 
         # Builder drove the decomposition off the extracted sample.
-        adapter.extract_sample.assert_called_once_with(model, data_loader, 0)
+        extractor.extract_sample.assert_called_once_with(model, data_loader, 0)
         pipeline.component_builder.build_components.assert_called_once_with(model, "SAMPLE")
 
         assert exporter.export.call_count == 2
@@ -91,12 +91,12 @@ class TestOnnxExportPipeline:
         factory.create_onnx_exporter.return_value = exporter
 
         components = [ExportableComponent(name="model", module=object(), sample_input="IN")]
-        adapter = Mock()
-        adapter.extract_sample.return_value = "SAMPLE"
+        extractor = Mock()
+        extractor.extract_sample.return_value = "SAMPLE"
 
         pipeline = OnnxExportPipeline(
             exporter_factory=factory,
-            sample_adapter=adapter,
+            sample_extractor=extractor,
             component_builder=_builder(components),
             onnx_wrapper_cls=Mock(),
         )
@@ -112,12 +112,12 @@ class TestOnnxExportPipeline:
             )
 
     def test_sample_extraction_failure_is_wrapped(self, tmp_path):
-        adapter = Mock()
-        adapter.extract_sample.side_effect = ValueError("no sample")
+        extractor = Mock()
+        extractor.extract_sample.side_effect = ValueError("no sample")
 
         pipeline = OnnxExportPipeline(
             exporter_factory=Mock(),
-            sample_adapter=adapter,
+            sample_extractor=extractor,
             component_builder=Mock(),
         )
 
@@ -131,13 +131,13 @@ class TestOnnxExportPipeline:
             )
 
 
-class TestDefaultSampleAdapter:
+class TestDefaultSampleExtractor:
     def test_returns_preprocessed_loaded_sample(self):
         data_loader = Mock()
         data_loader.load_sample.return_value = "RAW"
         data_loader.preprocess.return_value = "PREPROCESSED"
 
-        sample = DefaultSampleAdapter().extract_sample(object(), data_loader, 3)
+        sample = DefaultSampleExtractor().extract_sample(object(), data_loader, 3)
 
         data_loader.load_sample.assert_called_once_with(3)
         data_loader.preprocess.assert_called_once_with("RAW")

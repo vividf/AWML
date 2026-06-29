@@ -8,7 +8,7 @@ from mmengine.config import Config
 
 from deployment.cli.args import add_deployment_file_logging, setup_logging
 from deployment.configs.base import BaseDeploymentConfig
-from deployment.core.contexts import CenterPointExportContext
+from deployment.projects.centerpoint.context import CenterPointExportContext
 from deployment.projects.centerpoint.eval.evaluator import CenterPointEvaluator
 from deployment.projects.centerpoint.eval.executor import CenterPointExecutor
 from deployment.projects.centerpoint.eval.metrics_utils import extract_t4metric_v2_config

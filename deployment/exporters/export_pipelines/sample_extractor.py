@@ -1,11 +1,11 @@
 """
-Export sample adapter: the seam that produces the tracing sample.
+Export sample extractor: the seam that produces the tracing sample.
 
-``ExportSampleAdapter`` is the contract the ONNX export pipeline depends on to
-obtain the per-sample payload used for tracing. ``DefaultSampleAdapter`` is the
+``SampleExtractor`` is the contract the ONNX export pipeline depends on to
+obtain the per-sample payload used for tracing. ``DefaultSampleExtractor`` is the
 built-in implementation for the common whole-model case (just preprocess the
 loader's sample); projects that need model-specific feature extraction (e.g.
-CenterPoint) provide their own adapter.
+CenterPoint) provide their own extractor.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ import torch
 from deployment.core.io.base_data_loader import BaseDataLoader
 
 
-class ExportSampleAdapter(ABC):
-    """Interface for adapting model-specific sample extraction for export.
+class SampleExtractor(ABC):
+    """Interface for model-specific sample extraction for export.
 
     Implementations convert model-specific feature extraction outputs
     into a sample object that component builders can consume.
@@ -45,10 +45,10 @@ class ExportSampleAdapter(ABC):
         ...
 
 
-class DefaultSampleAdapter(ExportSampleAdapter):
-    """Default sample adapter: returns the preprocessed model input for tracing.
+class DefaultSampleExtractor(SampleExtractor):
+    """Default sample extractor: returns the preprocessed model input for tracing.
 
-    Used when a project does not supply its own adapter. No model-specific
+    Used when a project does not supply its own extractor. No model-specific
     feature extraction is performed: the sample is simply the loader's
     preprocessed sample, used directly as the model's tracing input.
     """

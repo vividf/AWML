@@ -5,12 +5,12 @@ from collections.abc import Mapping
 import torch
 
 from deployment.core.io.base_data_loader import BaseDataLoader
-from deployment.exporters.export_pipelines.sample_adapter import ExportSampleAdapter
+from deployment.exporters.export_pipelines.sample_extractor import SampleExtractor
 from deployment.projects.centerpoint.io.sample_types import CenterPointFeatureSample, VoxelDict
 
 
-class CenterPointSampleAdapter(ExportSampleAdapter):
-    """Adapter for CenterPoint feature extraction output into typed sample payload."""
+class CenterPointSampleExtractor(SampleExtractor):
+    """Extracts CenterPoint feature extraction output into a typed sample payload."""
 
     _REQUIRED_VOXEL_KEYS: tuple[str, ...] = ("voxels", "num_points", "coors")
 

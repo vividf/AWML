@@ -79,7 +79,7 @@ class DefaultComponentBuilder(ModelComponentBuilder):
 
         Args:
             model: PyTorch model exported as one component.
-            sample: Preprocessed tracing input from the sample adapter.
+            sample: Preprocessed tracing input from the sample extractor.
 
         Returns:
             A one-element list with the whole model as the component.

@@ -4,13 +4,13 @@ Unified ONNX export pipeline.
 A single, model-agnostic pipeline drives every ONNX export. The only thing that
 varies between models is *how the PyTorch model is split into exportable
 components*, and that variation is injected via a :class:`ModelComponentBuilder`
-(plus an :class:`ExportSampleAdapter` that produces the tracing sample):
+(plus a :class:`SampleExtractor` that produces the tracing sample):
 
 - Single-component models (e.g. a detector exported whole) use the built-in
-  :class:`~deployment.exporters.export_pipelines.sample_adapter.DefaultSampleAdapter`
+  :class:`~deployment.exporters.export_pipelines.sample_extractor.DefaultSampleExtractor`
   and :class:`~deployment.exporters.export_pipelines.component_builder.DefaultComponentBuilder`.
 - Models that must be decomposed (e.g. CenterPoint → voxel encoder +
-  backbone/neck/head) provide a project-specific adapter and builder.
+  backbone/neck/head) provide a project-specific extractor and builder.
 
 The pipeline itself never changes; it iterates whatever components the builder
 returns and exports one ONNX file per component.
@@ -31,7 +31,7 @@ from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import BaseModelWrapper, IdentityWrapper
 from deployment.exporters.common.onnx_exporter import ONNXExporter
 from deployment.exporters.export_pipelines.component_builder import ExportableComponent, ModelComponentBuilder
-from deployment.exporters.export_pipelines.sample_adapter import ExportSampleAdapter
+from deployment.exporters.export_pipelines.sample_extractor import SampleExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 class OnnxExportPipeline:
     """Model-agnostic ONNX export pipeline (one ONNX file per component).
 
-    Extracts a tracing sample via ``sample_adapter``, splits the model into
+    Extracts a tracing sample via ``sample_extractor``, splits the model into
     components via ``component_builder``, and exports each component with the
     configured ONNX exporter. The number of ONNX files produced is exactly the
     number of components the builder returns (one for a whole-model export,
@@ -49,7 +49,7 @@ class OnnxExportPipeline:
     def __init__(
         self,
         exporter_factory: type[ExporterFactory],
-        sample_adapter: ExportSampleAdapter,
+        sample_extractor: SampleExtractor,
         component_builder: ModelComponentBuilder,
         onnx_wrapper_cls: Type[BaseModelWrapper] = IdentityWrapper,
     ) -> None:
@@ -57,14 +57,14 @@ class OnnxExportPipeline:
 
         Args:
             exporter_factory: Factory used to create ONNX exporters per component.
-            sample_adapter: Adapter that extracts the typed tracing sample.
+            sample_extractor: Extractor that produces the typed tracing sample.
             component_builder: Builder that turns the model + sample into
                 exportable components.
             onnx_wrapper_cls: Model wrapper applied before ONNX export (defaults
                 to ``IdentityWrapper`` for models needing no output reshaping).
         """
         self.exporter_factory = exporter_factory
-        self.sample_adapter = sample_adapter
+        self.sample_extractor = sample_extractor
         self.component_builder = component_builder
         self._onnx_wrapper_cls = onnx_wrapper_cls
 
@@ -116,14 +116,14 @@ class OnnxExportPipeline:
             sample_idx: Index of the sample.
 
         Returns:
-            The adapter-specific sample payload consumed by the component builder.
+            The extractor-specific sample payload consumed by the component builder.
 
         Raises:
             RuntimeError: If sample extraction fails.
         """
         logger.info("Extracting sample data (sample_idx=%s)...", sample_idx)
         try:
-            return self.sample_adapter.extract_sample(model, data_loader, sample_idx)
+            return self.sample_extractor.extract_sample(model, data_loader, sample_idx)
         except Exception as exc:
             raise RuntimeError(f"Sample extraction failed: {exc}") from exc
 
