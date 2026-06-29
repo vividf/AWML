@@ -6,12 +6,13 @@ ONNX models, TensorRT engines) across different backends.
 """
 
 import logging
-from collections.abc import Mapping
 from typing import Dict, Optional, Tuple
 
 from deployment.configs.base import BaseDeploymentConfig
 from deployment.core.artifacts import Artifact
 from deployment.core.backend import Backend
+
+logger = logging.getLogger(__name__)
 
 
 class ArtifactManager:
@@ -28,16 +29,14 @@ class ArtifactManager:
        - ONNX: export.onnx_path
     """
 
-    def __init__(self, config: BaseDeploymentConfig, logger: logging.Logger) -> None:
+    def __init__(self, config: BaseDeploymentConfig) -> None:
         """
         Initialize artifact manager.
 
         Args:
             config: Deployment configuration
-            logger: Logger instance
         """
         self.config = config
-        self.logger = logger
         self.artifacts: Dict[str, Artifact] = {}
 
     def register_artifact(self, backend: Backend, artifact: Artifact) -> None:
@@ -49,7 +48,7 @@ class ArtifactManager:
             artifact: Artifact to register
         """
         self.artifacts[backend.value] = artifact
-        self.logger.debug("Registered %s artifact: %s", backend.value, artifact.path)
+        logger.debug("Registered %s artifact: %s", backend.value, artifact.path)
 
     def resolve_artifact(self, backend: Backend) -> Tuple[Optional[Artifact], bool]:
         """
@@ -81,17 +80,12 @@ class ArtifactManager:
             Configuration path for the given backend
         """
         eval_backends = self.config.evaluation_config.backends
-        # Backend is a str Enum, so a str-keyed lookup matches both str and Backend keys.
         backend_cfg = eval_backends.get(backend.value) if eval_backends else None
-        if backend_cfg and isinstance(backend_cfg, Mapping):
-            if backend == Backend.ONNX:
-                path = backend_cfg.get("model_dir")
-                if path:
-                    return path
-            elif backend == Backend.TENSORRT:
-                path = backend_cfg.get("engine_dir")
-                if path:
-                    return path
+        if backend_cfg is not None:
+            if backend == Backend.ONNX and backend_cfg.model_dir:
+                return backend_cfg.model_dir
+            if backend == Backend.TENSORRT and backend_cfg.engine_dir:
+                return backend_cfg.engine_dir
 
         if backend == Backend.PYTORCH:
             return self.config.checkpoint_path

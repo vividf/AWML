@@ -144,7 +144,6 @@ class BaseMetricsInterface(ABC):
         This method should clear all accumulated frame data and reinitialize
         the underlying evaluator.
         """
-        pass
 
     @abstractmethod
     def add_frame(self, *args) -> None:
@@ -156,7 +155,6 @@ class BaseMetricsInterface(ABC):
         - 2D Detection: predictions: List[Dict], ground_truths: List[Dict]
         - Classification: prediction: int, ground_truth: int, probabilities: List[float]
         """
-        pass
 
     @abstractmethod
     def compute_metrics(self) -> Dict[str, float]:
@@ -166,7 +164,6 @@ class BaseMetricsInterface(ABC):
         Returns:
             Dictionary of metric names to values.
         """
-        pass
 
     @property
     @abstractmethod
@@ -177,7 +174,6 @@ class BaseMetricsInterface(ABC):
         Returns:
             Dictionary with summary metrics and additional information.
         """
-        pass
 
     def _convert_index_to_label(self, label_index: int) -> Label:
         """Convert a label index to a perception_eval Label object.

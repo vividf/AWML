@@ -1,8 +1,4 @@
-"""
-GPU Resource Management utilities for TensorRT Pipelines.
-
-Flattened from `deployment/pipelines/common/gpu_resource_mixin.py`.
-"""
+"""GPU Resource Management utilities for TensorRT Pipelines."""
 
 import logging
 from abc import ABC, abstractmethod

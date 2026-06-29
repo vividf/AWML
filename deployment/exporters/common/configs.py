@@ -47,8 +47,6 @@ class BaseExporterConfig:
     for all configuration parameters.
     """
 
-    pass
-
 
 @dataclass(frozen=True)
 class ONNXExportConfig(BaseExporterConfig):
@@ -97,12 +95,3 @@ class TensorRTExportConfig(BaseExporterConfig):
     precision_policy: PrecisionPolicy = PrecisionPolicy.AUTO
     max_workspace_size: int = 1 << 30
     model_input: Optional[TensorRTModelInputConfig] = None
-
-
-__all__ = [
-    "BaseExporterConfig",
-    "ONNXExportConfig",
-    "TensorRTExportConfig",
-    "TensorRTModelInputConfig",
-    "TensorRTProfileConfig",
-]

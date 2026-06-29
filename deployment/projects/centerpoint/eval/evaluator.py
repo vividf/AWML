@@ -199,15 +199,13 @@ class CenterPointEvaluator(BaseEvaluator):
         logger.info("  Median: %.2f ms", latency_dict["median_ms"])
 
         if "latency_breakdown" in results:
-            breakdown = results["latency_breakdown"]
-            breakdown_dict = breakdown.to_dict() if hasattr(breakdown, "to_dict") else breakdown
+            breakdown_dict = results["latency_breakdown"].to_dict()
 
             if breakdown_dict:
                 logger.info("")
                 logger.info("Stage-wise Latency Breakdown:")
                 top_level_stages = {"preprocessing_ms", "model_ms", "postprocessing_ms"}
-                for stage, stats in breakdown_dict.items():
-                    stats_dict = stats.to_dict() if hasattr(stats, "to_dict") else stats
+                for stage, stats_dict in breakdown_dict.items():
                     stage_name = stage.replace("_ms", "").replace("_", " ").title()
 
                     output_format = (

@@ -1,8 +1,4 @@
-"""
-Pipeline Registry for Dynamic Project Pipeline Registration.
-
-Flattened from `deployment/pipelines/common/registry.py`.
-"""
+"""Pipeline Registry for Dynamic Project Pipeline Registration."""
 
 import logging
 from typing import Dict, Type

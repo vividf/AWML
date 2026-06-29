@@ -4,7 +4,6 @@ CenterPoint metrics utilities.
 This module extracts metrics configuration from MMEngine model configs.
 """
 
-import logging
 from typing import Any
 
 from mmengine.config import Config, ConfigDict
@@ -16,7 +15,6 @@ _T4METRIC_V2_EVALUATOR_TYPE = "T4MetricV2"
 
 def extract_t4metric_v2_config(
     model_cfg: Config,
-    logger: logging.Logger,
 ) -> Detection3DMetricsConfig:
     """Extract `Detection3DMetricsConfig` from an MMEngine model config.
 
@@ -24,7 +22,6 @@ def extract_t4metric_v2_config(
 
     Args:
         model_cfg: MMEngine model configuration.
-        logger: Logger instance.
 
     Returns:
         Detection3DMetricsConfig instance with extracted settings.

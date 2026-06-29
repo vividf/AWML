@@ -16,15 +16,15 @@ from deployment.core.device import DeviceSpec
 from deployment.core.evaluation.backend_executor import BackendExecutor
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.exporters.common.factory import ExporterFactory
-from deployment.exporters.common.model_wrappers import IdentityWrapper
-from deployment.exporters.export_pipelines.base import OnnxExportPipeline, TensorRTExportPipeline
+from deployment.exporters.export_pipelines.onnx_pipeline import OnnxExportPipeline
+from deployment.exporters.export_pipelines.tensorrt_pipeline import TensorRTExportPipeline
 from deployment.projects.centerpoint.eval.evaluator import CenterPointEvaluator
 from deployment.projects.centerpoint.export.component_builder import CenterPointComponentBuilder
-from deployment.projects.centerpoint.export.onnx_export_pipeline import CenterPointONNXExportPipeline
-from deployment.projects.centerpoint.export.tensorrt_export_pipeline import CenterPointTensorRTExportPipeline
+from deployment.projects.centerpoint.export.sample_adapter import CenterPointSampleAdapter
 from deployment.projects.centerpoint.io.model_loader import build_centerpoint_onnx_model
-from deployment.projects.centerpoint.io.sample_adapter import CenterPointSampleAdapter
 from deployment.runtime.runner import BaseDeploymentRunner
+
+logger = logging.getLogger(__name__)
 
 
 class CenterPointDeploymentRunner(BaseDeploymentRunner):
@@ -45,7 +45,6 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         executor: BackendExecutor,
         config: BaseDeploymentConfig,
         model_cfg: Config,
-        logger: logging.Logger,
         onnx_pipeline: Optional[OnnxExportPipeline] = None,
         tensorrt_pipeline: Optional[TensorRTExportPipeline] = None,
     ) -> None:
@@ -57,36 +56,27 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             executor: Backend execution primitives shared with the evaluator/verification runner.
             config: Deployment configuration.
             model_cfg: MMEngine model configuration.
-            logger: Logger instance.
             onnx_pipeline: Optional custom ONNX export pipeline.
             tensorrt_pipeline: Optional custom TensorRT export pipeline.
         """
 
+        # CenterPoint must be split into two ONNX components (voxel encoder and
+        # backbone/neck/head), so it drives the shared OnnxExportPipeline with a
+        # project-specific sample adapter + component builder instead of the
+        # whole-model default. IdentityWrapper (the pipeline default) is used as
+        # the components need no ONNX output reshaping.
         if onnx_pipeline is None:
-            sample_adapter = CenterPointSampleAdapter(logger=logger)
-            component_builder = CenterPointComponentBuilder(components_cfg=config.components_cfg, logger=logger)
-            onnx_pipeline = CenterPointONNXExportPipeline(
+            onnx_pipeline = OnnxExportPipeline(
                 exporter_factory=ExporterFactory,
-                sample_adapter=sample_adapter,
-                component_builder=component_builder,
-                logger=logger,
+                sample_adapter=CenterPointSampleAdapter(),
+                component_builder=CenterPointComponentBuilder(components_cfg=config.components_cfg),
             )
-
-        if tensorrt_pipeline is None:
-            tensorrt_pipeline = CenterPointTensorRTExportPipeline(
-                exporter_factory=ExporterFactory,
-                components_cfg=config.components_cfg,
-                logger=logger,
-            )
-
         super().__init__(
             data_loader=data_loader,
             evaluator=evaluator,
             executor=executor,
             config=config,
             model_cfg=model_cfg,
-            logger=logger,
-            onnx_wrapper_cls=IdentityWrapper,
             onnx_pipeline=onnx_pipeline,
             tensorrt_pipeline=tensorrt_pipeline,
         )
@@ -102,7 +92,7 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
             Loaded PyTorch model.
         """
         rot_y_axis_reference = self._extract_rot_y_axis_reference(context)
-        self.logger.info("Export option rot_y_axis_reference = %s", rot_y_axis_reference)
+        logger.info("Export option rot_y_axis_reference = %s", rot_y_axis_reference)
 
         model, _ = build_centerpoint_onnx_model(
             base_model_cfg=self.model_cfg,

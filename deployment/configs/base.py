@@ -121,9 +121,8 @@ class BaseDeploymentConfig:
             return True
 
         if self.evaluation_config.enabled:
-            backends_cfg = self.evaluation_config.backends
-            tensorrt_backend = backends_cfg.get(Backend.TENSORRT.value)
-            if tensorrt_backend and tensorrt_backend.get("enabled", False):
+            tensorrt_backend = self.evaluation_config.backends.get(Backend.TENSORRT.value)
+            if tensorrt_backend is not None and tensorrt_backend.enabled:
                 return True
 
         if self.verification_config.enabled:

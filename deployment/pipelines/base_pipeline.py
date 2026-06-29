@@ -1,8 +1,4 @@
-"""
-Base inference pipeline for unified model deployment.
-
-Flattened from `deployment/pipelines/common/base_pipeline.py`.
-"""
+"""Base inference pipeline for unified model deployment."""
 
 import logging
 import time
@@ -166,7 +162,6 @@ class BaseInferencePipeline(ABC):
         this automatically; use the context manager (`with pipeline:`) or call it
         explicitly.
         """
-        pass
 
     def __repr__(self):
         return f"{self.__class__.__name__}(" f"device={self.device}, " f"backend={self.backend_type})"

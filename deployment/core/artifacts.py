@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Protocol, Union, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +50,23 @@ class Artifact:
 # ============================================================================
 
 
+@runtime_checkable
+class ComponentFilenameSource(Protocol):
+    """Structural type for a components config that resolves artifact filenames.
+
+    The typed ``ComponentsConfig`` satisfies this protocol; a plain ``components``
+    dict does not and is handled via the ``Mapping`` branch instead. Accepting both
+    keeps this module decoupled from ``configs.schema`` and keeps the pure path
+    logic testable without constructing a full schema object.
+    """
+
+    def get_artifact_filename(self, component_name: str, file_key: str) -> Optional[str]: ...
+
+
 def resolve_artifact_path(
     *,
     base_dir: str,
-    components_cfg: Optional[Mapping[str, Any]],
+    components_cfg: Union[ComponentFilenameSource, Mapping[str, Any], None],
     component_name: str,
     file_key: str,
 ) -> str:
@@ -144,20 +157,18 @@ def resolve_artifact_path(
 
 
 def _get_filename_from_config(
-    components_cfg: Optional[Mapping[str, Any]],
+    components_cfg: Union[ComponentFilenameSource, Mapping[str, Any], None],
     component_name: str,
     file_key: str,
 ) -> Optional[str]:
-    """Extract filename from components config (dict or ComponentsConfig dataclass)."""
+    """Extract a filename from a typed components config or a raw ``components`` dict."""
     if components_cfg is None:
         return None
-    if hasattr(components_cfg, "get_artifact_filename"):
-        out = components_cfg.get_artifact_filename(component_name, file_key)
-        return out if isinstance(out, str) and out else None
-    component_cfg = components_cfg.get(component_name, {})
-    if not isinstance(component_cfg, Mapping):
+    if isinstance(components_cfg, ComponentFilenameSource):
+        filename = components_cfg.get_artifact_filename(component_name, file_key)
+    elif isinstance(components_cfg, Mapping):
+        component_cfg = components_cfg.get(component_name, {})
+        filename = component_cfg.get(file_key) if isinstance(component_cfg, Mapping) else None
+    else:
         return None
-    filename = component_cfg.get(file_key)
-    if isinstance(filename, str) and filename:
-        return filename
-    return None
+    return filename if isinstance(filename, str) and filename else None

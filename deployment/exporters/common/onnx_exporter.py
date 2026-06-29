@@ -10,8 +10,11 @@ import onnx
 import onnxsim
 import torch
 
+from deployment.core.artifacts import Artifact
 from deployment.exporters.common.base_exporter import BaseExporter
 from deployment.exporters.common.configs import ONNXExportConfig
+
+logger = logging.getLogger(__name__)
 
 
 class ONNXExporter(BaseExporter):
@@ -27,7 +30,6 @@ class ONNXExporter(BaseExporter):
     def __init__(
         self,
         config: ONNXExportConfig,
-        logger: logging.Logger,
         model_wrapper: Optional[Any] = None,
     ) -> None:
         """
@@ -35,10 +37,9 @@ class ONNXExporter(BaseExporter):
 
         Args:
             config: ONNX export configuration dataclass instance.
-            logger: Logger instance for export progress and diagnostics.
             model_wrapper: Optional model wrapper class (e.g., YOLOXOptElanONNXWrapper)
         """
-        super().__init__(config, logger=logger, model_wrapper=model_wrapper)
+        super().__init__(config, model_wrapper=model_wrapper)
         self._validate_config(config)
 
     def _validate_config(self, config: ONNXExportConfig) -> None:
@@ -71,15 +72,16 @@ class ONNXExporter(BaseExporter):
         model: torch.nn.Module,
         sample_input: Any,
         output_path: str,
-        onnx_path: Optional[str] = None,
-    ) -> None:
+    ) -> Artifact:
         """Export model to ONNX format.
 
         Args:
             model: PyTorch model to export
             sample_input: Sample input tensor
             output_path: Path to save ONNX model
-            onnx_path: Unused; accepted for interface compatibility with BaseExporter.
+
+        Returns:
+            Artifact describing the exported ONNX model.
 
         Raises:
             RuntimeError: If export fails
@@ -89,6 +91,7 @@ class ONNXExporter(BaseExporter):
         self._do_onnx_export(model, sample_input, output_path, self.config)
         if self.config.simplify:
             self._simplify_model(output_path)
+        return Artifact(path=output_path)
 
     def _prepare_for_onnx(self, model: torch.nn.Module) -> torch.nn.Module:
         """
@@ -125,12 +128,12 @@ class ONNXExporter(BaseExporter):
         Raises:
             RuntimeError: If export fails
         """
-        self.logger.info("Exporting model to ONNX format...")
+        logger.info("Exporting model to ONNX format...")
         if hasattr(sample_input, "shape"):
-            self.logger.info("  Input shape: %s", sample_input.shape)
-        self.logger.info("  Output path: %s", output_path)
+            logger.info("  Input shape: %s", sample_input.shape)
+        logger.info("  Output path: %s", output_path)
 
-        self.logger.info("  Opset version: %s", export_cfg.opset_version)
+        logger.info("  Opset version: %s", export_cfg.opset_version)
 
         # Ensure output directory exists
         output = Path(output_path)
@@ -161,10 +164,10 @@ class ONNXExporter(BaseExporter):
                 )
             self._publish(staging, produced, output)
 
-            self.logger.info("ONNX export completed: %s", output_path)
+            logger.info("ONNX export completed: %s", output_path)
 
         except Exception as exc:
-            self.logger.exception("ONNX export failed: %s", output_path)
+            logger.exception("ONNX export failed: %s", output_path)
             raise RuntimeError(f"ONNX export failed: {output_path}") from exc
         finally:
             shutil.rmtree(staging, ignore_errors=True)
@@ -176,7 +179,7 @@ class ONNXExporter(BaseExporter):
         Args:
             onnx_path: Path to ONNX model file
         """
-        self.logger.info("Simplifying ONNX model...")
+        logger.info("Simplifying ONNX model...")
         target = Path(onnx_path)
         # Save into a staging dir and publish, for the same external-data and atomicity reasons
         # as the export above: never overwrite the valid exported model in place.
@@ -185,14 +188,14 @@ class ONNXExporter(BaseExporter):
         try:
             model_simplified, success = onnxsim.simplify(onnx_path)
             if not success:
-                self.logger.error("ONNX model simplification failed; keeping unsimplified model")
+                logger.error("ONNX model simplification failed; keeping unsimplified model")
                 return
             self._reset_dir(staging)
             onnx.save(model_simplified, str(produced))
             self._publish(staging, produced, target)
-            self.logger.info("ONNX model simplified successfully")
+            logger.info("ONNX model simplified successfully")
         except Exception as e:
-            self.logger.error("ONNX simplification error: %s", e)
+            logger.error("ONNX simplification error: %s", e)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 

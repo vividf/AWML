@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from types import SimpleNamespace
 
 import pytest
 
+from deployment.configs.schema import BackendEvalConfig
 from deployment.core.artifacts import Artifact, resolve_artifact_path
 from deployment.core.backend import Backend
 from deployment.runtime.artifact_manager import ArtifactManager
@@ -83,8 +83,8 @@ def _stub_config(tmp_path):
         export_config=SimpleNamespace(onnx_path=str(tmp_path / "onnx_export")),
         evaluation_config=SimpleNamespace(
             backends={
-                "onnx": {"model_dir": str(tmp_path / "cfg_onnx")},
-                "tensorrt": {"engine_dir": str(tmp_path / "cfg_trt")},
+                "onnx": BackendEvalConfig(model_dir=str(tmp_path / "cfg_onnx")),
+                "tensorrt": BackendEvalConfig(engine_dir=str(tmp_path / "cfg_trt")),
             }
         ),
     )
@@ -94,7 +94,7 @@ class TestArtifactManager:
     def test_registered_artifact_takes_priority(self, tmp_path):
         ckpt = tmp_path / "real_ckpt.pth"
         ckpt.write_bytes(b"x")
-        mgr = ArtifactManager(_stub_config(tmp_path), logging.getLogger("test"))
+        mgr = ArtifactManager(_stub_config(tmp_path))
         mgr.register_artifact(Backend.PYTORCH, Artifact(path=str(ckpt)))
 
         artifact, exists = mgr.resolve_artifact(Backend.PYTORCH)
@@ -103,7 +103,7 @@ class TestArtifactManager:
         assert exists is True
 
     def test_falls_back_to_eval_backend_config(self, tmp_path):
-        mgr = ArtifactManager(_stub_config(tmp_path), logging.getLogger("test"))
+        mgr = ArtifactManager(_stub_config(tmp_path))
         artifact, exists = mgr.resolve_artifact(Backend.TENSORRT)
         assert artifact is not None
         assert artifact.path == str(tmp_path / "cfg_trt")
@@ -111,7 +111,7 @@ class TestArtifactManager:
         assert exists is False
 
     def test_pytorch_falls_back_to_checkpoint_path(self, tmp_path):
-        mgr = ArtifactManager(_stub_config(tmp_path), logging.getLogger("test"))
+        mgr = ArtifactManager(_stub_config(tmp_path))
         artifact, _ = mgr.resolve_artifact(Backend.PYTORCH)
         assert artifact is not None
         assert artifact.path == str(tmp_path / "ckpt.pth")

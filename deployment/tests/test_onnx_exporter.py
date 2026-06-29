@@ -7,7 +7,6 @@ torch.onnx export: ``torch.onnx.export`` is monkeypatched to simulate what it wr
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import pytest
@@ -18,7 +17,7 @@ from deployment.exporters.common.onnx_exporter import ONNXExporter
 
 
 def _exporter() -> ONNXExporter:
-    return ONNXExporter(ONNXExportConfig(), logging.getLogger("test"))
+    return ONNXExporter(ONNXExportConfig())
 
 
 def _no_staging_left(target: Path) -> bool:

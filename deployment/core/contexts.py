@@ -15,7 +15,6 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -26,19 +25,6 @@ class ExportContext:
     Marker base class for export contexts; project-specific subclasses (e.g.
     ``CenterPointExportContext``) add typed fields for their export parameters.
     """
-
-
-@dataclass(frozen=True)
-class YOLOXExportContext(ExportContext):
-    """
-    YOLOX-specific export context.
-
-    Attributes:
-        model_cfg: Path to model configuration file. If None, attempts
-                   to extract from model_cfg.filename.
-    """
-
-    model_cfg: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -53,15 +39,3 @@ class CenterPointExportContext(ExportContext):
     """
 
     rot_y_axis_reference: bool = False
-
-
-@dataclass(frozen=True)
-class CalibrationExportContext(ExportContext):
-    """
-    Calibration model export context.
-
-    Currently uses only base ExportContext fields.
-    Extend with calibration-specific parameters as needed.
-    """
-
-    pass

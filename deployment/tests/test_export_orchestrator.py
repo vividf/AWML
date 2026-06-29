@@ -10,7 +10,6 @@ These are pure control-flow tests: model loading and the actual export steps are
 
 from __future__ import annotations
 
-import logging
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -28,7 +27,6 @@ def _orchestrator(export_config, artifact_manager=None) -> ExportOrchestrator:
         config=config,
         data_loader=Mock(),
         artifact_manager=artifact_manager or Mock(),
-        logger=logging.getLogger("test"),
         model_loader=Mock(),
     )
 

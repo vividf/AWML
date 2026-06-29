@@ -1,8 +1,4 @@
-"""
-Base Pipeline Factory for Project-specific Pipeline Creation.
-
-Flattened from `deployment/pipelines/common/base_factory.py`.
-"""
+"""Base Pipeline Factory for Project-specific Pipeline Creation."""
 
 import logging
 from abc import ABC, abstractmethod
@@ -51,7 +47,7 @@ class BasePipelineFactory(ABC):
         Args:
             model_spec: Describes the model path/device/backend and any metadata.
             pytorch_model: A loaded PyTorch model (used for PYTORCH backends).
-            device: Optional device override (defaults to `model_spec.device`).
+            device: Target device for this run.
             components_cfg: Project-specific component configuration (e.g., file paths, IO specs).
         """
         raise NotImplementedError

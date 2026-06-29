@@ -17,9 +17,13 @@ flowchart TD
     cli["deployment/cli/main.py"] --> projectBundle["deployment/projects/project/entrypoint.py"]
     projectBundle --> runner["BaseDeploymentRunner"]
     runner --> exportStack["ExportOrchestrator_and_exporters"]
-    runner --> verifyEval["Verification_and_Evaluation_orchestrators"]
-    verifyEval --> evaluator["BaseEvaluator"]
-    evaluator --> pipelineFactory["BasePipelineFactory"]
+    runner --> evalOrch["EvaluationOrchestrator"]
+    runner --> verifyOrch["VerificationOrchestrator"]
+    evalOrch --> evaluator["BaseEvaluator"]
+    verifyOrch --> verifier["BackendVerifier"]
+    evaluator --> executor["BackendExecutor"]
+    verifier --> executor
+    executor --> pipelineFactory["BasePipelineFactory"]
     pipelineFactory --> projectPipelines["Project_pipelines"]
 ```
 
@@ -42,7 +46,7 @@ flowchart TD
 - `deployment/exporters/` owns ONNX and TensorRT export mechanics.
 - `deployment/pipelines/` owns shared inference pipeline abstractions and factory registration.
 - Project `pipelines/` implement backend-specific inference.
-- Evaluators own metrics, result reporting, and verification behavior.
+- Evaluators own metrics and result reporting; `BackendVerifier` owns reference-vs-test verification; both share a `BackendExecutor` for pipeline creation, input preparation, and device handling.
 
 ## Package map
 
@@ -50,7 +54,7 @@ flowchart TD
 | --- | --- |
 | `deployment/cli/` | Unified CLI and shared argument helpers |
 | `deployment/configs/` | Typed deployment config and schema |
-| `deployment/core/` | Shared contexts, base evaluator, verification/output-comparison helpers, data-loader base, backend/device types, and metrics interfaces |
+| `deployment/core/` | Shared contexts, base evaluator, backend executor, backend verifier and output-comparison helpers, data-loader base, backend/device types, and metrics interfaces |
 | `deployment/exporters/` | Shared ONNX and TensorRT exporters plus export pipeline bases |
 | `deployment/pipelines/` | Global pipeline registry and factory |
 | `deployment/runtime/` | Base runner, orchestrators, and artifact management |
@@ -66,11 +70,11 @@ This section replaces the old standalone core contract page.
 - Project runners inject project-specific loaders, evaluators, wrappers, and optional export pipelines.
 - Runners must not own task-specific preprocessing, postprocessing, or metrics logic.
 
-### Evaluator responsibilities
+### Evaluator, executor, and verifier responsibilities
 
-- `BaseEvaluator` is the shared base for task evaluators.
-- Evaluators create backend pipelines through `BasePipelineFactory`.
-- Evaluators prepare inputs, normalize outputs, compute metrics, and report results.
+- `BaseEvaluator` is the shared base for task evaluators; it runs the evaluation loop, normalizes outputs, computes metrics, and reports results.
+- `BackendExecutor` is the shared collaborator that creates backend pipelines through `BasePipelineFactory`, prepares inputs, manages device placement, and names raw outputs (`get_output_names`) for verification.
+- `BackendVerifier` runs reference-vs-test comparison using a `BackendExecutor` and an `OutputComparator`; the evaluator no longer owns verification.
 - Evaluators should log summaries through `logging`, not `print`.
 
 ### Pipeline responsibilities
@@ -88,8 +92,10 @@ This section replaces the old standalone core contract page.
 
 | Dependency | Allowed |
 | --- | --- |
-| Runner -> Evaluator | Yes |
-| Evaluator -> BasePipelineFactory / Pipelines / Metrics | Yes |
+| Runner -> Evaluator / Verifier | Yes |
+| Evaluator / Verifier -> BackendExecutor | Yes |
+| Evaluator -> Metrics | Yes |
+| BackendExecutor -> BasePipelineFactory / Pipelines | Yes |
 | BasePipelineFactory -> Pipelines | Yes |
 | Pipelines -> Metrics | No |
 | Metrics -> Runner / BasePipelineFactory | No |

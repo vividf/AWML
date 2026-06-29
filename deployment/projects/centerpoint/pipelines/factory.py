@@ -52,14 +52,13 @@ class CenterPointPipelineFactory(BasePipelineFactory):
         Args:
             model_spec: Model specification (backend/device/artifact)
             pytorch_model: PyTorch model instance for preprocessing
-            device: Override device (uses model_spec.device if None)
+            device: Target device for the pipeline.
             components_cfg: Unified component configuration dict from deploy_config.
                            Used to configure component file paths.
 
         Returns:
             Pipeline instance for the specified backend
         """
-        device = device or model_spec.device
         backend = model_spec.backend
 
         cls._validate_backend(backend)

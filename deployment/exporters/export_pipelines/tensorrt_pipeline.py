@@ -1,51 +1,128 @@
 """
-CenterPoint TensorRT export pipeline using composition.
+Model-agnostic TensorRT export pipeline.
 
-Reads ONNX paths from ``deploy_config`` ``components`` (same rules as
-``resolve_artifact_path``) and builds one TensorRT engine per component into
-``output_dir``.
+Converting ONNX → TensorRT does not touch the PyTorch model, so a single
+pipeline handles every project: it iterates the deploy config's ``components``
+(in order), resolves each component's ``onnx_file`` under ``onnx_path``, and
+builds the corresponding ``engine_file`` under ``output_dir``. The
+single-component case is just a one-iteration loop.
+
+Because there is nothing model-specific to inject here, this is the only
+TensorRT pipeline; projects do not subclass it. (Should a project ever need a
+model-specific build — e.g. INT8 calibration with bespoke data — it can supply
+its own ``tensorrt_pipeline`` to the runner.)
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 import torch
-from typing_extensions import override
 
 from deployment.configs.base import BaseDeploymentConfig
-from deployment.configs.schema import ComponentsConfig
 from deployment.core.artifacts import Artifact, resolve_artifact_path
 from deployment.core.device import DeviceSpec
 from deployment.exporters.common.factory import ExporterFactory
-from deployment.exporters.export_pipelines.base import TensorRTExportPipeline
+
+logger = logging.getLogger(__name__)
 
 
-class CenterPointTensorRTExportPipeline(TensorRTExportPipeline):
-    """TensorRT export pipeline for CenterPoint.
+class TensorRTExportPipeline:
+    """TensorRT export pipeline (one engine per config component).
 
-    Iterates ``components`` in deploy config order and builds one engine per
-    component from the configured ``onnx_file`` under ``onnx_path``.
+    Iterates the deploy config's ``components`` (in order), resolves each
+    component's ``onnx_file`` under ``onnx_path``, and builds the corresponding
+    ``engine_file`` under ``output_dir``. Handles the single-component case too.
     """
 
     def __init__(
         self,
         exporter_factory: type[ExporterFactory],
-        components_cfg: ComponentsConfig,
-        logger: Optional[logging.Logger] = None,
     ) -> None:
-        """Initialize the pipeline with exporter factory and components config.
+        """Initialize the pipeline with an exporter factory.
 
         Args:
             exporter_factory: Factory used to create TensorRT exporters per component.
-            components_cfg: Config defining component names, onnx_file and engine_file paths.
-            logger: Optional logger; defaults to module logger if not provided.
         """
         self.exporter_factory = exporter_factory
-        self._components_cfg = components_cfg
-        self.logger = logger or logging.getLogger(__name__)
+
+    def export(
+        self,
+        *,
+        onnx_path: str,
+        output_dir: str,
+        config: BaseDeploymentConfig,
+        device: DeviceSpec,
+    ) -> Artifact:
+        """Convert each component's ONNX to a TensorRT engine under ``output_dir``.
+
+        Args:
+            onnx_path: Directory containing ONNX files (layout matches deploy config).
+            output_dir: Directory where TensorRT engine files are written.
+            config: Deployment config for TensorRT exporter options and component layout.
+            device: CUDA device for building engines.
+
+        Returns:
+            Artifact whose path is the output directory.
+
+        Raises:
+            ValueError: If ``onnx_path`` is not a directory, CUDA is invalid, or
+                ``components`` is empty.
+            FileNotFoundError: If a configured ONNX file is missing under ``onnx_path``.
+        """
+        onnx_dir_path = Path(onnx_path)
+        if not onnx_dir_path.is_dir():
+            raise ValueError(f"onnx_path must be a directory for multi-file export, got: {onnx_path}")
+
+        components_cfg = config.components_cfg
+        components = list(components_cfg.items())
+        if not components:
+            raise ValueError("components config is empty; nothing to export to TensorRT.")
+
+        device_id = self._validate_cuda_device(device)
+        logger.info("Using CUDA device: %s", device)
+
+        output_dir_path = Path(output_dir)
+        output_dir_path.mkdir(parents=True, exist_ok=True)
+
+        onnx_dir_str = str(onnx_dir_path)
+        num = len(components)
+        # Scope the active CUDA device to this export instead of mutating the process-global
+        # device via torch.cuda.set_device(); this keeps concurrent/repeat exports isolated.
+        with torch.cuda.device(device_id):
+            # Start at 1 so progress logs are human-friendly: [1/N] ... [N/N].
+            for i, (component_name, comp) in enumerate(components, 1):
+                onnx_file = resolve_artifact_path(
+                    base_dir=onnx_dir_str,
+                    components_cfg=components_cfg,
+                    component_name=component_name,
+                    file_key="onnx_file",
+                )
+                trt_path = output_dir_path / comp.engine_file
+                trt_path.parent.mkdir(parents=True, exist_ok=True)
+
+                logger.info(
+                    "\n[%s/%s] Converting %s → %s...",
+                    i,
+                    num,
+                    Path(onnx_file).name,
+                    trt_path.name,
+                )
+
+                exporter = self.exporter_factory.create_tensorrt_exporter(
+                    config=config,
+                    component_name=component_name,
+                )
+
+                artifact = exporter.export(
+                    onnx_path=onnx_file,
+                    output_path=str(trt_path),
+                )
+                logger.info("TensorRT engine saved: %s", artifact.path)
+
+        logger.info("\nAll TensorRT engines exported successfully to %s", output_dir_path)
+        return Artifact(path=str(output_dir_path))
 
     def _validate_cuda_device(self, device: DeviceSpec) -> int:
         """Ensure device is CUDA and return the device index.
@@ -62,86 +139,3 @@ class CenterPointTensorRTExportPipeline(TensorRTExportPipeline):
         if not device.is_cuda:
             raise ValueError(f"TensorRT export requires CUDA device, got: {device}")
         return device.index
-
-    @override
-    def export(
-        self,
-        *,
-        onnx_path: str,
-        output_dir: str,
-        config: BaseDeploymentConfig,
-        device: DeviceSpec,
-    ) -> Artifact:
-        """Convert each component's ONNX to a TensorRT engine under ``output_dir``.
-
-        For every entry in ``components``, resolves ``onnx_file`` under ``onnx_path``
-        (must exist) and writes ``engine_file`` relative to ``output_dir``.
-
-        Args:
-            onnx_path: Directory containing ONNX files (layout matches deploy config).
-            output_dir: Directory where TensorRT engine files are written.
-            config: Deployment config for TensorRT exporter options.
-            device: CUDA device for building engines.
-
-        Returns:
-            Artifact whose path is the output directory.
-
-        Raises:
-            ValueError: If ``onnx_path`` is not a directory, CUDA is invalid, or
-                ``components`` is empty.
-            FileNotFoundError: If a configured ONNX file is missing under ``onnx_path``.
-        """
-        onnx_dir_path = Path(onnx_path)
-        if not onnx_dir_path.is_dir():
-            raise ValueError(f"onnx_path must be a directory for multi-file export, got: {onnx_path}")
-
-        components = list(self._components_cfg.items())
-        if not components:
-            raise ValueError("components config is empty; nothing to export to TensorRT.")
-
-        device_id = self._validate_cuda_device(device)
-        self.logger.info("Using CUDA device: %s", device)
-
-        output_dir_path = Path(output_dir)
-        output_dir_path.mkdir(parents=True, exist_ok=True)
-
-        onnx_dir_str = str(onnx_dir_path)
-        num = len(components)
-        # Scope the active CUDA device to this export instead of mutating the process-global
-        # device via torch.cuda.set_device(); this keeps concurrent/repeat exports isolated.
-        with torch.cuda.device(device_id):
-            # Start at 1 so progress logs are human-friendly: [1/N] ... [N/N].
-            for i, (component_name, comp) in enumerate(components, 1):
-                onnx_file = resolve_artifact_path(
-                    base_dir=onnx_dir_str,
-                    components_cfg=self._components_cfg,
-                    component_name=component_name,
-                    file_key="onnx_file",
-                )
-                trt_path = output_dir_path / comp.engine_file
-                trt_path.parent.mkdir(parents=True, exist_ok=True)
-
-                self.logger.info(
-                    "\n[%s/%s] Converting %s → %s...",
-                    i,
-                    num,
-                    Path(onnx_file).name,
-                    trt_path.name,
-                )
-
-                exporter = self.exporter_factory.create_tensorrt_exporter(
-                    config=config,
-                    logger=self.logger,
-                    component_name=component_name,
-                )
-
-                artifact = exporter.export(
-                    model=None,
-                    sample_input=None,
-                    output_path=str(trt_path),
-                    onnx_path=onnx_file,
-                )
-                self.logger.info("TensorRT engine saved: %s", artifact.path)
-
-        self.logger.info("\nAll TensorRT engines exported successfully to %s", output_dir_path)
-        return Artifact(path=str(output_dir_path))

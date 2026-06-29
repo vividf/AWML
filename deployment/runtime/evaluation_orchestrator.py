@@ -18,6 +18,8 @@ from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.pipelines.gpu_resource_mixin import clear_cuda_memory
 from deployment.runtime.artifact_manager import ArtifactManager
 
+logger = logging.getLogger(__name__)
+
 
 class EvaluationOrchestrator:
     """
@@ -37,7 +39,6 @@ class EvaluationOrchestrator:
         evaluator: BaseEvaluator,
         data_loader: BaseDataLoader,
         artifact_manager: ArtifactManager,
-        logger: logging.Logger,
     ):
         """
         Initialize the evaluation orchestrator.
@@ -47,13 +48,11 @@ class EvaluationOrchestrator:
             evaluator: Evaluator instance for running evaluation
             data_loader: Data loader for loading samples
             artifact_manager: Artifact manager for resolving model paths
-            logger: Logger instance
         """
         self.config = config
         self.evaluator = evaluator
         self.data_loader = data_loader
         self.artifact_manager = artifact_manager
-        self.logger = logger
 
     def run(self) -> Dict[str, Any]:
         """
@@ -65,16 +64,16 @@ class EvaluationOrchestrator:
         eval_config = self.config.evaluation_config
 
         if not eval_config.enabled:
-            self.logger.info("Evaluation disabled, skipping...")
+            logger.info("Evaluation disabled, skipping...")
             return {}
 
-        self.logger.info("=" * 80)
-        self.logger.info("Running Evaluation")
-        self.logger.info("=" * 80)
+        logger.info("=" * 80)
+        logger.info("Running Evaluation")
+        logger.info("=" * 80)
 
         model_specs = self._resolve_model_specs()
         if not model_specs:
-            self.logger.warning("No models found for evaluation")
+            logger.warning("No models found for evaluation")
             return {}
 
         num_samples = eval_config.num_samples
@@ -86,7 +85,7 @@ class EvaluationOrchestrator:
 
         for model_spec in model_specs:
             backend = model_spec.backend
-            self.logger.info("\nEvaluating %s on %s...", backend.value, model_spec.device)
+            logger.info("\nEvaluating %s on %s...", backend.value, model_spec.device)
             try:
                 results = self.evaluator.evaluate(
                     model=model_spec,
@@ -96,10 +95,10 @@ class EvaluationOrchestrator:
                     num_warmup=eval_config.num_warmup,
                 )
                 all_results[backend.value] = results
-                self.logger.info("\n%s Results:", backend.value.upper())
+                logger.info("\n%s Results:", backend.value.upper())
                 self.evaluator.print_results(results)
             except Exception as e:
-                self.logger.error("Evaluation failed for %s: %s", backend.value, e, exc_info=True)
+                logger.error("Evaluation failed for %s: %s", backend.value, e, exc_info=True)
                 all_results[backend.value] = {"error": str(e)}
             finally:
                 clear_cuda_memory()
@@ -124,17 +123,17 @@ class EvaluationOrchestrator:
 
         for backend_key, backend_cfg in backend_configs.items():
             backend_enum = Backend.from_value(backend_key)
-            if not backend_cfg.get("enabled", False):
+            if not backend_cfg.enabled:
                 continue
 
-            device = self._resolve_device_for_backend(backend_enum, backend_cfg.get("device"))
+            device = self._resolve_device_for_backend(backend_enum, backend_cfg.device)
             artifact, artifact_exists = self.artifact_manager.resolve_artifact(backend_enum)
 
             if artifact_exists and artifact:
                 model_specs.append(ModelSpec(backend=backend_enum, device=device, artifact=artifact))
-                self.logger.info("  - %s: %s (device: %s)", backend_enum.value, artifact.path, device)
+                logger.info("  - %s: %s (device: %s)", backend_enum.value, artifact.path, device)
             elif artifact is not None:
-                self.logger.warning(
+                logger.warning(
                     "  - %s: %s (not found or invalid, skipping)",
                     backend_enum.value,
                     artifact.path,
@@ -163,7 +162,7 @@ class EvaluationOrchestrator:
 
         if backend.requires_cuda and not resolved_device.is_cuda:
             default_device = self._get_default_device(backend)
-            self.logger.warning(
+            logger.warning(
                 "%s evaluation requires CUDA device. Overriding device from '%s' to '%s'.",
                 backend.value,
                 resolved_device,
@@ -195,14 +194,14 @@ class EvaluationOrchestrator:
         Args:
             all_results: Dictionary of all results
         """
-        self.logger.info("\n" + "=" * 80)
-        self.logger.info("Cross-Backend Comparison")
-        self.logger.info("=" * 80)
+        logger.info("\n" + "=" * 80)
+        logger.info("Cross-Backend Comparison")
+        logger.info("=" * 80)
 
         for backend_label, results in all_results.items():
-            self.logger.info("\n%s:", backend_label.upper())
+            logger.info("\n%s:", backend_label.upper())
             if results and "error" not in results:
                 for line in self.evaluator.summarize_for_comparison(results):
-                    self.logger.info(line)
+                    logger.info(line)
             else:
-                self.logger.info("  No results available")
+                logger.info("  No results available")

@@ -48,7 +48,7 @@ def run(args: argparse.Namespace) -> int:
     )
     logger.info("Loaded %s samples", data_loader.num_samples)
 
-    metrics_config = extract_t4metric_v2_config(model_cfg, logger=logger)
+    metrics_config = extract_t4metric_v2_config(model_cfg)
 
     # One executor instance, shared by the evaluator (evaluate/verify) and the runner
     # (which hands it the loaded reference model after export).
@@ -66,7 +66,6 @@ def run(args: argparse.Namespace) -> int:
         executor=executor,
         config=config,
         model_cfg=model_cfg,
-        logger=logger,
     )
 
     context = CenterPointExportContext(rot_y_axis_reference=bool(getattr(args, "rot_y_axis_reference", False)))

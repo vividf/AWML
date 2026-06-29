@@ -11,9 +11,11 @@ import logging
 import torch
 
 from deployment.configs.schema import ComponentsConfig
-from deployment.exporters.export_pipelines.interfaces import ExportableComponent, ModelComponentBuilder
+from deployment.exporters.export_pipelines.component_builder import ExportableComponent, ModelComponentBuilder
 from deployment.projects.centerpoint.io.sample_types import CenterPointFeatureSample, compute_batch_size
 from deployment.projects.centerpoint.onnx_models.centerpoint_onnx import CenterPointHeadONNX
+
+logger = logging.getLogger(__name__)
 
 
 class CenterPointComponentBuilder(ModelComponentBuilder):
@@ -27,16 +29,13 @@ class CenterPointComponentBuilder(ModelComponentBuilder):
     def __init__(
         self,
         components_cfg: ComponentsConfig,
-        logger: logging.Logger,
     ) -> None:
         """Initialize CenterPoint component builder.
 
         Args:
             components_cfg: Component config used to resolve export names.
-            logger: Logger for export progress and diagnostics.
         """
         self._components_cfg = components_cfg
-        self.logger = logger
 
     def build_components(
         self,
@@ -52,12 +51,12 @@ class CenterPointComponentBuilder(ModelComponentBuilder):
         Returns:
             Exportable components for voxel encoder and backbone/neck/head.
         """
-        self.logger.info("Extracting CenterPoint components for export...")
+        logger.info("Extracting CenterPoint components for export...")
 
         voxel_component = self._create_voxel_encoder_component(model, sample)
         backbone_component = self._create_backbone_component(model, sample)
 
-        self.logger.info("Extracted 2 components: pts_voxel_encoder, pts_backbone_neck_head")
+        logger.info("Extracted 2 components: pts_voxel_encoder, pts_backbone_neck_head")
         return [voxel_component, backbone_component]
 
     def _create_voxel_encoder_component(

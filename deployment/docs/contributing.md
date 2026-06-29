@@ -18,9 +18,10 @@ Add `export/` only when the project needs multi-stage or multi-file export orche
 
 ## Implementation notes
 
-### Evaluator and data loader
+### Evaluator, executor, and data loader
 
 - Subclass `BaseEvaluator` with task-specific metrics and output parsing.
+- Subclass `BackendExecutor` for pipeline creation, input preparation, and (optionally) `get_output_names()` to label raw outputs during verification.
 - Subclass `BaseDataLoader` for project dataset and preprocessing needs.
 - Keep metrics inside evaluators and metrics interfaces, not inside pipelines.
 

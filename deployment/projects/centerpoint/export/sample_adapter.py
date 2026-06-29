@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
 
 import torch
 
 from deployment.core.io.base_data_loader import BaseDataLoader
-from deployment.exporters.export_pipelines.interfaces import ExportSampleAdapter
+from deployment.exporters.export_pipelines.sample_adapter import ExportSampleAdapter
 from deployment.projects.centerpoint.io.sample_types import CenterPointFeatureSample, VoxelDict
 
 
@@ -14,14 +13,6 @@ class CenterPointSampleAdapter(ExportSampleAdapter):
     """Adapter for CenterPoint feature extraction output into typed sample payload."""
 
     _REQUIRED_VOXEL_KEYS: tuple[str, ...] = ("voxels", "num_points", "coors")
-
-    def __init__(self, logger: logging.Logger) -> None:
-        """Initialize the sample adapter.
-
-        Args:
-            logger: Logger for diagnostics.
-        """
-        self.logger = logger
 
     def extract_sample(
         self,

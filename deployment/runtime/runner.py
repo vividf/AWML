@@ -22,12 +22,18 @@ from deployment.core.evaluation.backend_verifier import BackendVerifier
 from deployment.core.evaluation.base_evaluator import BaseEvaluator
 from deployment.core.evaluation.output_comparator import OutputComparator
 from deployment.core.io.base_data_loader import BaseDataLoader
+from deployment.exporters.common.factory import ExporterFactory
 from deployment.exporters.common.model_wrappers import BaseModelWrapper
-from deployment.exporters.export_pipelines.base import OnnxExportPipeline, TensorRTExportPipeline
+from deployment.exporters.export_pipelines.component_builder import DefaultComponentBuilder
+from deployment.exporters.export_pipelines.onnx_pipeline import OnnxExportPipeline
+from deployment.exporters.export_pipelines.sample_adapter import DefaultSampleAdapter
+from deployment.exporters.export_pipelines.tensorrt_pipeline import TensorRTExportPipeline
 from deployment.runtime.artifact_manager import ArtifactManager
 from deployment.runtime.evaluation_orchestrator import EvaluationOrchestrator
 from deployment.runtime.export_orchestrator import ExportOrchestrator
 from deployment.runtime.verification_orchestrator import VerificationOrchestrator
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -51,7 +57,6 @@ class BaseDeploymentRunner:
         executor: BackendExecutor,
         config: BaseDeploymentConfig,
         model_cfg: Config,
-        logger: logging.Logger,
         onnx_wrapper_cls: Optional[Type[BaseModelWrapper]] = None,
         onnx_pipeline: Optional[OnnxExportPipeline] = None,
         tensorrt_pipeline: Optional[TensorRTExportPipeline] = None,
@@ -61,28 +66,37 @@ class BaseDeploymentRunner:
         self._executor = executor
         self.config = config
         self.model_cfg = model_cfg
-        self.logger = logger
 
-        self.artifact_manager = ArtifactManager(config, logger)
+        self.artifact_manager = ArtifactManager(config)
+
+        # Default to the model-agnostic whole-model export (one ONNX/engine per config
+        # component) when a project does not supply its own pipeline. Projects needing
+        # model-specific decomposition pass an explicit onnx_pipeline; the whole-model
+        # builder requires a single-component config and a wrapper class to build.
+        if onnx_pipeline is None and onnx_wrapper_cls is not None:
+            onnx_pipeline = OnnxExportPipeline(
+                exporter_factory=ExporterFactory,
+                sample_adapter=DefaultSampleAdapter(),
+                component_builder=DefaultComponentBuilder(config.components_cfg),
+                onnx_wrapper_cls=onnx_wrapper_cls,
+            )
+        if tensorrt_pipeline is None:
+            tensorrt_pipeline = TensorRTExportPipeline(
+                exporter_factory=ExporterFactory,
+            )
 
         self.export_orchestrator = ExportOrchestrator(
             config=config,
             data_loader=data_loader,
             artifact_manager=self.artifact_manager,
-            logger=logger,
             model_loader=self.load_pytorch_model,
-            onnx_wrapper_cls=onnx_wrapper_cls,
             onnx_pipeline=onnx_pipeline,
             tensorrt_pipeline=tensorrt_pipeline,
         )
         comparator = OutputComparator(output_names=executor.get_output_names())
         verifier = BackendVerifier(executor, comparator)
-        self.verification_orchestrator = VerificationOrchestrator(
-            config, verifier, data_loader, self.artifact_manager, logger
-        )
-        self.evaluation_orchestrator = EvaluationOrchestrator(
-            config, evaluator, data_loader, self.artifact_manager, logger
-        )
+        self.verification_orchestrator = VerificationOrchestrator(config, verifier, data_loader, self.artifact_manager)
+        self.evaluation_orchestrator = EvaluationOrchestrator(config, evaluator, data_loader, self.artifact_manager)
 
     def load_pytorch_model(self, checkpoint_path: str, context: ExportContext) -> Any:
         raise NotImplementedError(f"{self.__class__.__name__}.load_pytorch_model() must be implemented by subclasses.")
@@ -104,8 +118,8 @@ class BaseDeploymentRunner:
         results.verification_results = self.verification_orchestrator.run()
         results.evaluation_results = self.evaluation_orchestrator.run()
 
-        self.logger.info("\n" + "=" * 80)
-        self.logger.info("Deployment Complete!")
-        self.logger.info("=" * 80)
+        logger.info("\n" + "=" * 80)
+        logger.info("Deployment Complete!")
+        logger.info("=" * 80)
 
         return results

@@ -153,6 +153,69 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
             return input_name, output_names[0]
         return input_name, output_names
 
+    def _run_engine_inference(
+        self,
+        context: trt.IExecutionContext,
+        input_name: str,
+        input_array: np.ndarray,
+        output_names: List[str],
+    ) -> Tuple[Dict[str, np.ndarray], float]:
+        """Run one TensorRT context end-to-end and return outputs plus pure-GPU time.
+
+        Allocates device buffers, copies the input host->device, executes the context
+        while timing it with CUDA events, copies every output device->host, and reads
+        the elapsed GPU time back while the stream is still alive. Shared by the
+        single-output voxel encoder and the multi-output backbone/head stages.
+
+        Args:
+            context: Execution context whose engine exposes ``input_name``/``output_names``.
+            input_name: Engine input tensor name (its shape is set from ``input_array``).
+            input_array: Contiguous float32 host input.
+            output_names: Engine output tensor names, in the desired return order.
+
+        Returns:
+            Tuple of (outputs-by-name as host ndarrays, pure-GPU time in ms).
+        """
+        context.set_input_shape(input_name, input_array.shape)
+
+        # Output shapes can depend on the input shape, so read them only after set_input_shape.
+        outputs: Dict[str, np.ndarray] = {}
+        for name in output_names:
+            output_array = np.empty(context.get_tensor_shape(name), dtype=np.float32)
+            if not output_array.flags["C_CONTIGUOUS"]:
+                output_array = np.ascontiguousarray(output_array)
+            outputs[name] = output_array
+
+        with TensorRTResourceManager() as manager:
+            d_input = manager.allocate(input_array.nbytes)
+            d_outputs = {name: manager.allocate(arr.nbytes) for name, arr in outputs.items()}
+            stream = manager.stream
+
+            context.set_tensor_address(input_name, int(d_input))
+            for name in output_names:
+                context.set_tensor_address(name, int(d_outputs[name]))
+
+            # Memory transfer: CPU -> GPU
+            cuda.memcpy_htod_async(d_input, input_array, stream)
+
+            # Record start event and execute inference
+            start_event = cuda.Event()
+            end_event = cuda.Event()
+            start_event.record(stream)
+            context.execute_async_v3(stream_handle=stream.handle)
+            end_event.record(stream)
+
+            # Memory transfer: GPU -> CPU
+            for name in output_names:
+                cuda.memcpy_dtoh_async(outputs[name], d_outputs[name], stream)
+            manager.synchronize()
+
+            # Read GPU timing while the stream is still alive (events are complete after
+            # synchronize); avoids reading across a stream that has been released.
+            gpu_ms = end_event.time_since(start_event)
+
+        return outputs, gpu_ms
+
     @override
     def run_voxel_encoder(self, input_features: torch.Tensor) -> torch.Tensor:
         """Run voxel encoder using TensorRT.
@@ -172,41 +235,12 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
             raise RuntimeError("pts_voxel_encoder context is None - likely failed to initialize due to GPU OOM")
 
         input_array = self.to_numpy(input_features, dtype=np.float32)
-
         input_name, output_name = self._get_io_names(engine, single_output=True)
-        context.set_input_shape(input_name, input_array.shape)
-        output_shape = context.get_tensor_shape(output_name)
-        output_array = np.empty(output_shape, dtype=np.float32)
-        if not output_array.flags["C_CONTIGUOUS"]:
-            output_array = np.ascontiguousarray(output_array)
 
-        with TensorRTResourceManager() as manager:
-            d_input = manager.allocate(input_array.nbytes)
-            d_output = manager.allocate(output_array.nbytes)
-            stream = manager.stream
+        outputs, gpu_ms = self._run_engine_inference(context, input_name, input_array, [output_name])
+        self._gpu_stage_ms["voxel_encoder_ms"] = gpu_ms
 
-            context.set_tensor_address(input_name, int(d_input))
-            context.set_tensor_address(output_name, int(d_output))
-
-            # Memory transfer: CPU -> GPU
-            cuda.memcpy_htod_async(d_input, input_array, stream)
-
-            # Record start event and execute inference
-            start_event = cuda.Event()
-            end_event = cuda.Event()
-            start_event.record(stream)
-            context.execute_async_v3(stream_handle=stream.handle)
-            end_event.record(stream)
-
-            # Memory transfer: GPU -> CPU
-            cuda.memcpy_dtoh_async(output_array, d_output, stream)
-            manager.synchronize()
-
-            # Read GPU timing while the stream is still alive (events are complete after
-            # synchronize); avoids reading across a stream that has been released.
-            self._gpu_stage_ms["voxel_encoder_ms"] = end_event.time_since(start_event)
-
-        voxel_features = torch.from_numpy(output_array).to(self.torch_device)
+        voxel_features = torch.from_numpy(outputs[output_name]).to(self.torch_device)
         return self.squeeze_voxel_features(voxel_features)
 
     @override
@@ -229,9 +263,7 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
             raise RuntimeError("pts_backbone_neck_head context is None - likely failed to initialize due to GPU OOM")
 
         input_array = self.to_numpy(spatial_features, dtype=np.float32)
-
         input_name, trt_output_names = self._get_io_names(engine, single_output=False)
-        context.set_input_shape(input_name, input_array.shape)
 
         expected_output_names = [
             out.name for out in self._components_cfg.get_component("pts_backbone_neck_head").io.outputs
@@ -239,43 +271,10 @@ class CenterPointTensorRTPipeline(GPUResourceMixin, CenterPointInferencePipeline
         # Validate and order outputs (CenterPoint postprocess depends on the config order).
         output_names = self.order_head_outputs(trt_output_names, expected_output_names)
 
-        output_arrays = {}
-        for output_name in output_names:
-            output_shape = context.get_tensor_shape(output_name)
-            output_array = np.empty(output_shape, dtype=np.float32)
-            if not output_array.flags["C_CONTIGUOUS"]:
-                output_array = np.ascontiguousarray(output_array)
-            output_arrays[output_name] = output_array
+        outputs, gpu_ms = self._run_engine_inference(context, input_name, input_array, output_names)
+        self._gpu_stage_ms["backbone_head_ms"] = gpu_ms
 
-        with TensorRTResourceManager() as manager:
-            d_input = manager.allocate(input_array.nbytes)
-            d_outputs = {name: manager.allocate(arr.nbytes) for name, arr in output_arrays.items()}
-            stream = manager.stream
-
-            context.set_tensor_address(input_name, int(d_input))
-            for output_name in output_names:
-                context.set_tensor_address(output_name, int(d_outputs[output_name]))
-
-            # Memory transfer: CPU -> GPU
-            cuda.memcpy_htod_async(d_input, input_array, stream)
-
-            # Record start event and execute inference
-            start_event = cuda.Event()
-            end_event = cuda.Event()
-            start_event.record(stream)
-            context.execute_async_v3(stream_handle=stream.handle)
-            end_event.record(stream)
-
-            # Memory transfer: GPU -> CPU
-            for output_name in output_names:
-                cuda.memcpy_dtoh_async(output_arrays[output_name], d_outputs[output_name], stream)
-
-            manager.synchronize()
-
-            # Read GPU timing while the stream is still alive (see run_voxel_encoder).
-            self._gpu_stage_ms["backbone_head_ms"] = end_event.time_since(start_event)
-
-        return [torch.from_numpy(output_arrays[name]).to(self.torch_device) for name in output_names]
+        return [torch.from_numpy(outputs[name]).to(self.torch_device) for name in output_names]
 
     @override
     def run_model(
