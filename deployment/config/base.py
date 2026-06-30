@@ -20,6 +20,7 @@ from deployment.config.schema import (
     EvaluationConfig,
     ExportConfig,
     OnnxConfig,
+    QuantizationConfig,
     TensorRTConfig,
     VerificationConfig,
     VerificationScenario,
@@ -62,6 +63,7 @@ class BaseDeploymentConfig:
         self._tensorrt_config = TensorRTConfig.from_dict(deploy_cfg.get("tensorrt_config", {}))
         self.evaluation_config = EvaluationConfig.from_dict(deploy_cfg.get("evaluation", {}))
         self.verification_config = VerificationConfig.from_dict(deploy_cfg.get("verification", {}))
+        self.quantization_config = QuantizationConfig.from_dict(self._collect_quantization_dict(deploy_cfg))
         self._deploy_log_path = self._parse_deploy_log_path(deploy_cfg.get("deploy_log_path", "deployment.log"))
 
         # Runtime/environment validation (torch/cuda)
@@ -71,6 +73,17 @@ class BaseDeploymentConfig:
     def _parse_deploy_log_path(raw: Optional[str]) -> Optional[str]:
         """Parse deploy_log_path; None or blank disables file logging."""
         return raw.strip() or None if raw is not None else None
+
+    @staticmethod
+    def _collect_quantization_dict(deploy_cfg: Config) -> dict:
+        """Assemble the raw quantization dict, folding the top-level BEVFusion
+        ``spconv_int8_fp16_layers`` key in when it is not already nested under
+        ``quantization``. Returns an empty dict when no quantization is configured."""
+        quant_raw = dict(deploy_cfg.get("quantization", {}) or {})
+        top_level_fp16_layers = deploy_cfg.get("spconv_int8_fp16_layers")
+        if top_level_fp16_layers is not None and "spconv_int8_fp16_layers" not in quant_raw:
+            quant_raw["spconv_int8_fp16_layers"] = top_level_fp16_layers
+        return quant_raw
 
     @staticmethod
     def _validate_checkpoint_path(checkpoint_path: str) -> str:
@@ -143,6 +156,16 @@ class BaseDeploymentConfig:
         work_dir = Path(self.export_config.work_dir).expanduser()
         return str((work_dir / log_path).resolve(strict=False))
 
+    @property
+    def deploy_cfg(self) -> Config:
+        """Raw deploy-config object (read-only).
+
+        Surfaces the original MMEngine ``Config`` so project-specific export pipelines can read
+        project-only keys (e.g. BEVFusion's ``fuse_spconv_bn``, ``spconv_int8_fp16_layers``,
+        ``bevfusion_merge``, ``spconv_do_sort``) that the typed sections intentionally do not model.
+        """
+        return self._deploy_cfg
+
     def get_verification_scenarios(self, export_mode: ExportMode) -> Tuple[VerificationScenario, ...]:
         """
         Get verification scenarios for the given export mode.
@@ -192,4 +215,5 @@ class BaseDeploymentConfig:
             precision_policy=self._tensorrt_config.precision_policy,
             max_workspace_size=self._tensorrt_config.max_workspace_size,
             model_input=model_input,
+            plugin_libraries=self._tensorrt_config.plugin_libraries,
         )

@@ -93,11 +93,16 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         rot_y_axis_reference = self._extract_rot_y_axis_reference(context)
         logger.info("Export option rot_y_axis_reference = %s", rot_y_axis_reference)
 
+        quantization = dict(self.config.quantization_config.raw)
+        if quantization.get("enabled", False):
+            logger.info("Quantization enabled (mode=%s); loading quantized checkpoint.", quantization.get("mode"))
+
         model, _ = build_centerpoint_onnx_model(
             base_model_cfg=self.model_cfg,
             checkpoint_path=checkpoint_path,
             device=DeviceSpec.from_value("cpu"),
             rot_y_axis_reference=rot_y_axis_reference,
+            quantization=quantization,
         )
         return model
 
