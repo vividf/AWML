@@ -20,29 +20,53 @@ Usage:
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from perception_eval.common.dataset import FrameGroundTruth
 from perception_eval.common.object2d import DynamicObject2D
 from perception_eval.common.schema import FrameID
-from perception_eval.config.perception_evaluation_config import PerceptionEvaluationConfig
 from perception_eval.evaluation.metrics import MetricsScore
-from perception_eval.evaluation.result.perception_frame_config import (
-    CriticalObjectFilterConfig,
-    PerceptionPassFailConfig,
-)
 from perception_eval.manager import PerceptionEvaluationManager
 
 from deployment.core.metrics.base_metrics_interface import (
-    VALID_2D_FRAME_IDS,
     BaseMetricsConfig,
     BaseMetricsInterface,
-    ClassificationSummary,
+    validate_2d_frame_id,
 )
 
 logger = logging.getLogger(__name__)
+
+# Single-evaluator task: register the evaluator under this name (empty => no key prefix).
+_DEFAULT_EVALUATOR = ""
+
+
+@dataclass(frozen=True)
+class ClassificationSummary:
+    """Structured summary for classification metrics."""
+
+    accuracy: float = 0.0
+    precision: float = 0.0
+    recall: float = 0.0
+    f1score: float = 0.0
+    per_class_accuracy: Dict[str, float] = field(default_factory=dict)
+    confusion_matrix: List[List[int]] = field(default_factory=list)
+    num_samples: int = 0
+    detailed_metrics: Dict[str, float] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to a serializable dictionary."""
+        return {
+            "accuracy": self.accuracy,
+            "precision": self.precision,
+            "recall": self.recall,
+            "f1score": self.f1score,
+            "per_class_accuracy": dict(self.per_class_accuracy),
+            "confusion_matrix": [list(row) for row in self.confusion_matrix],
+            "num_samples": self.num_samples,
+            "detailed_metrics": dict(self.detailed_metrics),
+        }
 
 
 @dataclass(frozen=True)
@@ -63,10 +87,7 @@ class ClassificationMetricsConfig(BaseMetricsConfig):
     frame_pass_fail_config: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
-        if self.frame_id not in VALID_2D_FRAME_IDS:
-            raise ValueError(
-                f"Invalid frame_id '{self.frame_id}' for classification. " f"Valid options: {VALID_2D_FRAME_IDS}"
-            )
+        validate_2d_frame_id(self.frame_id, "classification")
 
         if self.evaluation_config_dict is None:
             object.__setattr__(
@@ -133,34 +154,25 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
         super().__init__(config)
         self.config: ClassificationMetricsConfig = config
 
-        self.perception_eval_config = PerceptionEvaluationConfig(
-            dataset_paths=data_root,
-            frame_id=config.frame_id,
+        self._evaluator_specs[_DEFAULT_EVALUATOR] = self._build_evaluator_spec(
+            config.evaluation_config_dict,
+            data_root=data_root,
             result_root_directory=result_root_directory,
-            evaluation_config_dict=config.evaluation_config_dict,
-            load_raw_data=False,
+            critical_object_filter_config=config.critical_object_filter_config,
+            frame_pass_fail_config=config.frame_pass_fail_config,
         )
 
-        self.critical_object_filter_config = CriticalObjectFilterConfig(
-            evaluator_config=self.perception_eval_config,
-            **config.critical_object_filter_config,
-        )
-
-        self.frame_pass_fail_config = PerceptionPassFailConfig(
-            evaluator_config=self.perception_eval_config,
-            **config.frame_pass_fail_config,
-        )
-
-        self.evaluator: Optional[PerceptionEvaluationManager] = None
+        # Matched per-frame results from the last compute, captured for the confusion matrix.
+        self._frame_results: Optional[List[Any]] = None
 
     def reset(self) -> None:
         """Reset the interface for a new evaluation session."""
-        self.evaluator = PerceptionEvaluationManager(
-            evaluation_config=self.perception_eval_config,
-            load_ground_truth=False,
-            metric_output_dir=None,
-        )
-        self._frame_count = 0
+        super().reset()
+        self._frame_results = None
+
+    def _capture_evaluator(self, name: str, evaluator: PerceptionEvaluationManager) -> None:
+        """Capture matched per-frame results for the confusion matrix (single evaluator)."""
+        self._frame_results = list(evaluator.frame_results)
 
     def _create_dynamic_object_2d(
         self,
@@ -186,7 +198,7 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
         probabilities: Optional[List[float]] = None,
         frame_name: Optional[str] = None,
     ) -> None:
-        """Add a single prediction and ground truth for evaluation.
+        """Buffer a single prediction and ground truth for evaluation.
 
         Args:
             prediction: Predicted class index.
@@ -194,9 +206,6 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
             probabilities: Optional probability scores for each class.
             frame_name: Optional name for the frame.
         """
-        if self.evaluator is None:
-            self.reset()
-
         unix_time = int(time.time() * 1e6)
         if frame_name is None:
             frame_name = str(self._frame_count)
@@ -206,7 +215,6 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
         if probabilities is not None and 0 <= prediction < len(probabilities):
             score = float(probabilities[prediction])
 
-        # Create prediction and ground truth objects
         estimated_object = self._create_dynamic_object_2d(
             label_index=prediction, unix_time=unix_time, score=score, uuid=frame_name
         )
@@ -222,35 +230,7 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
             raw_data=None,
         )
 
-        try:
-            self.evaluator.add_frame_result(
-                unix_time=unix_time,
-                ground_truth_now_frame=frame_ground_truth,
-                estimated_objects=[estimated_object],
-                critical_object_filter_config=self.critical_object_filter_config,
-                frame_pass_fail_config=self.frame_pass_fail_config,
-            )
-            self._frame_count += 1
-        except Exception as e:
-            logger.warning("Failed to add frame %s: %s", frame_name, e)
-
-    def compute_metrics(self) -> Dict[str, float]:
-        """Compute metrics from all added predictions.
-
-        Returns:
-            Dictionary of metrics including accuracy, precision, recall, f1score,
-            and per-class metrics.
-        """
-        if self.evaluator is None or self._frame_count == 0:
-            logger.warning("No samples to evaluate")
-            return {}
-
-        try:
-            metrics_score: MetricsScore = self.evaluator.get_scene_result()
-            return self._process_metrics_score(metrics_score)
-        except Exception:
-            logger.exception("Error computing metrics")
-            return {}
+        self._buffer_frame(unix_time, [estimated_object], frame_ground_truth)
 
     @staticmethod
     def _summarize_classification_score(classification_score: Any) -> Tuple[float, float, float, float]:
@@ -268,19 +248,19 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
         """Coerce inf/nan (e.g. from empty divisions or 0/0) to 0.0."""
         return float(value) if np.isfinite(value) else 0.0
 
-    def _process_metrics_score(self, metrics_score: MetricsScore) -> Dict[str, float]:
+    def _process_metrics_score(self, metrics_score: MetricsScore, prefix: Optional[str] = None) -> Dict[str, float]:
         """Process MetricsScore into a flat dictionary."""
-        metric_dict = {}
+        metric_dict: Dict[str, float] = {}
 
         for classification_score in metrics_score.classification_scores:
-            # Get overall metrics
+            # Overall metrics
             accuracy, precision, recall, f1score = self._summarize_classification_score(classification_score)
             metric_dict["accuracy"] = self._finite_or_zero(accuracy)
             metric_dict["precision"] = self._finite_or_zero(precision)
             metric_dict["recall"] = self._finite_or_zero(recall)
             metric_dict["f1score"] = self._finite_or_zero(f1score)
 
-            # Process per-class metrics
+            # Per-class metrics
             for acc in classification_score.accuracies:
                 if not acc.target_labels:
                     continue
@@ -309,12 +289,16 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
             2D numpy array where cm[i][j] = count of ground truth i predicted as j.
         """
         num_classes = len(self.class_names)
-        if self.evaluator is None or self._frame_count == 0:
+        if self._frame_count == 0:
             return np.zeros((num_classes, num_classes), dtype=int)
+
+        # Matched results are produced during compute_metrics; ensure it has run.
+        if self._frame_results is None:
+            self.compute_metrics()
 
         confusion_matrix = np.zeros((num_classes, num_classes), dtype=int)
 
-        for frame_result in self.evaluator.frame_results:
+        for frame_result in self._frame_results or []:
             if not frame_result.object_results:
                 continue
 
@@ -325,7 +309,6 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
                 pred_name = obj_result.estimated_object.semantic_label.name
                 gt_name = obj_result.ground_truth_object.semantic_label.name
 
-                # Find indices
                 pred_idx = next(
                     (i for i, n in enumerate(self.class_names) if n.lower() == pred_name.lower()),
                     -1,

@@ -5,6 +5,10 @@ This module provides an interface to compute 3D detection metrics (mAP, mAPH)
 using autoware_perception_evaluation, ensuring consistent metrics between
 training evaluation (T4MetricV2) and deployment evaluation.
 
+Like T4MetricV2, multiple evaluators are created for different distance ranges. Frames are
+buffered once and replayed into each range's evaluator at compute time (see
+``BaseMetricsInterface``), so peak memory is independent of the number of ranges.
+
 Usage:
     config = Detection3DMetricsConfig(
         class_names=["car", "truck", "bus", "bicycle", "pedestrian"],
@@ -21,30 +25,28 @@ Usage:
 
     # Compute metrics
     metrics = interface.compute_metrics()
-    # Returns: {"mAP_center_distance_bev_0.5": 0.7, ...}
+    # Returns: {"bev_center_0.0-121.0_mAP_center_distance_bev": 0.7, ...}
 """
 
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 from perception_eval.common.dataset import FrameGroundTruth
 from perception_eval.common.object import DynamicObject
 from perception_eval.common.shape import Shape, ShapeType
-from perception_eval.config.perception_evaluation_config import PerceptionEvaluationConfig
 from perception_eval.evaluation.metrics import MetricsScore
-from perception_eval.evaluation.result.perception_frame_config import (
-    CriticalObjectFilterConfig,
-    PerceptionPassFailConfig,
-)
-from perception_eval.manager import PerceptionEvaluationManager
 from pyquaternion import Quaternion
 
-from deployment.core.metrics.base_metrics_interface import BaseMetricsConfig, BaseMetricsInterface, DetectionSummary
+from deployment.core.metrics.base_metrics_interface import BaseMetricsConfig
+from deployment.core.metrics.detection_base import DetectionMetricsInterface
 
 logger = logging.getLogger(__name__)
+
+# Prefix for the per-distance-range evaluator names (and thus metric-key prefixes).
+_RANGE_FILTER_NAME = "bev_center"
 
 
 @dataclass(frozen=True)
@@ -90,53 +92,60 @@ class Detection3DMetricsConfig(BaseMetricsConfig):
     frame_pass_fail_config: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
-        # Set default evaluation config if not provided
         if self.evaluation_config_dict is None:
-            default_eval_config = {
-                "evaluation_task": "detection",
-                "target_labels": self.class_names,
-                "center_distance_bev_thresholds": [0.5, 1.0, 2.0, 4.0],
-                "plane_distance_thresholds": [2.0, 4.0],
-                "iou_2d_thresholds": None,
-                "iou_3d_thresholds": None,
-                "label_prefix": "autoware",
-                "max_distance": 121.0,
-                "min_distance": -121.0,
-                "min_point_numbers": 0,
-            }
-            object.__setattr__(self, "evaluation_config_dict", default_eval_config)
+            object.__setattr__(
+                self,
+                "evaluation_config_dict",
+                {
+                    "evaluation_task": "detection",
+                    "target_labels": self.class_names,
+                    "center_distance_bev_thresholds": [0.5, 1.0, 2.0, 4.0],
+                    "plane_distance_thresholds": [2.0, 4.0],
+                    "iou_2d_thresholds": None,
+                    "iou_3d_thresholds": None,
+                    "label_prefix": "autoware",
+                    "max_distance": 121.0,
+                    "min_distance": -121.0,
+                    "min_point_numbers": 0,
+                },
+            )
 
-        # Set default critical object filter config if not provided
         if self.critical_object_filter_config is None:
             num_classes = len(self.class_names)
-            default_filter_config = {
-                "target_labels": self.class_names,
-                "ignore_attributes": None,
-                "max_distance_list": [121.0] * num_classes,
-                "min_distance_list": [-121.0] * num_classes,
-            }
-            object.__setattr__(self, "critical_object_filter_config", default_filter_config)
+            object.__setattr__(
+                self,
+                "critical_object_filter_config",
+                {
+                    "target_labels": self.class_names,
+                    "ignore_attributes": None,
+                    "max_distance_list": [121.0] * num_classes,
+                    "min_distance_list": [-121.0] * num_classes,
+                },
+            )
 
-        # Set default frame pass fail config if not provided
         if self.frame_pass_fail_config is None:
             num_classes = len(self.class_names)
-            default_pass_fail_config = {
-                "target_labels": self.class_names,
-                "matching_threshold_list": [2.0] * num_classes,
-                "confidence_threshold_list": None,
-            }
-            object.__setattr__(self, "frame_pass_fail_config", default_pass_fail_config)
+            object.__setattr__(
+                self,
+                "frame_pass_fail_config",
+                {
+                    "target_labels": self.class_names,
+                    "matching_threshold_list": [2.0] * num_classes,
+                    "confidence_threshold_list": None,
+                },
+            )
 
 
-class Detection3DMetricsInterface(BaseMetricsInterface):
+class Detection3DMetricsInterface(DetectionMetricsInterface):
     # TODO(vividf): refactor this class after refactoring T4MetricV2
     """
     Interface for computing 3D detection metrics using autoware_perception_evaluation.
 
-    This interface provides a simplified interface for the deployment framework to
-    compute mAP, mAPH, and other detection metrics that are consistent with
-    the T4MetricV2 used during training.
+    Computes mAP, mAPH, and other detection metrics consistent with the T4MetricV2 used
+    during training, evaluated over multiple distance ranges.
     """
+
+    _supports_aph = True
 
     def __init__(
         self,
@@ -153,16 +162,19 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
             result_root_directory: Directory for saving evaluation results.
         """
         super().__init__(config)
-        self.data_root = data_root
-        self.result_root_directory = result_root_directory
+        self.config: Detection3DMetricsConfig = config
 
-        cfg_dict = config.evaluation_config_dict
+        self._bev_distance_ranges = self._resolve_distance_ranges(config.evaluation_config_dict)
+        self._create_evaluator_specs(config, data_root, result_root_directory)
+
+    @staticmethod
+    def _resolve_distance_ranges(cfg_dict: Optional[Mapping[str, Any]]) -> List[tuple]:
+        """Validate and expand min/max distance into a list of (min, max) ranges."""
         if cfg_dict is None:
             cfg_dict = {}
         if not isinstance(cfg_dict, Mapping):
             raise TypeError(f"evaluation_config_dict must be a dict, got {type(cfg_dict).__name__}")
 
-        # Create multiple evaluators for different distance ranges (like T4MetricV2)
         min_distance = cfg_dict.get("min_distance")
         max_distance = cfg_dict.get("max_distance")
 
@@ -177,174 +189,74 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
 
         if len(min_distance) != len(max_distance):
             raise ValueError(
-                f"min_distance and max_distance must have the same length. "
+                "min_distance and max_distance must have the same length. "
                 f"Got len(min_distance)={len(min_distance)}, len(max_distance)={len(max_distance)}"
             )
 
         if not min_distance or not max_distance:
             raise ValueError("min_distance and max_distance lists cannot be empty")
 
-        # Create distance ranges and evaluators
-        self._bev_distance_ranges = list(zip(min_distance, max_distance))
-        self.evaluators: Dict[str, Dict[str, Any]] = {}
-        self._create_evaluators(config)
+        return list(zip(min_distance, max_distance))
 
-        # Per-frame objects are buffered here and replayed per distance range at
-        # compute time; see reset()/compute_metrics for the memory rationale.
-        self._frames: List[Tuple[float, List[DynamicObject], FrameGroundTruth]] = []
-        self._cached_all_metrics: Optional[Dict[str, float]] = None
-        self._last_metrics_by_eval_name: Dict[str, MetricsScore] = {}
-
-    def _create_evaluators(self, config: Detection3DMetricsConfig) -> None:
-        """Create multiple evaluators for different distance ranges (like T4MetricV2)."""
-        range_filter_name = "bev_center"
+    def _create_evaluator_specs(
+        self,
+        config: Detection3DMetricsConfig,
+        data_root: str,
+        result_root_directory: str,
+    ) -> None:
+        """Create one evaluator spec per distance range (like T4MetricV2)."""
+        base_eval_config = config.evaluation_config_dict
+        if base_eval_config is None:
+            base_eval_config = {}
+        if not isinstance(base_eval_config, Mapping):
+            raise TypeError(f"evaluation_config_dict must be a dict, got {type(base_eval_config).__name__}")
 
         for min_dist, max_dist in self._bev_distance_ranges:
-            # Create a copy of evaluation_config_dict with single distance values
-            eval_config_dict_raw = config.evaluation_config_dict
-            if eval_config_dict_raw is None:
-                eval_config_dict_raw = {}
-            if not isinstance(eval_config_dict_raw, Mapping):
-                raise TypeError(f"evaluation_config_dict must be a dict, got {type(eval_config_dict_raw).__name__}")
-            eval_config_dict = dict(eval_config_dict_raw)
+            eval_config_dict = dict(base_eval_config)
             eval_config_dict["min_distance"] = min_dist
             eval_config_dict["max_distance"] = max_dist
 
-            # Create perception evaluation config for this range
-            evaluator_config = PerceptionEvaluationConfig(
-                dataset_paths=self.data_root,
-                frame_id=config.frame_id,
-                result_root_directory=self.result_root_directory,
-                evaluation_config_dict=eval_config_dict,
-                load_raw_data=False,
+            name = f"{_RANGE_FILTER_NAME}_{min_dist}-{max_dist}"
+            self._evaluator_specs[name] = self._build_evaluator_spec(
+                eval_config_dict,
+                data_root=data_root,
+                result_root_directory=result_root_directory,
+                critical_object_filter_config=config.critical_object_filter_config,
+                frame_pass_fail_config=config.frame_pass_fail_config,
             )
 
-            # Create critical object filter config
-            critical_object_filter_config = CriticalObjectFilterConfig(
-                evaluator_config=evaluator_config,
-                **config.critical_object_filter_config,
-            )
-
-            # Create frame pass fail config
-            frame_pass_fail_config = PerceptionPassFailConfig(
-                evaluator_config=evaluator_config,
-                **config.frame_pass_fail_config,
-            )
-
-            evaluator_name = f"{range_filter_name}_{min_dist}-{max_dist}"
-
-            self.evaluators[evaluator_name] = {
-                "evaluator_config": evaluator_config,
-                "critical_object_filter_config": critical_object_filter_config,
-                "frame_pass_fail_config": frame_pass_fail_config,
-            }
-
-    def reset(self) -> None:
-        """Reset the interface for a new evaluation session.
-
-        Evaluators are created lazily and one at a time in ``compute_metrics`` (each
-        distance range is evaluated then released), so here we only clear the buffered
-        frames and cached results. This keeps peak memory independent of the number of
-        distance ranges.
-        """
-        self._frames = []
-        self._frame_count = 0
-        self._cached_all_metrics = None
-        self._last_metrics_by_eval_name = {}
-
-    def _predictions_to_dynamic_objects(
+    def _to_dynamic_objects_3d(
         self,
-        predictions: List[Dict[str, Any]],
+        entries: List[Dict[str, Any]],
         unix_time: float,
+        *,
+        is_gt: bool,
     ) -> List[DynamicObject]:
-        """Convert prediction dicts to DynamicObject instances.
+        """Convert prediction/ground-truth dicts to DynamicObject instances.
 
         Args:
-            predictions: List of prediction dicts with keys:
+            entries: List of dicts with keys:
                 - bbox_3d: [x, y, z, l, w, h, yaw] or [x, y, z, l, w, h, yaw, vx, vy]
                   (Same format as mmdet3d LiDARInstance3DBoxes)
                 - label: int (class index)
-                - score: float (confidence score)
+                - score: float (confidence; ignored for ground truth, which is always 1.0)
+                - num_lidar_pts: int (ground truth only, optional)
             unix_time: Unix timestamp for the frame.
+            is_gt: Whether ``entries`` are ground truths (forces score 1.0 and reads point counts).
 
         Returns:
             List of DynamicObject instances.
         """
-        estimated_objects = []
-        for pred in predictions:
-            bbox = pred.get("bbox_3d", [])
+        kind = "ground truth" if is_gt else "prediction"
+
+        objects: List[DynamicObject] = []
+        for entry in entries:
+            bbox = entry.get("bbox_3d", [])
             if len(bbox) < 7:
                 continue
 
-            # Extract bbox components
             # mmdet3d LiDARInstance3DBoxes format: [x, y, z, l, w, h, yaw, vx, vy]
-            # where l=length, w=width, h=height
-            x, y, z = bbox[0], bbox[1], bbox[2]
-            l, w, h = bbox[3], bbox[4], bbox[5]
-            yaw = bbox[6]
-
-            if not np.all(np.isfinite([x, y, z, l, w, h, yaw])):
-                logger.warning("Skipping prediction with non-finite bbox_3d: %s", bbox)
-                continue
-
-            # Velocity (optional)
-            vx = bbox[7] if len(bbox) > 7 else 0.0
-            vy = bbox[8] if len(bbox) > 8 else 0.0
-
-            # Create quaternion from yaw
-            orientation = Quaternion(np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
-
-            # Get label
-            label_idx = pred.get("label", 0)
-            semantic_label = self._convert_index_to_label(int(label_idx))
-
-            # Get score
-            score = float(pred.get("score", 0.0))
-
-            # Shape size follows autoware_perception_evaluation convention: (length, width, height)
-            dynamic_obj = DynamicObject(
-                unix_time=unix_time,
-                frame_id=self.frame_id,
-                position=(x, y, z),
-                orientation=orientation,
-                shape=Shape(shape_type=ShapeType.BOUNDING_BOX, size=(l, w, h)),
-                velocity=(vx, vy, 0.0),
-                semantic_score=score,
-                semantic_label=semantic_label,
-            )
-            estimated_objects.append(dynamic_obj)
-
-        return estimated_objects
-
-    def _ground_truths_to_frame_ground_truth(
-        self,
-        ground_truths: List[Dict[str, Any]],
-        unix_time: float,
-        frame_name: str = "0",
-    ) -> FrameGroundTruth:
-        """Convert ground truth dicts to FrameGroundTruth instance.
-
-        Args:
-            ground_truths: List of ground truth dicts with keys:
-                - bbox_3d: [x, y, z, l, w, h, yaw] or [x, y, z, l, w, h, yaw, vx, vy]
-                  (Same format as mmdet3d LiDARInstance3DBoxes)
-                - label: int (class index)
-                - num_lidar_pts: int (optional, number of lidar points)
-            unix_time: Unix timestamp for the frame.
-            frame_name: Name/ID of the frame.
-
-        Returns:
-            FrameGroundTruth instance.
-        """
-        gt_objects = []
-        for gt in ground_truths:
-            bbox = gt.get("bbox_3d", [])
-            if len(bbox) < 7:
-                continue
-
-            # Extract bbox components
-            # mmdet3d LiDARInstance3DBoxes format: [x, y, z, l, w, h, yaw, vx, vy]
-            # where l=length, w=width, h=height
+            # where l=length, w=width, h=height.
             x, y, z = bbox[0], bbox[1], bbox[2]
             l, w, h = bbox[3], bbox[4], bbox[5]
             yaw = bbox[6]
@@ -352,44 +264,36 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
             # Skip non-finite boxes: a NaN/inf yaw produces a NaN quaternion that
             # silently corrupts matching across the whole frame.
             if not np.all(np.isfinite([x, y, z, l, w, h, yaw])):
-                logger.warning("Skipping ground truth with non-finite bbox_3d: %s", bbox)
+                logger.warning("Skipping %s with non-finite bbox_3d: %s", kind, bbox)
                 continue
 
-            # Velocity (optional)
             vx = bbox[7] if len(bbox) > 7 else 0.0
             vy = bbox[8] if len(bbox) > 8 else 0.0
 
-            # Create quaternion from yaw
             orientation = Quaternion(np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
+            semantic_label = self._convert_index_to_label(int(entry.get("label", 0)))
+            score = 1.0 if is_gt else float(entry.get("score", 0.0))
 
-            # Get label
-            label_idx = gt.get("label", 0)
-            semantic_label = self._convert_index_to_label(int(label_idx))
-
-            # Get point count (optional)
-            num_pts = gt.get("num_lidar_pts", 0)
+            kwargs: Dict[str, Any] = {}
+            if is_gt:
+                kwargs["pointcloud_num"] = int(entry.get("num_lidar_pts", 0))
 
             # Shape size follows autoware_perception_evaluation convention: (length, width, height)
-            dynamic_obj = DynamicObject(
-                unix_time=unix_time,
-                frame_id=self.frame_id,
-                position=(x, y, z),
-                orientation=orientation,
-                shape=Shape(shape_type=ShapeType.BOUNDING_BOX, size=(l, w, h)),
-                velocity=(vx, vy, 0.0),
-                semantic_score=1.0,  # GT always has score 1.0
-                semantic_label=semantic_label,
-                pointcloud_num=int(num_pts),
+            objects.append(
+                DynamicObject(
+                    unix_time=unix_time,
+                    frame_id=self.frame_id,
+                    position=(x, y, z),
+                    orientation=orientation,
+                    shape=Shape(shape_type=ShapeType.BOUNDING_BOX, size=(l, w, h)),
+                    velocity=(vx, vy, 0.0),
+                    semantic_score=score,
+                    semantic_label=semantic_label,
+                    **kwargs,
+                )
             )
-            gt_objects.append(dynamic_obj)
 
-        return FrameGroundTruth(
-            unix_time=unix_time,
-            frame_name=frame_name,
-            objects=gt_objects,
-            transforms=None,
-            raw_data=None,
-        )
+        return objects
 
     def add_frame(
         self,
@@ -397,242 +301,53 @@ class Detection3DMetricsInterface(BaseMetricsInterface):
         ground_truths: List[Dict[str, Any]],
         frame_name: Optional[str] = None,
     ) -> None:
-        """Add a frame of predictions and ground truths for evaluation.
+        """Buffer a frame of predictions and ground truths for evaluation.
 
         Args:
-            predictions: List of prediction dicts with keys:
-                - bbox_3d: [x, y, z, l, w, h, yaw] or [x, y, z, l, w, h, yaw, vx, vy]
-                - label: int (class index)
-                - score: float (confidence score)
-            ground_truths: List of ground truth dicts with keys:
-                - bbox_3d: [x, y, z, l, w, h, yaw] or [x, y, z, l, w, h, yaw, vx, vy]
-                - label: int (class index)
-                - num_lidar_pts: int (optional)
+            predictions: List of prediction dicts with keys bbox_3d, label, score.
+            ground_truths: List of ground truth dicts with keys bbox_3d, label, num_lidar_pts (optional).
             frame_name: Optional name for the frame.
         """
         unix_time = time.time()
         if frame_name is None:
             frame_name = str(self._frame_count)
 
-        # Build the perception_eval objects once and buffer them
-        estimated_objects = self._predictions_to_dynamic_objects(predictions, unix_time)
-        frame_ground_truth = self._ground_truths_to_frame_ground_truth(ground_truths, unix_time, frame_name)
+        estimated_objects = self._to_dynamic_objects_3d(predictions, unix_time, is_gt=False)
+        gt_objects = self._to_dynamic_objects_3d(ground_truths, unix_time, is_gt=True)
 
-        self._frames.append((unix_time, estimated_objects, frame_ground_truth))
-        self._frame_count += 1
-        self._cached_all_metrics = None  # invalidate cached results
+        frame_ground_truth = FrameGroundTruth(
+            unix_time=unix_time,
+            frame_name=frame_name,
+            objects=gt_objects,
+            transforms=None,
+            raw_data=None,
+        )
 
-    def compute_metrics(self) -> Dict[str, float]:
-        """Compute metrics from all added frames.
-
-        Returns:
-            Dictionary of metrics with keys like:
-                - mAP_center_distance_bev (mean AP across all classes, no threshold)
-                - mAPH_center_distance_bev (mean APH across all classes, no threshold)
-                - car_AP_center_distance_bev_0.5 (per-class AP with threshold)
-                - car_AP_center_distance_bev_1.0 (per-class AP with threshold)
-                - car_APH_center_distance_bev_0.5 (per-class APH with threshold)
-                - etc.
-                For multi-evaluator mode, metrics are prefixed with evaluator name:
-                - bev_center_0.0-50.0_mAP_center_distance_bev
-                - bev_center_0.0-50.0_car_AP_center_distance_bev_0.5
-                - bev_center_50.0-90.0_mAP_center_distance_bev
-                - etc.
-                Note: mAP/mAPH keys do not include threshold; only per-class AP/APH keys do.
-        """
-        if self._cached_all_metrics is not None:
-            return self._cached_all_metrics
-
-        if self._frame_count == 0:
-            logger.warning("No frames to evaluate")
-            return {}
-
-        # Evaluate one distance range at a time: build an evaluator, replay all buffered
-        # frames into it, summarize, then let it go out of scope before the next range so
-        # peak memory stays independent of the number of ranges.
-        scene_results: Dict[str, MetricsScore] = {}
-        all_metrics: Dict[str, float] = {}
-        for eval_name, eval_data in self.evaluators.items():
-            try:
-                evaluator = PerceptionEvaluationManager(
-                    evaluation_config=eval_data["evaluator_config"],
-                    load_ground_truth=False,
-                    metric_output_dir=None,
-                )
-                for unix_time, estimated_objects, frame_ground_truth in self._frames:
-                    evaluator.add_frame_result(
-                        unix_time=unix_time,
-                        ground_truth_now_frame=frame_ground_truth,
-                        estimated_objects=estimated_objects,
-                        critical_object_filter_config=eval_data["critical_object_filter_config"],
-                        frame_pass_fail_config=eval_data["frame_pass_fail_config"],
-                    )
-                metrics_score = evaluator.get_scene_result()
-                scene_results[eval_name] = metrics_score
-                all_metrics.update(self._process_metrics_score(metrics_score, prefix=eval_name))
-            except Exception as e:
-                logger.warning("Error computing metrics for %s: %s", eval_name, e)
-
-        # Cache for reuse by format_metrics_report() and the summary property.
-        self._last_metrics_by_eval_name = scene_results
-        self._cached_all_metrics = all_metrics
-        return all_metrics
+        self._buffer_frame(unix_time, estimated_objects, frame_ground_truth)
 
     def format_metrics_report(self) -> str:
-        """Format the metrics report as a human-readable string.
+        """Format the metrics report for all distance ranges as a human-readable string.
 
-        For multi-evaluator mode, returns reports for all evaluators with distance range labels.
-        Uses cached results from compute_metrics() if available to avoid recomputation.
+        Uses cached scene results from ``compute_metrics`` if available.
         """
-        # Use cached results if available, otherwise compute them
-        if not self._last_metrics_by_eval_name:
-            # Cache not available, compute now
+        if not self._last_scene_results:
             self.compute_metrics()
 
         reports = []
-        for eval_name, metrics_score in self._last_metrics_by_eval_name.items():
-            try:
-                # Extract distance range from evaluator name (e.g., "bev_center_0.0-50.0" -> "0.0-50.0")
-                distance_range = eval_name.replace("bev_center_", "")
-                reports.append(
-                    f"\n{'=' * 80}\n" f"Distance Range: {distance_range} m\n" f"{'=' * 80}\n" f"{metrics_score}"
-                )
-            except Exception as e:
-                logger.warning("Error formatting report for %s: %s", eval_name, e)
+        for eval_name, metrics_score in self._last_scene_results.items():
+            distance_range = eval_name.replace(f"{_RANGE_FILTER_NAME}_", "")
+            reports.append(
+                f"\n{'=' * 80}\n" f"Distance Range: {distance_range} m\n" f"{'=' * 80}\n" f"{metrics_score}"
+            )
 
         if not reports:
             raise RuntimeError("Failed to generate metrics report. Ensure that metrics have been computed.")
 
         return "\n".join(reports)
 
-    def _process_metrics_score(self, metrics_score: MetricsScore, prefix: Optional[str] = None) -> Dict[str, float]:
-        """Process MetricsScore into a flat dictionary.
-
-        Args:
-            metrics_score: MetricsScore instance from evaluator.
-            prefix: Optional prefix to add to metric keys (for multi-evaluator mode).
-
-        Returns:
-            Flat dictionary of metrics.
-        """
-        metric_dict = {}
-        key_prefix = f"{prefix}_" if prefix else ""
-
-        for map_instance in metrics_score.mean_ap_values:
-            matching_mode = map_instance.matching_mode.value.lower().replace(" ", "_")
-
-            # Process individual AP values
-            for label, aps in map_instance.label_to_aps.items():
-                label_name = label.value
-
-                for ap in aps:
-                    threshold = ap.matching_threshold
-                    ap_value = ap.ap
-
-                    # Create the metric key
-                    key = f"{key_prefix}{label_name}_AP_{matching_mode}_{threshold}"
-                    metric_dict[key] = ap_value
-
-            # Process individual APH values
-            label_to_aphs = getattr(map_instance, "label_to_aphs", None)
-            if label_to_aphs:
-                for label, aphs in label_to_aphs.items():
-                    label_name = label.value
-                    for aph in aphs:
-                        threshold = aph.matching_threshold
-                        aph_value = getattr(aph, "aph", None)
-                        if aph_value is None:
-                            aph_value = getattr(aph, "ap", None)
-                        if aph_value is None:
-                            continue
-                        key = f"{key_prefix}{label_name}_APH_{matching_mode}_{threshold}"
-                        metric_dict[key] = aph_value
-
-            # Add mAP and mAPH values
-            map_key = f"{key_prefix}mAP_{matching_mode}"
-            maph_key = f"{key_prefix}mAPH_{matching_mode}"
-            metric_dict[map_key] = map_instance.map
-            metric_dict[maph_key] = map_instance.maph
-
-        return metric_dict
-
-    @property
-    def summary(self) -> DetectionSummary:
-        """Get a summary of the evaluation including mAP and per-class metrics for all matching modes.
-
-        Only uses metrics from the last distance bucket.
-        """
-        metrics = self.compute_metrics()
-
+    def _select_summary_score(self) -> Optional[MetricsScore]:
+        """Summarize from the last (widest) distance bucket's score."""
         if not self._bev_distance_ranges:
-            return DetectionSummary(
-                mAP_by_mode={},
-                mAPH_by_mode={},
-                per_class_ap_by_mode={},
-                num_frames=self._frame_count,
-                detailed_metrics=metrics,
-            )
-
-        # Use the last distance bucket (should be the full range)
+            return None
         last_min_dist, last_max_dist = self._bev_distance_ranges[-1]
-        last_evaluator_name = f"bev_center_{last_min_dist}-{last_max_dist}"
-
-        last_metrics_score = self._last_metrics_by_eval_name.get(last_evaluator_name)
-        if last_metrics_score is None:
-            return DetectionSummary(
-                mAP_by_mode={},
-                mAPH_by_mode={},
-                per_class_ap_by_mode={},
-                num_frames=self._frame_count,
-                detailed_metrics=metrics,
-            )
-
-        last_bucket_metrics = self._process_metrics_score(last_metrics_score, prefix=None)
-
-        modes = self._extract_matching_modes(last_bucket_metrics)
-        if not modes:
-            return DetectionSummary(
-                mAP_by_mode={},
-                mAPH_by_mode={},
-                per_class_ap_by_mode={},
-                num_frames=self._frame_count,
-                detailed_metrics=metrics,
-            )
-
-        mAP_by_mode: Dict[str, float] = {}
-        mAPH_by_mode: Dict[str, float] = {}
-        per_class_ap_by_mode: Dict[str, Dict[str, float]] = {}
-
-        for mode in modes:
-            # Get mAP and mAPH directly from last bucket metrics
-            map_key = f"mAP_{mode}"
-            maph_key = f"mAPH_{mode}"
-
-            mAP_by_mode[mode] = last_bucket_metrics.get(map_key, 0.0)
-            mAPH_by_mode[mode] = last_bucket_metrics.get(maph_key, 0.0)
-
-            # Collect AP values per class for this mode from the last bucket
-            per_class_ap_values: Dict[str, List[float]] = {}
-            ap_key_separator = f"_AP_{mode}_"
-
-            for key, value in last_bucket_metrics.items():
-                idx = key.find(ap_key_separator)
-                if idx < 0:
-                    continue
-
-                # Label is the full substring before "_AP_{mode}_" (class names may
-                # themselves contain underscores, e.g. "traffic_light").
-                class_name = key[:idx]
-                if class_name:
-                    per_class_ap_values.setdefault(class_name, []).append(float(value))
-
-            if per_class_ap_values:
-                per_class_ap_by_mode[mode] = {k: float(np.mean(v)) for k, v in per_class_ap_values.items() if v}
-
-        return DetectionSummary(
-            mAP_by_mode=mAP_by_mode,
-            mAPH_by_mode=mAPH_by_mode,
-            per_class_ap_by_mode=per_class_ap_by_mode,
-            num_frames=self._frame_count,
-            detailed_metrics=metrics,
-        )
+        return self._last_scene_results.get(f"{_RANGE_FILTER_NAME}_{last_min_dist}-{last_max_dist}")
