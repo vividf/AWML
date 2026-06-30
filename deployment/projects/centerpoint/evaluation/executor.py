@@ -13,11 +13,11 @@ from typing_extensions import override
 
 from deployment.config.enums import Backend
 from deployment.config.schema import ComponentsConfig
-from deployment.core.device import DeviceSpec
 from deployment.evaluation.backend_executor import BackendExecutor
 from deployment.evaluation.evaluator_types import InferenceInput, ModelSpec
 from deployment.inference.base_inference_pipeline import BaseInferencePipeline
 from deployment.io.base_data_loader import BaseDataLoader
+from deployment.primitives.device import DeviceSpec
 from deployment.projects.centerpoint.inference.onnx_inference_pipeline import CenterPointONNXInferencePipeline
 from deployment.projects.centerpoint.inference.pytorch_inference_pipeline import CenterPointPyTorchInferencePipeline
 from deployment.projects.centerpoint.inference.tensorrt_inference_pipeline import CenterPointTensorRTInferencePipeline

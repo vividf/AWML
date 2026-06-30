@@ -8,7 +8,7 @@ import pytest
 
 from deployment.config.enums import Backend
 from deployment.config.schema import BackendEvalConfig
-from deployment.core.artifacts import Artifact, resolve_artifact_path
+from deployment.primitives.artifacts import Artifact, resolve_artifact_path
 from deployment.runtime.artifact_manager import ArtifactManager
 
 

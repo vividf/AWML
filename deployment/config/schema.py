@@ -14,8 +14,8 @@ from deployment.config.enums import (
     ExportMode,
     PrecisionPolicy,
 )
-from deployment.core.device import DeviceSpec
 from deployment.export.exporters.configs import TensorRTProfileConfig
+from deployment.primitives.device import DeviceSpec
 
 
 def _empty_mapping() -> Mapping[Any, Any]:

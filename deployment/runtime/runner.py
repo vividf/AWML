@@ -16,11 +16,11 @@ from typing import Any, Dict, Optional, Type
 from mmengine.config import Config
 
 from deployment.config.base import BaseDeploymentConfig
-from deployment.core.contexts import ExportContext
 from deployment.evaluation.backend_executor import BackendExecutor
 from deployment.evaluation.backend_verifier import BackendVerifier
 from deployment.evaluation.base_evaluator import BaseEvaluator
 from deployment.evaluation.output_comparator import OutputComparator
+from deployment.export.contexts import ExportContext
 from deployment.export.exporters.model_wrappers import BaseModelWrapper
 from deployment.export.pipelines.component_builder import DefaultComponentBuilder
 from deployment.export.pipelines.onnx_export_pipeline import OnnxExportPipeline

@@ -21,9 +21,9 @@ from pathlib import Path
 import torch
 
 from deployment.config.base import BaseDeploymentConfig
-from deployment.core.artifacts import Artifact, resolve_artifact_path
-from deployment.core.device import DeviceSpec
 from deployment.export.exporters.tensorrt_exporter import TensorRTExporter
+from deployment.primitives.artifacts import Artifact, resolve_artifact_path
+from deployment.primitives.device import DeviceSpec
 
 logger = logging.getLogger(__name__)
 

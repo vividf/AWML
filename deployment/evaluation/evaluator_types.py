@@ -11,8 +11,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Mapping, Optional, TypedDict
 
 from deployment.config.enums import Backend
-from deployment.core.artifacts import Artifact
-from deployment.core.device import DeviceSpec
+from deployment.primitives.artifacts import Artifact
+from deployment.primitives.device import DeviceSpec
 
 
 class EvalResultDict(TypedDict, total=False):

@@ -12,7 +12,7 @@ from mmdet3d.registry import MODELS
 from mmengine.logging import MMLogger
 from torch import nn
 
-from deployment.core.device import DeviceSpec
+from deployment.primitives.device import DeviceSpec
 
 
 class CenterPointHeadONNX(nn.Module):

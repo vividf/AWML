@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from deployment.core.contexts import ExportContext
+from deployment.export.contexts import ExportContext
 
 
 @dataclass(frozen=True)

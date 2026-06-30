@@ -18,10 +18,10 @@ from abc import ABC, abstractmethod
 from typing import Any, List, Mapping, Optional
 
 from deployment.config.enums import Backend
-from deployment.core.device import DeviceSpec
 from deployment.evaluation.evaluator_types import InferenceInput, ModelSpec
 from deployment.inference.base_inference_pipeline import BaseInferencePipeline
 from deployment.io.base_data_loader import BaseDataLoader
+from deployment.primitives.device import DeviceSpec
 
 logger = logging.getLogger(__name__)
 

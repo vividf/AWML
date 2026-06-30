@@ -54,12 +54,12 @@ flowchart TD
 | `deployment/cli/` | Unified CLI and shared argument helpers |
 | `deployment/config/` | Typed deployment config and schema |
 | `deployment/io/` | Data-loader base and sample types |
-| `deployment/export/` | ONNX/TensorRT exporters (`exporters/`) and export pipeline bases (`pipelines/`) |
+| `deployment/export/` | ONNX/TensorRT exporters (`exporters/`), export pipeline bases (`pipelines/`), and the `ExportContext` base |
 | `deployment/inference/` | Shared inference pipeline base and GPU resource helpers |
 | `deployment/evaluation/` | Base evaluator, backend executor, backend verifier, and output-comparison helpers |
 | `deployment/metrics/` | Task metrics interfaces (3D/2D detection, classification) |
 | `deployment/runtime/` | Base runner, orchestrators, and artifact management |
-| `deployment/core/` | Cross-cutting primitive types only: device, contexts, artifacts (not a pipeline stage) |
+| `deployment/primitives/` | Cross-cutting leaf types used by every stage: `device` (`DeviceSpec`) and `artifacts` (path resolution) — not a pipeline stage |
 | `deployment/projects/<project>/` | Project-specific entrypoint, runner, config, io, export, inference, evaluation, and optional contexts logic (see the project layout contract below) |
 
 ## Extension contract
@@ -120,7 +120,7 @@ implement. When you author a new project, walk this table top to bottom — ever
 | `evaluation/` | [`evaluation/`](../evaluation) | `BaseEvaluator` + `BackendExecutor` subclasses | Required |
 | `runner.py` | [`runtime/runner.py`](../runtime/runner.py) | Thin `BaseDeploymentRunner` subclass | Required |
 | `export/` | [`export/`](../export) | `ModelComponentBuilder` + `SampleExtractor` subclasses (in `export/pipelines/`); plus `export/onnx_models/` for export-time ONNX graph definitions | Optional |
-| `contexts.py` | [`core/contexts.py`](../core/contexts.py) | `ExportContext` subclass — only if you need extra context fields | Optional |
+| `contexts.py` | [`export/contexts.py`](../export/contexts.py) | `ExportContext` subclass — only if you need extra context fields | Optional |
 
 Metrics are intentionally **not** a project directory. Metrics configs,
 interfaces, and the extractors that build a config from a model config are
@@ -136,7 +136,7 @@ Every stage directory mirrors its framework counterpart by the **same name**
 (`config`, `io`, `export`, `inference`, `evaluation`) — no exceptions. The only
 non-mirrored items are the wiring single-files: `entrypoint.py`, `cli.py`,
 `runner.py`, and `contexts.py`, which glue the project to `cli/`,
-`runtime/runner.py`, and `core/contexts.py`.
+`runtime/runner.py`, and `export/contexts.py`.
 
 ### Pipeline naming
 

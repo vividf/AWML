@@ -11,11 +11,11 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from deployment.config.base import BaseDeploymentConfig
 from deployment.config.enums import Backend
-from deployment.core.device import DeviceSpec
 from deployment.evaluation.base_evaluator import BaseEvaluator
 from deployment.evaluation.evaluator_types import ModelSpec
 from deployment.inference.gpu_resource_mixin import clear_cuda_memory
 from deployment.io.base_data_loader import BaseDataLoader
+from deployment.primitives.device import DeviceSpec
 from deployment.runtime.artifact_manager import ArtifactManager
 
 logger = logging.getLogger(__name__)

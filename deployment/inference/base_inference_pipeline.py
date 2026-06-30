@@ -8,8 +8,8 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 import torch
 
 from deployment.config.enums import Backend
-from deployment.core.device import DeviceSpec
 from deployment.evaluation.evaluator_types import InferenceResult
+from deployment.primitives.device import DeviceSpec
 
 logger = logging.getLogger(__name__)
 

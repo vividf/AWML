@@ -13,11 +13,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from deployment.core.artifacts import Artifact
 from deployment.export.pipelines.component_builder import DefaultComponentBuilder, ExportableComponent
 from deployment.export.pipelines.onnx_export_pipeline import OnnxExportPipeline
 from deployment.export.pipelines.sample_extractor import DefaultSampleExtractor
 from deployment.export.pipelines.tensorrt_export_pipeline import TensorRTExportPipeline
+from deployment.primitives.artifacts import Artifact
 
 
 def _onnx_config(component_settings: dict) -> SimpleNamespace:

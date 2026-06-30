@@ -14,7 +14,7 @@ from mmengine.config import Config
 from mmengine.registry import MODELS, init_default_scope
 from mmengine.runner import load_checkpoint
 
-from deployment.core.device import DeviceSpec
+from deployment.primitives.device import DeviceSpec
 from deployment.projects.centerpoint.export.onnx_models import (  # noqa: F401 - register MODELS
     centerpoint_head_onnx,
     centerpoint_onnx,

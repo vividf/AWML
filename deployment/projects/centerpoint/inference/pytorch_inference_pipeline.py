@@ -11,7 +11,7 @@ import torch
 from typing_extensions import override
 
 from deployment.config.enums import Backend
-from deployment.core.device import DeviceSpec
+from deployment.primitives.device import DeviceSpec
 from deployment.projects.centerpoint.inference.centerpoint_inference_pipeline import CenterPointInferencePipeline
 
 logger = logging.getLogger(__name__)

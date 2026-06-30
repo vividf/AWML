@@ -46,12 +46,12 @@ deployment/
 ├── cli/           # Unified CLI
 ├── config/        # Typed deploy config schema
 ├── io/            # Data-loader base and sample types
-├── export/        # ONNX/TensorRT exporters (engines/) and export pipelines (pipelines/)
+├── export/        # exporters/ (ONNX/TensorRT), pipelines/, ExportContext
 ├── inference/     # Shared inference pipeline base and GPU resource helpers
 ├── evaluation/    # Evaluator, backend executor, verifier, output comparison
 ├── metrics/       # Task metrics interfaces (3D/2D detection, classification)
 ├── runtime/       # BaseDeploymentRunner, orchestrators, ArtifactManager
-├── core/          # Cross-cutting primitive types (device, contexts, artifacts)
+├── primitives/    # Cross-cutting leaf types: device (DeviceSpec), artifacts (path resolution)
 ├── projects/      # Per-task bundles
 └── tests/         # CPU-only unit tests (pytest)
 ```

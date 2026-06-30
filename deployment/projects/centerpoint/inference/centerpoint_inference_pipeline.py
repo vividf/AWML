@@ -18,8 +18,8 @@ from mmdet3d.structures import Det3DDataSample, LiDARInstance3DBoxes
 from typing_extensions import override
 
 from deployment.config.enums import Backend
-from deployment.core.device import DeviceSpec
 from deployment.inference.base_inference_pipeline import BaseInferencePipeline
+from deployment.primitives.device import DeviceSpec
 from deployment.projects.centerpoint.io.sample_types import compute_batch_size
 
 logger = logging.getLogger(__name__)

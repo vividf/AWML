@@ -17,7 +17,6 @@ from typing import List, Optional
 import torch
 
 from deployment.config.enums import Backend
-from deployment.core.device import DeviceSpec
 from deployment.evaluation.backend_executor import BackendExecutor
 from deployment.evaluation.evaluator_types import (
     ModelSpec,
@@ -30,6 +29,7 @@ from deployment.evaluation.output_comparator import (
 )
 from deployment.inference.base_inference_pipeline import BaseInferencePipeline
 from deployment.io.base_data_loader import BaseDataLoader
+from deployment.primitives.device import DeviceSpec
 
 logger = logging.getLogger(__name__)
 

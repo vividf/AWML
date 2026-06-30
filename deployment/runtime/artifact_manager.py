@@ -10,7 +10,7 @@ from typing import Dict, Optional, Tuple
 
 from deployment.config.base import BaseDeploymentConfig
 from deployment.config.enums import Backend
-from deployment.core.artifacts import Artifact
+from deployment.primitives.artifacts import Artifact
 
 logger = logging.getLogger(__name__)
 

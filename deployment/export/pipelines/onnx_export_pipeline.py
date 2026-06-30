@@ -25,12 +25,12 @@ from typing import Any, List, Optional, Type
 import torch
 
 from deployment.config.base import BaseDeploymentConfig
-from deployment.core.artifacts import Artifact
 from deployment.export.exporters.model_wrappers import BaseModelWrapper, IdentityWrapper
 from deployment.export.exporters.onnx_exporter import ONNXExporter
 from deployment.export.pipelines.component_builder import ExportableComponent, ModelComponentBuilder
 from deployment.export.pipelines.sample_extractor import SampleExtractor
 from deployment.io.base_data_loader import BaseDataLoader
+from deployment.primitives.artifacts import Artifact
 
 logger = logging.getLogger(__name__)
 

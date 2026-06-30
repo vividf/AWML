@@ -8,8 +8,8 @@ from typing import List, Sequence, Tuple
 import tensorrt as trt
 
 from deployment.config.enums import PrecisionPolicy
-from deployment.core.artifacts import Artifact
 from deployment.export.exporters.configs import TensorRTExportConfig
+from deployment.primitives.artifacts import Artifact
 
 logger = logging.getLogger(__name__)
 
