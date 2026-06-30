@@ -10,15 +10,15 @@ from typing import Optional
 import torch
 from mmengine.config import Config
 
-from deployment.configs.base import BaseDeploymentConfig
+from deployment.config.base import BaseDeploymentConfig
 from deployment.core.contexts import ExportContext
 from deployment.core.device import DeviceSpec
-from deployment.core.evaluation.backend_executor import BackendExecutor
-from deployment.core.io.base_data_loader import BaseDataLoader
-from deployment.exporters.export_pipelines.onnx_pipeline import OnnxExportPipeline
-from deployment.exporters.export_pipelines.tensorrt_pipeline import TensorRTExportPipeline
-from deployment.projects.centerpoint.context import CenterPointExportContext
-from deployment.projects.centerpoint.eval.evaluator import CenterPointEvaluator
+from deployment.evaluation.backend_executor import BackendExecutor
+from deployment.export.pipelines.onnx_export_pipeline import OnnxExportPipeline
+from deployment.export.pipelines.tensorrt_export_pipeline import TensorRTExportPipeline
+from deployment.io.base_data_loader import BaseDataLoader
+from deployment.projects.centerpoint.contexts import CenterPointExportContext
+from deployment.projects.centerpoint.evaluation.evaluator import CenterPointEvaluator
 from deployment.projects.centerpoint.export.component_builder import CenterPointComponentBuilder
 from deployment.projects.centerpoint.export.sample_extractor import CenterPointSampleExtractor
 from deployment.projects.centerpoint.io.model_loader import build_centerpoint_onnx_model

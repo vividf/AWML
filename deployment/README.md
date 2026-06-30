@@ -34,18 +34,24 @@ python -m deployment.cli.main centerpoint \
 ## Current status
 
 - Current first-class project: [CenterPoint](projects/centerpoint/README.md)
-- Shared framework responsibilities: CLI, typed config, exporters, runtime orchestration, verification, evaluation, and pipeline creation
+- Shared framework responsibilities: CLI, typed config, io, export, inference, evaluation, metrics, and runtime orchestration
 
 ## Repository layout
+
+Each top-level directory is one pipeline stage; a project bundle implements the
+same-named stages (see [docs/architecture.md](docs/architecture.md#project-layout-contract)).
 
 ```text
 deployment/
 ├── cli/           # Unified CLI
-├── configs/       # Typed deploy config schema
-├── core/          # Shared types, evaluators, verification mixins
-├── exporters/     # ONNX / TensorRT exporters and export pipeline bases
-├── pipelines/     # Shared inference pipeline base and GPU resource helpers
+├── config/        # Typed deploy config schema
+├── io/            # Data-loader base and sample types
+├── export/        # ONNX/TensorRT exporters (engines/) and export pipelines (pipelines/)
+├── inference/     # Shared inference pipeline base and GPU resource helpers
+├── evaluation/    # Evaluator, backend executor, verifier, output comparison
+├── metrics/       # Task metrics interfaces (3D/2D detection, classification)
 ├── runtime/       # BaseDeploymentRunner, orchestrators, ArtifactManager
+├── core/          # Cross-cutting primitive types (device, contexts, artifacts)
 ├── projects/      # Per-task bundles
 └── tests/         # CPU-only unit tests (pytest)
 ```

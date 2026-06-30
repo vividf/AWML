@@ -9,11 +9,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from deployment.configs.base import BaseDeploymentConfig
-from deployment.configs.enums import Backend
-from deployment.core.evaluation.backend_verifier import BackendVerifier
-from deployment.core.evaluation.evaluator_types import ModelSpec
-from deployment.core.io.base_data_loader import BaseDataLoader
+from deployment.config.base import BaseDeploymentConfig
+from deployment.config.enums import Backend
+from deployment.evaluation.backend_verifier import BackendVerifier
+from deployment.evaluation.evaluator_types import ModelSpec
+from deployment.io.base_data_loader import BaseDataLoader
 from deployment.runtime.artifact_manager import ArtifactManager
 
 logger = logging.getLogger(__name__)

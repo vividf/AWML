@@ -5,7 +5,7 @@ from typing import Dict, TypedDict
 
 import torch
 
-from deployment.core.io.base_data_loader import SampleData
+from deployment.io.base_data_loader import SampleData
 
 
 class CenterPointSample(SampleData):

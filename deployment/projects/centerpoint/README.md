@@ -45,17 +45,23 @@ The evaluation/verification dataset comes from the **model config's** `test_data
 
 ## Project layout
 
+Directory names mirror the framework module each one implements; see the
+[project layout contract](../../docs/architecture.md#project-layout-contract)
+for the generic project → framework → base-class mapping. The concrete
+CenterPoint classes are:
+
 | Path | Role |
 | --- | --- |
+| `__init__.py` | Registers the `centerpoint` `ProjectAdapter` |
 | `entrypoint.py` | Builds config, loader, evaluator, runner, and export context |
+| `cli.py` | Project-specific CLI flags (`--rot-y-axis-reference`) |
 | `runner.py` | `CenterPointDeploymentRunner` |
-| `cli.py` | Project-specific CLI flags |
 | `config/` | Deploy config |
 | `io/` | Data loading and model loading helpers |
-| `eval/` | CenterPoint evaluator and metrics helpers |
-| `pipelines/` | PyTorch, ONNX, and TensorRT pipelines |
-| `export/` | CenterPoint export orchestration |
-| `onnx_models/` | Export-time ONNX wrappers |
+| `evaluation/` | `CenterPointEvaluator` and `CenterPointExecutor` |
+| `inference/` | PyTorch, ONNX, and TensorRT inference pipelines |
+| `contexts.py` | `CenterPointExportContext` |
+| `export/` | CenterPoint export orchestration (builder, sample extractor, `onnx_models/`) |
 
 ## Shared docs
 

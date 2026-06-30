@@ -15,7 +15,7 @@ from mmengine.registry import MODELS, init_default_scope
 from mmengine.runner import load_checkpoint
 
 from deployment.core.device import DeviceSpec
-from deployment.projects.centerpoint.onnx_models import (  # noqa: F401 - register MODELS
+from deployment.projects.centerpoint.export.onnx_models import (  # noqa: F401 - register MODELS
     centerpoint_head_onnx,
     centerpoint_onnx,
     pillar_encoder_onnx,
@@ -30,7 +30,7 @@ def create_onnx_model_cfg(
     """Create a model config that swaps modules to ONNX-friendly variants.
 
     This mutates the `model_cfg.model` subtree to reference classes registered by
-    `deployment.projects.centerpoint.onnx_models` (e.g., `CenterPointONNX`).
+    `deployment.projects.centerpoint.export.onnx_models` (e.g., `CenterPointONNX`).
 
     Args:
         model_cfg: Original MMEngine model configuration.

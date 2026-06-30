@@ -4,8 +4,8 @@ from collections.abc import Mapping
 
 import torch
 
-from deployment.core.io.base_data_loader import BaseDataLoader
-from deployment.exporters.export_pipelines.sample_extractor import SampleExtractor
+from deployment.export.pipelines.sample_extractor import SampleExtractor
+from deployment.io.base_data_loader import BaseDataLoader
 from deployment.projects.centerpoint.io.sample_types import CenterPointFeatureSample, VoxelDict
 
 

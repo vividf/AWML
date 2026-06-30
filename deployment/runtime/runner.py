@@ -15,18 +15,18 @@ from typing import Any, Dict, Optional, Type
 
 from mmengine.config import Config
 
-from deployment.configs.base import BaseDeploymentConfig
+from deployment.config.base import BaseDeploymentConfig
 from deployment.core.contexts import ExportContext
-from deployment.core.evaluation.backend_executor import BackendExecutor
-from deployment.core.evaluation.backend_verifier import BackendVerifier
-from deployment.core.evaluation.base_evaluator import BaseEvaluator
-from deployment.core.evaluation.output_comparator import OutputComparator
-from deployment.core.io.base_data_loader import BaseDataLoader
-from deployment.exporters.common.model_wrappers import BaseModelWrapper
-from deployment.exporters.export_pipelines.component_builder import DefaultComponentBuilder
-from deployment.exporters.export_pipelines.onnx_pipeline import OnnxExportPipeline
-from deployment.exporters.export_pipelines.sample_extractor import DefaultSampleExtractor
-from deployment.exporters.export_pipelines.tensorrt_pipeline import TensorRTExportPipeline
+from deployment.evaluation.backend_executor import BackendExecutor
+from deployment.evaluation.backend_verifier import BackendVerifier
+from deployment.evaluation.base_evaluator import BaseEvaluator
+from deployment.evaluation.output_comparator import OutputComparator
+from deployment.export.exporters.model_wrappers import BaseModelWrapper
+from deployment.export.pipelines.component_builder import DefaultComponentBuilder
+from deployment.export.pipelines.onnx_export_pipeline import OnnxExportPipeline
+from deployment.export.pipelines.sample_extractor import DefaultSampleExtractor
+from deployment.export.pipelines.tensorrt_export_pipeline import TensorRTExportPipeline
+from deployment.io.base_data_loader import BaseDataLoader
 from deployment.runtime.artifact_manager import ArtifactManager
 from deployment.runtime.evaluation_orchestrator import EvaluationOrchestrator
 from deployment.runtime.export_orchestrator import ExportOrchestrator

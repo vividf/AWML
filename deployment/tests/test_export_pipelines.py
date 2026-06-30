@@ -14,10 +14,10 @@ from unittest.mock import Mock, patch
 import pytest
 
 from deployment.core.artifacts import Artifact
-from deployment.exporters.export_pipelines.component_builder import DefaultComponentBuilder, ExportableComponent
-from deployment.exporters.export_pipelines.onnx_pipeline import OnnxExportPipeline
-from deployment.exporters.export_pipelines.sample_extractor import DefaultSampleExtractor
-from deployment.exporters.export_pipelines.tensorrt_pipeline import TensorRTExportPipeline
+from deployment.export.pipelines.component_builder import DefaultComponentBuilder, ExportableComponent
+from deployment.export.pipelines.onnx_export_pipeline import OnnxExportPipeline
+from deployment.export.pipelines.sample_extractor import DefaultSampleExtractor
+from deployment.export.pipelines.tensorrt_export_pipeline import TensorRTExportPipeline
 
 
 def _onnx_config(component_settings: dict) -> SimpleNamespace:
@@ -60,7 +60,7 @@ class TestOnnxExportPipeline:
         data_loader = Mock()
 
         with patch(
-            "deployment.exporters.export_pipelines.onnx_pipeline.ONNXExporter",
+            "deployment.export.pipelines.onnx_export_pipeline.ONNXExporter",
             return_value=exporter,
         ):
             artifact = pipeline.export(
@@ -101,7 +101,7 @@ class TestOnnxExportPipeline:
         config = _onnx_config({"model": SimpleNamespace(save_file="model.onnx", batch_size=None)})
 
         with patch(
-            "deployment.exporters.export_pipelines.onnx_pipeline.ONNXExporter",
+            "deployment.export.pipelines.onnx_export_pipeline.ONNXExporter",
             return_value=exporter,
         ):
             with pytest.raises(RuntimeError, match="model ONNX export failed"):

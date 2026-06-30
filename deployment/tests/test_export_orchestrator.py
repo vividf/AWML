@@ -15,7 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from deployment.configs.enums import Backend
+from deployment.config.enums import Backend
 from deployment.core.artifacts import Artifact
 from deployment.core.contexts import ExportContext
 from deployment.runtime.export_orchestrator import ExportOrchestrator, ExportResult

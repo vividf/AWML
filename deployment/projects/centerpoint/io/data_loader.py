@@ -13,7 +13,7 @@ from mmengine.config import Config
 from mmengine.registry import DATASETS, init_default_scope
 from typing_extensions import override
 
-from deployment.core.io.base_data_loader import BaseDataLoader
+from deployment.io.base_data_loader import BaseDataLoader
 from deployment.projects.centerpoint.io.sample_types import (
     CenterPointModelInput,
     CenterPointSample,

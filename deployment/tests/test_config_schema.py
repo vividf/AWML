@@ -1,14 +1,14 @@
 """Unit tests for deploy-config schema parsing/validation.
 
 These are pure-Python (no GPU) and exercise the validation branches in
-``deployment.configs.schema`` that previously had no coverage.
+``deployment.config.schema`` that previously had no coverage.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from deployment.configs.schema import ComponentsConfig, VerificationScenario
+from deployment.config.schema import ComponentsConfig, VerificationScenario
 
 
 def _valid_component() -> dict:

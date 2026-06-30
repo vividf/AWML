@@ -4,7 +4,7 @@ This is the single source of truth for deploy config fields: top-level keys, `co
 
 Use [runbook.md](./runbook.md) for execution behavior and [architecture.md](./architecture.md) for framework structure. This page is intentionally reference-first.
 
-Deploy configs are plain Python dicts loaded with MMEngine `Config.fromfile`. `BaseDeploymentConfig` wraps them with typed dataclasses in `deployment.configs.schema` for validation and IDE-friendly access.
+Deploy configs are plain Python dicts loaded with MMEngine `Config.fromfile`. `BaseDeploymentConfig` wraps them with typed dataclasses in `deployment.config.schema` for validation and IDE-friendly access.
 
 ## How to read this config
 
@@ -201,7 +201,7 @@ Optional `num_warmup` (default `0`) adds warmup iterations before latency is mea
 
 ## Verification
 
-Scenarios are grouped by **export mode** (`both`, `onnx`, `trt`, `none`), matching `deployment.configs.enums.ExportMode`. Only scenarios for the active export mode run.
+Scenarios are grouped by **export mode** (`both`, `onnx`, `trt`, `none`), matching `deployment.config.enums.ExportMode`. Only scenarios for the active export mode run.
 
 ```python
 verification = dict(
@@ -244,7 +244,7 @@ evaluation = dict(
 
 ## Typed exporter configs
 
-Low-level typed classes live in `deployment.exporters.common.configs`. `BaseDeploymentConfig.get_onnx_settings(component_name)` / `get_tensorrt_settings(component_name)` merge shared `onnx_config` / `tensorrt_config` with each `components` entry.
+Low-level typed classes live in `deployment.export.exporters.configs`. `BaseDeploymentConfig.get_onnx_settings(component_name)` / `get_tensorrt_settings(component_name)` merge shared `onnx_config` / `tensorrt_config` with each `components` entry.
 
 ## Example on disk
 

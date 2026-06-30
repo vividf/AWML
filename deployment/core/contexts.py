@@ -9,7 +9,7 @@ Usage:
     result = export_orchestrator.run(ctx)
 
 Project-specific subclasses live with their project (e.g.
-``deployment.projects.centerpoint.context.CenterPointExportContext``).
+``deployment.projects.centerpoint.contexts.CenterPointExportContext``).
 """
 
 from __future__ import annotations

@@ -8,8 +8,8 @@ ONNX models, TensorRT engines) across different backends.
 import logging
 from typing import Dict, Optional, Tuple
 
-from deployment.configs.base import BaseDeploymentConfig
-from deployment.configs.enums import Backend
+from deployment.config.base import BaseDeploymentConfig
+from deployment.config.enums import Backend
 from deployment.core.artifacts import Artifact
 
 logger = logging.getLogger(__name__)

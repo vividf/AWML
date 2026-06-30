@@ -6,15 +6,22 @@ Before changing shared runners, evaluators, `BackendExecutor`, metrics interface
 
 ## Minimal project checklist
 
+Each directory below mirrors the framework module that owns its base class — see
+the [project layout contract](./architecture.md#project-layout-contract) for the
+full project-path → framework-module → base-class mapping.
+
 1. Create `deployment/projects/<project>/__init__.py` and register a `ProjectAdapter`.
 2. Add `entrypoint.py` to build `BaseDeploymentConfig`, the data loader, evaluator, and runner.
-3. Add `runner.py` as a thin `BaseDeploymentRunner` subclass.
-4. Add `config/deploy_config.py` with the required deploy config sections described in [configuration.md](./configuration.md).
-5. Add `io/` and `eval/` for project-specific loading and evaluation logic.
-6. Add `pipelines/` with backend-specific inference pipelines, and create them from the project's `BackendExecutor.create_pipeline`.
-7. Add a project `README.md` with the project-specific quick start and links back to shared docs.
+3. Add `cli.py` exposing `add_args(parser)` for project flags (may be a no-op).
+4. Add `runner.py` as a thin `BaseDeploymentRunner` subclass.
+5. Add `configs/deploy_config.py` with the required deploy config sections described in [configuration.md](./configuration.md).
+6. Add `io/` and `evaluation/` for project-specific loading and evaluation logic (mirroring framework `io/` and `evaluation/`).
+7. In `entrypoint.py`, build the task metrics config from the shared `metrics/` (e.g. `extract_t4metric_v2_config` for 3D detection) and pass it to the evaluator — do **not** add a project `metrics/` directory.
+8. Add `inference/` with backend-specific inference pipelines (files `*_inference_pipeline.py`), and create them from the project's `BackendExecutor.create_pipeline`.
+9. Add a project `README.md` with the project-specific quick start and links back to shared docs.
 
-Add `export/` only when the project needs multi-stage or multi-file export orchestration.
+Add `contexts.py` only when the project needs extra `ExportContext` fields, and
+`export/` only when the project needs multi-stage or multi-file export orchestration.
 
 ## Implementation notes
 
@@ -23,7 +30,7 @@ Add `export/` only when the project needs multi-stage or multi-file export orche
 - Subclass `BaseEvaluator` with task-specific metrics and output parsing.
 - Subclass `BackendExecutor` for pipeline creation, input preparation, and (optionally) `get_output_names()` to label raw outputs during verification.
 - Subclass `BaseDataLoader` for project dataset and preprocessing needs.
-- Keep metrics inside evaluators and metrics interfaces, not inside pipelines.
+- Metrics are shared, not per-project: reuse the task config/interface and extractor in `metrics/` (e.g. `Detection3DMetricsConfig` + `extract_t4metric_v2_config`). Build the config in `entrypoint.py` and keep metric computation inside `metrics/` interfaces, not inside pipelines. Add a new `metrics/<task>_metrics.py` only for a genuinely new task.
 
 ### Runner
 
@@ -32,7 +39,7 @@ Add `export/` only when the project needs multi-stage or multi-file export orche
 
 ### Inference pipelines
 
-- Add backend-specific pipelines under `deployment/projects/<project>/pipelines/`.
+- Add backend-specific pipelines under `deployment/projects/<project>/inference/` (files `*_inference_pipeline.py`).
 - Construct them in the project's `BackendExecutor.create_pipeline` (one branch per backend); override `get_supported_backends` to restrict which backends the project allows.
 - Use `components_cfg` from `BaseDeploymentConfig` instead of raw config dicts where possible.
 

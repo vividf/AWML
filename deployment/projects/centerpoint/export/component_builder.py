@@ -10,10 +10,10 @@ import logging
 
 import torch
 
-from deployment.configs.schema import ComponentsConfig
-from deployment.exporters.export_pipelines.component_builder import ExportableComponent, ModelComponentBuilder
+from deployment.config.schema import ComponentsConfig
+from deployment.export.pipelines.component_builder import ExportableComponent, ModelComponentBuilder
+from deployment.projects.centerpoint.export.onnx_models.centerpoint_onnx import CenterPointHeadONNX
 from deployment.projects.centerpoint.io.sample_types import CenterPointFeatureSample, compute_batch_size
-from deployment.projects.centerpoint.onnx_models.centerpoint_onnx import CenterPointHeadONNX
 
 logger = logging.getLogger(__name__)
 

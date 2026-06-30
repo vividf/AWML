@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from deployment.configs.enums import Backend
-from deployment.configs.schema import BackendEvalConfig
+from deployment.config.enums import Backend
+from deployment.config.schema import BackendEvalConfig
 from deployment.core.artifacts import Artifact, resolve_artifact_path
 from deployment.runtime.artifact_manager import ArtifactManager
 

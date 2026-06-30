@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from deployment.exporters.common.configs import ONNXExportConfig
-from deployment.exporters.common.onnx_exporter import ONNXExporter
+from deployment.export.exporters.configs import ONNXExportConfig
+from deployment.export.exporters.onnx_exporter import ONNXExporter
 
 
 def _exporter() -> ONNXExporter:
