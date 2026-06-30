@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict
 
 from deployment.configs.base import BaseDeploymentConfig
-from deployment.core.backend import Backend
+from deployment.configs.enums import Backend
 from deployment.core.evaluation.backend_verifier import BackendVerifier
 from deployment.core.evaluation.evaluator_types import ModelSpec
 from deployment.core.io.base_data_loader import BaseDataLoader

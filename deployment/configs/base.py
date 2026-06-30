@@ -13,7 +13,7 @@ from typing import Optional, Tuple
 import torch
 from mmengine.config import Config
 
-from deployment.configs.enums import ExportMode
+from deployment.configs.enums import Backend, ExportMode
 from deployment.configs.schema import (
     ComponentsConfig,
     DeviceConfig,
@@ -24,7 +24,6 @@ from deployment.configs.schema import (
     VerificationConfig,
     VerificationScenario,
 )
-from deployment.core.backend import Backend
 from deployment.exporters.common.configs import (
     ONNXExportConfig,
     TensorRTExportConfig,

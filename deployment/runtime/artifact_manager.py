@@ -9,8 +9,8 @@ import logging
 from typing import Dict, Optional, Tuple
 
 from deployment.configs.base import BaseDeploymentConfig
+from deployment.configs.enums import Backend
 from deployment.core.artifacts import Artifact
-from deployment.core.backend import Backend
 
 logger = logging.getLogger(__name__)
 

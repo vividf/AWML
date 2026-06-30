@@ -10,7 +10,7 @@ from typing import List
 import torch
 from typing_extensions import override
 
-from deployment.core.backend import Backend
+from deployment.configs.enums import Backend
 from deployment.core.device import DeviceSpec
 from deployment.projects.centerpoint.pipelines.centerpoint_pipeline import CenterPointInferencePipeline
 

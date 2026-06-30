@@ -16,7 +16,7 @@ from typing import List, Optional
 
 import torch
 
-from deployment.core.backend import Backend
+from deployment.configs.enums import Backend
 from deployment.core.device import DeviceSpec
 from deployment.core.evaluation.backend_executor import BackendExecutor
 from deployment.core.evaluation.evaluator_types import (

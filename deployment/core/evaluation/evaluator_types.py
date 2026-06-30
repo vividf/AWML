@@ -10,8 +10,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Mapping, Optional, TypedDict
 
+from deployment.configs.enums import Backend
 from deployment.core.artifacts import Artifact
-from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
 
 

@@ -17,7 +17,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, List, Mapping, Optional
 
-from deployment.core.backend import Backend
+from deployment.configs.enums import Backend
 from deployment.core.device import DeviceSpec
 from deployment.core.evaluation.evaluator_types import InferenceInput, ModelSpec
 from deployment.core.io.base_data_loader import BaseDataLoader

@@ -10,10 +10,10 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from deployment.configs.enums import (
     DEFAULT_WORKSPACE_SIZE,
+    Backend,
     ExportMode,
     PrecisionPolicy,
 )
-from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
 from deployment.exporters.common.configs import TensorRTProfileConfig
 

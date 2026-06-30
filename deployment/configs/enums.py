@@ -41,6 +41,51 @@ class PrecisionPolicy(str, Enum):
         raise ValueError(f"Invalid precision_policy '{value}'. Must be one of {[m.value for m in cls]}.")
 
 
+class Backend(str, Enum):
+    """Supported deployment backends."""
+
+    PYTORCH = "pytorch"
+    ONNX = "onnx"
+    TENSORRT = "tensorrt"
+
+    @classmethod
+    def from_value(cls, value: Union[str, Backend]) -> Backend:
+        """
+        Normalize backend identifiers coming from configs or enums.
+
+        Args:
+            value: Backend as string or Backend enum
+
+        Returns:
+            Backend enum instance
+
+        Raises:
+            ValueError: If value cannot be mapped to a supported backend
+        """
+        if isinstance(value, cls):
+            return value
+
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            try:
+                return cls(normalized)
+            except ValueError as exc:
+                raise ValueError(f"Unsupported backend '{value}'. Expected one of {[b.value for b in cls]}.") from exc
+
+        raise TypeError(f"Backend must be a string or Backend enum, got {type(value)}")
+
+    @property
+    def requires_cuda(self) -> bool:
+        """Whether this backend can only run on a CUDA device.
+
+        Single source of truth for the runtime constraint enforced by config validation, evaluation, and verification.
+        """
+        return self is Backend.TENSORRT
+
+    def __str__(self) -> str:  # pragma: no cover - convenience for logging
+        return self.value
+
+
 class ExportMode(str, Enum):
     """Export pipeline modes."""
 

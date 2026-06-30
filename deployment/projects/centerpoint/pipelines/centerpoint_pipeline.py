@@ -17,7 +17,7 @@ import torch
 from mmdet3d.structures import Det3DDataSample, LiDARInstance3DBoxes
 from typing_extensions import override
 
-from deployment.core.backend import Backend
+from deployment.configs.enums import Backend
 from deployment.core.device import DeviceSpec
 from deployment.pipelines.base_pipeline import BaseInferencePipeline
 from deployment.projects.centerpoint.io.sample_types import compute_batch_size

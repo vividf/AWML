@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from deployment.configs.base import BaseDeploymentConfig
+from deployment.configs.enums import Backend
 from deployment.core.artifacts import Artifact
-from deployment.core.backend import Backend
 from deployment.core.contexts import ExportContext
 from deployment.core.io.base_data_loader import BaseDataLoader
 from deployment.exporters.export_pipelines.onnx_pipeline import OnnxExportPipeline

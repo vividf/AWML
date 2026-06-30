@@ -11,8 +11,8 @@ from typing import List, Mapping, Optional
 
 from typing_extensions import override
 
+from deployment.configs.enums import Backend
 from deployment.configs.schema import ComponentsConfig
-from deployment.core.backend import Backend
 from deployment.core.device import DeviceSpec
 from deployment.core.evaluation.backend_executor import BackendExecutor
 from deployment.core.evaluation.evaluator_types import InferenceInput, ModelSpec

@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, List, Mapping, Optional
 
 from deployment.configs.base import BaseDeploymentConfig
-from deployment.core.backend import Backend
+from deployment.configs.enums import Backend
 from deployment.core.device import DeviceSpec
 from deployment.core.evaluation.base_evaluator import BaseEvaluator
 from deployment.core.evaluation.evaluator_types import ModelSpec

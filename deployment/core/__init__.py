@@ -1,1 +1,1 @@
-"""Core deployment utilities. Import concrete submodules (``deployment.core.backend``, …)."""
+"""Core deployment utilities. Import concrete submodules (``deployment.core.device``, …)."""
