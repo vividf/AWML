@@ -39,6 +39,19 @@ class BEVFusionDeploymentConfig(BaseDeploymentConfig):
         self.spconv_fuse_implicit_gemm_relu: bool = bool(deploy_cfg.get("spconv_fuse_implicit_gemm_relu", False))
         self.merge_bevfusion: bool = merge_requested(deploy_cfg)
 
+        # INT8/PTQ export knobs (top-level deploy keys, not part of the ``quantization`` dict).
+        # The quantization dict itself is surfaced by the base config as ``quantization_config``
+        # (typed) / ``quantization_config.raw`` (verbatim, with ``spconv_int8_fp16_layers`` folded in).
+        self.spconv_int8_transform_verbose: bool = bool(deploy_cfg.get("spconv_int8_transform_verbose", False))
+        # Unified ``spconv_fuse_implicit_gemm_relu`` for the INT8 sparse ONNX path (default True),
+        # falling back to the deprecated ``spconv_int8_fuse_implicit_gemm_relu`` key.
+        self.spconv_int8_fuse_implicit_gemm_relu: bool = bool(
+            deploy_cfg.get(
+                "spconv_fuse_implicit_gemm_relu",
+                deploy_cfg.get("spconv_int8_fuse_implicit_gemm_relu", True),
+            )
+        )
+
         # The merged graph is *derived* from the split sparse+dense pair (sparse inputs +
         # dense outputs), so it is resolved here as part of the config rather than mutated onto
         # the config later. After construction ``components_cfg`` is the final layout: the split

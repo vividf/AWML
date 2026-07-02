@@ -92,9 +92,16 @@ class CenterPointDeploymentRunner(BaseDeploymentRunner):
         rot_y_axis_reference = self.config.rot_y_axis_reference
         logger.info("Export option rot_y_axis_reference = %s", rot_y_axis_reference)
 
+        # ``quantization_config.raw`` is the verbatim deploy ``quantization`` dict (empty when the
+        # section is absent); the loader treats a disabled/empty dict as a plain FP load.
+        quantization = dict(self.config.quantization_config.raw)
+        if quantization.get("enabled", False):
+            logger.info("Quantization enabled (mode=%s); loading quantized checkpoint.", quantization.get("mode"))
+
         return build_centerpoint_model(
             model_cfg=self.model_cfg,
             checkpoint_path=checkpoint_path,
             device=DeviceSpec.from_value("cpu"),
             rot_y_axis_reference=rot_y_axis_reference,
+            quantization=quantization,
         )

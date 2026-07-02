@@ -20,6 +20,7 @@ from deployment.config.schema import (
     EvaluationConfig,
     ExportConfig,
     OnnxConfig,
+    QuantizationConfig,
     TensorRTConfig,
     VerificationConfig,
     VerificationScenario,
@@ -60,6 +61,7 @@ class BaseDeploymentConfig:
         self._tensorrt_config = TensorRTConfig.from_dict(deploy_cfg.get("tensorrt_config", {}))
         self.evaluation_config = EvaluationConfig.from_dict(deploy_cfg.get("evaluation", {}))
         self.verification_config = VerificationConfig.from_dict(deploy_cfg.get("verification", {}))
+        self.quantization_config = QuantizationConfig.from_dict(self._collect_quantization_dict(deploy_cfg))
         self._deploy_log_path = self._parse_deploy_log_path(deploy_cfg.get("deploy_log_path", "deployment.log"))
 
         # Runtime/environment validation (torch/cuda)
@@ -69,6 +71,17 @@ class BaseDeploymentConfig:
     def _parse_deploy_log_path(raw: Optional[str]) -> Optional[str]:
         """Parse deploy_log_path; None or blank disables file logging."""
         return raw.strip() or None if raw is not None else None
+
+    @staticmethod
+    def _collect_quantization_dict(deploy_cfg: Config) -> dict:
+        """Assemble the raw quantization dict, folding the top-level BEVFusion
+        ``spconv_int8_fp16_layers`` key in when it is not already nested under
+        ``quantization``. Returns an empty dict when no quantization is configured."""
+        quant_raw = dict(deploy_cfg.get("quantization", {}) or {})
+        top_level_fp16_layers = deploy_cfg.get("spconv_int8_fp16_layers")
+        if top_level_fp16_layers is not None and "spconv_int8_fp16_layers" not in quant_raw:
+            quant_raw["spconv_int8_fp16_layers"] = top_level_fp16_layers
+        return quant_raw
 
     @staticmethod
     def _validate_checkpoint_path(checkpoint_path: str) -> str:
@@ -175,6 +188,7 @@ class BaseDeploymentConfig:
             do_constant_folding=onnx_config.do_constant_folding,
             save_file=component_cfg.onnx_file,
             batch_size=None,
+            visualize_qdq_values=onnx_config.visualize_qdq_values,
         )
 
     def get_tensorrt_settings(self, component_name: str) -> TensorRTExportConfig:

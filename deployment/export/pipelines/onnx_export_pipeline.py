@@ -177,9 +177,37 @@ class OnnxExportPipeline:
             if component.post_transforms:
                 self._apply_post_transforms(output_path, component.post_transforms, component.name)
 
+            if onnx_settings.visualize_qdq_values:
+                self._apply_qdq_visualization(output_path, component.name)
+
             exported_paths.append(str(output_path))
 
         return exported_paths
+
+    @staticmethod
+    def _apply_qdq_visualization(output_path: Path, component_name: str) -> None:
+        """Make Q/DQ scales visible in the exported ONNX (``onnx_config.visualize_qdq_values``).
+
+        Promotes QuantizeLinear/DequantizeLinear scale/zero_point constants to named initializers
+        and annotates them into the Q/DQ node names (constant folding otherwise inlines them, so the
+        exported Q/DQ nodes show no scale). Best-effort: a failure here must not fail the export, so
+        it is logged and skipped. No-op in effect for graphs without Q/DQ nodes.
+        """
+        from deployment.export.exporters.onnx_qdq_visualize import make_qdq_readable
+
+        try:
+            model_proto = onnx.load(str(output_path))
+            annotated, promoted, removed = make_qdq_readable(model_proto)
+            onnx.save_model(model_proto, str(output_path))
+            logger.info(
+                "Q/DQ readability postprocess for %s: annotated=%d, promoted_constants=%d, removed_constant_nodes=%d",
+                output_path.name,
+                annotated,
+                promoted,
+                removed,
+            )
+        except Exception as exc:
+            logger.warning("Q/DQ readability postprocess skipped for %s: %s", output_path.name, exc)
 
     @staticmethod
     def _apply_post_transforms(

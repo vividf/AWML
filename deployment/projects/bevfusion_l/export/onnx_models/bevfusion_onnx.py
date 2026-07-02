@@ -15,6 +15,8 @@ so no single full-graph module wrapper is needed.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
@@ -43,11 +45,22 @@ def normalize_sparse_coors_for_autoware(coors: torch.Tensor) -> torch.Tensor:
 
 
 class BEVFusionSparseWrapper(nn.Module):
-    """LiDAR sparse encoder only: voxels/coors/num_points → BEV feature map."""
+    """LiDAR sparse encoder only: voxels/coors/num_points → BEV feature map.
 
-    def __init__(self, model: nn.Module) -> None:
+    For the INT8 (spconv) deploy path the sparse encoder carries NVIDIA ``TensorQuantizer``
+    modules; tracing them directly would bake Q/DQ around the ImplicitGemm ops. Passing a fused
+    FP32 ``shadow_encoder`` makes ``forward`` swap it in for the duration of the trace so the
+    sparse ONNX stays Q/DQ-free — the PTQ ``_amax`` stay in the checkpoint and are injected later
+    by the sparse-INT8 post-transform. The swap is scoped to ``forward`` (restored in ``finally``)
+    so PyTorch eval and the dense component's trace still use the real (quantized) encoder.
+    """
+
+    def __init__(self, model: nn.Module, shadow_encoder: Optional[nn.Module] = None) -> None:
         super().__init__()
         self.mod = model
+        # Registering as a submodule keeps the shadow on the right device and in eval mode; it is
+        # only referenced during export tracing when set.
+        self._shadow_encoder = shadow_encoder
 
     def forward(
         self,
@@ -61,7 +74,15 @@ class BEVFusionSparseWrapper(nn.Module):
             voxels = voxels.to(dtype=torch.float32)
         coors = normalize_sparse_coors_for_autoware(coors)
 
-        return self.mod.extract_pts_feat(voxels, coors, num_points_per_voxel, points=None)
+        if self._shadow_encoder is None:
+            return self.mod.extract_pts_feat(voxels, coors, num_points_per_voxel, points=None)
+
+        original_encoder = self.mod.pts_middle_encoder
+        self.mod.pts_middle_encoder = self._shadow_encoder
+        try:
+            return self.mod.extract_pts_feat(voxels, coors, num_points_per_voxel, points=None)
+        finally:
+            self.mod.pts_middle_encoder = original_encoder
 
 
 class BEVFusionDenseWrapper(nn.Module):

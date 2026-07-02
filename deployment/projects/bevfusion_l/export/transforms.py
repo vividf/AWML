@@ -165,6 +165,25 @@ def merge_split_sparse_dense_onnx(
     # merged ONNX carries the same opset_import a monolithic single-graph export would.
     del final_model.opset_import[:]
     final_model.opset_import.extend(merged_opset_ids)
+
+    # Match the per-component export: when onnx_config.visualize_qdq_values is set, annotate the
+    # merged graph's Q/DQ scales too (the split sparse/dense files are handled by the pipeline;
+    # the merged graph is produced here in the finalize hook, so apply it in-memory before save).
+    if config.get_onnx_settings("bevfusion_merged").visualize_qdq_values:
+        from deployment.export.exporters.onnx_qdq_visualize import make_qdq_readable
+
+        try:
+            annotated, promoted, removed = make_qdq_readable(final_model)
+            logger.info(
+                "Q/DQ readability postprocess for %s: annotated=%d, promoted_constants=%d, removed_constant_nodes=%d",
+                merged_path.name,
+                annotated,
+                promoted,
+                removed,
+            )
+        except Exception as exc:
+            logger.warning("Q/DQ readability postprocess skipped for %s: %s", merged_path.name, exc)
+
     onnx.save_model(final_model, str(merged_path))
     logger.info("Merged split ONNX -> %s", merged_path)
     return merged_path

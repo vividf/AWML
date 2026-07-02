@@ -56,6 +56,11 @@ class ONNXExportConfig:
         do_constant_folding: Whether to enable constant folding.
         save_file: Output filename for the ONNX model.
         batch_size: Fixed batch size for export (None for dynamic batch).
+        visualize_qdq_values: If True, post-process the exported ONNX with
+            ``make_qdq_readable`` so QuantizeLinear/DequantizeLinear scales/zero-points are
+            promoted to named initializers and annotated into the Q/DQ node names (constant
+            folding otherwise inlines them and the Q/DQ nodes show no scale). No-op for
+            non-quantized exports.
     """
 
     input_names: Tuple[str, ...] = ("input",)
@@ -69,6 +74,7 @@ class ONNXExportConfig:
     do_constant_folding: bool = True
     save_file: str = "model.onnx"
     batch_size: Optional[int] = None
+    visualize_qdq_values: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,7 +88,7 @@ class TensorRTExportConfig:
         model_input: Per-input optimization-profile shapes. A single config already maps
             multiple named inputs via ``input_shapes``; None means no dynamic profile.
         plugin_libraries: Custom TensorRT plugin ``.so`` paths to load before building
-            the engine (e.g. the BEVFusion spconv ImplicitGemm plugin). Empty by default.
+            the engine (e.g. the BEVFusion spconv INT8 plugin). Empty by default.
     """
 
     precision_policy: PrecisionPolicy = PrecisionPolicy.AUTO

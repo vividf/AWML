@@ -22,6 +22,7 @@ from deployment.config.schema import (
     EvaluationConfig,
     ExportConfig,
     OnnxConfig,
+    QuantizationConfig,
     TensorRTConfig,
     VerificationConfig,
 )
@@ -47,6 +48,7 @@ def test_centerpoint_config_parses(config_path: Path) -> None:
     EvaluationConfig.from_dict(cfg.get("evaluation", {}))
     VerificationConfig.from_dict(cfg.get("verification", {}))
     DeviceConfig.from_dict(cfg.get("devices", {}))
+    QuantizationConfig.from_dict(cfg.get("quantization", {}))
 
     # Component keys must be the canonical CenterPoint ids (catches un-renamed outer keys).
     # This is the same required-component set that CenterPointDeploymentConfig._validate_components
@@ -56,6 +58,18 @@ def test_centerpoint_config_parses(config_path: Path) -> None:
         "pts_voxel_encoder",
         "pts_backbone_neck_head",
     }, f"{config_path.name}: unexpected component keys {sorted(component_names)}"
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [p for p in _CONFIG_FILES if "int8" in p.stem],
+    ids=[_config_id(p) for p in _CONFIG_FILES if "int8" in p.stem],
+)
+def test_int8_configs_enable_quantization(config_path: Path) -> None:
+    """INT8 configs must carry an enabled quantization block."""
+    cfg = Config.fromfile(str(config_path))
+    quant = QuantizationConfig.from_dict(cfg.get("quantization", {}))
+    assert quant.enabled, f"{config_path.name}: expected quantization.enabled=True"
 
 
 def test_config_dir_is_nonempty() -> None:

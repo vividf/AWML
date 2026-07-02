@@ -100,7 +100,16 @@ class BEVFusionComponentBuilder(ModelComponentBuilder):
         return [self._sparse_component(model, sample), self._dense_component(model, sample)]
 
     def _sparse_component(self, model: torch.nn.Module, sample: BEVFusionVoxelSample) -> ExportableComponent:
-        """Sparse encoder: voxels/coors/num_points -> ``lidar_bev`` (optional ImplicitGemm+ReLU fuse)."""
+        """Sparse encoder: voxels/coors/num_points -> ``lidar_bev``.
+
+        FP path (default): trace the real encoder, optionally folding a trailing ImplicitGemm ReLU.
+        INT8 path (``quantization.spconv_int8``): trace via a fused FP32 shadow encoder so the sparse
+        ONNX has no Q/DQ, then rewrite ImplicitGemm -> ImplicitGemmInt8 as a post-transform, injecting
+        the PTQ ``_amax`` scales from the checkpoint.
+        """
+        if self._is_spconv_int8():
+            return self._sparse_component_int8(model, sample)
+
         if self._config.spconv_fuse_implicit_gemm_relu:
             post_transforms: tuple = (_fuse_implicit_gemm_relu,)
         else:
@@ -109,6 +118,61 @@ class BEVFusionComponentBuilder(ModelComponentBuilder):
         return self._component(
             "bevfusion_sparse", BEVFusionSparseWrapper(model), _voxel_inputs(sample), post_transforms
         )
+
+    def _is_spconv_int8(self) -> bool:
+        """True when the deploy config requests spconv INT8 (needs the sparse ONNX INT8 rewrite)."""
+        quant = self._config.quantization_config
+        return bool(quant.enabled and quant.spconv_int8)
+
+    def _sparse_component_int8(
+        self, model: torch.nn.Module, sample: BEVFusionVoxelSample
+    ) -> ExportableComponent:
+        """Sparse INT8 component: FP32-shadow trace + ImplicitGemmInt8 post-transform.
+
+        The sparse encoder carries NVIDIA ``TensorQuantizer`` modules from the PTQ load; tracing them
+        directly bakes Q/DQ into the graph. When the encoder can be shadowed, the wrapper swaps in a
+        fused FP32 shadow encoder for the trace so the ONNX stays Q/DQ-free, and the calibrated INT8
+        scales are injected afterwards from the PTQ checkpoint.
+        """
+        from deployment.projects.bevfusion_l.export.sparse_encoder_float_shadow import (
+            build_float_sparse_encoder_shadow,
+            encoder_has_nvidia_tensor_quantizers,
+            resolve_sparse_onnx_shadow,
+        )
+        from deployment.projects.bevfusion_l.export.sparse_int8_onnx_transform import (
+            build_sparse_int8_post_transform,
+        )
+
+        encoder = getattr(model, "pts_middle_encoder", None)
+        shadow_encoder = None
+        if encoder is not None and encoder_has_nvidia_tensor_quantizers(encoder):
+            gm_src, cfg_overrides = resolve_sparse_onnx_shadow(encoder, model)
+            if gm_src is not None:
+                device = next(model.parameters()).device
+                logger.info(
+                    "Sparse INT8 export: tracing via a fused FP32 shadow encoder so the sparse ONNX "
+                    "has no Q/DQ around ImplicitGemm (PTQ _amax injected by the INT8 post-transform)."
+                )
+                shadow_encoder = build_float_sparse_encoder_shadow(
+                    gm_src,
+                    device,
+                    cfg_overrides=cfg_overrides or None,
+                    fuse_spconv_bn=self._config.fuse_spconv_bn,
+                )
+            else:
+                logger.warning(
+                    "Sparse INT8 export: encoder has NVIDIA TensorQuantizers but no FP32 shadow could "
+                    "be resolved; sparse ONNX may contain Q/DQ (see sparse_encoder_float_shadow)."
+                )
+
+        int8_transform = build_sparse_int8_post_transform(
+            checkpoint_path=self._config.checkpoint_path,
+            fp16_layer_patterns=list(self._config.quantization_config.spconv_int8_fp16_layers),
+            verbose=self._config.spconv_int8_transform_verbose,
+            fuse_implicit_gemm_trailing_relu=self._config.spconv_int8_fuse_implicit_gemm_relu,
+        )
+        module = BEVFusionSparseWrapper(model, shadow_encoder=shadow_encoder)
+        return self._component("bevfusion_sparse", module, _voxel_inputs(sample), (int8_transform,))
 
     def _dense_component(self, model: torch.nn.Module, sample: BEVFusionVoxelSample) -> ExportableComponent:
         """Dense graph: ``lidar_bev`` -> detection triple. Traced with a BEV map from the sparse encoder."""

@@ -11,10 +11,11 @@ The public entry point is :func:`fuse_autoware_implicit_gemm_trailing_relu`.
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+import numpy as np
 import onnx
-from onnx import helper
+from onnx import helper, numpy_helper
 
 # ImplicitGemm ``act_type`` values (mirrors the plugin's enum).
 _ACT_NONE = 0
@@ -29,6 +30,29 @@ def _normalize_attr(name: str) -> str:
         if name.endswith(suffix) and len(name) > len(suffix):
             return name[: -len(suffix)]
     return name
+
+
+def _try_get_constant_numpy(
+    graph: onnx.GraphProto,
+    name: str,
+    init_map: Dict[str, np.ndarray],
+) -> Optional[np.ndarray]:
+    """Return the constant numpy array for tensor ``name``, or ``None`` if not a constant.
+
+    Checks ``init_map`` (pre-built from ``graph.initializer``) first, then searches
+    for a ``Constant`` node that produces ``name``. Used by the sparse INT8 ONNX transform
+    (``sparse_int8_onnx_transform``) to read baked constants out of the exported sparse graph.
+    """
+    if name in init_map:
+        return init_map[name]
+    for node in graph.node:
+        if node.op_type != "Constant":
+            continue
+        if name in node.output:
+            for attr in node.attribute:
+                if attr.type == onnx.AttributeProto.TENSOR:
+                    return numpy_helper.to_array(attr.t)
+    return None
 
 
 def _read_int_and_float_attrs(node: onnx.NodeProto) -> Dict[str, object]:

@@ -17,8 +17,8 @@ BUILD_DIR="${BUILD_DIR:-/tmp/trt_plugin_build}"
 SRC_DIR="${SRC_DIR:-/tmp/autoware_tensorrt_plugins_src}"
 INSTALL_PLUGINS_DIR="${INSTALL_PLUGINS_DIR:-/opt/plugins}"
 # AWML clones autoware_tensorrt_plugins from an AWML-maintained fork that bakes
-# in the GetIndicePairsImplicitGemm do_sort-attribute change (required by the
-# BEVFusion sparse ONNX export).
+# in the do_sort-attribute change (see §10.9 of
+# deployment/projects/bevfusion/docs/15_README_AWML_SPCONV_INT8_ACCEL_PLAN.md).
 # Override the URL/ref via env vars when you want to track a different fork/branch
 # (e.g. upstream autowarefoundation/autoware.universe main for an A/B build).
 AUTOWARE_UNIVERSE_REPO="${AUTOWARE_UNIVERSE_REPO:-https://github.com/vividf/autoware.universe.git}"
@@ -246,7 +246,7 @@ if grep -q "\"do_sort\"" "$PLUGIN_SRC_DIR/src/get_indices_pairs_implicit_gemm_pl
 else
   echo "[build_plugin] WARNING: cloned source does NOT expose the do_sort attribute."
   echo "[build_plugin]          This is fine ONLY if you are intentionally A/B-testing against stock upstream."
-  echo "[build_plugin]          For the BEVFusion sparse export, point AUTOWARE_UNIVERSE_REPO/REF at the AWML fork."
+  echo "[build_plugin]          For production INT8 builds, point AUTOWARE_UNIVERSE_REPO/REF at the AWML fork."
 fi
 
 # Configure and build with standalone CMakeLists (no ament/autoware_cmake)

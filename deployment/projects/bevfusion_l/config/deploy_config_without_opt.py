@@ -16,6 +16,8 @@ Use this instead of ``deploy_config.py`` when you want:
     consistency and yield garbage mAP.
   - Adjust channel **C** (default ``256``) to match ``pts_backbone.in_channels`` / sparse encoder output.
 
+**PTQ / spconv INT8 checkpoint** 請改用：``deploy_config_split_int8_all.py``（含 ``quantization`` 區塊）。
+
 CLI::
 
     python -m deployment.cli.main bevfusion_l \\

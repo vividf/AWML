@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from deployment.cli.args import restore_deployment_logging
 from deployment.config.base import BaseDeploymentConfig
 from deployment.config.enums import Backend
 from deployment.export.pipelines.onnx_export_pipeline import OnnxExportPipeline
@@ -147,10 +148,18 @@ class ExportOrchestrator:
         logger.info("\nLoading PyTorch model...")
         try:
             pytorch_model = self._model_loader(checkpoint_path)
-            self.artifact_manager.register_artifact(Backend.PYTORCH, Artifact(path=checkpoint_path))
-            return pytorch_model
         except Exception as e:
             raise RuntimeError(f"Failed to load PyTorch model from '{checkpoint_path}': {e}") from e
+        finally:
+            # Loading a quantized model imports pytorch_quantization, which pulls in
+            # absl.logging and hijacks the root logger — silencing all later INFO logs
+            # (ONNX/TensorRT export tail AND the entire evaluation phase). Re-assert the
+            # deployment logging config here so those stages remain visible. Runs on both
+            # success and failure so a load error is not swallowed either.
+            restore_deployment_logging()
+
+        self.artifact_manager.register_artifact(Backend.PYTORCH, Artifact(path=checkpoint_path))
+        return pytorch_model
 
     def _run_onnx_export(self, pytorch_model: Any) -> Optional[str]:
         """

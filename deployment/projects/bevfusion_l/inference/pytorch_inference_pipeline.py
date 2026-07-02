@@ -10,6 +10,9 @@ from typing_extensions import override
 
 from deployment.config.enums import Backend
 from deployment.primitives.device import DeviceSpec
+from deployment.projects.bevfusion_l.debug.sparse_encoder_hooks import (
+    try_register_sparse_encoder_sparse_conv_hooks,
+)
 from deployment.projects.bevfusion_l.inference.bevfusion_inference_pipeline import BEVFusionInferencePipeline
 from deployment.projects.bevfusion_l.io.head_outputs import head_dict_to_detection_outputs
 
@@ -27,6 +30,10 @@ class BEVFusionPyTorchInferencePipeline(BEVFusionInferencePipeline):
 
     def __init__(self, pytorch_model: torch.nn.Module, device: DeviceSpec) -> None:
         super().__init__(pytorch_model=pytorch_model, backend_type=Backend.PYTORCH, device=device)
+        # Env-gated debug hooks that log per-SparseConvolution stats so the PyTorch sparse pass can
+        # be lined up against the TensorRT ImplicitGemmInt8 plugin (no-op unless the debug env var is
+        # set; see debug/sparse_encoder_hooks.py).
+        try_register_sparse_encoder_sparse_conv_hooks(pytorch_model)
         logger.info("BEVFusion PyTorch pipeline initialized (sparse/dense seams)")
 
     @override
