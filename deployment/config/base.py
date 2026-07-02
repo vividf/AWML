@@ -143,6 +143,17 @@ class BaseDeploymentConfig:
         work_dir = Path(self.export_config.work_dir).expanduser()
         return str((work_dir / log_path).resolve(strict=False))
 
+    @property
+    def deploy_cfg(self) -> Config:
+        """Raw deploy-config object (read-only).
+
+        Surfaces the original MMEngine ``Config`` so project-specific export pipelines can read
+        project-only keys (e.g. BEVFusion's ``fuse_spconv_bn``, ``bevfusion_merge``,
+        ``spconv_do_sort``, ``spconv_fuse_implicit_gemm_relu``) that the typed sections
+        intentionally do not model.
+        """
+        return self._deploy_cfg
+
     def get_verification_scenarios(self, export_mode: ExportMode) -> Tuple[VerificationScenario, ...]:
         """
         Get verification scenarios for the given export mode.
@@ -192,4 +203,5 @@ class BaseDeploymentConfig:
             precision_policy=self._tensorrt_config.precision_policy,
             max_workspace_size=self._tensorrt_config.max_workspace_size,
             model_input=model_input,
+            plugin_libraries=self._tensorrt_config.plugin_libraries,
         )

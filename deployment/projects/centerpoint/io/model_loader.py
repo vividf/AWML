@@ -7,6 +7,7 @@ This module provides ONNX-compatible model building from MMEngine configs.
 from __future__ import annotations
 
 import copy
+import logging
 from typing import Tuple
 
 import torch
@@ -20,6 +21,8 @@ from deployment.projects.centerpoint.export.onnx_models import (  # noqa: F401 -
     centerpoint_onnx,
     pillar_encoder_onnx,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def create_onnx_model_cfg(
@@ -118,5 +121,6 @@ def build_centerpoint_onnx_model(
         device=device,
         rot_y_axis_reference=rot_y_axis_reference,
     )
+
     model = build_model_from_cfg(export_model_cfg, checkpoint_path, device=device)
     return model, export_model_cfg

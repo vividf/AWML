@@ -139,22 +139,29 @@ class TensorRTConfig:
     Configuration for TensorRT backend-specific settings.
 
     Uses config structure:
-        tensorrt_config = dict(precision_policy="auto", max_workspace_size=1<<30)
+        tensorrt_config = dict(precision_policy="auto", max_workspace_size=1<<30,
+                               plugin_libraries=["/opt/plugins/libcustom.so"])
 
     TensorRT profiles are defined in components.*.tensorrt_profile.
 
     Note:
         The deploy config key for this section is **`tensorrt_config`**.
+
+    ``plugin_libraries`` lists custom TensorRT plugin ``.so`` paths to ``dlopen``
+    before engine build/deserialize (e.g. the BEVFusion spconv ImplicitGemm plugin). Empty
+    by default, so projects that need no custom plugins (e.g. CenterPoint) are unaffected.
     """
 
     precision_policy: PrecisionPolicy = PrecisionPolicy.AUTO
     max_workspace_size: int = DEFAULT_WORKSPACE_SIZE
+    plugin_libraries: Tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, config_dict: Mapping[str, Any]) -> TensorRTConfig:
         return cls(
             precision_policy=PrecisionPolicy.from_value(config_dict.get("precision_policy")),
             max_workspace_size=config_dict.get("max_workspace_size", DEFAULT_WORKSPACE_SIZE),
+            plugin_libraries=tuple(config_dict.get("plugin_libraries") or ()),
         )
 
 
