@@ -1,9 +1,9 @@
 """FP32 sparse-encoder shadow for ``torch.onnx.export``.
 
-For split export the sparse tower is traced separately. This helper rebuilds a
+When sparse PTQ keeps ``TensorQuantizer`` modules on sparse convs, direct
+``torch.onnx.export`` can trace Q/DQ around sparse ops. This helper rebuilds a
 fused FP32 ``BEVFusionSparseEncoder`` and copies float weights from the source
-encoder, so BN can be folded (``fuse_spconv_bn``) into a clean sparse ONNX graph
-without mutating the runtime model.
+encoder so sparse ONNX stays Q/DQ-free.
 """
 
 from __future__ import annotations
@@ -34,6 +34,23 @@ SPARSE_ENCODER_SHADOW_ATTRS: tuple[str, ...] = (
 def has_sparse_encoder_shadow_attributes(module: nn.Module) -> bool:
     """True if ``module`` carries the config fields needed by ``build_float_sparse_encoder_shadow``."""
     return all(hasattr(module, name) for name in SPARSE_ENCODER_SHADOW_ATTRS)
+
+
+def encoder_has_nvidia_tensor_quantizers(encoder: nn.Module) -> bool:
+    """True if sparse tower uses NVIDIA-style quantizers on conv modules (PTQ deploy path).
+
+    ``apply_nvidia_spconv_int8`` adds ``_input_quantizer`` and ``_weight_quantizer`` to each
+    quantized ``SparseConvolution``. Used to decide ONNX FP32 shadow (scheme A).
+    """
+    for m in encoder.modules():
+        if m is encoder:
+            continue
+        if getattr(m, "_input_quantizer", None) is None:
+            continue
+        if getattr(m, "_weight_quantizer", None) is None:
+            continue
+        return True
+    return False
 
 
 def encoder_cfg_overrides_from_bevfusion_model(model: Optional[nn.Module]) -> Dict[str, Any]:
@@ -89,10 +106,12 @@ def resolve_sparse_onnx_shadow(
             )
         return pts_middle_encoder, overrides
 
-    logger.info(
-        "Sparse ONNX shadow: pts_middle_encoder lacks the config fields needed to rebuild an "
-        "FP32 shadow and model.cfg is incomplete; tracing the encoder directly."
-    )
+    if encoder_has_nvidia_tensor_quantizers(pts_middle_encoder):
+        logger.warning(
+            "pts_middle_encoder has TensorQuantizers but lacks SPARSE_ENCODER_SHADOW_ATTRS and "
+            "model.cfg.model.pts_middle_encoder is incomplete; ONNX FP32 shadow skipped "
+            "(sparse ONNX may contain Q/DQ)."
+        )
     return None, {}
 
 
@@ -105,8 +124,10 @@ def build_float_sparse_encoder_shadow(
 ) -> nn.Module:
     """Construct a fused FP32 ``BEVFusionSparseEncoder`` and load weights from ``gm`` state_dict.
 
-    Only floating conv/BN parameters are copied from ``gm``. ``cfg_overrides`` supplies
-    fields missing on the source module (from ``model.cfg``).
+    ``gm`` is typically ``BEVFusionSparseEncoder`` with NVIDIA ``TensorQuantizer``
+    children; only floating conv/BN parameters are copied, not ``_amax``.
+
+    ``cfg_overrides`` supplies fields missing on the source module (from ``model.cfg``).
     """
     from mmengine.registry import MODELS, init_default_scope
 
@@ -124,7 +145,8 @@ def build_float_sparse_encoder_shadow(
         raise RuntimeError(
             "Cannot rebuild FP32 sparse encoder for ONNX: source encoder + overrides missing: "
             f"{missing}. Ensure the FP32 shadow encoder defines these (match training sparse_encoder), or pass "
-            f"a BEVFusion model with model.cfg.model.pts_middle_encoder."
+            f"a BEVFusion model with model.cfg.model.pts_middle_encoder. See "
+            f"docs/5_bevfusion_onnx_trt_spconv_int8.md (bevfusion project)."
         )
 
     def _buf_to_list(buf: torch.Tensor) -> list:
@@ -179,9 +201,9 @@ def build_float_sparse_encoder_shadow(
     enc.eval()
 
     if fuse_spconv_bn:
-        from deployment.projects.bevfusion.export.spconv_bn_fusion import fuse_spconv_bn_in_encoder
+        from deployment.quantization.sparse.spconv_int8 import _fuse_spconv_bn_in_encoder
 
-        fuse_spconv_bn_in_encoder(enc)
+        _fuse_spconv_bn_in_encoder(enc)
     else:
         logger.info("Sparse ONNX float shadow: keep SparseConv+BN unfused (fuse_spconv_bn=False).")
 
@@ -189,7 +211,7 @@ def build_float_sparse_encoder_shadow(
     enc_sd = enc.state_dict()
 
     def _align_5d_spconv_weight_to_krsc(v: torch.Tensor, target: torch.Size) -> Optional[torch.Tensor]:
-        """Some checkpoints store 5D sparse conv as (C_in, C_out, Kz, Ky, Kx); MMDet encoder uses KRSC (C_out, Kz, Ky, Kx, C_in)."""
+        """Some PTQ checkpoints store 5D sparse conv as (C_in, C_out, Kz, Ky, Kx); MMDet encoder uses KRSC (C_out, Kz, Ky, Kx, C_in)."""
         if v.dim() != 5 or len(target) != 5:
             return None
         if v.shape == target:
@@ -240,6 +262,17 @@ def build_float_sparse_encoder_shadow(
             v = _gm_value_for_key(k)
             if v is None or not torch.is_tensor(v):
                 continue
+            if getattr(v, "is_quantized", False):
+                try:
+                    v = v.dequantize()
+                except Exception:
+                    continue
+            elif v.dtype in (torch.qint8, torch.quint8):
+                deq_fn = getattr(v, "dequantize", None)
+                if callable(deq_fn):
+                    v = deq_fn()
+                else:
+                    continue
 
             v = v.detach()
             if v.dim() == 5 and t.dim() == 5 and v.shape != t.shape:

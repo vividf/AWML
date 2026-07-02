@@ -98,8 +98,8 @@ def _apply_spconv_do_sort(deploy_cfg: Config, logger: logging.Logger) -> None:
     """Apply the ``spconv_do_sort`` field from ``deploy_cfg`` (default ``True``) to the
     GetIndicePairsImplicitGemm symbolic/forward path.
 
-    Controls the pair-mask argsort baked into the exported sparse graph; set ``False`` in a
-    deploy config to skip it.
+    - ``spconv_do_sort = True``  (default) -> run pair-mask argsort (FP16 needs this).
+    - ``spconv_do_sort = False``           -> skip sort (INT8 path).
     """
     value = bool(deploy_cfg.get("spconv_do_sort", True))
     from projects.SparseConvolution.sparse_functional import set_do_sort
@@ -131,6 +131,20 @@ def run(args: argparse.Namespace) -> int:
     logger.info("=" * 80)
     logger.info("BEVFusion Deployment Pipeline")
     logger.info("=" * 80)
+
+    quantization_cfg = deploy_cfg.get("quantization", None)
+    if quantization_cfg and quantization_cfg.get("enabled", False):
+        logger.info("Quantization: ENABLED")
+        logger.info(
+            "  Mode: dense=pytorch_quantization, sparse=%s",
+            "spconv_int8" if quantization_cfg.get("spconv_int8") else "fp32",
+        )
+        logger.info("  Fuse BN: %s", quantization_cfg.get("fuse_bn", True))
+        logger.info("  Quant backbone: %s", quantization_cfg.get("quant_backbone", True))
+        logger.info("  Quant neck: %s", quantization_cfg.get("quant_neck", True))
+        logger.info("  Quant head: %s", quantization_cfg.get("quant_head", True))
+    else:
+        logger.info("Quantization: disabled")
 
     info_file = (deploy_cfg.get("runtime_io", {}) or {}).get("info_file", "")
     data_loader = BEVFusionDataLoader(

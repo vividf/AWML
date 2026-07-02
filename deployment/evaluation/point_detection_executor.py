@@ -49,7 +49,7 @@ class PointDetectionExecutor(BackendExecutor):
     def _tensorrt_pipeline_kwargs(self) -> Mapping[str, Any]:
         """Extra keyword args forwarded to the TensorRT pipeline (default: none).
 
-        BEVFusion overrides this to pass its custom spconv ImplicitGemm ``plugin_libraries``.
+        BEVFusion overrides this to pass its custom spconv INT8 ``plugin_libraries``.
         """
         return {}
 

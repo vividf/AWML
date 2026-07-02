@@ -82,7 +82,7 @@ class TensorRTExportConfig:
         model_input: Per-input optimization-profile shapes. A single config already maps
             multiple named inputs via ``input_shapes``; None means no dynamic profile.
         plugin_libraries: Custom TensorRT plugin ``.so`` paths to load before building
-            the engine (e.g. the BEVFusion spconv ImplicitGemm plugin). Empty by default.
+            the engine (e.g. the BEVFusion spconv INT8 plugin). Empty by default.
     """
 
     precision_policy: PrecisionPolicy = PrecisionPolicy.AUTO

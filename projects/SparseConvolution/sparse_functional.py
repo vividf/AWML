@@ -18,9 +18,10 @@ from torch.autograd import Function
 from torch.onnx.symbolic_helper import _get_tensor_sizes
 
 # Controls `do_sort` on GetIndicePairsImplicitGemm (ONNX export + PyTorch
-# forward). Default True (pair-mask argsort on). Deploy CLIs (e.g. the BEVFusion
-# entrypoint) may flip this to False via `set_do_sort` before ONNX export. There
-# is deliberately no env-var fallback: the deploy_config is the single source of truth.
+# forward). Default True (pair-mask argsort on, required for FP16). Deploy CLIs
+# (e.g. the BEVFusion entrypoint) flip this to False for INT8 configs via
+# `set_do_sort` before ONNX export. There is deliberately no env-var fallback:
+# the deploy_config is the single source of truth.
 _do_sort: bool = True
 
 

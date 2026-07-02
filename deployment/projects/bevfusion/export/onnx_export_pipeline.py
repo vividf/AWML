@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import shutil
 import warnings
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -21,6 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from deployment.config.base import BaseDeploymentConfig
+from deployment.export.exporters.onnx_qdq_visualize import make_qdq_readable
 from deployment.io.base_data_loader import BaseDataLoader
 from deployment.primitives.artifacts import Artifact
 from deployment.projects.bevfusion.io.component_utils import (
@@ -28,6 +30,7 @@ from deployment.projects.bevfusion.io.component_utils import (
     is_split_bevfusion_components,
     should_merge_split_bevfusion,
 )
+from deployment.projects.bevfusion.io.model_loader import setup_quantization_for_onnx_export
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +125,8 @@ class BEVFusionMainBodyWrapper(nn.Module):
         num_points_per_voxel: torch.Tensor,
     ) -> tuple:
         # spconv requires int32 indices; float batch column (torch.zeros default) + int coors
-        # yields float tensor and can CUDA fault in implicit_gemm. Keep voxels FP32.
+        # yields float tensor and can CUDA fault in implicit_gemm.
+        # INT8 sparse path: quantize_per_tensor only accepts float; keep voxels FP32.
         voxels = voxels.to(dtype=torch.float32)
         coors = _normalize_sparse_coors_for_autoware(coors)
 
@@ -191,6 +195,10 @@ class BEVFusionONNXExportPipeline:
             f"ONNX config: opset={onnx_cfg['opset_version']}, inputs={onnx_cfg['input_names']}, outputs={onnx_cfg['output_names']}"
         )
 
+        # Use QuantizeLinear/DequantizeLinear in ONNX (same as CenterPoint). Without this,
+        # pytorch_quantization TensorQuantizer exports as primitive ops (Mul, Round, Clip, Div).
+        setup_quantization_for_onnx_export()
+        self._maybe_setup_spconv_int8_export_patches(config)
         self.logger.info("Running torch.onnx.export...")
         self._export_to_onnx(
             model,
@@ -204,6 +212,7 @@ class BEVFusionONNXExportPipeline:
 
         num_proposals = self._get_num_proposals(model)
         self._fix_topk(str(temp_path), str(output_path), num_proposals)
+        self._apply_qdq_visualization_if_enabled(str(output_path), onnx_cfg)
 
         self.logger.info("=" * 80)
         self.logger.info(f"BEVFusion ONNX export successful: {output_path}")
@@ -238,6 +247,9 @@ class BEVFusionONNXExportPipeline:
         voxels, coors, num_points_per_voxel = self._voxelize(model, points)
         self.logger.info(f"Voxelization done: {voxels.shape[0]} voxels")
 
+        setup_quantization_for_onnx_export()
+        self._maybe_setup_spconv_int8_export_patches(config)
+
         sparse_cfg = config.components_cfg.get_component("bevfusion_sparse")
         dense_cfg = config.components_cfg.get_component("bevfusion_dense")
         sparse_onnx = output_dir_path / sparse_cfg.onnx_file
@@ -263,7 +275,11 @@ class BEVFusionONNXExportPipeline:
             wrapper="sparse",
             fuse_spconv_bn=bool(config.deploy_cfg.get("fuse_spconv_bn", False)),
         )
-        self._postprocess_sparse_onnx_fp(config=config, sparse_onnx_path=sparse_onnx)
+        if self._should_auto_transform_sparse_onnx_int8(config=config):
+            self._postprocess_sparse_onnx_int8(config=config, sparse_onnx_path=sparse_onnx)
+        else:
+            self._postprocess_sparse_onnx_fp(config=config, sparse_onnx_path=sparse_onnx)
+        self._apply_qdq_visualization_if_enabled(str(sparse_onnx), onnx_cfg_sparse)
 
         with torch.no_grad():
             sw = BEVFusionSparseWrapper(model)
@@ -284,6 +300,7 @@ class BEVFusionONNXExportPipeline:
 
         num_proposals = self._get_num_proposals(model)
         self._fix_topk(str(dense_temp), str(dense_onnx), num_proposals)
+        self._apply_qdq_visualization_if_enabled(str(dense_onnx), onnx_cfg_dense)
 
         if should_merge_split_bevfusion(config.deploy_cfg):
             self._merge_split_onnx_artifact(
@@ -292,6 +309,10 @@ class BEVFusionONNXExportPipeline:
                 dense_onnx_path=dense_onnx,
                 output_dir_path=output_dir_path,
             )
+            if has_component(config.components_cfg, "bevfusion_main_body"):
+                onnx_cfg_main = self._get_onnx_config(config, "bevfusion_main_body")
+                merged_main = output_dir_path / config.components_cfg.get_component("bevfusion_main_body").onnx_file
+                self._apply_qdq_visualization_if_enabled(str(merged_main), onnx_cfg_main)
 
         self.logger.info("=" * 80)
         self.logger.info("Split ONNX export OK: %s , %s", sparse_onnx, dense_onnx)
@@ -299,12 +320,98 @@ class BEVFusionONNXExportPipeline:
 
         return Artifact(path=str(output_dir_path))
 
+    def _maybe_setup_spconv_int8_export_patches(self, config: BaseDeploymentConfig) -> None:
+        """Apply spconv INT8 ONNX-export patches only when INT8 sparse export is requested.
+
+        The patch lives under ``deployment.projects.bevfusion.quantization`` (INT8-only) and
+        is imported lazily so the FP16 export path never touches a quantization module.
+        """
+        if not self._should_auto_transform_sparse_onnx_int8(config=config):
+            return
+        from deployment.quantization.sparse.spconv_add_patch import (
+            ensure_spconv_quantize_per_tensor_float_activations,
+        )
+
+        ensure_spconv_quantize_per_tensor_float_activations()
+
+    def _should_auto_transform_sparse_onnx_int8(self, *, config: BaseDeploymentConfig) -> bool:
+        """Whether split sparse ONNX should be transformed to ImplicitGemmInt8."""
+        quant_cfg = config.deploy_cfg.get("quantization", {}) or {}
+        return bool(quant_cfg.get("enabled", False) and quant_cfg.get("spconv_int8", False))
+
+    def _postprocess_sparse_onnx_int8(self, *, config: BaseDeploymentConfig, sparse_onnx_path: Path) -> None:
+        """Auto-run sparse INT8 transform after sparse ONNX export (step2 includes old step3/4)."""
+        if not sparse_onnx_path.exists():
+            raise FileNotFoundError(f"Sparse ONNX not found for INT8 transform: {sparse_onnx_path}")
+
+        checkpoint_path = config.checkpoint_path
+        if not checkpoint_path:
+            raise RuntimeError(
+                "INT8 sparse ONNX auto-transform requires deploy_cfg.checkpoint_path "
+                "(PTQ checkpoint with _amax entries)."
+            )
+
+        backup_fp16 = sparse_onnx_path.parent.parent / sparse_onnx_path.name.replace(".onnx", "_fp16.onnx")
+        shutil.copy2(str(sparse_onnx_path), str(backup_fp16))
+
+        from deployment.projects.bevfusion.export.sparse_int8_onnx_transform import transform_onnx_int8
+        from deployment.projects.bevfusion.export.sparse_int8_transform_ops import (
+            _build_layer_scale_map,
+            _load_amax_from_checkpoint,
+        )
+
+        self.logger.info("Sparse ONNX INT8 transform: backup FP16 ONNX -> %s", backup_fp16)
+
+        amax_dict = _load_amax_from_checkpoint(checkpoint_path)
+        if not amax_dict:
+            raise RuntimeError(
+                f"PTQ checkpoint {checkpoint_path!r} has no _amax keys; cannot auto-transform sparse ONNX to INT8."
+            )
+        layer_scales = _build_layer_scale_map(amax_dict)
+        if not layer_scales:
+            raise RuntimeError(
+                f"No sparse layer scales built from checkpoint {checkpoint_path!r}; "
+                "check PTQ output / spconv INT8 calibration."
+            )
+
+        ckpt = torch.load(checkpoint_path, map_location="cpu")
+        encoder_sd = ckpt.get("state_dict", ckpt)
+        fp16_patterns = [
+            str(p) for p in (config.deploy_cfg.get("spconv_int8_fp16_layers", []) or []) if str(p).strip()
+        ]
+        fuse_implicit_gemm_relu = self._deploy_cfg_fuse_implicit_gemm_relu(config.deploy_cfg, default=True)
+
+        model_fp = onnx.load(str(backup_fp16))
+        model_int8 = transform_onnx_int8(
+            model_fp,
+            layer_scales,
+            encoder_sd,
+            verbose=bool(config.deploy_cfg.get("spconv_int8_transform_verbose", False)),
+            amax_dict=amax_dict,
+            fp16_layer_patterns=fp16_patterns,
+            fuse_implicit_gemm_trailing_relu=fuse_implicit_gemm_relu,
+        )
+        onnx.save_model(model_int8, str(sparse_onnx_path))
+        self.logger.info(
+            "Sparse ONNX INT8 transform done: %s (fp16 backup: %s)",
+            sparse_onnx_path,
+            backup_fp16,
+        )
+
     @staticmethod
     def _deploy_cfg_fuse_implicit_gemm_relu(deploy_cfg: Any, *, default: bool = True) -> bool:
-        """Read ``spconv_fuse_implicit_gemm_relu`` (fuse trailing Relu into ImplicitGemm nodes)."""
+        """Read unified ``spconv_fuse_implicit_gemm_relu`` (FP + INT8 sparse ONNX paths).
+
+        Falls back to deprecated ``spconv_int8_fuse_implicit_gemm_relu`` when only the legacy
+        key is set. Inlined from ``sparse_int8_onnx_transform`` (INT8-only module) so the FP
+        export path never imports a quantization/INT8 module.
+        """
         val = deploy_cfg.get("spconv_fuse_implicit_gemm_relu", None)
         if val is not None:
             return bool(val)
+        legacy = deploy_cfg.get("spconv_int8_fuse_implicit_gemm_relu", None)
+        if legacy is not None:
+            return bool(legacy)
         return default
 
     def _postprocess_sparse_onnx_fp(self, *, config: BaseDeploymentConfig, sparse_onnx_path: Path) -> None:
@@ -459,7 +566,7 @@ class BEVFusionONNXExportPipeline:
         # Default "auto" = trace on the same device as the model (usually CUDA). CUDA-built spconv
         # implicit_gemm runs GPU kernels: indices/features on CPU + those kernels => cudaErrorIllegalAddress.
         # If you lack GPU memory for dense(), set trace_device=cpu only with a CPU spconv build, or export
-        # on another machine.
+        # on another machine; see docs/4_spconv_int8_implementation_history_zh.md (this project).
         trace_device = getattr(onnx_settings, "trace_device", None) or os.environ.get(
             "BEVFUSION_ONNX_TRACE_DEVICE", "auto"
         )
@@ -472,9 +579,28 @@ class BEVFusionONNXExportPipeline:
             "do_constant_folding": bool(getattr(onnx_settings, "do_constant_folding", True)),
             "export_params": True,
             "keep_initializers_as_inputs": False,
+            "visualize_qdq_values": bool(getattr(onnx_settings, "visualize_qdq_values", False)),
             "verbose": False,
             "trace_device": trace_device,
         }
+
+    def _apply_qdq_visualization_if_enabled(self, onnx_path: str, onnx_cfg: Dict[str, Any]) -> None:
+        """Annotate Q/DQ and collapse related Constant nodes for easier graph inspection."""
+        if not bool(onnx_cfg.get("visualize_qdq_values", False)):
+            return
+        try:
+            model = onnx.load(onnx_path)
+            annotated, promoted, removed = make_qdq_readable(model)
+            onnx.save_model(model, onnx_path)
+            self.logger.info(
+                "Q/DQ readability postprocess done for %s: annotated=%d, promoted_constants=%d, removed_constant_nodes=%d",
+                onnx_path,
+                annotated,
+                promoted,
+                removed,
+            )
+        except Exception as e:
+            self.logger.warning("Q/DQ readability postprocess skipped for %s: %s", onnx_path, e)
 
     def _torch_onnx_export_module(
         self,
@@ -501,6 +627,8 @@ class BEVFusionONNXExportPipeline:
         except Exception:
             pass
 
+        unsupported_onnx_op = getattr(getattr(torch.onnx, "errors", None), "UnsupportedOperatorError", None)
+
         with torch.no_grad():
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -508,7 +636,22 @@ class BEVFusionONNXExportPipeline:
                     message=".*non-tuple sequence for multidimensional indexing.*",
                     category=UserWarning,
                 )
-                torch.onnx.export(module, model_inputs, output_path, **export_kw)
+                try:
+                    torch.onnx.export(module, model_inputs, output_path, **export_kw)
+                except Exception as e:
+                    if (
+                        unsupported_onnx_op is not None
+                        and isinstance(e, unsupported_onnx_op)
+                        and "_empty_affine_quantized" in str(e)
+                    ):
+                        raise RuntimeError(
+                            "torch.onnx.export failed on quantized tensors (aten::_empty_affine_quantized). "
+                            "Expected fix: make sure pts_middle_encoder carries "
+                            "sparse_encoder_float_shadow.SPARSE_ENCODER_SHADOW_ATTRS so the exporter "
+                            "swaps in an FP32 BEVFusionSparseEncoder for tracing only. "
+                            "If your encoder is wrapped, ensure the wrapped module exposes those attributes."
+                        ) from e
+                    raise
 
     def _resolve_trace_device(
         self,
@@ -645,9 +788,10 @@ class BEVFusionONNXExportPipeline:
     ) -> Optional[nn.Module]:
         """Swap ``pts_middle_encoder`` for a fused FP32 shadow used only during tracing.
 
-        Returns the original encoder (to restore after export) or ``None`` if no swap was
-        needed. The shadow lets BN be folded (``fuse_spconv_bn``) into a clean sparse ONNX
-        graph without mutating the runtime model.
+        Returns the original encoder (to restore after export) or ``None`` if no swap
+        was needed. INT8 (NVIDIA TensorQuantizer) encoders trace via the shadow so the
+        sparse ONNX has no Q/DQ around ImplicitGemm; PTQ ``_amax`` stay in the checkpoint
+        for the sparse INT8 transform. See docs/11_int8_autoware_plugin.md §8-4.
         """
         enc = getattr(model, "pts_middle_encoder", None)
         if enc is None:
@@ -655,6 +799,7 @@ class BEVFusionONNXExportPipeline:
 
         from deployment.projects.bevfusion.export.sparse_encoder_float_shadow import (
             build_float_sparse_encoder_shadow,
+            encoder_has_nvidia_tensor_quantizers,
             resolve_sparse_onnx_shadow,
         )
 
@@ -662,10 +807,18 @@ class BEVFusionONNXExportPipeline:
         if gm_src is None:
             return None
 
-        self.logger.info(
-            "Sparse tower: using fused FP32 shadow encoder for ONNX export "
-            "(weights copied from source sparse encoder)."
-        )
+        if gm_src is enc and encoder_has_nvidia_tensor_quantizers(enc):
+            self.logger.info(
+                "Sparse tower (NVIDIA TensorQuantizer path, scheme A): using a fused FP32 "
+                "shadow encoder for torch.onnx.export so sparse ONNX has no Q/DQ around "
+                "ImplicitGemm. PTQ _amax stay in checkpoint for sparse INT8 transform. See "
+                "docs/11_int8_autoware_plugin.md §8-4."
+            )
+        else:
+            self.logger.info(
+                "Sparse tower: using fused FP32 shadow encoder for ONNX export "
+                "(weights copied from source sparse encoder)."
+            )
         if cfg_ov:
             self.logger.info(
                 "Shadow rebuild merges %d attribute(s) from model.cfg pts_middle_encoder.",

@@ -6,8 +6,11 @@ ARG BUILD_SPCONV_CPP="true"
 ARG SPCONV_CPP_REF="main"
 ARG BUILD_TRT_PLUGINS="true"
 # AWML fork of autoware.universe that carries the GetIndicePairsImplicitGemm
-# `do_sort` plugin attribute change required by the BEVFusion sparse ONNX export
-# (stock upstream autowarefoundation main lacks this attribute).
+# `do_sort` plugin attribute change. See
+# deployment/projects/bevfusion/docs/15_README_AWML_SPCONV_INT8_ACCEL_PLAN.md §10.9.
+# The fork branch carries both the GetIndicePairsImplicitGemm `do_sort` attribute
+# change AND the INT8 quantize_ops sources (quantize_features.cu) required by
+# CMakeLists.standalone. Stock upstream autowarefoundation main lacks quantize_ops.
 ARG AUTOWARE_UNIVERSE_REPO="https://github.com/vividf/autoware.universe.git"
 ARG AUTOWARE_UNIVERSE_REF="feat/implicit_gemm_int8"
 
@@ -20,6 +23,12 @@ RUN python3 -m pip --no-cache-dir install \
 
 # Install traveller59 python package (requested)
 RUN python3 -m pip --no-cache-dir install spconv-cu120
+
+# PyTorch quantization (NVIDIA wheel index + PyPI for deps)
+RUN python3 -m pip --no-cache-dir install \
+  --index-url https://pypi.nvidia.com \
+  --extra-index-url https://pypi.org/simple \
+  pytorch-quantization==2.1.3
 
 # Build and install libspconv.so from spconv_cpp (for C++/TensorRT deployment path)
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \

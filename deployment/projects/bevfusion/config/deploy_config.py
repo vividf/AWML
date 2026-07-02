@@ -103,10 +103,18 @@ onnx_config = dict(
 # BEVFusion ONNX uses ImplicitGemm / GetIndicePairsImplicitGemm (spconv). You must
 # provide the plugin .so and list it here, or TensorRT export will fail with
 # "Plugin not found". See: projects/BEVFusion/plugins/README.md
+#
+# INT8 / spconv INT8:
+# - TensorRT INT8: set policy_flags={"FP16": True, "INT8": True} (and calibration
+#   if required). Sparse conv ops are custom plugins; they use FP16/FP32 unless the
+#   plugin implements INT8. So this is "TensorRT INT8", not necessarily "spconv INT8".
+# - Spconv INT8 (cumm kernels): use PyTorch backend with a PTQ-quantized checkpoint.
+#   See docs/2_spconv_int8_deploy.md (under this project) for the recommended flow.
 tensorrt_config = dict(
     precision_policy="fp16",
     max_workspace_size=1 << 32,
-    # Optional: enable FP16 at build time via policy_flags=dict(FP16=True).
+    # Optional: enable FP16/INT8 at build time (INT8 may require calibration).
+    # policy_flags=dict(FP16=True, INT8=False),
     # Set this after placing libautoware_tensorrt_plugins.so in the image (e.g. under
     # /opt/plugins/). Alternatively set env DEPLOY_TENSORRT_PLUGIN_LIBS.
     plugin_libraries=["/opt/plugins/libautoware_tensorrt_plugins.so"],

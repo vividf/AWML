@@ -46,8 +46,8 @@ class BEVFusionTensorRTExportPipeline:
 
         torch.cuda.set_device(device.index)
 
-        # Load any custom plugin .so libraries (e.g. the BEVFusion spconv ImplicitGemm plugin)
-        # before building. No-op when plugin_libraries is empty.
+        # Load any custom plugin .so libraries (e.g. BEVFusion spconv INT8) before building.
+        # No-op when plugin_libraries is empty.
         load_tensorrt_plugin_libraries(self.logger, getattr(self, "_plugin_libraries", ()))
 
         onnx_dir = Path(onnx_path)

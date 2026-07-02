@@ -28,12 +28,16 @@ class _TRTLayerProfiler(trt.IProfiler):
 
 
 # Priority A — bucket classification for sparse encoder in-situ profile.
+# Mirrors ``benchmark/profile_sparse_encoder.py`` so stage 5 eval and the
+# standalone tool surface the same labels.
 _SPARSE_BUCKET_ORDER: Tuple[str, ...] = (
     "pair_gen",
+    "implicit_gemm_int8",
     "implicit_gemm_fp",
     "scatter_nd",
     "add",
     "relu",
+    "quant_dquant",
     "cast",
     "layout",
     "other",
@@ -47,15 +51,19 @@ def _classify_sparse_bucket(layer_name: str) -> str:
     occasional prefixes, so pure substring matching is enough and cheap.
     """
     n = layer_name.lower()
-    # Normalize common separators so ``ImplicitGemm`` / ``implicit-gemm`` / ``implicit gemm``
-    # all collapse to ``implicitgemm`` before substring matching.
+    # Normalize common separators so ``ImplicitGemm_int8`` / ``ImplicitGemm-int8``
+    # all collapse to ``implicitgemmint8`` before substring matching.
     n_norm = n.replace("_", "").replace("-", "").replace(" ", "")
     if "getindicepairsimplicitgemm" in n_norm or ("getindicepairs" in n_norm and "implicitgemm" not in n_norm):
         return "pair_gen"
+    if "implicitgemmint8" in n_norm:
+        return "implicit_gemm_int8"
     if "implicitgemm" in n_norm or "indiceconv" in n_norm:
         return "implicit_gemm_fp"
     if "scatternd" in n:
         return "scatter_nd"
+    if "quantizelinear" in n or "dequantizelinear" in n:
+        return "quant_dquant"
     # Guard: "add"/"relu"/"cast" must be word-like to avoid matching paths.
     if "relu" in n:
         return "relu"

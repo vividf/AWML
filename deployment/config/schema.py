@@ -148,7 +148,7 @@ class TensorRTConfig:
         The deploy config key for this section is **`tensorrt_config`**.
 
     ``plugin_libraries`` lists custom TensorRT plugin ``.so`` paths to ``dlopen``
-    before engine build/deserialize (e.g. the BEVFusion spconv ImplicitGemm plugin). Empty
+    before engine build/deserialize (e.g. the BEVFusion spconv INT8 plugin). Empty
     by default, so projects that need no custom plugins (e.g. CenterPoint) are unaffected.
     """
 
@@ -162,6 +162,98 @@ class TensorRTConfig:
             precision_policy=PrecisionPolicy.from_value(config_dict.get("precision_policy")),
             max_workspace_size=config_dict.get("max_workspace_size", DEFAULT_WORKSPACE_SIZE),
             plugin_libraries=tuple(config_dict.get("plugin_libraries") or ()),
+        )
+
+
+# -----------------------------------------------------------------------------
+# Quantization (deploy_cfg["quantization"]) — optional, default-disabled
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class QuantizationConfig:
+    """Typed view of the deploy-config ``quantization`` section.
+
+    Mirrors the (previously untyped) ``quantization`` dict consumed by the CenterPoint
+    and BEVFusion model loaders. Defaults are chosen so an absent section yields a
+    fully-disabled config (``enabled=False``) — existing non-quantized deploy configs
+    are unaffected.
+
+    ``raw`` preserves the original deploy-config dict verbatim; the per-project model
+    loaders (e.g. ``_load_quantized_checkpoint``) read it directly, so the proven
+    loader bodies port unchanged. The typed fields exist for introspection/validation.
+
+    Field defaults match the ``.get(..., default)`` calls in those loaders:
+    ``quant_{backbone,neck,head,voxel_encoder}`` default True; everything else
+    (add/linear/eSE/maxpool, spconv) defaults False. ``skip_vovnet_stages`` defaults
+    to ``None`` (not VoVNet) and must be distinguished from an empty tuple.
+    """
+
+    enabled: bool = False
+    mode: str = "ptq"  # "ptq" | "qat"
+    fuse_bn: bool = True
+    ptq_checkpoint: bool = False
+    # Dense-part toggles
+    quant_backbone: bool = True
+    quant_neck: bool = True
+    quant_head: bool = True
+    quant_voxel_encoder: bool = True
+    quant_add: bool = False
+    quant_linear_backbone: bool = False
+    # VoVNet/eSE/maxpool knobs (CenterPoint)
+    quant_ese_mul_identity: bool = False
+    quant_ese_pool_input: bool = False
+    quant_maxpool_input: bool = False
+    # Backbone-stage skips
+    skip_backbone_first_stages: int = 0
+    skip_backbone_stages: Tuple[int, ...] = ()
+    skip_vovnet_stages: Optional[Tuple[int, ...]] = None
+    sensitive_layers: Tuple[str, ...] = ()
+    calib_cache_path: Optional[str] = None
+    # BEVFusion sparse-encoder INT8
+    spconv_int8: bool = False
+    spconv_int8_fp16_layers: Tuple[str, ...] = ()
+    # Verbatim deploy-config dict for per-project loaders.
+    raw: Mapping[str, Any] = field(default_factory=_empty_mapping)
+
+    @staticmethod
+    def _int_tuple(value: Any) -> Tuple[int, ...]:
+        return tuple(int(v) for v in value) if value else ()
+
+    @staticmethod
+    def _str_tuple(value: Any) -> Tuple[str, ...]:
+        return tuple(str(v) for v in value) if value else ()
+
+    @classmethod
+    def from_dict(cls, raw: Optional[Mapping[str, Any]]) -> QuantizationConfig:
+        """Build QuantizationConfig from deploy_cfg['quantization']; empty/None → disabled."""
+        if not raw:
+            return cls()
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"quantization must be a dict, got {type(raw).__name__}")
+        vov = raw.get("skip_vovnet_stages", None)
+        return cls(
+            enabled=bool(raw.get("enabled", False)),
+            mode=str(raw.get("mode", "ptq")),
+            fuse_bn=bool(raw.get("fuse_bn", True)),
+            ptq_checkpoint=bool(raw.get("ptq_checkpoint", False)),
+            quant_backbone=bool(raw.get("quant_backbone", True)),
+            quant_neck=bool(raw.get("quant_neck", True)),
+            quant_head=bool(raw.get("quant_head", True)),
+            quant_voxel_encoder=bool(raw.get("quant_voxel_encoder", True)),
+            quant_add=bool(raw.get("quant_add", False)),
+            quant_linear_backbone=bool(raw.get("quant_linear_backbone", False)),
+            quant_ese_mul_identity=bool(raw.get("quant_ese_mul_identity", False)),
+            quant_ese_pool_input=bool(raw.get("quant_ese_pool_input", False)),
+            quant_maxpool_input=bool(raw.get("quant_maxpool_input", False)),
+            skip_backbone_first_stages=int(raw.get("skip_backbone_first_stages", 0) or 0),
+            skip_backbone_stages=cls._int_tuple(raw.get("skip_backbone_stages")),
+            skip_vovnet_stages=(None if vov is None else cls._int_tuple(vov)),
+            sensitive_layers=cls._str_tuple(raw.get("sensitive_layers")),
+            calib_cache_path=raw.get("calib_cache_path"),
+            spconv_int8=bool(raw.get("spconv_int8", False)),
+            spconv_int8_fp16_layers=cls._str_tuple(raw.get("spconv_int8_fp16_layers")),
+            raw=MappingProxyType(dict(raw)),
         )
 
 

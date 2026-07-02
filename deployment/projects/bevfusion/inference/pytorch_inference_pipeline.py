@@ -12,6 +12,9 @@ from typing_extensions import override
 
 from deployment.config.enums import Backend
 from deployment.primitives.device import DeviceSpec
+from deployment.projects.bevfusion.debug.sparse_encoder_hooks import (
+    try_register_sparse_encoder_sparse_conv_hooks,
+)
 from deployment.projects.bevfusion.inference.bevfusion_inference_pipeline import BEVFusionDeploymentPipeline
 
 try:
@@ -60,6 +63,7 @@ class BEVFusionPyTorchPipeline(BEVFusionDeploymentPipeline):
 
     def __init__(self, pytorch_model: torch.nn.Module, device: DeviceSpec) -> None:
         super().__init__(pytorch_model=pytorch_model, backend_type=Backend.PYTORCH, device=device)
+        try_register_sparse_encoder_sparse_conv_hooks(pytorch_model)
         logger.info("BEVFusion PyTorch pipeline initialized (per-block latency enabled)")
 
     @override

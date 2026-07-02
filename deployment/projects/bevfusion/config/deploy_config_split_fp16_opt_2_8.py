@@ -16,6 +16,8 @@ Use this instead of ``deploy_config.py`` when you want:
     consistency and yield garbage mAP.
   - Adjust channel **C** (default ``256``) to match ``pts_backbone.in_channels`` / sparse tower output.
 
+**PTQ / spconv INT8 checkpoint** 請改用：``deploy_config_split_int8_all.py``（含 ``quantization`` 區塊）。
+
 CLI::
 
     python -m deployment.cli.main bevfusion \\
@@ -35,8 +37,8 @@ spconv_do_sort = False
 # ============================================================================
 spconv_fuse_implicit_gemm_relu = True
 
-# Fuse SparseConv + BN in ``pts_middle_encoder`` before ONNX export (eval-mode Conv-BN fold).
-# Produces a BN-free sparse subgraph in the exported ONNX.
+# Fuse SparseConv + BN in ``pts_middle_encoder`` before ONNX export (same as PTQ load path).
+# Aligns FP16 sparse subgraph with INT8 deploy / fair latency vs mAP comparison.
 fuse_spconv_bn = True
 
 # ============================================================================

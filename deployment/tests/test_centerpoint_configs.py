@@ -24,6 +24,7 @@ from deployment.config.schema import (
     EvaluationConfig,
     ExportConfig,
     OnnxConfig,
+    QuantizationConfig,
     TensorRTConfig,
     VerificationConfig,
 )
@@ -50,6 +51,7 @@ def test_centerpoint_config_parses(config_path: Path) -> None:
     EvaluationConfig.from_dict(cfg.get("evaluation", {}))
     VerificationConfig.from_dict(cfg.get("verification", {}))
     DeviceConfig.from_dict(cfg.get("devices", {}))
+    QuantizationConfig.from_dict(cfg.get("quantization", {}))
 
     # Component keys must be the canonical CenterPoint ids (catches un-renamed outer keys).
     component_names = set(components_cfg.component_names())
@@ -60,6 +62,18 @@ def test_centerpoint_config_parses(config_path: Path) -> None:
 
     # The registry's required-components check is exactly what the entrypoint runs.
     project_registry.validate_required_components("centerpoint", components_cfg)
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [p for p in _CONFIG_FILES if "int8" in p.stem],
+    ids=[_config_id(p) for p in _CONFIG_FILES if "int8" in p.stem],
+)
+def test_int8_configs_enable_quantization(config_path: Path) -> None:
+    """INT8 configs must carry an enabled quantization block."""
+    cfg = Config.fromfile(str(config_path))
+    quant = QuantizationConfig.from_dict(cfg.get("quantization", {}))
+    assert quant.enabled, f"{config_path.name}: expected quantization.enabled=True"
 
 
 def test_config_dir_is_nonempty() -> None:

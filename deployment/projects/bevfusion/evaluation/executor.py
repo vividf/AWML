@@ -1,7 +1,7 @@
 """BEVFusion backend executor.
 
 Thin subclass of ``PointDetectionExecutor``: declares the BEVFusion pipeline classes, the
-split/merged output-name lookup, and forwards custom spconv ImplicitGemm ``plugin_libraries`` to the
+split/merged output-name lookup, and forwards custom spconv INT8 ``plugin_libraries`` to the
 TensorRT pipeline. Pipeline creation and ``(points, metainfo)`` input prep are shared with the
 base (see ``deployment.evaluation.point_detection_executor``).
 
@@ -29,7 +29,7 @@ class BEVFusionExecutor(PointDetectionExecutor):
         components_cfg: Unified components configuration, forwarded to the ONNX/TensorRT
             pipelines so they can resolve split (sparse+dense) vs merged main-body artifacts.
         tensorrt_plugin_libraries: Custom TensorRT plugin ``.so`` paths forwarded to the
-            TensorRT pipeline (e.g. the spconv ImplicitGemm plugin); empty when none is needed.
+            TensorRT pipeline (e.g. the spconv INT8 plugin); empty for the FP16 path.
     """
 
     task_name = "BEVFusion"
@@ -43,7 +43,7 @@ class BEVFusionExecutor(PointDetectionExecutor):
 
     @override
     def _tensorrt_pipeline_kwargs(self) -> Mapping[str, Any]:
-        """Forward the custom spconv ImplicitGemm plugin ``.so`` paths to the TensorRT pipeline."""
+        """Forward the custom spconv INT8 plugin ``.so`` paths to the TensorRT pipeline."""
         return {"plugin_libraries": self._tensorrt_plugin_libraries}
 
     @override

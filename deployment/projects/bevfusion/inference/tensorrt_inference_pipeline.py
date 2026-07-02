@@ -54,9 +54,18 @@ _TRT_LOG_IO = _env_truthy("BEVFUSION_TRT_LOG_IO")
 # Priority A — in-situ per-layer breakdown for the split sparse engine.
 #   BEVFUSION_TRT_SPARSE_PROFILE=1          attaches trt.IProfiler to the sparse context
 #   BEVFUSION_TRT_SPARSE_PROFILE_EVERY=1    log breakdown on every frame (default: every 10 frames)
-# This env var is a sanity overlay when running the real eval path (step 5).
+# The standalone tool ``benchmark/profile_sparse_encoder.py`` produces a cleaner report;
+# this env var is a sanity overlay when running the real eval path (step 5).
 _TRT_SPARSE_PROFILE = _env_truthy("BEVFUSION_TRT_SPARSE_PROFILE")
 _TRT_SPARSE_PROFILE_EVERY = max(1, _env_int("BEVFUSION_TRT_SPARSE_PROFILE_EVERY", 10))
+# ImplicitGemmInt8 TRT plugin (C++): per-layer FP16 output stats to stderr after each enqueue.
+#   BEVFUSION_INT8_GEMM_DEBUG=1
+#   BEVFUSION_INT8_GEMM_DEBUG_MAX=60   # max layer-dumps (default 60 ≈ 3 sparse passes × 20 layers)
+# Rebuild: deployment/projects/bevfusion/cpp/int8_plugin/
+#
+# PyTorch sparse conv hooks (align seq with TRT): BEVFUSION_SPARSE_ENCODER_HOOK_DEBUG=1
+#   BEVFUSION_SPARSE_ENCODER_HOOK_MAX_PASSES=2   # full pts_middle_encoder forwards (default 2)
+# See deployment/projects/bevfusion/debug/sparse_encoder_hooks.py
 # First N eval frames: print pooled-voxel + lidar_bev stats to stdout (align with PyTorch pipeline).
 _TRT_TENSOR_LOG_FRAMES = max(0, _env_int("BEVFUSION_TRT_TENSOR_LOG_FRAMES", 2))
 _TRT_TENSOR_LOG_PREFIX = "[BEVFUSION][TensorRT][tensors]"
@@ -134,7 +143,7 @@ def _log_engine_input_dtypes_line(tag: str, engine: trt.ICudaEngine) -> None:
             logger.warning(
                 "[trt-io] %s: voxel-like input %r is HALF — host numpy is cast before "
                 "``set_tensor_address`` (see INFO ``casting host buffer`` on first infer). "
-                "If that cast is missing, ImplicitGemm inputs corrupt (lidar_bev explodes).",
+                "If that cast is missing, ImplicitGemmInt8 inputs corrupt (lidar_bev explodes).",
                 tag,
                 name,
             )
@@ -293,7 +302,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
 
         Split sparse ONNX is often traced with FP32 voxels, but TensorRT ``fp16`` builds may bind
         ``voxels`` as ``HALF``. Feeding float32 nbytes into a HALF binding misaligns the GPU
-        buffer and corrupts the first ImplicitGemm inputs (lidar_bev explosion while numpy
+        buffer and corrupts the first ImplicitGemmInt8 inputs (lidar_bev explosion while numpy
         voxel stats still look sane).
         """
         trt_dtype = engine.get_tensor_dtype(tensor_name)
@@ -424,7 +433,7 @@ class BEVFusionTensorRTPipeline(GPUResourceMixin, BEVFusionDeploymentPipeline):
         voxels_np = self.to_numpy(voxels, dtype=np.float32)
         coors_np = self.to_numpy(voxel_indices_xyz_to_graph_input_zyx(coors), dtype=np.int32)
         num_points_np = self.to_numpy(num_points_per_voxel, dtype=np.int32)
-        # Match ``extract_pts_feat``: mean-pool must not divide by zero (NaN BEV → dense NaN).
+        # Match ``extract_pts_feat`` / PTQ: mean-pool must not divide by zero (NaN BEV → dense NaN).
         num_points_np = np.maximum(num_points_np, 1)
 
         if self._split:
