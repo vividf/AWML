@@ -586,10 +586,10 @@ Optimized the ONNX model and TensorRT plugin from `BEVFusion-LiDAR base/2.8.1` f
 
 - Deployed onnx and ROS parameter files (for internal)
   - [WebAuto](https://evaluation.ci.tier4.jp/evaluation/mlpackages/46f8188d-e3be-4f2f-b989-fd27002610d7/releases/b51982cf-293c-4ee6-8493-3d82bcb2544c?project_id=zWhWRzei)
-  - [model-zoo](https://download.autoware-ml-model-zoo.tier4.jp/autoware-ml/models/bevfusion/bevfusion-l/j6gen2_base/v2.7.1_opt/deployment.zip)
+  - [model-zoo](https://download.autoware-ml-model-zoo.tier4.jp/autoware-ml/models/bevfusion/bevfusion-l/j6gen2_base/v2.8.1_opt/deployment.zip)
   - [Google drive](https://drive.google.com/file/d/16PiONnaYdAxkMp7yU8bXDW21MemnYDUb/view?usp=drive_link)
 - Pytorch Best checkpoints:
-  - [model-zoo](https://download.autoware-ml-model-zoo.tier4.jp/autoware-ml/models/bevfusion/bevfusion-l/j6gen2_base/v2.7.1_opt/best_epoch_28.pth)
+  - [model-zoo](https://download.autoware-ml-model-zoo.tier4.jp/autoware-ml/models/bevfusion/bevfusion-l/j6gen2_base/v2.8.1_opt/best_epoch_25.pth)
   - [Google drive](https://drive.google.com/file/d/1Ku3R88PXdFJ15aDx1sBpb0gY3TQ0UGez/view?usp=drive_linkk)
 </details>
 
