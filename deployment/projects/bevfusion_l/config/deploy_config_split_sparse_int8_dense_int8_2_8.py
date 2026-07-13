@@ -1,29 +1,27 @@
 """
-BEVFusion-L Deployment Configuration — split sparse+dense, merged & optimized (FP16).
+BEVFusion-L Deployment Configuration — split sparse (INT8) + dense (INT8), merged (PTQ).
+
+Loads a PTQ checkpoint and deploys BOTH the dense tower (backbone/neck/head, pytorch_quantization)
+and the sparse encoder (spconv INT8, ``quantization.spconv_int8=True``) in INT8. Layers listed in
+``spconv_int8_fp16_layers`` are kept FP16 for accuracy recovery.
 
 Layout (single file, grouped by concern; mirrors centerpoint/config/deploy_config.py):
   1. SHARED VALUES  - single source of truth reused across sections (paths, devices, shapes).
-  2. EXPORT         - spconv/export flags, ONNX/TensorRT build settings, component definitions.
+  2. EXPORT         - spconv/export flags, quantization, ONNX/TensorRT build settings, components.
   3. EVALUATION     - per-backend evaluation settings.
   4. VERIFICATION   - cross-backend numerical verification scenarios.
 
 Only the top-level names `checkpoint_path`, `devices`, `export`, `components`,
-`onnx_config`, `tensorrt_config`, `evaluation`, `verification`, plus the BEVFusion-only flags
-`spconv_do_sort`, `spconv_fuse_implicit_gemm_relu`, `fuse_spconv_bn`, `bevfusion_merge`, are read
-(by `BaseDeploymentConfig` / `BEVFusionDeploymentConfig`). Names prefixed with `_` are local
+`onnx_config`, `tensorrt_config`, `evaluation`, `verification`, `quantization`,
+`spconv_int8_fp16_layers`, plus the BEVFusion-only flags `spconv_do_sort`,
+`spconv_fuse_implicit_gemm_relu`, `fuse_spconv_bn`, `bevfusion_merge`, are read (by
+`BaseDeploymentConfig` / `BEVFusionDeploymentConfig`). Names prefixed with `_` are local
 single-source helpers and are intentionally not consumed directly.
-
-Requirements:
-  - LiDAR-only model (`fusion_layer is None`, `img_backbone is None`).
-  - `components.bevfusion_dense.tensorrt_profile.lidar_bev` H,W must equal
-    `grid_size[0:2] // out_size_factor` (e.g. 1440/8 → 180×180). Do NOT widen H/W: `bbox_head`
-    uses fixed `bev_pos` and heatmap length H*W, so a wide profile breaks Reshape/Gather and
-    yields garbage mAP. Adjust channel C (default 256) to the sparse encoder output.
 
 CLI::
 
     python -m deployment.cli.main bevfusion_l \\
-        deployment/projects/bevfusion_l/config/deploy_config.py \\
+        deployment/projects/bevfusion_l/config/deploy_config_split_sparse_int8_dense_int8_2_8.py \\
         <your_model_cfg.py>
 """
 
@@ -31,8 +29,8 @@ CLI::
 # 1. SHARED VALUES (single source of truth)
 # ============================================================================
 
-# Checkpoint - single source of truth for the PyTorch model (used by export + PyTorch eval).
-checkpoint_path = "work_dirs/bevfusion/bevfusion_2_8/best_epoch_25.pth"
+# Checkpoint - single source of truth for the PyTorch model (PTQ .pth: dense _amax + sparse _amax).
+checkpoint_path = "work_dirs/bevfusion/bevfusion_2_8/best_epoch_25_ptq_sparse_int8_dense_int8.pth"
 # checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28.pth"
 
 # Device settings (shared by export, evaluation, verification).
@@ -44,14 +42,14 @@ devices = dict(
 _CUDA = devices["cuda"]
 
 # Deployment output layout. _ONNX_DIR / _TENSORRT_DIR are the single source for both the export
-# outputs and the evaluation backends' engine_dir (kept in sync here).
-_WORK_DIR = "work_dirs/bevfusion_deployment_2_8"
+# outputs and the evaluation backends' model_dir / engine_dir (kept in sync here).
+_WORK_DIR = "work_dirs/bevfusion_deployment_2_8_sparse_int8_dense_int8"
 _ONNX_DIR = f"{_WORK_DIR}/onnx"
 _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
 
 # Dense head BEV feature map: [batch, channels, grid_h, grid_w] = grid_size // out_size_factor.
-# Fully static (min == opt == max) so constant folding can drop the head's shape-glue (~177
-# nodes) and the split graph's node count matches the monolithic export.
+# Fully static (min == opt == max) so constant folding can drop the head's shape-glue and the
+# split graph's node count matches the monolithic export.
 _LIDAR_BEV_SHAPE = [1, 256, 180, 180]
 
 # Sparse (spconv) voxel input profile: [num_voxels, max_points_per_voxel, voxel_feature_dim].
@@ -60,6 +58,7 @@ _VOXEL_FEATURE_DIM = 5
 _VOXELS_OPT = 64000
 _VOXELS_MAX = 256000
 
+
 # ============================================================================
 # 2. EXPORT
 # ============================================================================
@@ -67,22 +66,71 @@ _VOXELS_MAX = 256000
 # Bake the pair-mask argsort into GetIndicePairsImplicitGemm.do_sort_i at ONNX symbolic export.
 spconv_do_sort = False
 
-# Sparse ONNX postprocess: fuse each `ImplicitGemm -> Relu` into an activated ImplicitGemm
-# (applied as a post-export transform by export/component_builder.py after exporting the sparse ONNX).
-# - True  : bake activation into ImplicitGemm (act_type)
-# - False : keep explicit Relu nodes
+# Sparse ONNX postprocess: fuse each `ImplicitGemm -> Relu` (and `Add(const)+Relu`) into an
+# activated ImplicitGemm (post-export transform in export/component_builder.py).
+# - True  (default): bake activation into ImplicitGemm (act_type) / merged bias.
+# - False          : keep explicit Relu/Add nodes (debug / ablation).
 spconv_fuse_implicit_gemm_relu = True
 
-# Fuse SparseConv + BN in `pts_middle_encoder` before ONNX export (eval-mode Conv-BN fold),
-# producing a BN-free sparse subgraph in the exported ONNX.
+# Fuse SparseConv + BN in `pts_middle_encoder` before ONNX export (same as the PTQ load path).
+# Aligns the FP16 sparse subgraph with INT8 deploy for a fair latency-vs-mAP comparison.
 fuse_spconv_bn = True
 
-# Export mode: "onnx", "trt", "both", "none". sample_idx: dataset index used to trace/shape.
+# Quantization: dense tower (backbone/neck/head) INT8 via pytorch_quantization AND sparse encoder
+# INT8 via spconv (spconv_int8=True). ptq_checkpoint=True re-attaches the quantizer tree before
+# loading the PTQ .pth so the calibrated _amax line up.
+quantization = dict(
+    enabled=True,
+    ptq_checkpoint=True,
+    fuse_bn=True,
+    quant_backbone=True,
+    quant_neck=True,
+    quant_head=True,
+    quant_add=False,
+    spconv_int8=True,
+    sensitive_layers=[],
+)
+
+# Sparse-conv layers kept FP16 (skip INT8 replacement) for accuracy recovery. Matched as
+# case-insensitive substrings against the exported ImplicitGemm node names. Must match the PTQ run
+# so the reloaded module tree lines up with the checkpoint. Uncomment more to widen the FP16 set.
+spconv_int8_fp16_layers = [
+    "conv_input.0",
+    "encoder_layer1/encoder_layer1.0/conv1",
+    "encoder_layer1/encoder_layer1.0/conv2",
+    #
+    "encoder_layer1/encoder_layer1.1/conv1",
+    "encoder_layer1/encoder_layer1.1/conv2",
+    #
+    "encoder_layer1/encoder_layer1.2/encoder_layer1.2.0",
+    "encoder_layer2/encoder_layer2.0/conv1",
+    "encoder_layer2/encoder_layer2.0/conv2",
+    #
+    "encoder_layer2/encoder_layer2.1/conv1",
+    "encoder_layer2/encoder_layer2.1/conv2",
+    # #
+    "encoder_layer2/encoder_layer2.2/encoder_layer2.2.0",
+    "encoder_layer3/encoder_layer3.0/conv1",
+    "encoder_layer3/encoder_layer3.0/conv2",
+    # #
+    # "encoder_layer3/encoder_layer3.1/conv1",
+    # "encoder_layer3/encoder_layer3.1/conv2",
+    # #
+    # "encoder_layer3/encoder_layer3.2/encoder_layer3.2.0",
+    # "encoder_layer4/encoder_layer4.0/conv1",
+    # "encoder_layer4/encoder_layer4.0/conv2",
+    # #
+    # "encoder_layer4/encoder_layer4.1/conv1",
+    # "encoder_layer4/encoder_layer4.1/conv2",
+    # #
+    # "conv_out/conv_out.0",
+]
+
+# Export mode: "onnx", "trt", "both", "none".
 export = dict(
     mode="both",
     work_dir=_WORK_DIR,
     onnx_path=_ONNX_DIR,
-    sample_idx=0,
 )
 
 # Keep the split component definitions but also emit a single merged full-graph ONNX/engine.
@@ -90,22 +138,26 @@ export = dict(
 # - enabled=True : additionally emit one merged ONNX + engine + backend pipeline.
 bevfusion_merge = dict(
     enabled=True,
-    onnx_file="bevfusion_lidar_fp16_opt.onnx",
-    engine_file="bevfusion_lidar_fp16_opt.engine",
+    onnx_file="bevfusion_lidar.onnx",
+    engine_file="bevfusion_lidar.engine",
 )
 
 # ONNX export settings (shared across all components).
-# BEVFusion 2.8.x exports at opset 18 (matches projects/BEVFusion/configs/deploy/*_tensorrt_dynamic.py).
 onnx_config = dict(
-    opset_version=18,
+    opset_version=17,
     do_constant_folding=True,
     export_params=True,
     keep_initializers_as_inputs=False,
+    # Promote Q/DQ scale / zero_point Constants to named initializers and annotate the
+    # QuantizeLinear/DequantizeLinear node names with [s=..|z=..] so the INT8 scales are
+    # visible in the exported ONNX (runs make_qdq_readable). Without this, do_constant_folding
+    # inlines them and the Q/DQ nodes show no x_scale / x_zero_point.
+    visualize_qdq_values=True,
     simplify=False,
 )
 
 # TensorRT build settings (shared across all components). plugin_libraries loads the spconv
-# ImplicitGemm plugin before engine build/deserialize.
+# ImplicitGemm[Int8] plugin before engine build/deserialize.
 tensorrt_config = dict(
     precision_policy="fp16",
     max_workspace_size=1 << 32,
@@ -131,6 +183,7 @@ components = dict(
                 "voxels": {0: "voxels_num"},
                 "coors": {0: "voxels_num"},
                 "num_points_per_voxel": {0: "voxels_num"},
+                "lidar_bev": {0: "batch", 2: "bev_h", 3: "bev_w"},
             },
         ),
         tensorrt_profile=dict(
@@ -163,8 +216,10 @@ components = dict(
                 dict(name="score", dtype="float32"),
                 dict(name="label_pred", dtype="int64"),
             ],
-            # Static lidar_bev input (see _LIDAR_BEV_SHAPE), so no dynamic axes.
-            dynamic_axes={},
+            # Spatial dims must stay at head BEV resolution; see module docstring.
+            dynamic_axes={
+                "lidar_bev": {0: "batch"},
+            },
         ),
         # H,W fixed to head grid (grid_size // out_size_factor). Widen only batch dim if needed.
         tensorrt_profile=dict(
@@ -177,20 +232,24 @@ components = dict(
     ),
 )
 
-
 # ============================================================================
 # 3. EVALUATION
 #    ONNX *inference* is unsupported for BEVFusion (sparse graph needs the TRT plugin).
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=5,
+    num_samples=-1,
     num_warmup=2,
     verbose=True,
     backends=dict(
         pytorch=dict(
             enabled=False,
             device=_CUDA,
+        ),
+        onnx=dict(
+            enabled=False,
+            device=_CUDA,
+            model_dir=_ONNX_DIR,
         ),
         tensorrt=dict(
             enabled=True,

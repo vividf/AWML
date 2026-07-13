@@ -321,7 +321,20 @@ def _calibrate_spconv(
                     batch_coors = torch.zeros(coords.shape[0], 1, device=device, dtype=coords.dtype)
                     coords = torch.cat([batch_coors, coords], dim=1).contiguous()
 
-                    if sizes is not None and getattr(model, "voxelize_reduce", True):
+                    # Reproduce the real forward path (BEVFusion.extract_pts_feat):
+                    #   feats = pts_voxel_encoder(feats, sizes, coords)
+                    #   x = pts_middle_encoder(feats, coords, batch_size)
+                    # The voxel encoder produces exactly the feature layout the sparse
+                    # encoder's ``conv_input`` expects. ``HardSimpleVoxelSinCosEncoder``
+                    # does the per-voxel mean reduction internally AND expands the raw
+                    # dims into sin/cos (fourier) channels (e.g. 5 -> 50), so a hard-coded
+                    # mean reduction here would feed ``conv_input`` the wrong channel count
+                    # ("channel size mismatch"). Running the model's own encoder keeps this
+                    # correct for any voxel encoder (HardSimpleVFE, sin/cos, ...).
+                    voxel_encoder = getattr(model, "pts_voxel_encoder", None)
+                    if voxel_encoder is not None:
+                        feats = voxel_encoder(feats, sizes, coords).contiguous()
+                    elif sizes is not None and getattr(model, "voxelize_reduce", True):
                         sz = sizes.type_as(feats).view(-1, 1).clamp(min=1.0)
                         feats = feats.sum(dim=1, keepdim=False) / sz
                         feats = feats.contiguous()
