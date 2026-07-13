@@ -51,8 +51,6 @@ class BaseDeploymentConfig:
         Args:
             deploy_cfg: MMEngine Config object containing deployment settings
         """
-        self._deploy_cfg = deploy_cfg
-
         checkpoint_path = deploy_cfg.get("checkpoint_path")
         self.checkpoint_path = self._validate_checkpoint_path(checkpoint_path)
         self.device_config = DeviceConfig.from_dict(deploy_cfg.get("devices", {}))
@@ -142,17 +140,6 @@ class BaseDeploymentConfig:
             return str(log_path.resolve(strict=False))
         work_dir = Path(self.export_config.work_dir).expanduser()
         return str((work_dir / log_path).resolve(strict=False))
-
-    @property
-    def deploy_cfg(self) -> Config:
-        """Raw deploy-config object (read-only).
-
-        Surfaces the original MMEngine ``Config`` so project-specific export pipelines can read
-        project-only keys (e.g. BEVFusion's ``fuse_spconv_bn``, ``bevfusion_merge``,
-        ``spconv_do_sort``, ``spconv_fuse_implicit_gemm_relu``) that the typed sections
-        intentionally do not model.
-        """
-        return self._deploy_cfg
 
     def get_verification_scenarios(self, export_mode: ExportMode) -> Tuple[VerificationScenario, ...]:
         """

@@ -10,6 +10,8 @@ import logging
 import os
 from typing import Iterable, List, Tuple
 
+logger = logging.getLogger(__name__)
+
 _LOADED_PLUGIN_LIBS: set[str] = set()
 
 
@@ -69,31 +71,31 @@ def _get_tensorrt_registries():
     return uniq
 
 
-def load_tensorrt_plugin_libraries(
-    logger: logging.Logger,
-    plugin_libraries: Iterable[str],
-) -> Tuple[str, ...]:
+def load_tensorrt_plugin_libraries(plugin_libraries: Iterable[str]) -> Tuple[str, ...]:
     """Load custom TensorRT plugin libraries.
 
     Paths are taken only from deploy_config.tensorrt_config.plugin_libraries.
     For TensorRT 10+ (Plugin V3), prefer registry-based loading
     (`IPluginRegistry.load_library`) so creators are registered properly.
-    Fallback to `ctypes.CDLL(..., RTLD_GLOBAL)` for compatibility.
+    Always also `ctypes.CDLL(..., RTLD_GLOBAL)` so symbols stay globally visible for
+    dependent shared objects. Libraries already loaded in this process are skipped.
 
     Args:
-        logger: Logger used for informative diagnostics.
         plugin_libraries: Plugin library paths from deploy config (e.g. tensorrt_config.plugin_libraries).
 
     Returns:
-        Tuple of loaded plugin library identifiers.
+        Tuple of the library paths newly loaded by this call (empty if all were already loaded).
 
     Raises:
         FileNotFoundError: If a configured path includes a slash but does not exist.
         OSError: If dlopen fails for a provided library.
     """
     resolved = _normalize_libraries(plugin_libraries)
-    loaded_now: List[str] = []
+    if not resolved:
+        logger.debug("No custom TensorRT plugin libraries configured. Set tensorrt_config.plugin_libraries.")
+        return ()
 
+    newly_loaded: List[str] = []
     for library in resolved:
         if library in _LOADED_PLUGIN_LIBS:
             continue
@@ -101,7 +103,7 @@ def load_tensorrt_plugin_libraries(
         if "/" in library and not os.path.exists(library):
             raise FileNotFoundError(f"TensorRT plugin library not found: {library}")
 
-        # Try TensorRT registry loader first (required by many TRT10 V3 plugins).
+        # Try the TensorRT registry loader first (required by many TRT10 V3 plugins).
         loaded_with_registry = False
         for reg_name, registry in _get_tensorrt_registries():
             if not hasattr(registry, "load_library"):
@@ -113,17 +115,12 @@ def load_tensorrt_plugin_libraries(
             except Exception as exc:  # pragma: no cover - best effort fallback path
                 logger.debug("%s registry load failed for %s: %s", reg_name, library, exc)
 
-        # Always ensure symbols are globally visible for dependent shared objects.
+        # Always CDLL so symbols are globally visible; only log when the registry path did not.
+        ctypes.CDLL(library, mode=ctypes.RTLD_GLOBAL)
         if not loaded_with_registry:
-            ctypes.CDLL(library, mode=ctypes.RTLD_GLOBAL)
             logger.info("Loaded TensorRT plugin library via ctypes: %s", library)
-        else:
-            ctypes.CDLL(library, mode=ctypes.RTLD_GLOBAL)
 
         _LOADED_PLUGIN_LIBS.add(library)
-        loaded_now.append(library)
+        newly_loaded.append(library)
 
-    if not resolved:
-        logger.debug("No custom TensorRT plugin libraries configured. Set tensorrt_config.plugin_libraries.")
-
-    return tuple(_LOADED_PLUGIN_LIBS)
+    return tuple(newly_loaded)

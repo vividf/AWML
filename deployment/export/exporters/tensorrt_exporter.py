@@ -61,7 +61,7 @@ class TensorRTExporter:
         # Load any custom plugin .so libraries (e.g. the BEVFusion spconv ImplicitGemm plugin)
         # before the built-in plugin init, so their creators are registered for engine build.
         # No-op when plugin_libraries is empty (e.g. CenterPoint).
-        load_tensorrt_plugin_libraries(logger, self.config.plugin_libraries)
+        load_tensorrt_plugin_libraries(self.config.plugin_libraries)
         trt.init_libnvinfer_plugins(trt_logger, "")
 
         builder = trt.Builder(trt_logger)
