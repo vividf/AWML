@@ -16,8 +16,6 @@ from pathlib import Path
 import pytest
 from mmengine.config import Config
 
-# Importing the project package registers its ProjectAdapter (required_components).
-import deployment.projects.centerpoint  # noqa: F401
 from deployment.config.schema import (
     ComponentsConfig,
     DeviceConfig,
@@ -27,7 +25,6 @@ from deployment.config.schema import (
     TensorRTConfig,
     VerificationConfig,
 )
-from deployment.projects.registry import project_registry
 
 _CONFIG_DIR = Path(__file__).resolve().parents[1] / "projects" / "centerpoint" / "config"
 _CONFIG_FILES = sorted(_CONFIG_DIR.glob("deploy_config*.py"))
@@ -52,14 +49,13 @@ def test_centerpoint_config_parses(config_path: Path) -> None:
     DeviceConfig.from_dict(cfg.get("devices", {}))
 
     # Component keys must be the canonical CenterPoint ids (catches un-renamed outer keys).
+    # This is the same required-component set that CenterPointDeploymentConfig._validate_components
+    # enforces at config-construction time.
     component_names = set(components_cfg.component_names())
     assert component_names == {
         "pts_voxel_encoder",
         "pts_backbone_neck_head",
     }, f"{config_path.name}: unexpected component keys {sorted(component_names)}"
-
-    # The registry's required-components check is exactly what the entrypoint runs.
-    project_registry.validate_required_components("centerpoint", components_cfg)
 
 
 def test_config_dir_is_nonempty() -> None:

@@ -237,6 +237,16 @@ class ComponentsConfig:
         """Iterate (name, ComponentCfg) pairs."""
         return self._components.items()
 
+    def with_component(self, component: ComponentCfg) -> ComponentsConfig:
+        """Return a new ``ComponentsConfig`` with ``component`` added (replacing any of the same name).
+
+        Lets callers derive a layout (e.g. BEVFusion's merged ``bevfusion_merged``) from already
+        typed components without round-tripping the whole config back through raw dicts.
+        """
+        return ComponentsConfig(
+            _components=MappingProxyType({**self._components, component.name: component}),
+        )
+
     @staticmethod
     def _validate_dynamic_axes(raw: Any) -> Dict[str, Dict[int, str]]:
         """Validate dynamic_axes schema without coercing types."""
