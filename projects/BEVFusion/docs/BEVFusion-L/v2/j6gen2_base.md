@@ -578,7 +578,14 @@ Optimized the ONNX model and TensorRT plugin from `BEVFusion-LiDAR base/2.8.1` f
 - **SparseConv + BatchNorm fusion**: fold BatchNorm into the preceding sparse convolution.
 - **ImplicitGemm + ReLU fusion**: fuse the ReLU activation into the implicit GEMM kernel.
 
-> **Note**: The optimized ONNX requires the latest `autoware.universe` to run correctly.
+> **Latency test GPU**: NVIDIA RTX Ada Generation family.
+
+> **Note**: The optimized ONNX requires the latest `autoware.universe` to run correctly. Make sure the following TensorRT plugin PRs are merged to get the best performance:
+>
+> - Disable Sort: [autoware_universe#12631](https://github.com/autowarefoundation/autoware_universe/pull/12631)
+> - Fuse BatchNorm & ReLU (fused bias + activation in `ImplicitGemmPlugin`): [autoware_universe#12658](https://github.com/autowarefoundation/autoware_universe/pull/12658)
+> - Required `ImplicitGemmPlugin` build/runtime fix: [autoware_universe#12734](https://github.com/autowarefoundation/autoware_universe/pull/12734)
+
 </details>
 
 <details>
