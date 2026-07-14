@@ -1400,8 +1400,8 @@ class T4MetricV2(BaseMetric):
         # Extract evaluation annotation info for the current sample
         eval_info: dict = data_sample.get("eval_ann_info", {})
         sample_id: str = data_sample.get("sample_idx", _UNKNOWN)
-        location: str = data_sample.get("city", _UNKNOWN)
-        vehicle_type: str = data_sample.get("vehicle_type", _UNKNOWN)
+        location: str = data_sample.get("city") or _UNKNOWN
+        vehicle_type: str = data_sample.get("vehicle_type") or _UNKNOWN
 
         # gt_bboxes_3d: LiDARInstance3DBoxes with tensor of shape (N, 9)
         # Format per box: [x, y, z, l, w, h, yaw, vx, vy]

@@ -19,7 +19,9 @@ class T4DatasetSceneMetadata:
 
     @property
     def frame_prefix(self) -> str:
-        return self.location + "/" + self.vehicle_type
+        location = self.location if self.location is not None else "unknown"
+        vehicle_type = self.vehicle_type if self.vehicle_type is not None else "unknown"
+        return location + "/" + vehicle_type
 
 
 class T4DatasetStatistics:

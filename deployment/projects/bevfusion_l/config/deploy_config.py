@@ -79,7 +79,7 @@ fuse_spconv_bn = True
 
 # Export mode: "onnx", "trt", "both", "none". sample_idx: dataset index used to trace/shape.
 export = dict(
-    mode="both",
+    mode="none",
     work_dir=_WORK_DIR,
     onnx_path=_ONNX_DIR,
     sample_idx=0,
@@ -184,12 +184,12 @@ components = dict(
 # ============================================================================
 evaluation = dict(
     enabled=True,
-    num_samples=5,
+    num_samples=-1,
     num_warmup=2,
     verbose=True,
     backends=dict(
         pytorch=dict(
-            enabled=False,
+            enabled=True,
             device=_CUDA,
         ),
         tensorrt=dict(

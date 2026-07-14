@@ -322,6 +322,7 @@ def main():
                 elif len(dataset_scene_info) == 2:
                     t4_dataset_id, t4_dataset_version_id = dataset_scene_info
                     city = vehicle_type = None
+                    traffic_cone_barrier_status = None
                 else:
                     raise ValueError(
                         "Invalid scene_id format. should be : {t4_dataset_id}/{t4_dataset_version_id}/{city:optional}/{vehicle_type:optional}"

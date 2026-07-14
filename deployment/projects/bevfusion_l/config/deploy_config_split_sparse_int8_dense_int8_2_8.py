@@ -128,7 +128,7 @@ spconv_int8_fp16_layers = [
 
 # Export mode: "onnx", "trt", "both", "none".
 export = dict(
-    mode="both",
+    mode="none",
     work_dir=_WORK_DIR,
     onnx_path=_ONNX_DIR,
 )
@@ -243,13 +243,8 @@ evaluation = dict(
     verbose=True,
     backends=dict(
         pytorch=dict(
-            enabled=False,
+            enabled=True,
             device=_CUDA,
-        ),
-        onnx=dict(
-            enabled=False,
-            device=_CUDA,
-            model_dir=_ONNX_DIR,
         ),
         tensorrt=dict(
             enabled=True,

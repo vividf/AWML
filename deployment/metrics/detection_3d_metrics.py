@@ -91,6 +91,9 @@ class Detection3DMetricsConfig(BaseMetricsConfig):
     evaluation_config_dict: Optional[Dict[str, Any]] = None
     critical_object_filter_config: Optional[Dict[str, Any]] = None
     frame_pass_fail_config: Optional[Dict[str, Any]] = None
+    # Minimum number of LiDAR points a ground-truth box must contain to be evaluated.
+    # Mirrors T4MetricV2's ``min_num_points`` so deployment and training filter GT identically.
+    min_num_points: int = 0
 
     def __post_init__(self):
         if self.evaluation_config_dict is None:
@@ -177,6 +180,14 @@ def extract_t4metric_v2_config(model_cfg: Config) -> Detection3DMetricsConfig:
             return getattr(cfg, key)
         raise ValueError(f"Missing required key/attribute '{key}'")
 
+    def read_optional_cfg_value(cfg: Config | ConfigDict, key: str, default: Any) -> Any:
+        """Read an optional key/attribute from a config object, falling back to ``default``."""
+        if key in cfg:
+            return cfg[key]
+        if hasattr(cfg, key):
+            return getattr(cfg, key)
+        return default
+
     class_names = read_required_cfg_value(model_cfg, "class_names")
     evaluator_cfg = read_required_cfg_value(model_cfg, "val_evaluator")
 
@@ -191,12 +202,17 @@ def extract_t4metric_v2_config(model_cfg: Config) -> Detection3DMetricsConfig:
     critical_object_filter_config = read_required_cfg_value(evaluator_cfg, "critical_object_filter_config")
     frame_pass_fail_config = read_required_cfg_value(evaluator_cfg, "frame_pass_fail_config")
 
+    # Optional: T4MetricV2 filters out GT boxes with fewer than this many LiDAR points.
+    # Defaults to 0 (no filtering) when the evaluator config does not set it.
+    min_num_points = read_optional_cfg_value(evaluator_cfg, "min_num_points", 0)
+
     return Detection3DMetricsConfig(
         class_names=class_names,
         frame_id=frame_id,
         evaluation_config_dict=evaluation_config_dict,
         critical_object_filter_config=critical_object_filter_config,
         frame_pass_fail_config=frame_pass_fail_config,
+        min_num_points=min_num_points,
     )
 
 

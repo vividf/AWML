@@ -5,7 +5,7 @@ max_epochs = 30
 val_interval = 5
 
 train_gpu_size = 8
-test_batch_size = 4
+test_batch_size = 1
 train_batch_size = 16
 
 param_scheduler = [

@@ -79,8 +79,12 @@ class BaseEvaluator(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _parse_ground_truths(self, gt_data: Mapping[str, Any]) -> Any:
-        """Parse `sample["ground_truth"]` into ground-truth structures for metrics."""
+    def _parse_ground_truths(self, sample: Mapping[str, Any]) -> Any:
+        """Parse a loaded ``sample`` into ground-truth structures for metrics.
+
+        The full sample is passed (not just ``sample["ground_truth"]``) so implementations
+        can access the input (e.g. the point cloud) for GT filtering that depends on it.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -169,7 +173,7 @@ class BaseEvaluator(ABC):
 
                 if "ground_truth" not in sample:
                     raise KeyError("DataLoader.load_sample() must return 'ground_truth' for evaluation.")
-                ground_truths = self._parse_ground_truths(sample["ground_truth"])
+                ground_truths = self._parse_ground_truths(sample)
 
                 infer_result = pipeline.infer(inference_input.data, metadata=inference_input.metadata)
                 latencies.append(infer_result.latency_ms)

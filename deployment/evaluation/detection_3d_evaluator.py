@@ -15,6 +15,7 @@ import logging
 from typing import Any, Dict, List, Mapping
 
 import numpy as np
+from mmdet3d.structures.ops import box_np_ops
 from mmengine.config import Config
 from typing_extensions import override
 
@@ -46,6 +47,9 @@ class Detection3DEvaluator(BaseEvaluator):
         if not hasattr(model_cfg, "class_names"):
             raise ValueError("class_names must be provided via model_cfg.class_names.")
 
+        # Mirror T4MetricV2: drop GT boxes containing fewer than this many LiDAR points.
+        self._min_num_points = metrics_config.min_num_points
+
         super().__init__(
             metrics_interface=Detection3DMetricsInterface(metrics_config),
             model_cfg=model_cfg,
@@ -58,12 +62,19 @@ class Detection3DEvaluator(BaseEvaluator):
         return pipeline_output if isinstance(pipeline_output, list) else []
 
     @override
-    def _parse_ground_truths(self, gt_data: Mapping[str, Any]) -> List[Dict]:
-        """Convert ``gt_bboxes_3d`` / ``gt_labels_3d`` into a list of ``{bbox_3d, label}`` dicts.
+    def _parse_ground_truths(self, sample: Mapping[str, Any]) -> List[Dict]:
+        """Convert ``gt_bboxes_3d`` / ``gt_labels_3d`` into a list of ``{bbox_3d, label, num_lidar_pts}`` dicts.
+
+        When ``min_num_points > 0`` (from T4MetricV2's config), GT boxes containing fewer than
+        that many LiDAR points are dropped, exactly as T4MetricV2 does during training/testing:
+        the point count is recomputed from the same input point cloud via
+        :func:`box_np_ops.points_in_rbbox` (not read from the stored ``num_lidar_pts``), so the
+        evaluated GT set matches ``test.py`` and mAP is comparable across the two pipelines.
 
         Raises:
             KeyError: If ``gt_bboxes_3d`` or ``gt_labels_3d`` is missing.
         """
+        gt_data = sample["ground_truth"]
         if "gt_bboxes_3d" not in gt_data:
             raise KeyError("gt_bboxes_3d not found in ground truth data.")
         if "gt_labels_3d" not in gt_data:
@@ -77,7 +88,47 @@ class Detection3DEvaluator(BaseEvaluator):
         )
         gt_labels_3d = np.asarray(gt_labels_3d, dtype=np.int64).reshape(-1)
 
-        return [{"bbox_3d": gt_bboxes_3d[i].tolist(), "label": int(gt_labels_3d[i])} for i in range(len(gt_bboxes_3d))]
+        num_lidar_pts = gt_data.get("num_lidar_pts", None)
+        num_lidar_pts = None if num_lidar_pts is None else np.asarray(num_lidar_pts).reshape(-1)
+
+        gt_bboxes_3d, gt_labels_3d, num_lidar_pts = self._filter_by_min_num_points(
+            gt_bboxes_3d, gt_labels_3d, num_lidar_pts, sample.get("points")
+        )
+
+        ground_truths: List[Dict] = []
+        for i in range(len(gt_bboxes_3d)):
+            entry: Dict[str, Any] = {"bbox_3d": gt_bboxes_3d[i].tolist(), "label": int(gt_labels_3d[i])}
+            if num_lidar_pts is not None:
+                entry["num_lidar_pts"] = int(num_lidar_pts[i])
+            ground_truths.append(entry)
+        return ground_truths
+
+    def _filter_by_min_num_points(
+        self,
+        gt_bboxes_3d: np.ndarray,
+        gt_labels_3d: np.ndarray,
+        num_lidar_pts: Any,
+        points: Any,
+    ) -> tuple:
+        """Drop GT boxes with fewer than ``self._min_num_points`` points inside them.
+
+        Point counts are recomputed from ``points`` (the same cloud fed to the model) via
+        ``box_np_ops.points_in_rbbox``, matching T4MetricV2 exactly. No-op when filtering is
+        disabled, there are no boxes, or no point cloud is available (e.g. camera-based 3D).
+        """
+        if self._min_num_points <= 0 or not len(gt_bboxes_3d) or points is None:
+            return gt_bboxes_3d, gt_labels_3d, num_lidar_pts
+
+        points_np = points.cpu().numpy() if hasattr(points, "cpu") else np.asarray(points)
+        indices = box_np_ops.points_in_rbbox(points_np[:, :3], gt_bboxes_3d[:, :7])
+        num_points_in_gt = indices.sum(0)
+        mask = num_points_in_gt >= self._min_num_points
+
+        gt_bboxes_3d = gt_bboxes_3d[mask]
+        gt_labels_3d = gt_labels_3d[mask]
+        if num_lidar_pts is not None:
+            num_lidar_pts = num_lidar_pts[mask]
+        return gt_bboxes_3d, gt_labels_3d, num_lidar_pts
 
     @override
     def _add_to_interface(self, predictions: List[Dict], ground_truths: List[Dict]) -> None:

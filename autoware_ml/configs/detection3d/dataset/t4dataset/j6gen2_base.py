@@ -18,26 +18,26 @@ info_test_statistics_file_name = "t4dataset_j6gen2_base_statistics_test.parquet"
 
 # dataset scene setting
 dataset_version_list = [
-    "db_j6gen2_v1",
-    "db_j6gen2_v2",
+    # "db_j6gen2_v1",
+    # "db_j6gen2_v2",
     "db_j6gen2_v3",
-    "db_j6gen2_v4",
-    "db_j6gen2_v5",
-    "db_j6gen2_v6",
-    "db_j6gen2_v7",
-    "db_j6gen2_v8",
-    "db_j6gen2_v9",
-    "db_j6gen2_v10",
-    "db_j6gen2_v11",
-    "db_j6gen2_v12",
-    "db_largebus_v1",
-    "db_largebus_v2",
-    "db_largebus_v3",
+    # "db_j6gen2_v4",
+    # "db_j6gen2_v5",
+    # "db_j6gen2_v6",
+    # "db_j6gen2_v7",
+    # "db_j6gen2_v8",
+    # "db_j6gen2_v9",
+    # "db_j6gen2_v10",
+    # "db_j6gen2_v11",
+    # "db_j6gen2_v12",
+    # "db_largebus_v1",
+    # "db_largebus_v2",
+    # "db_largebus_v3",
 ]
 
 dataset_test_groups = {
-    "largebus": ("t4dataset_largebus_infos_test.pkl", False),
-    "j6gen2": ("t4dataset_j6gen2_infos_test.pkl", False),
+    # "largebus": ("t4dataset_largebus_infos_test.pkl", False),
+    # "j6gen2": ("t4dataset_j6gen2_infos_test.pkl", False),
     "j6gen2_base": ("t4dataset_j6gen2_base_infos_test.pkl", True),
 }
 
