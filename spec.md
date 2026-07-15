@@ -1,21 +1,39 @@
 # Quantization Refactor Spec (DRAFT — for discussion, no code changes yet)
 
 Status: **Goal 1 implemented** (in the working tree — spconv-INT8 removal done; Docker e2e pending).
-**Goal 2 designed, not implemented** — §3 is the concrete design to agree on *before* touching code.
+**Goal 2 implemented** (host-verified: ast + pyflakes clean, parity-oracle test green over all 7 configs;
+Docker e2e mAP pending — see §3.7/§3.8 and the two Docker-verify caveats below).
 **Goal 3** is the design-review layer, re-checked against the current tree after Goal 1 (§4).
+**Goal 4 implemented (2026-07-16)** — framework-wide cleanliness pass over deployment/ + quantization
+(§5); all four work packages landed in the working tree, host-verified (ast 155 files clean, pyflakes
+clean, golden `_base_`-merge check green over all 6 INT8 configs, migration-oracle logic green, grep
+gates pass). Docker e2e (mAP identical) pending, plus the parked 4B.3 / 4D.3 Docker decisions — see §5.7.
+
+> **Goal 2 Docker-verify caveats** (behavior-preservation assumptions the host cannot check):
+> 1. BEVFusion `disable_recipes=["add"]` — confirm whether load-bearing (does the dense backbone contain
+>    a block `attach_quant_add` matches?). Either way it preserves behavior; drop it only if confirmed no-op.
+> 2. `quant_model` now **always** quantizes `pts_backbone` Linear (was gated by `quant_linear_backbone`).
+>    Safe iff ResNet/SECOND backbones have no `nn.Linear` (they are Conv-only); confirm mAP unchanged for
+>    the `resnet*` / `second*` configs.
 
 Scope: `deployment/` quantization for CenterPoint and BEVFusion-L.
 
-Three goals:
+Four goals:
 
 1. **Remove all spconv INT8 code** — sparse-encoder INT8 gave no meaningful mAP/latency win, so the
    sparse encoder stays FP16 and every INT8-sparse-specific path is deleted.
 2. **Redesign the quantization config** — replace the ~13 ad-hoc boolean flags in each
    `deploy_config_*.py` with a small declarative surface, informed by NVIDIA modelopt and
    CUDA-BEVFusion.
-3. **Design review & risk hardening** (this discussion) — a Principal-Engineer pass over Goals 1–2:
+3. **Design review & risk hardening** — a Principal-Engineer pass over Goals 1–2:
    challenge the load-bearing assumptions against the *actual* code, surface architectural risks, and
    make the under-specified decisions explicit — **without** redesigning what already works.
+4. **Framework cleanliness pass** (§5) — with Goals 1–3 landed, re-review the *whole*
+   deployment + quantization framework and remove what the earlier goals left behind: drifted
+   copies, decorative typed layers, dead public surface, and config-file cloning. Optimize only for
+   simplicity, cognitive load, maintainability, locality of change, information hiding, and clear
+   ownership — explicitly **not** for SOLID compliance, design patterns, LOC reduction, or more
+   abstraction.
 
 ---
 
@@ -253,10 +271,14 @@ The original draft left two things implicit, and both bite (R3). Pin them down:
 (`quant_model.py:64`), so the root's own name is **never tested** — only its descendants are. So the
 draft's own mapping `quant_voxel_encoder=False → keep_fp16=["pts_voxel_encoder"]` would **silently fail
 to skip the tower**, and the zero-match guard would *not* fire (the root matches exactly one module).
-Fix: `keep_fp16` means "this module **and everything under it**." Resolve each pattern with `fnmatch`
-against `named_modules()`, then skip any module whose name equals a resolved name *or* is a descendant of
-one (`name == s or name.startswith(s + ".")`). This is the ~2-line core change in §3.8(1); it is
-**effect-identical** for every existing sub-tower skip (`pts_backbone.stem` already skips its subtree).
+Fix (chosen — **no core change**): `keep_fp16` means "this module **and everything under it**," resolved
+**in the `keep_fp16` expansion helper**, not in the engine. The helper — which must exist anyway for the
+zero-match warning (§3.4) — expands each pattern against `named_modules()` to {matched modules **∪ their
+descendants**} (`n == m or n.startswith(m + ".")`) and passes that concrete set as `skip_names`.
+`core/replace.py` stays **byte-frozen**: its existing exact-match test then fires on the first materialized
+descendant it reaches. Effect-identical for every existing sub-tower skip (`pts_backbone.stem`). *(Alternative
+considered and rejected: make the skip test itself prefix-aware inside `replace.py` — 2 lines × 2 functions.
+Rejected because it edits a shared engine primitive for a capability the helper already provides — see §3.8(1).)*
 
 **(b) `keep_fp16` gates Q/DQ reach only — never BN fusion.** Today `sensitive_layers` → `skip_names`
 (skips Q/DQ), but `fuse_targets` stays the full dense set (`dense_qdq.py:50`), so a skipped tower is
@@ -360,13 +382,19 @@ quantization = dict(
 `disable_recipes=["add"]` is load-bearing (holds current mAP); if no, `add` is already a no-op and the entry
 is harmless. Ship it either way — **removing** it can only *change* behavior, never preserve it.
 
-### 3.8 The one required core change + verification gates
-1. **Prefix/subtree skip (required; ~2 lines × 2 functions).** In `quant_conv_module` and
-   `quant_linear_module` (`core/replace.py:213` and `:256`) change the skip test from `full_name in
-   skip_names` to also skip descendants:
-   `full_name in skip_names or any(full_name == s or full_name.startswith(s + ".") for s in skip_names)`.
-   Required so a tower-root `keep_fp16` entry actually skips the tower (§3.3a). This is a semantic
-   tightening, **not** an engine rewrite, and is effect-identical for every existing sub-tower skip.
+### 3.8 Where the subtree logic lives + verification gates
+1. **Subtree expansion in the `keep_fp16` helper — NO core change (chosen).** The new helper (needed anyway
+   for the zero-match warning, §3.4) expands each pattern against `named_modules()` to {matched modules ∪
+   their descendants} and passes that concrete set as `skip_names`; `core/replace.py` is untouched and its
+   exact-match test does the rest (§3.3a). Rationale: (i) the helper must expand globs regardless, so the
+   subtree behavior is nearly free; (ii) it keeps **all** `keep_fp16` semantics in **one** new place instead
+   of splitting them between a helper and the engine; (iii) it leaves the shared engine primitive frozen,
+   honoring the "keep the engine, re-skin the config" non-goal; (iv) it makes the parity oracle (item 2) a
+   pure set-equality assertion; (v) it sidesteps a latent inconsistency — `quant_conv_module` skips by exact
+   match (`replace.py:213`) but `attach_maxpool_input_quantizer` already skips by loose `startswith`
+   (`attach.py:246`) — because concrete names satisfy both checks. *Alternative (rejected): make the skip test
+   prefix-aware inside `replace.py`, ~2 lines × 2 functions — smaller diff in isolation, but edits a primitive
+   every quant path shares for no capability the helper doesn't already give.*
 2. **Parity oracle test — write FIRST, before the schema change (R6).** For each existing config, take its
    *old* flags, compute `{tower opt-outs} ∪ resolved_sensitive_layers()`, and assert it equals the
    subtree-expansion of the migrated `keep_fp16`; also assert the recipe on/off set matches. This turns
@@ -479,11 +507,11 @@ current status overlay:
   sets diverge → the trees diverge → state_dict load breaks or numerics shift.
 - **Recommendation:** (a) Make the parity test (§6 Risks) an **oracle test**: for every existing `deploy_config_*.py`,
   assert `expand(keep_fp16) == resolved_sensitive_layers()` *and* that every no-wildcard entry resolves to a real
-  module node. (b) Decide the semantics explicitly: either (i) document that `keep_fp16` matches **module node
-  names** and a bare name skips that node's subtree via the existing container-skip (simplest — my
-  recommendation), or (ii) treat a metacharacter-free pattern as an explicit subtree prefix. Pick one and write
-  it down; don't leave it implicit. (c) Expect a handful of existing configs to trip the zero-match warning on
-  dead entries — clean those as config bugs, don't "fix" them by loosening the guard.
+  module node. (b) **Decision (settled): `keep_fp16` is a subtree match, resolved in the expansion helper, not in
+  the engine** — a bare name keeps that module and all descendants; globs still work. Chosen over editing
+  `replace.py` because the helper must expand globs anyway (zero-match warning), so subtree behavior comes for
+  free while the shared engine primitive stays frozen (§3.3a, §3.8(1)). (c) Expect a handful of existing configs to
+  trip the zero-match warning on dead entries — clean those as config bugs, don't "fix" them by loosening the guard.
 
 ### R4 — "Auto-attach keyed off the detected backbone" is unnecessary machinery — the class-gate *is* the detection
 - **Claim challenged:** §3.3 — "`build_<model>_plan` … always attaches the architecture recipes, **keyed off the
@@ -529,23 +557,280 @@ current status overlay:
   ever *looked* like a per-deploy choice (R1). Removing it makes "recipes = canonical architecture" true in code,
   not just in prose — the highest-ROI *deletion*.
 
+### 4.9 Goal-3 close-out — implementation status (2026-07-16)
+Every actionable recommendation is now landed in code (host-verified: ast + pyflakes clean, both oracle/
+characterization test files written; Docker e2e pending). Per finding:
+
+| # | Recommendation | Status |
+|---|---|---|
+| **R1** | single-Q eSE default; delete legacy two-Q; `disable_recipes=["add"]` for BEVFusion; characterization test | **DONE** — two-Q path deleted (`forward_hooks.py`, `attach.py`); `disable_recipes` wired; `deployment/tests/test_ese_single_q_recipe.py` added (structural). Numeric half = Docker mAP. |
+| **R2** | make sparse BN-fold unconditional; drop `include_sparse` | **DONE** — `build_bevfusion_plan(config)` folds sparse on `fuse_bn`; both callers identical. |
+| **R3** | subtree skip in the `keep_fp16` helper (no core change) + parity oracle test | **DONE** — `expand_keep_fp16` (`core/replace.py`) + `deployment/tests/test_quant_config_migration.py` (green over 7 configs). Zero-match-on-real-model check = Docker. |
+| **R4** | delete "detected backbone" framing; recipes always-on + class-gated | **DONE** — schemes attach unconditionally; no detection registry. |
+| **R5** | dead-code/doc-rot cleanup | **DONE** — schema helpers/fields removed & callers migrated; canonical `deployment/quantization/README.md` + `docs/quantization_pipeline.md` + `profile_sparse_encoder.py` comment updated. |
+| **R6** | parity oracle as a golden test | **DONE** — the migration oracle is committed as a test. |
+
+**Left for the user (not code):** the ~29 `projects/bevfusion_l/docs/*int8*` historical notes still describe
+the removed spconv-INT8 subsystem — per §2.1 these are *your* call (archive vs delete; "not deleting history
+unasked"), so they are untouched. **Docker-pending** (host can't run torch): e2e mAP == 0.3228 / 0.3931, plus
+the two behavior caveats in the top-of-file status (BEVFusion `add`; always-on backbone-Linear).
+
 ---
 
-## 5. Non-goals
-- Not adopting modelopt as a dependency; not rewriting the Q/DQ engine, schemes, recipes, or
-  calibration. Only the **config surface** and the **spconv-INT8 removal** are in scope.
-- Not changing dense-INT8 numerics for CenterPoint or BEVFusion (mAP must be unchanged).
-- Not touching QAT semantics beyond the config-surface rename.
+## 5. Goal 4 — Framework cleanliness pass (post-Goal-1–3 re-review, 2026-07-16)
 
-## 6. Risks
-- Wide blast radius on the BEVFusion side for Goal 1 (~20 files). Mitigation: phase it, grep for
-  dangling refs, Docker e2e after each phase.
-- Relocating `fuse_spconv_bn_in_encoder` must not change `state_dict` keys (FP16 deploy still loads
-  BN-folded checkpoints). Verify byte-identical fold.
-- `keep_fp16` glob expansion must reproduce today's `resolved_sensitive_layers()` results exactly for
-  existing configs, or PTQ/deploy trees diverge. Add a parity test.
+### 5.0 Charter, method, verdict
 
-## 7. Suggested sequencing
-1. Goal 1 first (removal) on its own — smaller behavioral surface, easier to verify mAP unchanged.
-2. Then Goal 2 (config redesign) on the reduced surface.
-3. Rewrite deploy configs + docs last.
+**Optimize only for:** simplicity · cognitive load · maintainability · locality of change ·
+information hiding · clear ownership.
+**Never optimize for:** SOLID compliance · design patterns · reducing LOC · maximizing abstraction.
+**Hard constraints:** zero numeric change (Docker mAP 0.3228 / 0.3931 stays the acceptance gate);
+the sacred invariant (§0 — PTQ producer, deploy loader, QAT hook all call the same
+`build_<model>_plan(config).prepare(model)`) is preserved by every item below; deletions, merges,
+and inlining beat any new interface.
+
+**Method:** four independent deep reviews of the current tree (quantization engine; per-project
+quantization glue; core deployment framework; deploy-config surface), each against the lens above,
+cross-checked against Graphify (2026-07-03 report — pre-quantization, so used for the core skeleton
+only) and first-hand reads of `config/schema.py` and `quantization/core/replace.py`.
+
+**Verdict:** the *centers* are healthy — the scheme/plan seam, `expand_keep_fp16` (engine holds the
+mechanism, config holds the values), `tensorrt_runner`, `OutputComparator`, the verify/eval split,
+the `plan.py` chokepoints, and `quant_model.py` all have exactly one owner and should not be
+touched. The costs are concentrated at the **edges**: (a) the two PTQ producers and two deploy
+loaders have drifted into near-copies with one already-diverged helper and one bespoke re-implementation
+that endangers the sacred invariant; (b) the typed `QuantizationConfig` is parsed three times and
+then bypassed via `.raw`, so the schema is decorative on the deploy path; (c) the 6 CenterPoint INT8
+configs are ~85% verbatim clones and have already started to rot (wrong comments, dead keys, stale
+advice); (d) Goals 1–3's deletions left residue — dead public exports, a lying function name, and
+docs describing removed knobs. Everything below is a fix to one of those four cost centers.
+
+### 5.1 Work package 4A — one owner for the quant-config path *(correctness-adjacent; do first)*
+
+**4A.1 Reject unknown `quantization` keys.** `QuantizationConfig.from_dict`
+(`config/schema.py:217-234`) reads a fixed key set with `.get()` and silently drops the rest, and the
+loaders read extra keys (e.g. `calib_cache_path` at `centerpoint/io/model_loader.py:185`) off `raw`.
+A typo — `keep_fp16s=[...]`, `disable_recipe=[...]` — parses fine and degrades to "quantize
+everything INT8," detectable only by the Docker mAP gate. Fix: after building, compute
+`set(raw) - KNOWN_KEYS` and **raise** on non-empty (~4 lines, one place). This is the config-key
+sibling of the §3.4 zero-match warning and closes the last silent-misconfig class.
+*(Lens: cognitive-load footgun.)*
+
+**4A.2 Parse `QuantizationConfig` once; stop smearing ownership across three files.** Today
+`config/base.py:64` builds the typed object, the runners throw it away and forward the raw dict
+(`centerpoint/runner.py:97`, `bevfusion_l/runner.py:131` — `dict(...quantization_config.raw)`), and
+both loaders **re-parse** it (`centerpoint/io/model_loader.py:172`, `bevfusion_l/io/model_loader.py:234`);
+`load_quantization_config` (`schema.py:243`) is a third constructor for the producer CLIs. The typed
+fields from the first parse are read by nobody. Fix: runners pass the typed
+`self.config.quantization_config` straight through; delete the `from_dict` re-parse in both loaders.
+`raw` stays available on the object for the few verbatim-dict consumers (shrink it later if those
+disappear). One parse, one owner (`base.py`). *(Lens: clear ownership, information hiding — the
+schema docstring at `schema.py:186-189` currently *documents* the bypass as a feature.)*
+
+**4A.3 One spelling of "disable the FP16 layers."** The canonical loop —
+`expand_keep_fp16(...)` → `disable_quantization(layer).apply()` — appears 3× (`centerpoint/quantization/quantize.py:296-302`,
+`qat_hook.py:172-177`, `bevfusion_l/quantization/quantize.py:129-139`), and the CenterPoint **deploy
+loader** re-implements it a 4th way with `name.startswith(...)` matching + raw `module.disable()`
+(`centerpoint/io/model_loader.py:246-272`) — despite already computing the correct set via
+`expand_keep_fp16` at line 182. Divergent match semantics between producer and deploy side is
+exactly the drift the sacred invariant exists to prevent. Fix: one shared 4-line helper (natural
+home: next to `expand_keep_fp16`), all four sites call it; delete
+`_disable_quantization_for_sensitive_layers`. *(Lens: clear ownership + the invariant.)*
+
+### 5.2 Work package 4B — merge the drifted copies (producers & loaders)
+
+**4B.1 Hoist the three duplicated `TensorQuantizer` helpers.** `_import_tensor_quantizer`,
+`_move_quantizer_amax_to_device`, `setup_quantization_for_onnx_export` exist near-verbatim in both
+loaders (`centerpoint/io/model_loader.py:34-44, 228-243, 315-327` vs
+`bevfusion_l/io/model_loader.py:103-131, 276-291, 323-331`) — and have **already diverged once**:
+only the BEVFusion `_import_tensor_quantizer` carries the `restore_deployment_logging()` absl-hijack
+fix in a `finally`, so CenterPoint is silently missing a known fix. Move all three into
+`deployment/quantization/` (both loaders already import from it), consolidating on the BEVFusion
+superset. CenterPoint-only `_validate_quantizer_amax` stays local. *(Lens: locality of change —
+proven drift under maintenance.)*
+
+**4B.2 Shared PTQ-producer helpers.** The two `quantize.py` producers duplicate ~60–80 lines:
+dataloader seed block **byte-identical** (`centerpoint …/quantize.py:257-266` vs
+`bevfusion_l …/quantize.py:214-223`), shuffle block byte-identical (CP:268-272 / BF:225-228),
+ceil-batches math (CP:201 / BF:161), checkpoint + `.calib` save (CP:330-336 / BF:257-269), absl
+logging init (CP:171-178 / BF:289-294). Move the verbatim blocks to one home —
+`deployment/quantization/producer.py`: `init_quant_logging()`,
+`build_calib_dataloader(cfg, batch_size, seed, shuffle)`, `save_ptq_checkpoint(...)` — and each
+`quantize.py` keeps only its model-specific bits (`run_qat` is genuinely CenterPoint-only; leave it).
+This is moving copied code to one home, not adding abstraction — imitate the
+`spconv_bn_fusion.py` re-export pattern, which is the house style for exactly this.
+Also: the one-off diagnostic dumps (CP residual-status dump `quantize.py:308-327`, BF
+`_print_ptq_save_check` `quantize.py:142-150`) — delete or gate behind `--debug`.
+*(Lens: locality of change, simplicity.)*
+
+**4B.3 Resolve the loader post-load asymmetry (owner decision).** CenterPoint-only:
+`_validate_quantizer_amax` (`model_loader.py:275-312`). BEVFusion-only:
+`_set_tensor_quantizers_inference_mode` (`model_loader.py:294-320`), whose docstring says without it
+mAP collapses to ~0. Both loaders build the identical tree by construction, so this asymmetry is
+either a silently missing step on one side or a model-specific fact that must say *why* in place.
+Decide in Docker (does CenterPoint need inference-mode? does BEVFusion want amax validation?), then
+either share both via 4B.1's module or write the one-line reason each is per-project.
+*(Lens: cognitive load — an unexplained asymmetry at the framework's most safety-critical seam.)*
+
+**4B.4 Merge the eSE attach pair; retire the lying name.** `attach_ese_pool_input_quantizer` +
+`attach_ese_mul_identity_quantizer` (`recipes/attach.py:151-205`) are one concept split into two
+order-dependent functions ("Assumes … ran first", `attach.py:171`; "Order matters",
+`quant_model.py:73-75`) — and after the Goal-3 two-Q deletion the second one no longer touches any
+`mul_identity` quantizer at all (it attaches `mul_gate_quantizer`, `attach.py:175`). Merge into a
+single `attach_ese_quantizers(model)` that adds `pool_input_quantizer` + `mul_gate_quantizer` and
+installs the hook once; update the two call sites (`quant_model.py:74-75`,
+`tests/test_ese_single_q_recipe.py:79-80`). *(Lens: hidden ordering contract + a name that lies.)*
+
+### 5.3 Work package 4C — deploy-config de-dup + rot fix
+
+**4C.1 One `_base_` file for the CenterPoint INT8 configs.** The 6 INT8 configs are ~85% verbatim
+copies: the `components` IO map + `dynamic_axes` block and the `verification.scenarios` block are
+byte-identical across all 6 + `deploy_config.py`; only checkpoint, `keep_fp16`/`disable_recipes`,
+TRT profile shapes, opset, work_dir, and eval knobs vary. Renaming one IO tensor is a **7-file
+edit** today. Fix with the mechanism the loader already supports (MMEngine `_base_` — currently
+used by zero configs): one `_deploy_config_int8_base.py` holding `components`, `onnx_config`,
+`evaluation`, `verification`, `devices`; each variant shrinks to `_base_ = [...]` + its ~15 true
+diffs. Adding a variant stays one file; changing a shared concern becomes one edit. This is the
+idiomatic one-file story, not a new pattern. *(Lens: locality of change.)*
+
+**4C.2 Fix the clone rot in the same stroke** (all direct symptoms of 4C.1):
+- `deploy_config_int8_vov57.py:69-71` and `vov99.py:69-71` carry a copy-pasted **ConvNeXt** comment
+  ("10 input channels … 1216 grid") contradicting their own values (11 ch, 1020 grid). Delete/correct.
+- `vov57.py:21-22` / `vov99.py:21-22` still advise tuning via `quant_head=False` /
+  `sensitive_layers` — the exact flags Goal 2 deleted (and `test_no_legacy_flags_remain` forbids) —
+  and reference a non-existent `README_PTQ_ACCURACY_VOV99.md` (real doc:
+  `quantization/docs/ptq_accuracy_vov99.md`). Rewrite to "add the module to `keep_fp16`" + fix path.
+- Every config passes `devices=devices` inside `verification=dict(...)`, but
+  `VerificationConfig.from_dict` (`schema.py:550-574`) never reads it — a dead key that looks
+  load-bearing. Drop the line everywhere (scenarios already carry per-scenario devices).
+
+**4C.3 Test hardening.**
+- `test_centerpoint_configs.py` parse-checks every CenterPoint config; **no equivalent exists for
+  BEVFusion** — a structural typo there is invisible until Docker. Parametrize over both config dirs.
+- `test_quant_config_migration.py:30-91` pins each config's `keep_fp16` to the value derived from
+  the *old* flags — correct as a one-time migration oracle, but any legitimate future `keep_fp16`
+  tuning will fail it. Add a header comment: "migration oracle — retire after the Goal-2 Docker
+  verify lands," so it is not mistaken for a live invariant.
+
+### 5.4 Work package 4D — post-deletion residue sweep (deletions & docs)
+
+**4D.1 Trim the advertised API to the real one.** Zero external callers (grep-verified) for
+`transfer_to_quantization`, `fuse_conv_bn`, `QuantConvTranspose2d`, `QuantLinear` in
+`quantization/__init__.py:37-59` — drop them from the root exports (they stay importable at their
+definition sites for the internal users). The entire re-export block in `recipes/__init__.py:10-36`
+is dead surface — every real importer uses the concrete submodule paths (`quant_model.py:16`,
+`test_ese_single_q_recipe.py:19`); delete it, keep the docstring. The remaining root API is what is
+actually used: `CalibrationManager`, `expand_keep_fp16`, `quant_conv_module` / `quant_linear_module`,
+`fuse_model_bn`, `disable_quantization`, `print_quantizer_status`, the three schemes.
+*(Lens: information hiding — a reader must be able to tell load-bearing from decorative.)*
+
+**4D.2 Small engine deletions** (each independently landable):
+- `attach_quant_add(model, target_class_names=None)` (`attach.py:71`): both callers pass only
+  `model`; drop the param and its two-branch matcher.
+- `fuse_model_bn(model, inplace=True)` (`fusion.py:246`): no caller passes `False`; delete the param
+  and the dead `deepcopy` branch (`fusion.py:261-264`). *(Contrast: `calibrate(method=...)` is
+  genuinely varied — leave it.)*
+- Descriptor population is stamped in 3–4 places (`quant_conv.py:80-83,139-142`,
+  `quant_linear.py:45-48`, `replace.py:85-108`, `attach.py:46-52`): give it one home (module
+  `__init__` calls `ensure_quant_descriptors_initialized()`), and delete the unreachable
+  per-channel ConvTranspose guard (`replace.py:95-103`) — `descriptors.py`, the single source,
+  can never produce what it guards against.
+- Inline `_get_bn_num_features` / `_get_conv_out_channels` into their only caller
+  (`fusion.py:205-206`).
+- Optional, lowest priority: collapse `sparse/` (one 49-line function + `__init__`) into a single
+  `sparse.py`, keeping the import path.
+
+**4D.3 Decide-and-document (needs Docker, not just edits):**
+- Two clone mechanisms for one concept: Conv uses the clean rebuild path
+  (`replace.py:113` `_rebuild_conv2d_as_quant` — `__init__` + weight copy, hook-safe), Linear uses
+  the `vars()` transplant (`replace.py:193` `transfer_to_quantization`). Either move Linear onto a
+  `_rebuild_linear_as_quant` for symmetry, or write down in place why the transplant is safe for
+  Linear specifically. One mechanism, or one sentence — not two silent ones.
+- `_skip_fake_quant_for_export_trace` guards Conv/ConvTranspose forwards
+  (`quant_conv.py:99-112,158-169`) but not `QuantLinear.forward` (`quant_linear.py:64-73`). Verify
+  in Docker whether Linear export needs it; hoist a shared guard or add the one-line reason.
+
+**4D.4 Doc residue.**
+- `quantization/__init__.py:13` still labels `sparse` "the spconv INT8 subsystem" — it is FP16
+  BN-fold only. One-line fix.
+- `quantization/docs/ese_int8_changes.md:78-96,115,127` documents the deleted two-Q fallback and
+  the removed `quant_ese_*` keys. Rewrite to the `disable_recipes` surface or delete (the single-Q
+  rationale already lives in `forward_hooks.py:254-269`).
+- The ~29 `projects/bevfusion_l/docs/*int8*` notes: unchanged policy — the user's call (§4.9).
+- `docs/quantization_pipeline.md` (repo root) and `quantization/README.md` were re-verified: both
+  match the current surface; no action.
+
+**4D.5 Core-framework nits (do only these; see 5.6 for what we deliberately skip):**
+- Inline the pure pass-through pair in `ExportOrchestrator`: `_run_onnx_export` → `_export_onnx`
+  (`runtime/export_orchestrator.py:164-177` / `205-233`) and the TRT mirror (`190-203` / `235-270`).
+  The export path is 7 files / ~11 hops end-to-end; the tiers are defensible, this hop is not.
+
+### 5.5 Sequencing & verification gates
+
+Order: **4A → 4B → 4C → 4D** (4A is correctness-adjacent and makes 4B's merges safer; 4C and 4D are
+independent of each other and individually landable). Every step is behavior-preserving by intent.
+
+Gates (same regime as Goals 1–2):
+- Host: `ast.parse` + `pyflakes` on every touched file; `pytest deployment/tests/` green — including
+  the parity oracle (until retired per 4C.3), the eSE characterization test (updated call sites),
+  and the new BEVFusion config parse test.
+- Grep gates: no remaining `_disable_quantization_for_sensitive_layers`, no
+  `attach_ese_mul_identity_quantizer`, no `from deployment.quantization import transfer_to_quantization`.
+- Docker e2e: CenterPoint vov99 + BEVFusion mAP **identical** to baseline (0.3228 / 0.3931) — this
+  goal changes zero numerics, so *identical* (not "within tolerance") stays the bar. 4B.3 and 4D.3
+  explicitly park their behavior questions here.
+
+### 5.6 Deliberately not doing (guardrails against churn)
+
+- **Keep** the scheme/plan seam exactly as is — it is a real deep module backing the invariant
+  (3 concrete schemes, one-method interface). Do **not** merge `CenterPointDenseScheme` into
+  `DenseQDQScheme`: CenterPoint genuinely needs Conv+Linear+eSE+maxpool, BEVFusion conv+add only.
+- **Keep** `expand_keep_fp16` in `core/replace.py` — re-review confirmed ownership is clean
+  (engine = mechanism, config = values; all five consumers call the one function).
+- **Keep** the orchestrator → pipeline → exporter tiers, the verification/evaluation split (two
+  genuinely different loops sharing one `BackendExecutor`), and the two orchestrators unmerged
+  (similar shape, different bodies — merging adds branching).
+- **Do not** replace `ProjectAdapter`/`ProjectRegistry` (a dict wrapper, but stable and small —
+  flagged as evidence, not scheduled) and **do not** build a shared TensorRT-pipeline base class
+  now (~30 lines of near-duplicate per project; absorb only if those files are touched anyway).
+- **Do not** add any new config surface, DSL, back-compat shim, or "framework utils" grab-bag
+  module. Every 4B move goes to a named, single-purpose home.
+- Healthy code named healthy stays untouched: `tensorrt_runner.py`, `OutputComparator`,
+  `detection3d_entrypoint.py`'s inject-the-three-things pattern, `availability.py`,
+  `descriptors.py`, `plan.py` (both), `quant_model.py`, `qat_hook.py`, the exporters' atomic
+  staging/publish writes, `primitives/artifacts.py`.
+
+### 5.7 Goal-4 close-out — implementation status (2026-07-16)
+
+All four work packages are landed in the working tree. Per item:
+
+| Item | Status / notes |
+|---|---|
+| **4A.1** unknown-key guard | **DONE** — `QuantizationConfig.KNOWN_KEYS` + raise in `from_dict`; all 7 configs' literal blocks verified against the guard. |
+| **4A.2** single parse | **DONE+** — runners pass the typed object; both loader re-parses deleted; went further than planned: the `raw` escape hatch had **zero** consumers left, so the field itself is deleted (the typed schema is now the only contract). |
+| **4A.3** one disable spelling | **DONE** — `disable_quantizers_in` (core/utils.py, next to `disable_quantization`); all 4 sites converted; the bespoke `startswith` loader variant deleted. |
+| **4B.1** loader helper hoist | **DONE** — `get_tensor_quantizer_cls` (carries the absl-restore fix CenterPoint was missing), `move_quantizer_amax_to_device`, `setup_quantization_for_onnx_export` in core/utils.py; both loaders + BEVFusion runner import them. |
+| **4B.2** producer helpers | **DONE** — `deployment/quantization/producer.py` (`init_quant_logging`, `build_calib_dataloader`, `save_ptq_checkpoint`); both `quantize.py` producers converted; both one-off debug dumps deleted. Two deliberate error-path improvements (not numeric changes): a failed `.calib` save now raises instead of warning (BEVFusion), and CenterPoint's missing-layer disable warning now comes from the shared helper. |
+| **4B.3** loader asymmetry | **PARKED for Docker** (as specced) — both functions now document the asymmetry + TODO(Docker) pointer here. |
+| **4B.4** eSE attach merge | **DONE** — single `attach_ese_quantizers`; ordering contract and `mul_identity` name gone; `quant_model.py` + characterization test updated. |
+| **4C.1** config `_base_` | **DONE** — `_deploy_config_int8_base.py` (underscore keeps it out of the `deploy_config*` glob); 6 variants now hold only checkpoint / quantization / export dirs / profile shapes / opset / eval overrides. **Golden check green**: a pure-python re-implementation of MMEngine's recursive merge proves base+variant == pre-refactor file for every section of all 6 configs (quantization section excluded — its diff vs git HEAD is exactly the already-tested Goal-2 flag migration). |
+| **4C.2** rot fixes | **DONE** — wrong ConvNeXt comment now lives only in the ConvNeXt config (with correct 10ch/1216 values); vov advice rewritten to `keep_fp16` + real doc path (`quantization/docs/ptq_accuracy_vov99.md`); dead `verification.devices` key dropped (now one place — the base); second's usage docstring path corrected. |
+| **4C.3** test hardening | **DONE** — `tests/test_bevfusion_configs.py` (layout-aware: split vs merged), oracle shelf-life note added to `test_quant_config_migration.py`. |
+| **4D.1** export trim | **DONE** — root `__init__` drops `transfer_to_quantization` / `fuse_conv_bn` / `QuantConvTranspose2d` / `QuantLinear` (grep: zero external users) and adds the new utils; `recipes/__init__.py` re-export block deleted (all importers use submodule paths). |
+| **4D.2** small deletions | **DONE** — `attach_quant_add` param dropped (module constant `_RESIDUAL_BLOCK_CLASSES`); `fuse_model_bn` `inplace` + dead deepcopy branch deleted; unreachable per-channel ConvTranspose guard deleted; `_get_conv_out_channels`/`_get_bn_num_features` inlined. **Deviation:** descriptor-populate consolidation was *rejected* — `transfer_to_quantization` builds via `__new__` (bypasses `__init__`), and folding the stamps into one call site needs modules→replace imports (a cycle); instead the two deliberate population points are now documented in `ensure_quant_descriptors_initialized`. `sparse/`→`sparse.py` collapse skipped (optional, lowest value). |
+| **4D.3** decide-and-document | **DOCUMENTED, decisions parked for Docker** — clone duality (Conv rebuild vs Linear transplant) explained at `transfer_to_quantization` with the unify-option TODO; QuantLinear's missing trace-skip guard explained at its `forward` (no-op in every shipped path since fb_fake_quant is set first). |
+| **4D.4** doc residue | **DONE** — `__init__.py` sparse label fixed; `ese_int8_changes.md` rewritten to the current single-attach/`disable_recipes` surface (kept the still-valid TRT reformat rationale); README layering tree updated (producer.py + utils.py scope). |
+| **4D.5** orchestrator inline | **DONE** — `_run_onnx_export`/`_run_tensorrt_export` inlined into `run()`; stale-ONNX guard behavior unchanged; control-flow tests updated to stub `_export_onnx`/`_export_tensorrt`. |
+
+**Host verification:** `ast.parse` clean over all 155 deployment `.py` files; pyflakes clean on every
+touched file (remaining hits are pre-existing noqa'd side-effect imports); grep gates pass (no
+`_disable_quantization_for_sensitive_layers` / old eSE attach names / `.raw` / loader re-parse /
+removed-export imports outside intentional docstring history); golden `_base_`-merge check green
+(6/6 configs); migration-oracle logic green (7/7 configs, run with a pytest stub — host has no
+pytest/mmengine/torch/Docker socket this session).
+
+**Docker-pending:** (a) e2e mAP **identical** to 0.3228 / 0.3931 (the goal's acceptance gate);
+(b) 4B.3 — do both loaders need both post-load steps; (c) 4D.3 — unify the Linear clone path /
+trace-skip guard or keep the documented reasons; (d) run `tests/test_bevfusion_configs.py`,
+`test_centerpoint_configs.py` (now exercising `_base_` resolution), `test_export_orchestrator.py`,
+and `test_ese_single_q_recipe.py` in the runtime image.

@@ -12,7 +12,7 @@ and the PTQ producer build an identical dense module tree by calling the *same* 
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterable, List, Optional, Sequence
+from typing import Any, Iterable, List, Sequence
 
 from .base import QuantizationScheme
 
@@ -20,18 +20,20 @@ logger = logging.getLogger(__name__)
 
 
 class DenseQDQScheme(QuantizationScheme):
-    """Insert Conv2d Q/DQ into dense submodules and (optionally) residual-add quantizers.
+    """Insert Conv2d Q/DQ into dense submodules and (unless disabled) residual-add quantizers.
+
+    Model-agnostic and declarative: **every** dense submodule is BN-fused and its Conv2d quantized,
+    except the subtrees named by ``keep_fp16`` (see :func:`deployment.quantization.expand_keep_fp16`).
+    BN is fused across **all** submodules regardless of ``keep_fp16`` — fusing an un-quantized module's
+    BN is an inference identity but *changes state_dict keys*, so PTQ and deploy must fuse the exact
+    same set; ``keep_fp16`` only subtracts from the *quantized* set, never the *fused* set (spec §3.3b).
 
     Args:
-        quant_targets: Submodule names to quantize (Conv2d -> QuantConv2d), e.g.
-            ``("pts_backbone", "pts_neck", "bbox_head")``.
-        fuse_targets: Submodule names whose Conv+BN are fused before quantization. Fusing an
-            un-quantized submodule's BN is numerically an identity for inference, but it changes
-            state_dict keys — so PTQ and deploy MUST fuse the exact same set. Defaults to
-            ``quant_targets`` when not given; pass the full dense set explicitly to match a
-            producer that fuses more than it quantizes.
-        quant_add: Attach residual-add quantizers (``attach_quant_add`` on the whole model).
-        sensitive_layers: Layer-name prefixes left in FP (skipped by ``quant_conv_module``).
+        dense_submodules: Submodule names forming the dense tower (fused, and quantized minus
+            ``keep_fp16``), e.g. ``("pts_backbone", "pts_neck", "bbox_head")``.
+        keep_fp16: Glob patterns (subtree match) left in FP16; expanded against the model at
+            ``prepare`` time.
+        disable_recipes: Recipe names to skip. Only ``"add"`` (residual-add) applies to this scheme.
         fuse_bn: Master switch for BN fusion.
     """
 
@@ -39,25 +41,24 @@ class DenseQDQScheme(QuantizationScheme):
 
     def __init__(
         self,
-        quant_targets: Sequence[str],
+        dense_submodules: Sequence[str],
         *,
-        fuse_targets: Optional[Sequence[str]] = None,
-        quant_add: bool = False,
-        sensitive_layers: Iterable[str] = (),
+        keep_fp16: Iterable[str] = (),
+        disable_recipes: Iterable[str] = (),
         fuse_bn: bool = True,
     ) -> None:
-        self.quant_targets: List[str] = list(quant_targets)
-        self.fuse_targets: List[str] = list(fuse_targets) if fuse_targets is not None else list(quant_targets)
-        self.quant_add = bool(quant_add)
-        self.sensitive_layers: List[str] = list(sensitive_layers or ())
+        self.dense_submodules: List[str] = list(dense_submodules)
+        self.keep_fp16: List[str] = list(keep_fp16 or ())
+        self.disable_recipes = set(disable_recipes)
         self.fuse_bn = bool(fuse_bn)
 
     def prepare(self, model: Any) -> Any:
-        from deployment.quantization import fuse_model_bn, quant_conv_module
+        from deployment.quantization import expand_keep_fp16, fuse_model_bn, quant_conv_module
         from deployment.quantization.recipes.attach import attach_quant_add
 
+        # Fuse BN across ALL dense submodules (keeps state_dict keys aligned on both sides).
         if self.fuse_bn:
-            for target_name in self.fuse_targets:
+            for target_name in self.dense_submodules:
                 submodule = getattr(model, target_name, None)
                 if submodule is None:
                     continue
@@ -65,15 +66,16 @@ class DenseQDQScheme(QuantizationScheme):
                 fuse_model_bn(submodule)
                 logger.info("  [dense_qdq] fused BN in %s", target_name)
 
-        skip = set(self.sensitive_layers)
-        for target_name in self.quant_targets:
+        # Quantize every dense submodule's Conv2d, minus the keep_fp16 subtrees.
+        skip = expand_keep_fp16(model, self.keep_fp16)
+        for target_name in self.dense_submodules:
             submodule = getattr(model, target_name, None)
             if submodule is None:
                 continue
             quant_conv_module(submodule, skip, target_name)
             logger.info("  [dense_qdq] quantized %s (Conv2d -> QuantConv2d)", target_name)
 
-        if self.quant_add:
+        if "add" not in self.disable_recipes:
             attach_quant_add(model)
             logger.info("  [dense_qdq] attached residual-add quantizers")
         return model

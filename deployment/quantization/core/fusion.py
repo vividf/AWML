@@ -119,23 +119,6 @@ def fuse_conv_bn(conv: nn.Module, bn: nn.Module):
     )
 
 
-def _get_conv_out_channels(conv: nn.Module) -> int:
-    """Get output channels from a Conv or Linear module."""
-    if isinstance(conv, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-        return conv.out_channels
-    elif isinstance(conv, (nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d)):
-        return conv.out_channels
-    elif isinstance(conv, nn.Linear):
-        return conv.out_features
-    else:
-        raise ValueError(f"Unsupported module type: {type(conv)}")
-
-
-def _get_bn_num_features(bn: nn.Module) -> int:
-    """Get num_features from a BatchNorm module."""
-    return bn.num_features
-
-
 def _iter_adjacent_named_children(
     model: nn.Module, prefix: str = ""
 ) -> Iterator[Tuple[str, nn.Module, str, nn.Module]]:
@@ -201,10 +184,11 @@ def find_conv_bn_pairs(model: nn.Module) -> List[Tuple[str, str]]:
     for left_name, left_module, right_name, right_module in _iter_adjacent_named_children(model):
         for conv_type, bn_type in conv_to_bn.items():
             if isinstance(left_module, conv_type) and isinstance(right_module, bn_type):
-                # Validate that channel dimensions match
-                conv_out_channels = _get_conv_out_channels(left_module)
-                bn_num_features = _get_bn_num_features(right_module)
-                if conv_out_channels == bn_num_features:
+                # Validate that channel dimensions match (Linear calls it out_features).
+                out_channels = (
+                    left_module.out_features if isinstance(left_module, nn.Linear) else left_module.out_channels
+                )
+                if out_channels == right_module.num_features:
                     pairs.append((left_name, right_name))
                 break
 
@@ -243,13 +227,12 @@ def _replace_bn_with_identity(model: nn.Module, bn_name: str):
         setattr(parent, attr, nn.Identity())
 
 
-def fuse_model_bn(model: nn.Module, inplace: bool = True) -> nn.Module:
+def fuse_model_bn(model: nn.Module) -> nn.Module:
     """
-    Fuse all Conv-BN pairs in the model.
+    Fuse all Conv-BN pairs in the model, in place.
 
     Args:
-        model: PyTorch model
-        inplace: If True, modify model in-place. If False, return a copy.
+        model: PyTorch model (modified in place; also returned for chaining).
     Returns:
         Model with fused BatchNorm layers.
 
@@ -258,11 +241,6 @@ def fuse_model_bn(model: nn.Module, inplace: bool = True) -> nn.Module:
         >>> fuse_model_bn(model)
         >>> # Now all fused BN layers are replaced with Identity
     """
-    if not inplace:
-        import copy
-
-        model = copy.deepcopy(model)
-
     # Must be in eval mode for fusion
     model.eval()
 

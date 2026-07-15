@@ -36,7 +36,7 @@ class TestStaleOnnxGuard:
         orch = _orchestrator(export_config)
         # Bypass real model loading and force ONNX export to produce nothing.
         orch._load_and_register_pytorch_model = lambda ckpt: object()
-        orch._run_onnx_export = lambda model: None
+        orch._export_onnx = lambda model: None
 
         with pytest.raises(RuntimeError, match="stale"):
             orch.run()
@@ -45,12 +45,12 @@ class TestStaleOnnxGuard:
         export_config = SimpleNamespace(should_export_onnx=True, should_export_tensorrt=True, onnx_path="stale/onnx")
         orch = _orchestrator(export_config)
         orch._load_and_register_pytorch_model = lambda ckpt: object()
-        orch._run_onnx_export = lambda model: None
-        orch._run_tensorrt_export = Mock(side_effect=AssertionError("TensorRT must not run on stale ONNX"))
+        orch._export_onnx = lambda model: None
+        orch._export_tensorrt = Mock(side_effect=AssertionError("TensorRT must not run on stale ONNX"))
 
         with pytest.raises(RuntimeError):
             orch.run()
-        orch._run_tensorrt_export.assert_not_called()
+        orch._export_tensorrt.assert_not_called()
 
 
 class TestExternalArtifactResolution:

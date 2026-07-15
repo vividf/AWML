@@ -36,7 +36,9 @@ deployment/quantization/                      # model-agnostic engine
 │   ├── replace.py                             #   nn.Conv2d -> QuantConv2d module swap
 │   ├── fusion.py                              #   Conv+BN fusion (dense)
 │   ├── calibration.py                         #   CalibrationManager (histogram + amax)
-│   ├── utils.py                               #   disable_quantization / status / counts
+│   ├── utils.py                               #   disable_quantization(+_in) / TensorQuantizer
+│   │                                          #   deploy-load helpers (amax→device, fb_fake_quant,
+│   │                                          #   get_tensor_quantizer_cls) / status / counts
 │   └── availability.py                        #   pytorch-quantization import guard (leaf)
 ├── recipes/                                   # architecture-specific Q/DQ *placement*
 │   ├── forward_hooks.py                       #   per-block forward reimplementations
@@ -44,6 +46,8 @@ deployment/quantization/                      # model-agnostic engine
 ├── schemes/                                   # the "seam" between deploy stages and quantization
 │   ├── base.py                                #   QuantizationScheme (ABC) + QuantizationPlan
 │   └── dense_qdq.py                           #   generic DenseQDQScheme
+├── producer.py                                # shared PTQ-producer plumbing (calib dataloader
+│                                              #   seed/shuffle, checkpoint+.calib save, logging init)
 └── sparse/                                    # spconv sparse-encoder helpers (FP16 deploy)
     └── fusion.py                              #   fuse_spconv_bn_in_encoder (SparseConv+BN fold)
 
@@ -56,7 +60,7 @@ deployment/projects/centerpoint/quantization/ # CenterPoint composition
 
 deployment/projects/bevfusion_l/quantization/ # BEVFusion composition
 ├── schemes.py                                 #   SpconvBnFuseScheme (sparse tower: FP16, BN fold only)
-├── plan.py                                    #   build_bevfusion_plan(config, include_sparse) -> QuantizationPlan
+├── plan.py                                    #   build_bevfusion_plan(config) -> QuantizationPlan
 └── quantize.py                                #   PTQ producer CLI
 ```
 
@@ -73,9 +77,10 @@ The deploy config carries a `quantization = dict(...)` block. `QuantizationConfi
 config schema, next to `ExportConfig` / `ComponentsConfig` / …) is the **single** typed view of it:
 `QuantizationConfig.from_dict(dict)` (from an in-memory dict, e.g. in a loader) or
 `load_quantization_config(path)` (from a deploy-config file, e.g. in a CLI). Defaults live in exactly
-one place, so the insert side and the load side cannot drift. `resolved_sensitive_layers()` expands
-the convenience skip-flags into concrete dotted module names; `dense_quant_enabled()` and
-`with_overrides()` support the CLIs.
+one place, so the insert side and the load side cannot drift. Precision placement is declarative:
+`default_precision="int8"` quantizes everything the plan reaches, and `keep_fp16=[globs]` lists subtrees
+to leave in FP16 (expanded against the model by `expand_keep_fp16`, `core/replace.py`);
+`disable_recipes=[...]` opts a config out of an always-on recipe. `with_overrides()` supports the CLIs.
 
 ### 2.2 Quantized modules (`core/modules/`) + descriptors (`core/descriptors.py`)
 `QuantConv2d`, `QuantConvTranspose2d`, `QuantLinear` subclass their `nn.*` counterparts and add
@@ -86,7 +91,11 @@ are defined. During ONNX export the fake-quant emits `QuantizeLinear` / `Dequant
 
 ### 2.3 Module replacement (`core/replace.py`)
 `quant_conv_module` / `quant_linear_module` recursively swap `nn.Conv2d/ConvTranspose2d/Linear` for
-their quantized subclasses, honoring a `skip_names` set (full dotted paths).
+their quantized subclasses, honoring a `skip_names` set (full dotted paths). `expand_keep_fp16(model,
+patterns)` resolves the config's `keep_fp16` globs into that `skip_names` set — each pattern matches
+`named_modules()` (fnmatch) and expands to the matched modules **plus their descendants**, so a bare
+tower name (e.g. `"pts_voxel_encoder"`) keeps the whole subtree in FP16. It logs per-pattern match
+counts and **warns on zero matches** (catches `keep_fp16` typos — the one guard both references lacked).
 
 ### 2.4 BN fusion
 `fuse_model_bn` (dense) folds adjacent Conv→BN pairs into the conv and replaces the BN with
@@ -100,10 +109,13 @@ set** — which the shared plan guarantees.
 
 ### 2.6 Recipes (`recipes/`)
 Residual blocks and attention modules need Q/DQ placed at TensorRT-friendly spots (quantize only the
-identity branch so TRT fuses Conv+Add; single-Q fan-out at a block input). `forward_hooks.py`
+identity branch so TRT fuses Conv+Add; single-Q fan-out at a block input; for VoVNet `eSEModule`, **one**
+Q at the eSE input feeds both `Mul` operands — the reformat-minimizing INT8 path). `forward_hooks.py`
 reimplements each block's `forward`; `attach.py` walks the model, attaches the needed quantizers, and
 installs the hooks. Covered: ResNet `BasicBlock`, `SparseBasicBlock`, `ConvNeXtBlock`, VoVNet
-`_OSA_module` / `eSEModule`, MaxPool.
+`_OSA_module` / `eSEModule`, MaxPool. Recipes are **always attached and class-gated** (a no-op where the
+architecture lacks the module), so there is no per-recipe config flag — a config opts one out via
+`disable_recipes` (e.g. BEVFusion ships `["add"]`).
 
 ### 2.7 Schemes & Plan (`schemes/`) — the seam
 A `QuantizationScheme` is a strategy with one structural step, `prepare(model)`, that fuses BN /
@@ -113,7 +125,7 @@ ships a `build_<model>_plan(config)` that composes its schemes:
 | Model | Plan builder | Schemes composed |
 |-------|--------------|------------------|
 | CenterPoint | `build_centerpoint_plan(config)` | `CenterPointDenseScheme` (Conv/Linear + eSE/MaxPool/residual recipes) |
-| BEVFusion | `build_bevfusion_plan(config, include_sparse)` | `DenseQDQScheme` + `SpconvBnFuseScheme` |
+| BEVFusion | `build_bevfusion_plan(config)` | `DenseQDQScheme` + `SpconvBnFuseScheme` |
 
 ### 2.8 Sparse encoder (`sparse/`) — FP16
 The spconv sparse encoder deploys in **FP16** (TRT's ImplicitGemm plugin); it is not quantized to
@@ -155,8 +167,9 @@ flowchart LR
     D --> E[export ONNX / TRT · eval]
 ```
 
-BEVFusion passes `include_sparse=True` here (BN-fold the sparse tower too); the PTQ producer passes
-`include_sparse=False` (the sparse BN fold is done separately before dense calibration).
+The sparse tower's SparseConv+BN fold is part of `build_bevfusion_plan` (gated only on `fuse_bn`), so the
+PTQ producer and the deploy loader call the plan with **identical arguments** — the quantized tree is
+identical by construction, not reconciled by a separate fold step (no `include_sparse` parameter).
 
 ### 3.3 Deploy load (FP32 checkpoint)
 `load_state_dict` first, **then** the plan inserts uncalibrated dense Q/DQ (needs runtime calibration).
@@ -176,16 +189,24 @@ All settings live under `quantization = dict(...)` in the deploy config and are 
 | Key | Applies to | Meaning |
 |-----|-----------|---------|
 | `enabled` | both | Master switch for the quantized load path. |
+| `mode` | both | `"ptq"` or `"qat"`. |
 | `fuse_bn` | both | Fuse Conv/SparseConv + BN before quantizing (default `True`). |
-| `quant_backbone` / `quant_neck` / `quant_head` | both | Quantize the dense towers. |
-| `quant_voxel_encoder` | CenterPoint | Quantize `pts_voxel_encoder` Linear layers. |
-| `quant_add` | both | Attach residual-add quantizers (ResNet/Sparse residual blocks). |
-| `quant_linear_backbone` | CenterPoint | Quantize Linear layers inside `pts_backbone` (ConvNeXt). |
-| `quant_ese_mul_identity` / `quant_ese_pool_input` / `quant_maxpool_input` | CenterPoint | VoVNet eSE / MaxPool Q/DQ placement. |
-| `sensitive_layers` | both | Dotted module paths left in FP. |
-| `skip_backbone_first_stages` / `skip_backbone_stages` / `skip_vovnet_stages` | CenterPoint | Convenience expansions into `sensitive_layers`. |
+| `default_precision` | both | Precision for everything the plan reaches (currently `"int8"`). |
+| `keep_fp16` | both | Glob patterns (subtree match) to leave in FP16. Absorbs the old `quant_backbone`/`neck`/`head`/`voxel_encoder`, `skip_backbone_*` / `skip_vovnet_stages`, and `sensitive_layers`. |
+| `disable_recipes` | both | Always-on recipes to opt out of: `"add"` / `"ese"` / `"maxpool"`. |
 | `ptq_checkpoint` | both | The checkpoint carries calibrated `_amax` (rebuild tree before load). |
 | `calib_cache_path` | both | Load amax from a `.calib` cache instead of calibrating. |
+
+Example (CenterPoint VoVNet):
+
+```python
+quantization = dict(
+    enabled=True, mode="ptq", fuse_bn=True,
+    default_precision="int8",
+    keep_fp16=["pts_voxel_encoder", "pts_backbone.stem", "pts_backbone.stage2"],
+    # disable_recipes=["add"],   # e.g. SECOND / BEVFusion keep residual-add in FP16
+)
+```
 
 > The BEVFusion spconv sparse encoder always deploys in FP16 — there is no sparse-INT8 config key.
 

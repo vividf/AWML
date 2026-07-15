@@ -21,7 +21,7 @@ flowchart TD
     E --> F{"fuse_bn enabled?"}
     F -->|yes| F1["Fuse SparseConv + BN<br/>pts_middle_encoder (sparse stays FP16)"]
     F -->|no| G
-    F1 --> G["build_bevfusion_plan(config, include_sparse=false).prepare(model)"]
+    F1 --> G["build_bevfusion_plan(config).prepare(model)"]
 
     G --> H{"Dense quant enabled?"}
     H -->|yes| H1["DenseQDQScheme<br/>Fuse BN in pts_backbone, pts_neck, bbox_head<br/>Conv2d to QuantConv2d<br/>optional residual-add quantizers"]

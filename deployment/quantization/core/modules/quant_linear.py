@@ -62,7 +62,15 @@ class QuantLinear(nn.Linear):
         self._weight_quantizer = TensorQuantizer(quant_desc_weight)
 
     def forward(self, x):
-        """Forward with quantized input and weights."""
+        """Forward with quantized input and weights.
+
+        Unlike ``QuantConv2d`` / ``QuantConvTranspose2d``, there is no
+        ``_skip_fake_quant_for_export_trace`` guard here: every shipped export path sets
+        ``use_fb_fake_quant=True`` first (``setup_quantization_for_onnx_export``), which makes the
+        conv guard a no-op anyway — and quantized Linears have exported fine without it.
+        TODO(Docker): confirm tracing a quantized Linear *without* fb fake quant either works or
+        should adopt the shared guard (spec.md §5.4 4D.3).
+        """
         if self._input_quantizer is not None and self._weight_quantizer is not None:
             quant_input = self._input_quantizer(x)
             quant_weight = self._weight_quantizer(self.weight)

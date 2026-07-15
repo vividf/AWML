@@ -3,60 +3,40 @@ CenterPoint INT8 Quantization Deployment Configuration - VoVNet 99 Backbone
 
 Usage:
     python -m deployment.cli.main centerpoint \
-        deployment/projects/centerpoint/config/deploy_config_int8_convnext_small.py \
+        deployment/projects/centerpoint/config/deploy_config_int8_vov99.py \
         projects/CenterPoint/configs/t4dataset/CenterPoint-ConvNeXtPC/pillar_020_convnext_small_secfpn_4xb8_121m_base_t4metric_v2.py
+
+Shared skeleton (components IO, verification, TensorRT build, evaluation defaults) comes from
+``_deploy_config_int8_base.py``; this file holds only what differs for this model.
 """
 
-# ============================================================================
-# Checkpoint Path - Use PTQ quantized checkpoint
-# ============================================================================
-# checkpoint_path = "models/2_5/experiment_j6_gen2/vov_epoch_30_ptq_exp6.pth"
-checkpoint_path = "models/2_5/experiment_j6_gen2/vov_epoch_30_exp12.pth"
+_base_ = ["./_deploy_config_int8_base.py"]
 
-deploy_log_path = "deployment.log"
+checkpoint_path = "models/2_5/experiment_j6_gen2/vov_epoch_30_exp12.pth"
 
 # ============================================================================
 # Quantization Configuration
 # ============================================================================
-# PTQ accuracy: If mAP drops a lot (e.g. 0.5 -> 0.25), try quant_head=False and/or
-# sensitive_layers (see deployment/quantization/README_PTQ_ACCURACY_VOV99.md).
+# PTQ accuracy: if mAP drops a lot (e.g. 0.5 -> 0.25), widen keep_fp16 (e.g. add
+# "pts_backbone.stage3" or "pts_bbox_head") — see deployment/quantization/docs/ptq_accuracy_vov99.md.
 quantization = dict(
     enabled=True,
     mode="ptq",
     fuse_bn=True,
-    quant_ese_mul_identity=True,  # Q/DQ on identity branch before eSE Mul (so Mul has QDQ node)
-    quant_ese_pool_input=True,  # Q/DQ before pooling layer in eSE (so Pool has QDQ input)
-    quant_maxpool_input=True,  # Q/DQ before MaxPool2d (VoVNet _OSA_stage)
-    quant_voxel_encoder=False,
-    quant_backbone=True,
-    quant_neck=True,
-    quant_head=True,  # Set False to keep detection head FP16 (often recovers mAP)
-    quant_add=True,
-    quant_linear_backbone=True,
-    # Optional: load calibration cache to populate amax for newly added quantizers
-    # calib_cache_path="work_dirs/centerpoint-convnext/small/epoch_30_small_ptq_exp3.calib",
-    skip_backbone_first_stages=0,  # For SECOND/ResNet; VoVNet uses skip_vovnet_stages instead
-    skip_backbone_stages=[],
-    # VoVNet backbone only: keep these stages in FP16 (0=stem, 1=stage2, 2=stage3, 3=stage4).
-    # If mAP drops and neck/head skip did not help, try [0], then [0,1], or binary-search by stage.
-    skip_vovnet_stages=[0, 1],  # [0]=stem FP16; try [0,1] or [1] if needed
-    sensitive_layers=[
-        # Keep layers in FP16 to recover mAP (VoVNet: pts_backbone.stem, .stage2, .stage3, .stage4)
-        # "pts_bbox_head",           # whole head FP16 (alternative to quant_head=False)
-        # "pts_backbone.stem",      # first backbone stage FP16
-        # "pts_backbone.stage2",    # second stage FP16
-        # "pts_neck.deblocks.0.0",  # ConvTranspose2d - no TRT INT8 support
-        # "pts_neck.deblocks.1.0",
-        # "pts_neck.deblocks.2.0",
+    # INT8 by default; keep_fp16 lists subtrees to leave in FP16 (fnmatch on dotted module name; a bare
+    # name keeps that module and all its children). Architecture recipes (residual-add, eSE, maxpool)
+    # are always-on and class-gated — for VoVNet the eSE recipe is the single-Q-at-input INT8 path.
+    default_precision="int8",
+    keep_fp16=[
+        "pts_voxel_encoder",  # was quant_voxel_encoder=False
+        "pts_backbone.stem",  # was skip_vovnet_stages=[0]  (0=stem)
+        "pts_backbone.stage2",  # was skip_vovnet_stages=[1]  (1=stage2)
+        # "pts_backbone.stage3",   # widen VoVNet FP16 stages if mAP drops
+        # "pts_bbox_head",         # whole head FP16 (often recovers mAP)
+        # "pts_neck.deblocks.*.0",  # ConvTranspose2d - no TRT INT8 support
     ],
-)
-
-# ============================================================================
-# Device settings
-# ============================================================================
-devices = dict(
-    cpu="cpu",
-    cuda="cuda:0",
+    # disable_recipes: empty — VoVNet uses add + eSE + maxpool + backbone Linear (all on).
+    # calib_cache_path="work_dirs/centerpoint-convnext/small/epoch_30_small_ptq_exp3.calib",
 )
 
 # ============================================================================
@@ -75,28 +55,10 @@ _ONNX_DIR = f"{_WORK_DIR}/onnx"
 _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
 
 # ============================================================================
-# Unified Component Configuration
-#
-# ConvNeXt Small uses BackwardPillarFeatureNet with 10 input channels:
-#   base (5) + cluster_center (3) + voxel_center (2) = 10
-# Grid size: [1216, 1216, 1]
+# Per-model TensorRT profile shapes (VoVNet: 11-channel pillars, 1020x1020 BEV grid)
 # ============================================================================
 components = dict(
     pts_voxel_encoder=dict(
-        onnx_file="pts_voxel_encoder.onnx",
-        engine_file="pts_voxel_encoder.engine",
-        io=dict(
-            inputs=[
-                dict(name="input_features", dtype="float32"),
-            ],
-            outputs=[
-                dict(name="pillar_features", dtype="float32"),
-            ],
-            dynamic_axes={
-                "input_features": {0: "num_voxels", 1: "num_max_points"},
-                "pillar_features": {0: "num_voxels"},
-            },
-        ),
         tensorrt_profile=dict(
             input_features=dict(
                 min_shape=[1000, 32, 11],
@@ -106,30 +68,6 @@ components = dict(
         ),
     ),
     pts_backbone_neck_head=dict(
-        onnx_file="pts_backbone_neck_head.onnx",
-        engine_file="pts_backbone_neck_head.engine",
-        io=dict(
-            inputs=[
-                dict(name="spatial_features", dtype="float32"),
-            ],
-            outputs=[
-                dict(name="heatmap", dtype="float32"),
-                dict(name="reg", dtype="float32"),
-                dict(name="height", dtype="float32"),
-                dict(name="dim", dtype="float32"),
-                dict(name="rot", dtype="float32"),
-                dict(name="vel", dtype="float32"),
-            ],
-            dynamic_axes={
-                "spatial_features": {0: "batch_size", 2: "height", 3: "width"},
-                "heatmap": {0: "batch_size", 2: "height", 3: "width"},
-                "reg": {0: "batch_size", 2: "height", 3: "width"},
-                "height": {0: "batch_size", 2: "height", 3: "width"},
-                "dim": {0: "batch_size", 2: "height", 3: "width"},
-                "rot": {0: "batch_size", 2: "height", 3: "width"},
-                "vel": {0: "batch_size", 2: "height", 3: "width"},
-            },
-        ),
         tensorrt_profile=dict(
             spatial_features=dict(
                 min_shape=[1, 32, 1020, 1020],
@@ -140,69 +78,12 @@ components = dict(
     ),
 )
 
-# ============================================================================
-# ONNX Export Settings
-# ============================================================================
-onnx_config = dict(
-    opset_version=22,
-    do_constant_folding=True,
-    export_params=True,
-    keep_initializers_as_inputs=False,
-    simplify=False,
-)
+onnx_config = dict(opset_version=22)
 
-# ============================================================================
-# TensorRT Build Settings
-# ============================================================================
-tensorrt_config = dict(
-    precision_policy="fp16",
-    max_workspace_size=4 << 30,
-)
-
-# ============================================================================
-# Evaluation Configuration
-# ============================================================================
 evaluation = dict(
-    enabled=True,
     num_samples=-1,
-    verbose=True,
     backends=dict(
-        pytorch=dict(
-            enabled=False,
-            device=devices["cuda"],
-        ),
-        onnx=dict(
-            enabled=False,
-            device=devices["cuda"],
-            model_dir=_ONNX_DIR,
-        ),
-        tensorrt=dict(
-            enabled=True,
-            device=devices["cuda"],
-            engine_dir=_TENSORRT_DIR,
-        ),
-    ),
-)
-
-# ============================================================================
-# Verification Configuration
-# ============================================================================
-verification = dict(
-    enabled=False,
-    tolerance=1e-1,
-    num_verify_samples=1,
-    devices=devices,
-    scenarios=dict(
-        both=[
-            dict(ref_backend="pytorch", ref_device="cpu", test_backend="onnx", test_device="cpu"),
-            dict(ref_backend="onnx", ref_device="cuda", test_backend="tensorrt", test_device="cuda"),
-        ],
-        onnx=[
-            dict(ref_backend="pytorch", ref_device="cpu", test_backend="onnx", test_device="cpu"),
-        ],
-        trt=[
-            dict(ref_backend="onnx", ref_device="cuda", test_backend="tensorrt", test_device="cuda"),
-        ],
-        none=[],
+        onnx=dict(model_dir=_ONNX_DIR),
+        tensorrt=dict(engine_dir=_TENSORRT_DIR),
     ),
 )

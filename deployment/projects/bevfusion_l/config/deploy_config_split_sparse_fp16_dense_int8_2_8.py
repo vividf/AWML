@@ -80,11 +80,11 @@ quantization = dict(
     enabled=True,
     ptq_checkpoint=True,
     fuse_bn=True,
-    quant_backbone=True,
-    quant_neck=True,
-    quant_head=True,
-    quant_add=False,
-    sensitive_layers=[],
+    default_precision="int8",
+    keep_fp16=[],
+    # BEVFusion keeps residual-add in FP16 (was quant_add=False). Verify in Docker whether this is
+    # load-bearing (i.e. whether the dense backbone has a block attach_quant_add matches).
+    disable_recipes=["add"],
 )
 
 # Export mode: "onnx", "trt", "both", "none".

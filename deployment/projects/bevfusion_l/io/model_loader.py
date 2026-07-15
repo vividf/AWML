@@ -24,9 +24,11 @@ from mmengine.runner import load_checkpoint
 # MMDet3D registries so ``MODELS.build`` can resolve them during export.
 import projects.BEVFusion.bevfusion  # noqa: F401
 import projects.SparseConvolution  # noqa: F401
+from deployment.config.schema import QuantizationConfig
 from deployment.io.mmdet3d_model import build_mmdet3d_model
 from deployment.primitives.device import DeviceSpec
 from deployment.projects.bevfusion_l.export.spconv_bn_fusion import fuse_spconv_bn_in_encoder
+from deployment.quantization import get_tensor_quantizer_cls, move_quantizer_amax_to_device
 
 logger = logging.getLogger(__name__)
 
@@ -100,42 +102,11 @@ def _log_load_state_dict_result(result) -> None:
             logger.info("[load-state-dict] other %s sample: %s", kind, other[:10])
 
 
-def _import_tensor_quantizer():
-    """Lazily import TensorQuantizer from pytorch_quantization.
-
-    Importing pytorch_quantization pulls in ``absl.logging``, which hijacks the root
-    logger: it installs its own handler (only WARNING+ reaches stderr) and can raise the
-    root level. The net effect is that every log record emitted afterwards — the rest of
-    ONNX/TensorRT export AND the entire evaluation phase — silently disappears from both
-    console and the deployment log file.
-
-    The absl hijack can also be triggered *earlier* on this code path — the transitive
-    ``from deployment.quantization import ...`` in the dense-quant load imports
-    pytorch_quantization before this function is ever called — so we cannot rely on a
-    snapshot taken here. Instead we delegate to ``restore_deployment_logging``, which
-    re-asserts the canonical logging config captured by the CLI at ``setup_logging`` time
-    (a no-op when the CLI did not configure logging, e.g. unit tests).
-    """
-    try:
-        from pytorch_quantization.nn import TensorQuantizer
-
-        return TensorQuantizer
-    except ImportError:
-        return None
-    finally:
-        try:
-            from deployment.cli.args import restore_deployment_logging
-
-            restore_deployment_logging()
-        except Exception:
-            pass
-
-
 def build_bevfusion_model(
     model_cfg: Config,
     checkpoint_path: str,
     device: DeviceSpec,
-    quantization: Optional[dict] = None,
+    quantization: Optional[QuantizationConfig] = None,
     *,
     fuse_spconv_bn: bool = False,
 ) -> torch.nn.Module:
@@ -145,12 +116,8 @@ def build_bevfusion_model(
         model_cfg: MMEngine model configuration.
         checkpoint_path: Path to .pth checkpoint file.
         device: Target device.
-        quantization: Optional quantization config dict with keys:
-            - enabled: bool
-            - fuse_bn: bool (fuse BatchNorm for dense parts)
-            - quant_backbone, quant_neck, quant_head: bool
-            - quant_add: bool (quantize residual add)
-            - sensitive_layers: list of layer name prefixes to skip
+        quantization: Typed ``quantization`` section (parsed once by ``BaseDeploymentConfig``);
+            ``None`` or ``enabled=False`` takes the plain FP path.
         fuse_spconv_bn: If True and ``quantization`` is not enabled, fuse each
             ``SparseConvolution`` + ``BatchNorm1d`` pair in ``pts_middle_encoder`` after load
             (eval-mode Conv-BN fold, a graph optimization for the sparse ONNX export).
@@ -163,7 +130,7 @@ def build_bevfusion_model(
         RuntimeError: If the checkpoint is not a LiDAR-only BEVFusion model (see
             :func:`_require_lidar_only_bevfusion`).
     """
-    if quantization and quantization.get("enabled", False):
+    if quantization is not None and quantization.enabled:
         # Quantized path: build + insert Q/DQ + load PTQ/FP32 ourselves (the shared
         # build_mmdet3d_model cannot express the pre-load quant-tree insertion).
         init_default_scope("mmdet3d")
@@ -176,7 +143,7 @@ def build_bevfusion_model(
         except Exception as e:
             logger.exception("Quantization pipeline failed (full traceback above). Summary: %s", e)
             logger.error(f"Quantization failed: {e}. See message below for whether a safe FP32 fallback is possible.")
-            if quantization.get("ptq_checkpoint"):
+            if quantization.ptq_checkpoint:
                 raise RuntimeError(
                     "PTQ checkpoint load failed; cannot fall back to plain FP32 load_checkpoint. "
                     "Typical cause: the deploy PTQ load order must match "
@@ -212,7 +179,7 @@ def _load_with_quantization(
     model: torch.nn.Module,
     checkpoint_path: str,
     device: torch.device,
-    quantization: dict,
+    config: QuantizationConfig,
 ) -> torch.nn.Module:
     """Load a quantized BEVFusion model via the shared :class:`QuantizationPlan`.
 
@@ -228,10 +195,8 @@ def _load_with_quantization(
     B) FP32 checkpoint: ``load_state_dict`` first, then ``plan.prepare`` inserts uncalibrated Q/DQ
        (dense only; would need runtime calibration).
     """
-    from deployment.config.schema import QuantizationConfig
     from deployment.projects.bevfusion_l.quantization.plan import build_bevfusion_plan
 
-    config = QuantizationConfig.from_dict(quantization)
     is_ptq = config.ptq_checkpoint
 
     if is_ptq:
@@ -239,7 +204,7 @@ def _load_with_quantization(
 
         # Rebuild the quantized module tree BEFORE load_state_dict, using the shared plan
         # (dense Q/DQ + BN fuse, sparse BN fuse). Identical to the PTQ producer.
-        build_bevfusion_plan(config, include_sparse=True).prepare(model)
+        build_bevfusion_plan(config).prepare(model)
 
         checkpoint = torch.load(checkpoint_path, map_location=device)
         state_dict = checkpoint.get("state_dict", checkpoint)
@@ -251,9 +216,9 @@ def _load_with_quantization(
         num_amax = sum(1 for k in state_dict if "_amax" in k)
         logger.info(f"PTQ state_dict contains {num_amax} amax entries, {len(state_dict)} total keys")
 
-        _move_quantizer_amax_to_device(model, device)
+        move_quantizer_amax_to_device(model, device)
 
-        tensor_quantizer_cls = _import_tensor_quantizer()
+        tensor_quantizer_cls = get_tensor_quantizer_cls()
         if tensor_quantizer_cls:
             loaded = 0
             for name, mod in model.named_modules():
@@ -267,28 +232,10 @@ def _load_with_quantization(
         load_checkpoint(model, checkpoint_path, map_location=device)
         model.eval()
         logger.info("Applying dense quantization (uncalibrated) to BEVFusion model...")
-        build_bevfusion_plan(config, include_sparse=False).prepare(model)
+        build_bevfusion_plan(config).prepare(model)
 
     logger.info("Quantization applied successfully")
     return model
-
-
-def _move_quantizer_amax_to_device(model: torch.nn.Module, device: torch.device) -> None:
-    """Move all TensorQuantizer amax values to the target device."""
-    tensor_quantizer_cls = _import_tensor_quantizer()
-    if tensor_quantizer_cls is None:
-        return
-
-    moved_count = 0
-    for _name, module in model.named_modules():
-        if isinstance(module, tensor_quantizer_cls):
-            if hasattr(module, "_amax") and module._amax is not None:
-                if module._amax.device != device:
-                    module._amax = module._amax.to(device)
-                    moved_count += 1
-
-    if moved_count > 0:
-        logger.info(f"Moved {moved_count} quantizer amax tensors to {device}")
 
 
 def _set_tensor_quantizers_inference_mode(model: torch.nn.Module) -> int:
@@ -298,8 +245,13 @@ def _set_tensor_quantizers_inference_mode(model: torch.nn.Module) -> int:
     (fake-quant off, stats on). That yields a different dense branch than the PTQ
     script after ``calibrator.calibrate`` and can drive mAP/near-zero despite a
     valid ``state_dict``.
+
+    BEVFusion-only for now: the CenterPoint loader does not run this toggle (it instead validates
+    amax positivity — ``_validate_quantizer_amax``). TODO(Docker): decide whether both loaders
+    should run both steps and, if so, share this via ``deployment.quantization.core.utils``
+    (spec.md §5.2 4B.3).
     """
-    tensor_quantizer_cls = _import_tensor_quantizer()
+    tensor_quantizer_cls = get_tensor_quantizer_cls()
     if tensor_quantizer_cls is None:
         return 0
     n = 0
@@ -318,13 +270,3 @@ def _set_tensor_quantizers_inference_mode(model: torch.nn.Module) -> int:
     if n:
         logger.info("Set %d TensorQuantizer modules to inference mode (post PTQ load)", n)
     return n
-
-
-def setup_quantization_for_onnx_export() -> None:
-    """Configure pytorch-quantization for ONNX export (Q/DQ nodes)."""
-    tensor_quantizer_cls = _import_tensor_quantizer()
-    if tensor_quantizer_cls is None:
-        return
-
-    tensor_quantizer_cls.use_fb_fake_quant = True
-    logger.info("Enabled use_fb_fake_quant for ONNX export")

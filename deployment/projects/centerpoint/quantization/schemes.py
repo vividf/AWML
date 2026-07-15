@@ -23,13 +23,14 @@ logger = logging.getLogger(__name__)
 class CenterPointDenseScheme(QuantizationScheme):
     """Fuse BN and insert CenterPoint's Q/DQ (Conv/Linear + eSE/MaxPool/residual recipes).
 
+    Declarative surface (see spec.md §3): every standard tower is quantized INT8 except the subtrees
+    named by ``keep_fp16``, and the architecture recipes are always attached (class-gated) unless named
+    in ``disable_recipes``. All placement detail lives in :func:`quant_model`.
+
     Args:
-        quant_backbone / quant_neck / quant_head / quant_voxel_encoder: Quantize each named tower.
-        quant_add: Attach residual-add quantizers (ResNet / Sparse residual blocks).
-        quant_linear_backbone: Quantize Linear layers inside ``pts_backbone`` (ConvNeXt).
-        quant_ese_mul_identity / quant_ese_pool_input / quant_maxpool_input: VoVNet eSE / MaxPool
-            Q/DQ placement.
-        sensitive_layers: Fully-resolved dotted module names left in FP (skipped by ``quant_model``).
+        keep_fp16: Glob patterns (subtree match) left in FP16; expanded against the model at
+            ``prepare`` time by :func:`deployment.quantization.expand_keep_fp16`.
+        disable_recipes: Recipe names to skip ("add" / "ese" / "maxpool").
         fuse_bn: Fuse Conv+BN before quantizing (default True).
     """
 
@@ -38,32 +39,16 @@ class CenterPointDenseScheme(QuantizationScheme):
     def __init__(
         self,
         *,
-        quant_backbone: bool = True,
-        quant_neck: bool = True,
-        quant_head: bool = True,
-        quant_voxel_encoder: bool = True,
-        quant_add: bool = False,
-        quant_linear_backbone: bool = False,
-        quant_ese_mul_identity: bool = False,
-        quant_ese_pool_input: bool = False,
-        quant_maxpool_input: bool = False,
-        sensitive_layers: Iterable[str] = (),
+        keep_fp16: Iterable[str] = (),
+        disable_recipes: Iterable[str] = (),
         fuse_bn: bool = True,
     ) -> None:
-        self.quant_backbone = bool(quant_backbone)
-        self.quant_neck = bool(quant_neck)
-        self.quant_head = bool(quant_head)
-        self.quant_voxel_encoder = bool(quant_voxel_encoder)
-        self.quant_add = bool(quant_add)
-        self.quant_linear_backbone = bool(quant_linear_backbone)
-        self.quant_ese_mul_identity = bool(quant_ese_mul_identity)
-        self.quant_ese_pool_input = bool(quant_ese_pool_input)
-        self.quant_maxpool_input = bool(quant_maxpool_input)
-        self.sensitive_layers: List[str] = list(sensitive_layers or ())
+        self.keep_fp16: List[str] = list(keep_fp16 or ())
+        self.disable_recipes = tuple(disable_recipes)
         self.fuse_bn = bool(fuse_bn)
 
     def prepare(self, model: Any) -> Any:
-        from deployment.quantization import fuse_model_bn
+        from deployment.quantization import expand_keep_fp16, fuse_model_bn
 
         from .quant_model import quant_model
 
@@ -72,18 +57,7 @@ class CenterPointDenseScheme(QuantizationScheme):
             fuse_model_bn(model)
             logger.info("  [centerpoint_dense] fused Conv-BN")
 
-        quant_model(
-            model,
-            quant_backbone=self.quant_backbone,
-            quant_neck=self.quant_neck,
-            quant_head=self.quant_head,
-            quant_voxel_encoder=self.quant_voxel_encoder,
-            quant_add=self.quant_add,
-            quant_linear_backbone=self.quant_linear_backbone,
-            quant_ese_mul_identity=self.quant_ese_mul_identity,
-            quant_ese_pool_input=self.quant_ese_pool_input,
-            quant_maxpool_input=self.quant_maxpool_input,
-            skip_names=set(self.sensitive_layers),
-        )
+        skip_names = expand_keep_fp16(model, self.keep_fp16)
+        quant_model(model, skip_names=skip_names, disable_recipes=self.disable_recipes)
         logger.info("  [centerpoint_dense] inserted Q/DQ nodes")
         return model

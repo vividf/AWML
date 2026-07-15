@@ -5,14 +5,14 @@ Usage:
     python -m deployment.cli.main centerpoint \
         deployment/projects/centerpoint/config/deploy_config_int8_convnext_small.py \
         projects/CenterPoint/configs/t4dataset/CenterPoint-ConvNeXtPC/pillar_020_convnext_small_secfpn_4xb8_121m_base_t4metric_v2.py
+
+Shared skeleton (components IO, verification, TensorRT build, evaluation defaults) comes from
+``_deploy_config_int8_base.py``; this file holds only what differs for this model.
 """
 
-# ============================================================================
-# Checkpoint Path - Use PTQ quantized checkpoint
-# ============================================================================
-checkpoint_path = "work_dirs/centerpoint-convnext/epoch_5_downsample_conv_first_ptq.pth"
+_base_ = ["./_deploy_config_int8_base.py"]
 
-deploy_log_path = "deployment.log"
+checkpoint_path = "work_dirs/centerpoint-convnext/epoch_5_downsample_conv_first_ptq.pth"
 
 # ============================================================================
 # Quantization Configuration
@@ -21,29 +21,13 @@ quantization = dict(
     enabled=True,
     mode="ptq",
     fuse_bn=True,
-    quant_voxel_encoder=False,
-    quant_backbone=True,
-    quant_neck=True,
-    quant_head=True,
-    quant_add=True,
-    quant_linear_backbone=True,
-    # Optional: load calibration cache to populate amax for newly added quantizers
-    # calib_cache_path="work_dirs/centerpoint-convnext/small/epoch_30_small_ptq_exp3.calib",
-    skip_backbone_first_stages=0,
-    skip_backbone_stages=[],
-    sensitive_layers=[
-        # "pts_neck.deblocks.0.0",  # ConvTranspose2d - no TRT INT8 support
-        # "pts_neck.deblocks.1.0",  # ConvTranspose2d - no TRT INT8 support
-        # "pts_neck.deblocks.2.0",  # ConvTranspose2d - no TRT INT8 support
+    default_precision="int8",
+    keep_fp16=[
+        "pts_voxel_encoder",  # was quant_voxel_encoder=False
+        # "pts_neck.deblocks.*.0",  # ConvTranspose2d - no TRT INT8 support
     ],
-)
-
-# ============================================================================
-# Device settings
-# ============================================================================
-devices = dict(
-    cpu="cpu",
-    cuda="cuda:0",
+    # disable_recipes: empty — ConvNeXt uses residual-add + backbone Linear (both on).
+    # calib_cache_path="work_dirs/centerpoint-convnext/small/epoch_30_small_ptq_exp3.calib",
 )
 
 # ============================================================================
@@ -62,7 +46,7 @@ _ONNX_DIR = f"{_WORK_DIR}/onnx"
 _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
 
 # ============================================================================
-# Unified Component Configuration
+# Per-model TensorRT profile shapes
 #
 # ConvNeXt Small uses BackwardPillarFeatureNet with 10 input channels:
 #   base (5) + cluster_center (3) + voxel_center (2) = 10
@@ -70,20 +54,6 @@ _TENSORRT_DIR = f"{_WORK_DIR}/tensorrt"
 # ============================================================================
 components = dict(
     pts_voxel_encoder=dict(
-        onnx_file="pts_voxel_encoder.onnx",
-        engine_file="pts_voxel_encoder.engine",
-        io=dict(
-            inputs=[
-                dict(name="input_features", dtype="float32"),
-            ],
-            outputs=[
-                dict(name="pillar_features", dtype="float32"),
-            ],
-            dynamic_axes={
-                "input_features": {0: "num_voxels", 1: "num_max_points"},
-                "pillar_features": {0: "num_voxels"},
-            },
-        ),
         tensorrt_profile=dict(
             input_features=dict(
                 min_shape=[1000, 32, 10],
@@ -93,30 +63,6 @@ components = dict(
         ),
     ),
     pts_backbone_neck_head=dict(
-        onnx_file="pts_backbone_neck_head.onnx",
-        engine_file="pts_backbone_neck_head.engine",
-        io=dict(
-            inputs=[
-                dict(name="spatial_features", dtype="float32"),
-            ],
-            outputs=[
-                dict(name="heatmap", dtype="float32"),
-                dict(name="reg", dtype="float32"),
-                dict(name="height", dtype="float32"),
-                dict(name="dim", dtype="float32"),
-                dict(name="rot", dtype="float32"),
-                dict(name="vel", dtype="float32"),
-            ],
-            dynamic_axes={
-                "spatial_features": {0: "batch_size", 2: "height", 3: "width"},
-                "heatmap": {0: "batch_size", 2: "height", 3: "width"},
-                "reg": {0: "batch_size", 2: "height", 3: "width"},
-                "height": {0: "batch_size", 2: "height", 3: "width"},
-                "dim": {0: "batch_size", 2: "height", 3: "width"},
-                "rot": {0: "batch_size", 2: "height", 3: "width"},
-                "vel": {0: "batch_size", 2: "height", 3: "width"},
-            },
-        ),
         tensorrt_profile=dict(
             spatial_features=dict(
                 min_shape=[1, 32, 1216, 1216],
@@ -127,69 +73,13 @@ components = dict(
     ),
 )
 
-# ============================================================================
-# ONNX Export Settings
-# ============================================================================
-onnx_config = dict(
-    opset_version=20,
-    do_constant_folding=True,
-    export_params=True,
-    keep_initializers_as_inputs=False,
-    simplify=False,
-)
+onnx_config = dict(opset_version=20)
 
-# ============================================================================
-# TensorRT Build Settings
-# ============================================================================
-tensorrt_config = dict(
-    precision_policy="fp16",
-    max_workspace_size=4 << 30,
-)
-
-# ============================================================================
-# Evaluation Configuration
-# ============================================================================
 evaluation = dict(
-    enabled=True,
     num_samples=100,
-    verbose=True,
     backends=dict(
-        pytorch=dict(
-            enabled=True,
-            device=devices["cuda"],
-        ),
-        onnx=dict(
-            enabled=True,
-            device=devices["cuda"],
-            model_dir=_ONNX_DIR,
-        ),
-        tensorrt=dict(
-            enabled=True,
-            device=devices["cuda"],
-            engine_dir=_TENSORRT_DIR,
-        ),
-    ),
-)
-
-# ============================================================================
-# Verification Configuration
-# ============================================================================
-verification = dict(
-    enabled=False,
-    tolerance=1e-1,
-    num_verify_samples=1,
-    devices=devices,
-    scenarios=dict(
-        both=[
-            dict(ref_backend="pytorch", ref_device="cpu", test_backend="onnx", test_device="cpu"),
-            dict(ref_backend="onnx", ref_device="cuda", test_backend="tensorrt", test_device="cuda"),
-        ],
-        onnx=[
-            dict(ref_backend="pytorch", ref_device="cpu", test_backend="onnx", test_device="cpu"),
-        ],
-        trt=[
-            dict(ref_backend="onnx", ref_device="cuda", test_backend="tensorrt", test_device="cuda"),
-        ],
-        none=[],
+        pytorch=dict(enabled=True),
+        onnx=dict(enabled=True, model_dir=_ONNX_DIR),
+        tensorrt=dict(engine_dir=_TENSORRT_DIR),
     ),
 )

@@ -27,16 +27,8 @@ def build_centerpoint_plan(config: QuantizationConfig) -> QuantizationPlan:
     plan = QuantizationPlan()
     plan.add(
         CenterPointDenseScheme(
-            quant_backbone=config.quant_backbone,
-            quant_neck=config.quant_neck,
-            quant_head=config.quant_head,
-            quant_voxel_encoder=config.quant_voxel_encoder,
-            quant_add=config.quant_add,
-            quant_linear_backbone=config.quant_linear_backbone,
-            quant_ese_mul_identity=config.quant_ese_mul_identity,
-            quant_ese_pool_input=config.quant_ese_pool_input,
-            quant_maxpool_input=config.quant_maxpool_input,
-            sensitive_layers=config.resolved_sensitive_layers(),
+            keep_fp16=config.keep_fp16,
+            disable_recipes=config.disable_recipes,
             fuse_bn=config.fuse_bn,
         )
     )

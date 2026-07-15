@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from deployment.config.enums import (
     DEFAULT_WORKSPACE_SIZE,
@@ -178,48 +178,48 @@ class TensorRTConfig:
 class QuantizationConfig:
     """Typed view of the deploy-config ``quantization`` section.
 
-    Mirrors the (previously untyped) ``quantization`` dict consumed by the CenterPoint
-    and BEVFusion model loaders. Defaults are chosen so an absent section yields a
-    fully-disabled config (``enabled=False``) — existing non-quantized deploy configs
-    are unaffected.
+    The single parse of the ``quantization`` dict: ``BaseDeploymentConfig`` builds this once and the
+    runners pass it straight to the model loaders — nothing downstream re-parses the raw dict.
+    Defaults are chosen so an absent section yields a fully-disabled config (``enabled=False``) —
+    existing non-quantized deploy configs are unaffected.
 
-    ``raw`` preserves the original deploy-config dict verbatim; the per-project model
-    loaders (e.g. ``_load_quantized_checkpoint``) read it directly, so the proven
-    loader bodies port unchanged. The typed fields exist for introspection/validation.
-
-    Field defaults match the ``.get(..., default)`` calls in those loaders:
-    ``quant_{backbone,neck,head,voxel_encoder}`` default True; everything else
-    (add/linear/eSE/maxpool) defaults False. ``skip_vovnet_stages`` defaults
-    to ``None`` (not VoVNet) and must be distinguished from an empty tuple.
+    Precision placement is declarative (modelopt-style): everything the plan reaches is
+    ``default_precision`` (INT8), and ``keep_fp16`` lists glob patterns (subtree match) to leave in
+    FP16 — the modern replacement for the old ~13 ``quant_*`` / ``skip_*`` / ``sensitive_layers``
+    booleans. Architecture recipes are always-on and class-gated; ``disable_recipes`` opts a config
+    out of one. See spec.md §3.
     """
 
     enabled: bool = False
     mode: str = "ptq"  # "ptq" | "qat"
     fuse_bn: bool = True
     ptq_checkpoint: bool = False
-    # Dense-part toggles
-    quant_backbone: bool = True
-    quant_neck: bool = True
-    quant_head: bool = True
-    quant_voxel_encoder: bool = True
-    quant_add: bool = False
-    quant_linear_backbone: bool = False
-    # VoVNet/eSE/maxpool knobs (CenterPoint)
-    quant_ese_mul_identity: bool = False
-    quant_ese_pool_input: bool = False
-    quant_maxpool_input: bool = False
-    # Backbone-stage skips
-    skip_backbone_first_stages: int = 0
-    skip_backbone_stages: Tuple[int, ...] = ()
-    skip_vovnet_stages: Optional[Tuple[int, ...]] = None
-    sensitive_layers: Tuple[str, ...] = ()
+    # Precision placement: INT8 by default, opt out by glob (subtree match). ``keep_fp16`` absorbs the
+    # old quant_backbone/neck/head/voxel_encoder toggles, skip_backbone_*/skip_vovnet_stages, and
+    # sensitive_layers. A pattern keeps the matched module and all its descendants in FP16.
+    default_precision: str = "int8"
+    keep_fp16: Tuple[str, ...] = ()
+    # Architecture recipes (residual-add / eSE / maxpool) are attached always, gated by module class.
+    # List a recipe name here to opt this config out. Recognized: "add", "ese", "maxpool".
+    disable_recipes: Tuple[str, ...] = ()
     calib_cache_path: Optional[str] = None
-    # Verbatim deploy-config dict for per-project loaders.
-    raw: Mapping[str, Any] = field(default_factory=_empty_mapping)
 
-    @staticmethod
-    def _int_tuple(value: Any) -> Tuple[int, ...]:
-        return tuple(int(v) for v in value) if value else ()
+    # The full key set of the ``quantization`` deploy-config section. ``from_dict`` rejects anything
+    # else: a misspelled key (``keep_fp16s=...``) would otherwise silently degrade to "quantize
+    # everything INT8" and be visible only as a Docker-eval mAP drop. Config-key sibling of the
+    # zero-match warning in ``expand_keep_fp16`` (spec.md §3.4).
+    KNOWN_KEYS = frozenset(
+        {
+            "enabled",
+            "mode",
+            "fuse_bn",
+            "ptq_checkpoint",
+            "default_precision",
+            "keep_fp16",
+            "disable_recipes",
+            "calib_cache_path",
+        }
+    )
 
     @staticmethod
     def _str_tuple(value: Any) -> Tuple[str, ...]:
@@ -227,65 +227,32 @@ class QuantizationConfig:
 
     @classmethod
     def from_dict(cls, raw: Optional[Mapping[str, Any]]) -> QuantizationConfig:
-        """Build QuantizationConfig from deploy_cfg['quantization']; empty/None → disabled."""
+        """Build QuantizationConfig from deploy_cfg['quantization']; empty/None → disabled.
+
+        Raises:
+            ValueError: If the dict contains keys outside :attr:`KNOWN_KEYS` (typo guard).
+        """
         if not raw:
             return cls()
         if not isinstance(raw, Mapping):
             raise TypeError(f"quantization must be a dict, got {type(raw).__name__}")
-        vov = raw.get("skip_vovnet_stages", None)
+        unknown = set(raw) - cls.KNOWN_KEYS
+        if unknown:
+            raise ValueError(
+                f"Unknown quantization key(s): {sorted(unknown)}. "
+                f"Valid keys: {sorted(cls.KNOWN_KEYS)}. "
+                "A misspelled key would silently change what gets quantized."
+            )
         return cls(
             enabled=bool(raw.get("enabled", False)),
             mode=str(raw.get("mode", "ptq")),
             fuse_bn=bool(raw.get("fuse_bn", True)),
             ptq_checkpoint=bool(raw.get("ptq_checkpoint", False)),
-            quant_backbone=bool(raw.get("quant_backbone", True)),
-            quant_neck=bool(raw.get("quant_neck", True)),
-            quant_head=bool(raw.get("quant_head", True)),
-            quant_voxel_encoder=bool(raw.get("quant_voxel_encoder", True)),
-            quant_add=bool(raw.get("quant_add", False)),
-            quant_linear_backbone=bool(raw.get("quant_linear_backbone", False)),
-            quant_ese_mul_identity=bool(raw.get("quant_ese_mul_identity", False)),
-            quant_ese_pool_input=bool(raw.get("quant_ese_pool_input", False)),
-            quant_maxpool_input=bool(raw.get("quant_maxpool_input", False)),
-            skip_backbone_first_stages=int(raw.get("skip_backbone_first_stages", 0) or 0),
-            skip_backbone_stages=cls._int_tuple(raw.get("skip_backbone_stages")),
-            skip_vovnet_stages=(None if vov is None else cls._int_tuple(vov)),
-            sensitive_layers=cls._str_tuple(raw.get("sensitive_layers")),
+            default_precision=str(raw.get("default_precision", "int8")),
+            keep_fp16=cls._str_tuple(raw.get("keep_fp16")),
+            disable_recipes=cls._str_tuple(raw.get("disable_recipes")),
             calib_cache_path=raw.get("calib_cache_path"),
-            raw=MappingProxyType(dict(raw)),
         )
-
-    # -- Behavior shared by every stage (PTQ producer, deploy loader, QAT hook) ---------------
-
-    _VOVNET_STAGE_NAMES = ("stem", "stage2", "stage3", "stage4")
-
-    def resolved_sensitive_layers(self) -> Set[str]:
-        """Expand the convenience skip-flags into concrete dotted module names.
-
-        Combines ``sensitive_layers`` with the SECOND/ResNet backbone-stage skips
-        (``skip_backbone_first_stages`` + ``skip_backbone_stages`` -> ``pts_backbone.blocks.N``)
-        and the VoVNet stage skips (``skip_vovnet_stages`` -> ``pts_backbone.<stem|stageN>``). The
-        insert side and the load side both call this, so the FP-retained set is identical.
-        """
-        skip: Set[str] = set(self.sensitive_layers)
-
-        stage_ids: Set[int] = set()
-        if self.skip_backbone_first_stages > 0:
-            stage_ids.update(range(self.skip_backbone_first_stages))
-        stage_ids.update(self.skip_backbone_stages)
-        for stage_id in stage_ids:
-            skip.add(f"pts_backbone.blocks.{stage_id}")
-
-        if self.skip_vovnet_stages is not None:
-            for idx in self.skip_vovnet_stages:
-                if 0 <= idx < len(self._VOVNET_STAGE_NAMES):
-                    skip.add(f"pts_backbone.{self._VOVNET_STAGE_NAMES[idx]}")
-
-        return skip
-
-    def dense_quant_enabled(self) -> bool:
-        """Whether any dense Conv/residual tower is quantized (vs sparse-only / fuse-only)."""
-        return bool(self.quant_backbone or self.quant_neck or self.quant_head or self.quant_add)
 
     def with_overrides(self, **overrides: Any) -> QuantizationConfig:
         """Return a copy with the given fields replaced (e.g. a CLI flag overriding a deploy-cfg value)."""

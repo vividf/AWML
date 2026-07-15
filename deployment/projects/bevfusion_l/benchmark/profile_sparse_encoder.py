@@ -1,6 +1,6 @@
 """Priority A — Sparse encoder TensorRT 專項 profile 工具。
 
-對應 ``docs/15_README_AWML_SPCONV_INT8_ACCEL_PLAN.md``:
+Sparse-encoder (FP16 ImplicitGemm) TensorRT 時間分解 profiling:
 
   * **A1** — 分離 ``implicit_gemm`` / pair-gen / sort / elementwise / scatter
     的實際時間佔比，而不是只看總 latency。

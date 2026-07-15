@@ -18,10 +18,8 @@ from deployment.projects.bevfusion_l.config.bevfusion_deployment_config import B
 from deployment.projects.bevfusion_l.export.component_builder import BEVFusionComponentBuilder
 from deployment.projects.bevfusion_l.export.sample_extractor import BEVFusionSampleExtractor
 from deployment.projects.bevfusion_l.export.transforms import bevfusion_merge_finalize
-from deployment.projects.bevfusion_l.io.model_loader import (
-    build_bevfusion_model,
-    setup_quantization_for_onnx_export,
-)
+from deployment.projects.bevfusion_l.io.model_loader import build_bevfusion_model
+from deployment.quantization import setup_quantization_for_onnx_export
 from deployment.runtime.runner import BaseDeploymentRunner
 from projects.SparseConvolution.sparse_functional import set_do_sort
 
@@ -98,8 +96,10 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
             self.config.spconv_do_sort,
         )
 
-        quantization = self._resolve_quantization()
-        if quantization and quantization.get("enabled", False):
+        # The typed QuantizationConfig parsed once by BaseDeploymentConfig; disabled (section
+        # absent) yields a plain FP load in the loader.
+        quantization = self.config.quantization_config
+        if quantization.enabled:
             logger.info("=" * 60)
             logger.info("BEVFusion INT8 Quantization Enabled")
             logger.info("  Dense (backbone/neck/head): pytorch_quantization")
@@ -114,19 +114,10 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
             fuse_spconv_bn=self.config.fuse_spconv_bn,
         )
 
-        if quantization and quantization.get("enabled", False):
+        if quantization.enabled:
             # Enable ``TensorQuantizer.use_fb_fake_quant`` so ONNX export emits QuantizeLinear/
             # DequantizeLinear nodes (not the primitive Mul/Round/Clip/Div lowering). Global flag,
             # so setting it here — before the base runner drives ONNX export of this model — is enough.
             setup_quantization_for_onnx_export()
 
         return model
-
-    def _resolve_quantization(self) -> Optional[dict]:
-        """Return the effective quantization dict, or None when quantization is not configured.
-
-        ``quantization_config.raw`` is the verbatim deploy ``quantization`` dict. Copied so mutation
-        never touches the config; empty (section absent) yields None.
-        """
-        raw = self.config.quantization_config.raw
-        return dict(raw) if raw else None

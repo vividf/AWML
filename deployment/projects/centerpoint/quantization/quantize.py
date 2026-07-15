@@ -73,7 +73,7 @@ def parse_args():
         help=(
             "Required deployment config path (e.g. deployment/projects/centerpoint/config/deploy_config_int8.py). "
             "PTQ uses its `quantization` settings as the single source of truth "
-            "(sensitive_layers, quant_* flags, skip_backbone_* and fuse_bn)."
+            "(default_precision, keep_fp16, disable_recipes and fuse_bn)."
         ),
     )
     ptq_parser.add_argument(
@@ -168,31 +168,21 @@ def parse_args():
     return parser.parse_args()
 
 
-def initialize_quantization():
-    """Initialize pytorch-quantization library and suppress verbose logging."""
-    try:
-        from absl import logging as quant_logging
-
-        quant_logging.set_verbosity(quant_logging.ERROR)
-    except ImportError:
-        pass
-
-
 def run_ptq(args):
     """Run PTQ quantization pipeline."""
     import math
 
-    import torch
     from mmdet3d.apis import init_model
     from mmengine.config import Config
-    from mmengine.runner import Runner
 
     from deployment.config.schema import load_quantization_config
     from deployment.quantization import (
         CalibrationManager,
-        disable_quantization,
+        disable_quantizers_in,
+        expand_keep_fp16,
         print_quantizer_status,
     )
+    from deployment.quantization.producer import build_calib_dataloader, save_ptq_checkpoint
 
     from .plan import build_centerpoint_plan
 
@@ -222,10 +212,9 @@ def run_ptq(args):
 
     # Single source of truth: parse the deploy ``quantization`` block once.
     config, _ = load_quantization_config(args.deploy_cfg)
-    skip_layers = config.resolved_sensitive_layers()
-    if config.quant_add:
-        print("Note: Residual quantization enabled for residual connections (ResNet-style backbones)")
-        print("      Using residual_quantizer (only quantizes identity branch, not conv path)")
+    if "add" not in config.disable_recipes:
+        print("Note: Residual-add quantization enabled (only the identity branch is quantized, to")
+        print("      enable TensorRT Conv+Add fusion; class-gated). Disable via disable_recipes=['add'].")
 
     # Load model
     print("\n[1/5] Loading model...")
@@ -233,46 +222,28 @@ def run_ptq(args):
     model = init_model(cfg, args.checkpoint, device=args.device)
     model.eval()
 
+    # Resolve keep_fp16 → concrete module names for the disable loop below (needs the model; same
+    # expansion the plan uses internally, log=False to avoid duplicate per-pattern match logging).
+    skip_layers = expand_keep_fp16(model, config.keep_fp16, log=False)
+
     # Fuse BN + insert Q/DQ via the SHARED CenterPoint plan. The deploy loader builds the same plan,
     # so the PTQ state_dict and the deployed module tree line up by construction.
     print("\n[2-3/5] Fusing BatchNorm + inserting Q/DQ via shared CenterPoint plan...")
     build_centerpoint_plan(config).prepare(model)
 
-    if config.quant_add:
-        print("  - Residual quantizer attached to residual blocks (BasicBlock/SparseBasicBlock)")
-        print("    Only identity branch is quantized to enable TensorRT Conv+Add fusion")
-    if config.quant_ese_mul_identity:
-        print("  - eSE Mul: both inputs quantized (identity + gate) for INT8 → Q-DQ on both sides before Mul")
-    if config.quant_ese_pool_input:
-        print("  - eSE Pool: Q/DQ before avg_pool for INT8 (input -> QDQ -> avg_pool -> fc -> Hsigmoid)")
-    if config.quant_maxpool_input:
-        print("  - MaxPool: Q/DQ before MaxPool2d for INT8 (e.g. VoVNet _OSA_stage)")
+    print(
+        "  - Architecture recipes (residual-add / eSE / maxpool): always-on & class-gated; "
+        f"disabled: {sorted(config.disable_recipes) or 'none'}"
+    )
 
-    # Build dataloader
+    # Build dataloader (shared PTQ-producer helper: batch_size override + seed + shuffle)
     print("\n[4/5] Building calibration dataloader...")
-    # Override batch_size for PTQ calibration (best-effort)
-    if isinstance(cfg.val_dataloader, dict):
-        cfg.val_dataloader["batch_size"] = args.batch_size
-
-        # Handle shuffle + seed for calibration
-        if args.calib_seed is not None:
-            import random
-
-            import numpy as np
-
-            random.seed(args.calib_seed)
-            np.random.seed(args.calib_seed)
-            torch.manual_seed(args.calib_seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(args.calib_seed)
-
-        if args.calib_shuffle:
-            # Remove existing sampler to allow shuffle (they are mutually exclusive)
-            if "sampler" in cfg.val_dataloader:
-                del cfg.val_dataloader["sampler"]
-            cfg.val_dataloader["shuffle"] = True
-
-    dataloader = Runner.build_dataloader(cfg.val_dataloader)
+    dataloader = build_calib_dataloader(
+        cfg,
+        batch_size=args.batch_size,
+        seed=args.calib_seed,
+        shuffle=args.calib_shuffle,
+    )
 
     # Print dataset size (best-effort)
     try:
@@ -293,48 +264,17 @@ def run_ptq(args):
         method="mse",  # fixed to mse to match CUDA-CenterPoint behavior
     )
 
-    # Disable skipped layers
-    for layer_name in skip_layers:
-        try:
-            layer = dict(model.named_modules())[layer_name]
-            disable_quantization(layer).apply()
-            print(f"  Disabled quantization for: {layer_name}")
-        except KeyError:
-            print(f"  Warning: Layer not found: {layer_name}")
+    # Disable quantizers in the keep_fp16 subtrees (shared loop — same as QAT hook and deploy loader).
+    disabled = disable_quantizers_in(model, skip_layers)
+    if disabled:
+        print(f"  Disabled quantization in {disabled} keep_fp16 module(s)")
 
-    # Print status
+    # Print status (covers every quantizer, including the recipe-attached residual/eSE ones)
     print("\nQuantizer Status:")
     print_quantizer_status(model)
 
-    # Debug: Check residual_quantizer status
-    if config.quant_add:
-        print("\nResidual Quantizer Status:")
-        residual_count = 0
-        for name, module in model.named_modules():
-            if hasattr(module, "residual_quantizer"):
-                residual_count += 1
-                rq = module.residual_quantizer
-                has_calibrator = hasattr(rq, "_calibrator") and rq._calibrator is not None
-                has_amax = hasattr(rq, "_amax") and rq._amax is not None
-                is_disabled = getattr(rq, "_disabled", False)
-                print(f"  {name}.residual_quantizer:")
-                print(f"    - Has calibrator: {has_calibrator}")
-                print(f"    - Has amax: {has_amax}")
-                print(f"    - Disabled: {is_disabled}")
-                if has_amax:
-                    print(
-                        f"    - Amax value: {rq._amax.item() if rq._amax.numel() == 1 else f'[{rq._amax.numel()} elements]'}"
-                    )
-        print(f"  Total residual quantizers: {residual_count}")
-
-    # Save model
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": model.state_dict()}, output_path)
-
-    # Save calibration cache
-    calib_path = output_path.with_suffix(".calib")
-    calibrator.save_calib_cache(str(calib_path))
+    # Save checkpoint + calibration cache (shared PTQ-producer helper)
+    output_path, calib_path = save_ptq_checkpoint(model, args.output, calibrator)
 
     print("\n" + "=" * 80)
     print("PTQ Complete!")
@@ -426,22 +366,12 @@ def run_qat(args):
     if not hasattr(cfg, "custom_hooks"):
         cfg.custom_hooks = []
 
-    # Sensitive layers + quant toggles: the deploy config is the single source of truth.
+    # Quantization placement: the deploy config is the single source of truth. The QATHook builds the
+    # SAME plan (via build_centerpoint_plan) the PTQ producer and deploy loader use, so keep_fp16 /
+    # disable_recipes flow straight through.
     from deployment.config.schema import load_quantization_config
 
     config, _ = load_quantization_config(args.deploy_cfg)
-    sensitive_layers = config.resolved_sensitive_layers()
-
-    # If deploy config disables whole components, treat their roots as sensitive too (belt and
-    # suspenders: the quant_* flags already skip them).
-    if not config.quant_voxel_encoder:
-        sensitive_layers.add("pts_voxel_encoder")
-    if not config.quant_backbone:
-        sensitive_layers.add("pts_backbone")
-    if not config.quant_neck:
-        sensitive_layers.add("pts_neck")
-    if not config.quant_head:
-        sensitive_layers.add("pts_bbox_head")
 
     cfg.custom_hooks.append(
         dict(
@@ -449,13 +379,8 @@ def run_qat(args):
             calibration_batches=calibration_batches,
             calibration_epoch=0,
             freeze_bn=True,
-            sensitive_layers=sorted(sensitive_layers),
-            quant_add=config.quant_add,
-            quant_linear_backbone=config.quant_linear_backbone,
-            quant_backbone=config.quant_backbone,
-            quant_neck=config.quant_neck,
-            quant_head=config.quant_head,
-            quant_voxel_encoder=config.quant_voxel_encoder,
+            keep_fp16=list(config.keep_fp16),
+            disable_recipes=list(config.disable_recipes),
             calib_cache_path=args.ptq_calib_cache,
         )
     )
@@ -504,10 +429,12 @@ def run_qat(args):
 
 def main():
     """Main entry point."""
+    from deployment.quantization.producer import init_quant_logging
+
     args = parse_args()
 
     # Initialize quantization library
-    initialize_quantization()
+    init_quant_logging()
 
     # Run the appropriate command
     if args.command == "ptq":

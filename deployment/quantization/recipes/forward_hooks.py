@@ -253,17 +253,19 @@ class OSAModuleForwardHook:
 
 class eSEModuleForwardHook:
     """
-    Forward hook for eSEModule (VoVNet): single Q at eSE input, fan-out to both paths.
+    Forward hook for eSEModule (VoVNet): single Q at the eSE input, fanned out to both paths.
 
-    TRT expects only ONE QuantizeLinear at eSE input (one FP32→INT8), then the same
-    Q output (after DQ) feeds both the GAP path and the bypass path to Mul.
-    So: conv_out FP32 → Reformat → Qx (single) → DQ → { GAP path; bypass path } → Mul.
+    TRT expects only ONE QuantizeLinear at the eSE input (one FP32→INT8). The same Q output then feeds
+    BOTH the global-average-pool (gate) path and the bypass path into the Mul, so ``qx * gate`` has both
+    operands in INT8 with a single reformat:
 
-    - When pool_input_quantizer is present: it is the single Qx. identity = qx (same as
-      pool path input); gate = GAP(qx)→fc→hsigmoid→mul_gate_quantizer. Do NOT use
-      mul_identity_quantizer (that would be a second Q on conv_out → second reformat).
-    - When pool_input_quantizer is absent but mul_identity_quantizer is present:
-      legacy two-Q path (identity = mul_identity_quantizer(x), gate = mul_gate_quantizer(...)).
+        conv_out FP32 → Reformat → qx (single Q) → { avg_pool→fc→hsigmoid→mul_gate_q ; bypass } → Mul
+
+    ``pool_input_quantizer`` is that single Q, attached by :func:`attach_ese_quantizers`; the
+    bypass reuses its output (``qx``), so there is no second quantizer on the conv output. This is the
+    canonical, reformat-minimizing INT8 eSE placement. (The legacy two-Q ``mul_identity`` variant — a
+    second reformat, pool branch left un-quantized — has been removed.) A module without
+    ``pool_input_quantizer`` (eSE INT8 recipe not applied) falls back to the plain FP path.
     """
 
     def __init__(self, obj):
@@ -271,22 +273,13 @@ class eSEModuleForwardHook:
 
     def __call__(self, x):
         self = self.obj
-        # Single Q at input: pool_input_quantizer is Qx; bypass uses its output (no second Q)
-        if hasattr(self, "pool_input_quantizer") and self.pool_input_quantizer is not None:
-            qx = self.pool_input_quantizer(x)
-            gate = self.avg_pool(qx)
-            gate = self.fc(gate)
-            gate = self.hsigmoid(gate)
-            if hasattr(self, "mul_gate_quantizer") and self.mul_gate_quantizer is not None:
-                gate = self.mul_gate_quantizer(gate)
-            return qx * gate
-        # No pool_input_quantizer: identity and gate each get their own Q (legacy)
-        identity = x
-        x = self.avg_pool(x)
-        x = self.fc(x)
-        x = self.hsigmoid(x)
-        if hasattr(self, "mul_identity_quantizer") and self.mul_identity_quantizer is not None:
-            identity = self.mul_identity_quantizer(identity)
-        if hasattr(self, "mul_gate_quantizer") and self.mul_gate_quantizer is not None:
-            x = self.mul_gate_quantizer(x)
-        return identity * x
+        pool_input_quantizer = getattr(self, "pool_input_quantizer", None)
+        if pool_input_quantizer is None:
+            # eSE INT8 recipe not applied here → plain FP path (no quantizers).
+            return x * self.hsigmoid(self.fc(self.avg_pool(x)))
+        qx = pool_input_quantizer(x)
+        gate = self.hsigmoid(self.fc(self.avg_pool(qx)))
+        mul_gate_quantizer = getattr(self, "mul_gate_quantizer", None)
+        if mul_gate_quantizer is not None:
+            gate = mul_gate_quantizer(gate)
+        return qx * gate

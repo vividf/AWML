@@ -11,12 +11,13 @@ from __future__ import annotations
 import copy
 import logging
 import os
-from typing import Optional, Set
+from typing import Optional
 
 import torch
 from mmengine.config import Config
 from mmengine.registry import MODELS, init_default_scope
 
+from deployment.config.schema import QuantizationConfig
 from deployment.io.mmdet3d_model import build_mmdet3d_model
 from deployment.primitives.device import DeviceSpec
 
@@ -29,19 +30,6 @@ from deployment.projects.centerpoint.export.onnx_models import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _import_tensor_quantizer():
-    """Lazily import TensorQuantizer from pytorch_quantization.
-
-    Returns None when the package is not installed.
-    """
-    try:
-        from pytorch_quantization.nn import TensorQuantizer
-
-        return TensorQuantizer
-    except ImportError:
-        return None
 
 
 def create_onnx_model_cfg(
@@ -94,7 +82,7 @@ def build_centerpoint_model(
     device: DeviceSpec,
     *,
     rot_y_axis_reference: bool = False,
-    quantization: Optional[dict] = None,
+    quantization: Optional[QuantizationConfig] = None,
 ) -> torch.nn.Module:
     """Build a CenterPoint model from config and load checkpoint weights (for export + reference eval).
 
@@ -109,8 +97,8 @@ def build_centerpoint_model(
         checkpoint_path: Path to the checkpoint file.
         device: Target device specification.
         rot_y_axis_reference: Whether to use y-axis rotation reference.
-        quantization: Optional deploy-config ``quantization`` dict. When present and ``enabled``
-            is True, loads the checkpoint via ``_load_quantized_checkpoint``.
+        quantization: Typed ``quantization`` section (parsed once by ``BaseDeploymentConfig``).
+            When ``enabled``, loads the checkpoint via ``_load_quantized_checkpoint``.
 
     Returns:
         The loaded model in eval mode; the export config it was built from is available as ``model.cfg``.
@@ -121,8 +109,8 @@ def build_centerpoint_model(
         rot_y_axis_reference=rot_y_axis_reference,
     )
 
-    qcfg = quantization or {}
-    if qcfg.get("enabled", False):
+    qcfg = quantization or QuantizationConfig()
+    if qcfg.enabled:
         init_default_scope("mmdet3d")
         model = MODELS.build(copy.deepcopy(export_model_cfg.model))
         torch_device = device.to_torch_device()
@@ -139,7 +127,7 @@ def _load_quantized_checkpoint(
     model: torch.nn.Module,
     checkpoint_path: str,
     device: str,
-    quantization: dict,
+    config: QuantizationConfig,
 ) -> torch.nn.Module:
     """Load a quantized (PTQ/QAT) checkpoint into a model.
 
@@ -151,15 +139,20 @@ def _load_quantized_checkpoint(
         model: Model to load checkpoint into.
         checkpoint_path: Path to quantized checkpoint.
         device: Device string.
-        quantization: Quantization config dict.
+        config: Typed quantization config (parsed once by ``BaseDeploymentConfig``).
 
     Returns:
         Model with quantized checkpoint loaded.
     """
     try:
-        from deployment.config.schema import QuantizationConfig
         from deployment.projects.centerpoint.quantization.plan import build_centerpoint_plan
-        from deployment.quantization import CalibrationManager
+        from deployment.quantization import (
+            CalibrationManager,
+            disable_quantizers_in,
+            expand_keep_fp16,
+            move_quantizer_amax_to_device,
+            setup_quantization_for_onnx_export,
+        )
     except ImportError as e:
         raise ImportError(
             "Quantization modules not found. Make sure deployment/quantization " f"is properly installed. Error: {e}"
@@ -169,22 +162,19 @@ def _load_quantized_checkpoint(
 
     # 1-2. Build the SAME quantized module tree the PTQ producer built (BN fuse + Q/DQ insert),
     # via the shared plan, so the calibrated state_dict lines up on load.
-    config = QuantizationConfig.from_dict(quantization)
-    skip_layers = config.resolved_sensitive_layers()
     logger.info(
-        "Building quantized tree via CenterPoint plan (fuse_bn=%s, backbone=%s, neck=%s, head=%s, "
-        "voxel_encoder=%s, add=%s)",
+        "Building quantized tree via CenterPoint plan (fuse_bn=%s, keep_fp16=%s, disable_recipes=%s)",
         config.fuse_bn,
-        config.quant_backbone,
-        config.quant_neck,
-        config.quant_head,
-        config.quant_voxel_encoder,
-        config.quant_add,
+        list(config.keep_fp16),
+        list(config.disable_recipes),
     )
     build_centerpoint_plan(config).prepare(model)
+    # Resolve keep_fp16 → concrete module names for the disable loop below (same expansion the scheme
+    # used; log=False to avoid duplicate per-pattern match logging).
+    skip_layers = expand_keep_fp16(model, config.keep_fp16, log=False)
 
     # 2.5 Load calibration cache if provided
-    calib_cache_path = quantization.get("calib_cache_path")
+    calib_cache_path = config.calib_cache_path
     if calib_cache_path:
         if os.path.exists(calib_cache_path):
             logger.info(f"Loading calibration cache from {calib_cache_path}...")
@@ -212,13 +202,14 @@ def _load_quantized_checkpoint(
         logger.debug(f"Unexpected keys: {unexpected[:10]}...")
 
     # 4. Move all quantizer amax values to the target device
-    _move_quantizer_amax_to_device(model, device)
+    move_quantizer_amax_to_device(model, device)
 
     # 5. Validate quantizer amax values (TensorRT requires positive scales)
     _validate_quantizer_amax(model)
 
-    # 6. Disable quantization for sensitive layers
-    _disable_quantization_for_sensitive_layers(model, skip_layers)
+    # 6. Disable quantizers in the keep_fp16 subtrees — the SAME shared loop the PTQ producer and
+    # QAT hook run, so producer and deploy sides can never diverge on match semantics.
+    disable_quantizers_in(model, skip_layers)
 
     # 7. Configure pytorch-quantization for proper ONNX export
     setup_quantization_for_onnx_export()
@@ -227,60 +218,20 @@ def _load_quantized_checkpoint(
     return model
 
 
-def _move_quantizer_amax_to_device(model: torch.nn.Module, device: str) -> None:
-    """Move all TensorQuantizer amax values to the specified device."""
-    tensor_quantizer_cls = _import_tensor_quantizer()
-    if tensor_quantizer_cls is None:
-        return
-
-    moved_count = 0
-    for _name, module in model.named_modules():
-        if isinstance(module, tensor_quantizer_cls):
-            if hasattr(module, "_amax") and module._amax is not None:
-                if module._amax.device != torch.device(device):
-                    module._amax = module._amax.to(device)
-                    moved_count += 1
-
-    if moved_count > 0:
-        logger.info(f"Moved {moved_count} quantizer amax tensors to {device}")
-
-
-def _disable_quantization_for_sensitive_layers(
-    model: torch.nn.Module,
-    sensitive_layers: Set[str],
-) -> None:
-    """Disable quantization for sensitive layers (e.g. ConvTranspose2d with limited INT8 support)."""
-    if not sensitive_layers:
-        return
-
-    tensor_quantizer_cls = _import_tensor_quantizer()
-    if tensor_quantizer_cls is None:
-        return
-
-    disabled_count = 0
-    for name, module in model.named_modules():
-        should_disable = False
-        for sensitive_name in sensitive_layers:
-            if name.startswith(sensitive_name) and isinstance(module, tensor_quantizer_cls):
-                should_disable = True
-                break
-
-        if should_disable:
-            module.disable()
-            disabled_count += 1
-            logger.debug(f"Disabled quantizer: {name}")
-
-    if disabled_count > 0:
-        logger.info(f"Disabled {disabled_count} quantizers for sensitive layers: {sensitive_layers}")
-
-
 def _validate_quantizer_amax(model: torch.nn.Module) -> None:
     """Validate TensorQuantizers have valid amax values (TensorRT requires positive scales).
 
     Skips quantizers that are disabled. Disabled quantizers are not used in forward
     and may have amax=nan from never being calibrated.
+
+    CenterPoint-only for now: the BEVFusion loader does not run this check (it instead forces
+    quantizers into inference mode post-load — ``_set_tensor_quantizers_inference_mode``).
+    TODO(Docker): decide whether both loaders should run both steps and, if so, move this next to
+    ``move_quantizer_amax_to_device`` in ``deployment.quantization.core.utils`` (spec.md §5.2 4B.3).
     """
-    tensor_quantizer_cls = _import_tensor_quantizer()
+    from deployment.quantization import get_tensor_quantizer_cls
+
+    tensor_quantizer_cls = get_tensor_quantizer_cls()
     if tensor_quantizer_cls is None:
         return
 
@@ -312,18 +263,3 @@ def _validate_quantizer_amax(model: torch.nn.Module) -> None:
         for name, reason in invalid_names:
             logger.error(f"Invalid quantizer amax: {name} ({reason})")
         raise RuntimeError(f"Found {len(invalid_names)} TensorQuantizer modules with invalid amax values")
-
-
-def setup_quantization_for_onnx_export() -> None:
-    """Configure pytorch-quantization for proper ONNX export.
-
-    Enables 'use_fb_fake_quant' mode so that TensorQuantizer exports as
-    QuantizeLinear/DequantizeLinear ONNX ops (recognized by TensorRT).
-    Must be called before ONNX export when using quantized models.
-    """
-    tensor_quantizer_cls = _import_tensor_quantizer()
-    if tensor_quantizer_cls is None:
-        return
-
-    tensor_quantizer_cls.use_fb_fake_quant = True
-    logger.info("Enabled use_fb_fake_quant for ONNX export of quantized model")

@@ -68,7 +68,12 @@ def _install_forward_hook(module: nn.Module, hook_cls) -> None:
     module.forward = hook_cls(module)
 
 
-def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = None):
+# Residual-block class names attach_quant_add matches (exact or substring — subclassed block names
+# like "MyConvNeXtBlock" still match). The full supported set; this deliberately spans architectures.
+_RESIDUAL_BLOCK_CLASSES = {"BasicBlock", "SparseBasicBlock", "ConvNeXtBlock", "_OSA_module"}
+
+
+def attach_quant_add(model: nn.Module):
     """
     Attach residual_quantizer to modules that perform residual add and replace their forward methods.
 
@@ -78,15 +83,12 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
     - The residual_quantizer uses the same quant descriptor as conv layers for consistency
 
     Args:
-        model: CenterPoint model
-        target_class_names: Optional set of class name strings to match
-                            (e.g., {"SparseBasicBlock", "BasicBlock"}). If None,
-                            will match class names containing "BasicBlock".
+        model: Model whose residual blocks (see ``_RESIDUAL_BLOCK_CLASSES``) get the recipe.
     """
     require_pytorch_quantization_installed("residual quantization")
     ensure_quant_descriptors_initialized()
 
-    target_class_names = target_class_names or {"BasicBlock", "SparseBasicBlock", "ConvNeXtBlock", "_OSA_module"}
+    target_class_names = _RESIDUAL_BLOCK_CLASSES
 
     attached_count = 0
     for name, module in model.named_modules():
@@ -148,74 +150,37 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
         logger.info("Attached residual_quantizer to %d residual blocks", attached_count)
 
 
-def attach_ese_mul_identity_quantizer(model: nn.Module) -> int:
+def attach_ese_quantizers(model: nn.Module) -> int:
     """
-    Attach mul_gate_quantizer to eSEModule so gate path has Q-DQ before Mul.
-    When pool_input_quantizer is already present, do NOT add mul_identity_quantizer:
-    bypass path uses pool_input_quantizer output (single Q at eSE input → one reformat).
-    When pool_input_quantizer is absent, add both mul_identity_quantizer and mul_gate_quantizer.
+    Set up the single-Q-at-input eSE recipe on every ``eSEModule`` (one call, no ordering contract).
+
+    Per module: attach ``pool_input_quantizer`` — the ONE Q/DQ at the eSE input, whose output ``qx``
+    is shared by the pooling branch (``avg_pool → fc → hsigmoid``) *and* the ``Mul`` bypass — plus
+    ``mul_gate_quantizer`` for the gate operand, then install :class:`eSEModuleForwardHook` once.
+    Result: both ``Mul`` operands are INT8 with a single FP32→INT8 reformat at the eSE input.
+
+    (Replaces the old order-dependent ``attach_ese_pool_input_quantizer`` →
+    ``attach_ese_mul_identity_quantizer`` pair. The legacy two-Q path — a separate
+    ``mul_identity_quantizer``, i.e. a second reformat with the pool branch left unquantized — was
+    deleted in Goal 2; no shipping config used it.)
 
     Returns:
-        Number of eSEModules that got (mul_gate_quantizer and optionally mul_identity_quantizer) attached.
+        Number of eSEModules set up.
     """
-    require_pytorch_quantization_installed("eSE Mul quantization")
+    require_pytorch_quantization_installed("eSE quantization")
     ensure_quant_descriptors_initialized()
     count = 0
-    for name, module in model.named_modules():
+    for _name, module in model.named_modules():
         if module.__class__.__name__ != "eSEModule":
             continue
-        # Already has pool_input_quantizer → single Q at input; only ensure mul_gate_quantizer (no mul_identity)
-        if hasattr(module, "pool_input_quantizer") and module.pool_input_quantizer is not None:
-            if not hasattr(module, "mul_gate_quantizer") or module.mul_gate_quantizer is None:
-                module.add_module("mul_gate_quantizer", _new_input_quantizer())
-            _install_forward_hook(module, eSEModuleForwardHook)
-            count += 1
-            continue
-        # No pool_input_quantizer: attach both mul_identity and mul_gate (legacy two-Q path)
-        if hasattr(module, "mul_identity_quantizer") and module.mul_identity_quantizer is not None:
-            _install_forward_hook(module, eSEModuleForwardHook)
-            if not hasattr(module, "mul_gate_quantizer") or module.mul_gate_quantizer is None:
-                module.add_module("mul_gate_quantizer", _new_input_quantizer())
-            count += 1
-            continue
-        if hasattr(module, "fc") and hasattr(module.fc, "_input_quantizer") and module.fc._input_quantizer is not None:
-            module.mul_identity_quantizer = module.fc._input_quantizer
-        else:
-            module.add_module("mul_identity_quantizer", _new_input_quantizer())
-        module.add_module("mul_gate_quantizer", _new_input_quantizer())
-        _install_forward_hook(module, eSEModuleForwardHook)
-        count += 1
-    if count > 0:
-        logger.info(
-            "Attached eSE Mul quantizers to %d eSEModules "
-            "(single Q at input when pool_input present, else identity+gate Q-DQ)",
-            count,
-        )
-    return count
-
-
-def attach_ese_pool_input_quantizer(model: nn.Module) -> int:
-    """
-    Attach pool_input_quantizer to eSEModule so that QDQ is applied before avg_pool.
-
-    eSE: input -> [optional QDQ] -> avg_pool -> fc -> hsigmoid; identity -> [optional QDQ] -> Mul.
-    This adds QDQ on the pooling branch input so the pooling layer has quantized input.
-
-    Returns:
-        Number of eSEModules that got pool_input_quantizer attached.
-    """
-    require_pytorch_quantization_installed("eSE pool input quantization")
-    ensure_quant_descriptors_initialized()
-    count = 0
-    for name, module in model.named_modules():
-        if module.__class__.__name__ != "eSEModule":
-            continue
-        if not (hasattr(module, "pool_input_quantizer") and module.pool_input_quantizer is not None):
+        if getattr(module, "pool_input_quantizer", None) is None:
             module.add_module("pool_input_quantizer", _new_input_quantizer())
+        if getattr(module, "mul_gate_quantizer", None) is None:
+            module.add_module("mul_gate_quantizer", _new_input_quantizer())
         _install_forward_hook(module, eSEModuleForwardHook)
         count += 1
     if count > 0:
-        logger.info("Attached pool_input_quantizer to %d eSEModules (QDQ before pooling)", count)
+        logger.info("Attached single-Q eSE quantizers (pool_input + mul_gate) to %d eSEModules", count)
     return count
 
 
