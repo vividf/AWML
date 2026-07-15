@@ -129,11 +129,9 @@ def _load_weights_from_ptq_checkpoint(
 
 def _fuse_bn(encoder: nn.Module) -> int:
     """Fuse BatchNorm into sparse convolutions."""
-    from deployment.quantization.sparse.spconv_int8 import (
-        _fuse_spconv_bn_in_encoder,
-    )
+    from deployment.quantization.sparse import fuse_spconv_bn_in_encoder
 
-    count = _fuse_spconv_bn_in_encoder(encoder)
+    count = fuse_spconv_bn_in_encoder(encoder)
     print(f"[fuse-bn] Fused {count} Conv-BN pairs")
     return count
 

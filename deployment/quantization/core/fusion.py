@@ -7,10 +7,13 @@ Fusing BatchNorm into preceding convolutions is important for quantization becau
 3. It's required for accurate fake quantization during QAT training
 """
 
+import logging
 from typing import Iterator, List, Tuple, Union
 
 import torch
 import torch.nn as nn
+
+logger = logging.getLogger(__name__)
 
 
 def fuse_bn_weights(
@@ -266,7 +269,7 @@ def fuse_model_bn(model: nn.Module, inplace: bool = True) -> nn.Module:
     # Find all Conv-BN pairs
     pairs = find_conv_bn_pairs(model)
     if len(pairs) == 0:
-        print("No Conv-BN pairs found to fuse")
+        logger.info("No Conv-BN pairs found to fuse")
         return model
 
     # Build modules dict for fast lookup
@@ -279,5 +282,5 @@ def fuse_model_bn(model: nn.Module, inplace: bool = True) -> nn.Module:
         fuse_conv_bn(conv, bn)
         _replace_bn_with_identity(model, bn_name)
 
-    print(f"Fused {len(pairs)} Conv-BN pairs")
+    logger.info("Fused %d Conv-BN pairs", len(pairs))
     return model

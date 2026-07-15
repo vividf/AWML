@@ -18,9 +18,10 @@ from typing import Optional, Set
 
 import torch.nn as nn
 
-from deployment.quantization.core.availability import pytorch_quantization_install_hint
+from deployment.quantization.core.availability import require_pytorch_quantization_installed
+from deployment.quantization.core.descriptors import default_input_desc
 from deployment.quantization.core.modules import QuantConv2d
-from deployment.quantization.core.replace import _ensure_quant_descriptors_initialized
+from deployment.quantization.core.replace import ensure_quant_descriptors_initialized
 
 from .forward_hooks import (
     BasicBlockForwardHook,
@@ -30,6 +31,41 @@ from .forward_hooks import (
     SparseBasicBlockForwardHook,
     eSEModuleForwardHook,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _input_quant_desc():
+    """Return the shared INT8 activation descriptor used by conv input quantizers.
+
+    Reuses ``QuantConv2d.default_quant_desc_input`` so the residual / eSE / pool quantizers share
+    the *exact* descriptor the conv layers use (calibration consistency), and guarantees a histogram
+    ``calib_method``. Centralizes a block that was copy-pasted ~6 times across this module.
+    """
+    ensure_quant_descriptors_initialized()
+    desc = QuantConv2d.default_quant_desc_input
+    if desc is None:
+        desc = default_input_desc()
+        QuantConv2d.default_quant_desc_input = desc
+    if not getattr(desc, "calib_method", None):
+        desc.calib_method = "histogram"
+    return desc
+
+
+def _new_input_quantizer():
+    """Create a fresh ``TensorQuantizer`` on the shared conv-input descriptor."""
+    from pytorch_quantization.nn import TensorQuantizer
+
+    return TensorQuantizer(_input_quant_desc())
+
+
+def _install_forward_hook(module: nn.Module, hook_cls) -> None:
+    """Replace ``module.forward`` with ``hook_cls(module)``, saving the original once (idempotent)."""
+    if isinstance(module.forward, hook_cls):
+        return
+    if not hasattr(module, "_original_forward"):
+        module._original_forward = module.forward
+    module.forward = hook_cls(module)
 
 
 def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = None):
@@ -47,14 +83,8 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
                             (e.g., {"SparseBasicBlock", "BasicBlock"}). If None,
                             will match class names containing "BasicBlock".
     """
-    try:
-        from pytorch_quantization import tensor_quant
-        from pytorch_quantization.nn import TensorQuantizer
-    except ImportError:
-        raise ImportError(pytorch_quantization_install_hint("residual quantization"))
-
-    # Ensure quantization descriptors are initialized
-    _ensure_quant_descriptors_initialized()
+    require_pytorch_quantization_installed("residual quantization")
+    ensure_quant_descriptors_initialized()
 
     target_class_names = target_class_names or {"BasicBlock", "SparseBasicBlock", "ConvNeXtBlock", "_OSA_module"}
 
@@ -69,58 +99,27 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
                     not hasattr(module, "concat_input_quantizers")
                     or len(module.concat_input_quantizers) != n_branch_inputs
                 ):
-                    quant_desc = QuantConv2d.default_quant_desc_input
-                    if quant_desc is None:
-                        quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
-                    else:
-                        if not hasattr(quant_desc, "calib_method") or quant_desc.calib_method is None:
-                            quant_desc.calib_method = "histogram"
-                    concat_quantizers = nn.ModuleList([TensorQuantizer(quant_desc) for _ in range(n_branch_inputs)])
+                    concat_quantizers = nn.ModuleList([_new_input_quantizer() for _ in range(n_branch_inputs)])
                     module.add_module("concat_input_quantizers", concat_quantizers)
                 # When identity=True we reuse concat_input_quantizers[0] as single Q for block input (no extra module)
                 if not getattr(module, "identity", False):
-                    if not isinstance(module.forward, OSAModuleForwardHook):
-                        if not hasattr(module, "_original_forward"):
-                            module._original_forward = module.forward
-                        module.forward = OSAModuleForwardHook(module)
+                    _install_forward_hook(module, OSAModuleForwardHook)
                     continue
-            # Attach residual_quantizer if not already present
-            # Aligned with lidar-ai-solution:
-            # - If downsample exists: create new TensorQuantizer
-            # - If no downsample: reuse conv1._input_quantizer (shares calibration data)
+            # Attach residual_quantizer if not already present. Aligned with lidar-ai-solution:
+            # with a downsample, create a fresh quantizer; otherwise reuse an existing branch input
+            # quantizer (shares calibration data). Reused quantizers are assigned as plain attributes
+            # (not add_module) because a TensorQuantizer cannot be a submodule of two parents; the
+            # forward hook still calls it so ONNX export traces the Q/DQ.
             if not hasattr(module, "residual_quantizer"):
                 if hasattr(module, "downsample") and module.downsample is not None:
-                    # Has downsample: create new quantizer
-                    quant_desc = QuantConv2d.default_quant_desc_input
-                    if quant_desc is None:
-                        # Fallback to default if not initialized
-                        quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
-                    else:
-                        # Ensure calib_method is set for calibration
-                        if not hasattr(quant_desc, "calib_method") or quant_desc.calib_method is None:
-                            quant_desc.calib_method = "histogram"
-                    residual_quantizer = TensorQuantizer(quant_desc)
-                    # Register as submodule so PyTorch ONNX export can trace it
-                    module.add_module("residual_quantizer", residual_quantizer)
+                    module.add_module("residual_quantizer", _new_input_quantizer())
                     attached_count += 1
                 elif hasattr(module, "conv1") and hasattr(module.conv1, "_input_quantizer"):
-                    # No downsample: reuse conv1._input_quantizer (same as lidar-ai-solution)
-                    # Note: We cannot use add_module() here because conv1._input_quantizer is already
-                    # a submodule of conv1. PyTorch doesn't allow a module to be a submodule of multiple parents.
-                    # However, ONNX export should still trace the call if we access it correctly.
-                    # We'll just assign it as an attribute, and the forward hook will call it.
-                    # The key is that TensorQuantizer.use_fb_fake_quant and _enable_onnx_export must be set.
-                    residual_quantizer = module.conv1._input_quantizer
-                    # Assign as attribute (not submodule) - ONNX export will trace the call
-                    # IMPORTANT: Even though it's a reference, ONNX export should trace it when called
-                    # in the forward hook. The quantizer's forward method will be called, and if
-                    # _enable_onnx_export is True, it will export as QDQ nodes.
-                    module.residual_quantizer = residual_quantizer
+                    module.residual_quantizer = module.conv1._input_quantizer
                     attached_count += 1
                 elif hasattr(module, "depthwise_conv") and hasattr(module.depthwise_conv, "_input_quantizer"):
                     # ConvNeXtBlock: reuse depthwise_conv._input_quantizer
-                    residual_quantizer = module.depthwise_conv._input_quantizer
-                    module.residual_quantizer = residual_quantizer
+                    module.residual_quantizer = module.depthwise_conv._input_quantizer
                     attached_count += 1
                 elif (
                     cls_name == "_OSA_module"
@@ -129,50 +128,24 @@ def attach_quant_add(model: nn.Module, target_class_names: Optional[Set[str]] = 
                     and hasattr(module.concat[0], "_input_quantizer")
                 ):
                     # VoVNet _OSA_module: reuse concat's first conv (QuantConv2d) input quantizer
-                    residual_quantizer = module.concat[0]._input_quantizer
-                    module.residual_quantizer = residual_quantizer
+                    module.residual_quantizer = module.concat[0]._input_quantizer
                     attached_count += 1
                 else:
-                    # Fallback: create new quantizer
-                    quant_desc = QuantConv2d.default_quant_desc_input
-                    if quant_desc is None:
-                        quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
-                    else:
-                        # Ensure calib_method is set for calibration
-                        if not hasattr(quant_desc, "calib_method") or quant_desc.calib_method is None:
-                            quant_desc.calib_method = "histogram"
-                    residual_quantizer = TensorQuantizer(quant_desc)
-                    # Register as submodule so PyTorch ONNX export can trace it
-                    module.add_module("residual_quantizer", residual_quantizer)
+                    module.add_module("residual_quantizer", _new_input_quantizer())
                     attached_count += 1
 
-            # Replace forward method with hook that uses residual_quantizer
+            # Replace forward with the block-specific hook (quantizes only the residual branch).
             if "ConvNeXtBlock" in cls_name:
-                if not isinstance(module.forward, ConvNeXtBlockForwardHook):
-                    if not hasattr(module, "_original_forward"):
-                        module._original_forward = module.forward
-                    module.forward = ConvNeXtBlockForwardHook(module)
+                _install_forward_hook(module, ConvNeXtBlockForwardHook)
             elif cls_name == "_OSA_module":
-                if not isinstance(module.forward, OSAModuleForwardHook):
-                    if not hasattr(module, "_original_forward"):
-                        module._original_forward = module.forward
-                    module.forward = OSAModuleForwardHook(module)
+                _install_forward_hook(module, OSAModuleForwardHook)
             elif "Sparse" in cls_name:
-                # SparseBasicBlock: use SparseBasicBlockForwardHook
-                if not isinstance(module.forward, SparseBasicBlockForwardHook):
-                    if not hasattr(module, "_original_forward"):
-                        module._original_forward = module.forward
-                    module.forward = SparseBasicBlockForwardHook(module)
+                _install_forward_hook(module, SparseBasicBlockForwardHook)
             else:
-                # BasicBlock: use BasicBlockForwardHook
-                if not isinstance(module.forward, BasicBlockForwardHook):
-                    if not hasattr(module, "_original_forward"):
-                        module._original_forward = module.forward
-                    module.forward = BasicBlockForwardHook(module)
+                _install_forward_hook(module, BasicBlockForwardHook)
 
     if attached_count > 0:
-        logger = logging.getLogger(__name__)
-        logger.info(f"Attached residual_quantizer to {attached_count} residual blocks")
+        logger.info("Attached residual_quantizer to %d residual blocks", attached_count)
 
 
 def attach_ese_mul_identity_quantizer(model: nn.Module) -> int:
@@ -185,13 +158,8 @@ def attach_ese_mul_identity_quantizer(model: nn.Module) -> int:
     Returns:
         Number of eSEModules that got (mul_gate_quantizer and optionally mul_identity_quantizer) attached.
     """
-    try:
-        from pytorch_quantization import tensor_quant
-        from pytorch_quantization.nn import TensorQuantizer
-    except ImportError:
-        raise ImportError(pytorch_quantization_install_hint("eSE Mul quantization"))
-
-    _ensure_quant_descriptors_initialized()
+    require_pytorch_quantization_installed("eSE Mul quantization")
+    ensure_quant_descriptors_initialized()
     count = 0
     for name, module in model.named_modules():
         if module.__class__.__name__ != "eSEModule":
@@ -199,53 +167,29 @@ def attach_ese_mul_identity_quantizer(model: nn.Module) -> int:
         # Already has pool_input_quantizer → single Q at input; only ensure mul_gate_quantizer (no mul_identity)
         if hasattr(module, "pool_input_quantizer") and module.pool_input_quantizer is not None:
             if not hasattr(module, "mul_gate_quantizer") or module.mul_gate_quantizer is None:
-                quant_desc = QuantConv2d.default_quant_desc_input
-                if quant_desc is None:
-                    quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
-                elif not getattr(quant_desc, "calib_method", None):
-                    quant_desc.calib_method = "histogram"
-                module.add_module("mul_gate_quantizer", TensorQuantizer(quant_desc))
-            if not isinstance(module.forward, eSEModuleForwardHook):
-                if not hasattr(module, "_original_forward"):
-                    module._original_forward = module.forward
-                module.forward = eSEModuleForwardHook(module)
+                module.add_module("mul_gate_quantizer", _new_input_quantizer())
+            _install_forward_hook(module, eSEModuleForwardHook)
             count += 1
             continue
         # No pool_input_quantizer: attach both mul_identity and mul_gate (legacy two-Q path)
         if hasattr(module, "mul_identity_quantizer") and module.mul_identity_quantizer is not None:
-            if not isinstance(module.forward, eSEModuleForwardHook):
-                if not hasattr(module, "_original_forward"):
-                    module._original_forward = module.forward
-                module.forward = eSEModuleForwardHook(module)
+            _install_forward_hook(module, eSEModuleForwardHook)
             if not hasattr(module, "mul_gate_quantizer") or module.mul_gate_quantizer is None:
-                quant_desc = QuantConv2d.default_quant_desc_input
-                if quant_desc is None:
-                    quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
-                elif not getattr(quant_desc, "calib_method", None):
-                    quant_desc.calib_method = "histogram"
-                module.add_module("mul_gate_quantizer", TensorQuantizer(quant_desc))
+                module.add_module("mul_gate_quantizer", _new_input_quantizer())
             count += 1
             continue
-        quant_desc = QuantConv2d.default_quant_desc_input
-        if quant_desc is None:
-            quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
-        elif not getattr(quant_desc, "calib_method", None):
-            quant_desc.calib_method = "histogram"
         if hasattr(module, "fc") and hasattr(module.fc, "_input_quantizer") and module.fc._input_quantizer is not None:
             module.mul_identity_quantizer = module.fc._input_quantizer
         else:
-            q = TensorQuantizer(quant_desc)
-            module.add_module("mul_identity_quantizer", q)
-        module.add_module("mul_gate_quantizer", TensorQuantizer(quant_desc))
-        if not hasattr(module, "_original_forward"):
-            module._original_forward = module.forward
-        module.forward = eSEModuleForwardHook(module)
+            module.add_module("mul_identity_quantizer", _new_input_quantizer())
+        module.add_module("mul_gate_quantizer", _new_input_quantizer())
+        _install_forward_hook(module, eSEModuleForwardHook)
         count += 1
     if count > 0:
-        logger = logging.getLogger(__name__)
         logger.info(
-            f"Attached eSE Mul quantizers to {count} eSEModules "
-            "(single Q at input when pool_input present, else identity+gate Q-DQ)"
+            "Attached eSE Mul quantizers to %d eSEModules "
+            "(single Q at input when pool_input present, else identity+gate Q-DQ)",
+            count,
         )
     return count
 
@@ -260,38 +204,18 @@ def attach_ese_pool_input_quantizer(model: nn.Module) -> int:
     Returns:
         Number of eSEModules that got pool_input_quantizer attached.
     """
-    try:
-        from pytorch_quantization import tensor_quant
-        from pytorch_quantization.nn import TensorQuantizer
-    except ImportError:
-        raise ImportError(pytorch_quantization_install_hint("eSE pool input quantization"))
-
-    _ensure_quant_descriptors_initialized()
+    require_pytorch_quantization_installed("eSE pool input quantization")
+    ensure_quant_descriptors_initialized()
     count = 0
     for name, module in model.named_modules():
         if module.__class__.__name__ != "eSEModule":
             continue
-        if hasattr(module, "pool_input_quantizer") and module.pool_input_quantizer is not None:
-            if not isinstance(module.forward, eSEModuleForwardHook):
-                if not hasattr(module, "_original_forward"):
-                    module._original_forward = module.forward
-                module.forward = eSEModuleForwardHook(module)
-            count += 1
-            continue
-        quant_desc = QuantConv2d.default_quant_desc_input
-        if quant_desc is None:
-            quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
-        elif not getattr(quant_desc, "calib_method", None):
-            quant_desc.calib_method = "histogram"
-        q = TensorQuantizer(quant_desc)
-        module.add_module("pool_input_quantizer", q)
-        if not hasattr(module, "_original_forward"):
-            module._original_forward = module.forward
-        module.forward = eSEModuleForwardHook(module)
+        if not (hasattr(module, "pool_input_quantizer") and module.pool_input_quantizer is not None):
+            module.add_module("pool_input_quantizer", _new_input_quantizer())
+        _install_forward_hook(module, eSEModuleForwardHook)
         count += 1
     if count > 0:
-        logger = logging.getLogger(__name__)
-        logger.info(f"Attached pool_input_quantizer to {count} eSEModules (QDQ before pooling)")
+        logger.info("Attached pool_input_quantizer to %d eSEModules (QDQ before pooling)", count)
     return count
 
 
@@ -308,13 +232,8 @@ def attach_maxpool_input_quantizer(
     Returns:
         Number of MaxPool2d modules replaced with QuantBeforePool.
     """
-    try:
-        from pytorch_quantization import tensor_quant
-        from pytorch_quantization.nn import TensorQuantizer
-    except ImportError:
-        raise ImportError(pytorch_quantization_install_hint("MaxPool input quantization"))
-
-    _ensure_quant_descriptors_initialized()
+    require_pytorch_quantization_installed("MaxPool input quantization")
+    ensure_quant_descriptors_initialized()
     skip_names = skip_names or set()
     name_to_module = dict(model.named_modules())
     to_replace = []  # (parent_module, child_name, pool_module)
@@ -336,20 +255,11 @@ def attach_maxpool_input_quantizer(
             continue
         to_replace.append((parent, child_name, module))
 
-    quant_desc = QuantConv2d.default_quant_desc_input
-    if quant_desc is None:
-        quant_desc = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
-    elif not getattr(quant_desc, "calib_method", None):
-        quant_desc.calib_method = "histogram"
-
     count = 0
     for parent, child_name, pool_module in to_replace:
-        q = TensorQuantizer(quant_desc)
-        wrapper = QuantBeforePool(q, pool_module)
-        setattr(parent, child_name, wrapper)
+        setattr(parent, child_name, QuantBeforePool(_new_input_quantizer(), pool_module))
         count += 1
 
     if count > 0:
-        logger = logging.getLogger(__name__)
-        logger.info(f"Attached QDQ before {count} MaxPool2d modules")
+        logger.info("Attached QDQ before %d MaxPool2d modules", count)
     return count

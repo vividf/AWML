@@ -12,63 +12,54 @@ from typing import Optional, Set, Type
 import torch
 import torch.nn as nn
 
-from .availability import pytorch_quantization_install_hint
+from .descriptors import (
+    conv2d_weight_desc,
+    conv_transpose2d_weight_desc,
+    default_input_desc,
+    linear_weight_desc,
+)
 from .modules import QuantConv2d, QuantConvTranspose2d, QuantLinear
 
 # Flag to track if quantization descriptors have been initialized
 _quant_descriptors_initialized = False
 
 
-def _ensure_quant_descriptors_initialized():
-    """
-    Ensure that default quantization descriptors are initialized.
+def ensure_quant_descriptors_initialized():
+    """Populate the ``default_quant_desc_*`` class attributes from the shared descriptor factory.
 
-    This must be called before using transfer_to_quantization since the
-    default_quant_desc_* class attributes are only set in __init__.
+    Must be called before :func:`transfer_to_quantization` / the module rebuilds, since the
+    ``default_quant_desc_*`` attributes are otherwise only set the first time a quantized module is
+    constructed. Idempotent. The descriptor *choices* live in :mod:`.descriptors` so this path and
+    the module ``__init__`` path cannot disagree.
     """
     global _quant_descriptors_initialized
     if _quant_descriptors_initialized:
         return
 
-    try:
-        from pytorch_quantization import tensor_quant
-    except ImportError:
-        raise ImportError(pytorch_quantization_install_hint())
-
-    # Initialize QuantConv2d descriptors
     if QuantConv2d.default_quant_desc_input is None:
-        QuantConv2d.default_quant_desc_input = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+        QuantConv2d.default_quant_desc_input = default_input_desc()
     if QuantConv2d.default_quant_desc_weight is None:
-        QuantConv2d.default_quant_desc_weight = tensor_quant.QUANT_DESC_8BIT_CONV2D_WEIGHT_PER_CHANNEL
+        QuantConv2d.default_quant_desc_weight = conv2d_weight_desc()
 
-    # Initialize QuantConvTranspose2d descriptors
     if QuantConvTranspose2d.default_quant_desc_input is None:
-        QuantConvTranspose2d.default_quant_desc_input = tensor_quant.QuantDescriptor(
-            num_bits=8, calib_method="histogram"
-        )
+        QuantConvTranspose2d.default_quant_desc_input = default_input_desc()
     if QuantConvTranspose2d.default_quant_desc_weight is None:
-        # Use per-tensor weight quantization for TensorRT compatibility.
-        QuantConvTranspose2d.default_quant_desc_weight = tensor_quant.QUANT_DESC_8BIT_PER_TENSOR
+        QuantConvTranspose2d.default_quant_desc_weight = conv_transpose2d_weight_desc()
 
-    # Guard rail: ConvTranspose2d INT8 in TensorRT is often fragile with per-channel
-    # weight quantization. If someone sets it back to a per-channel descriptor, it can
-    # break TRT build with "vol == 1 failed" or "Could not find any implementation".
-    # We force per-tensor weights unless users explicitly opt out by passing a custom
-    # descriptor into `init_quantizer` after replacement.
+    # Guard rail: if someone set a per-channel ConvTranspose2d weight descriptor, force it back to
+    # per-tensor (see :func:`~deployment.quantization.core.descriptors.conv_transpose2d_weight_desc`).
     try:
         qdw = QuantConvTranspose2d.default_quant_desc_weight
         if getattr(qdw, "axis", None) not in (None, (), []):
-            QuantConvTranspose2d.default_quant_desc_weight = tensor_quant.QUANT_DESC_8BIT_PER_TENSOR
+            QuantConvTranspose2d.default_quant_desc_weight = conv_transpose2d_weight_desc()
     except Exception:
         # Be conservative: never fail descriptor initialization due to this guard.
         pass
 
-    # Initialize QuantLinear descriptors
     if QuantLinear.default_quant_desc_input is None:
-        QuantLinear.default_quant_desc_input = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+        QuantLinear.default_quant_desc_input = default_input_desc()
     if QuantLinear.default_quant_desc_weight is None:
-        # Per-row quantization for Linear layers (per output channel)
-        QuantLinear.default_quant_desc_weight = tensor_quant.QuantDescriptor(num_bits=8, axis=(0,))
+        QuantLinear.default_quant_desc_weight = linear_weight_desc()
 
     _quant_descriptors_initialized = True
 
@@ -80,7 +71,7 @@ def _rebuild_conv2d_as_quant(conv: nn.Conv2d) -> QuantConv2d:
     half-initialized state that interacts badly with fake tensors during
     ``TensorQuantizer`` setup. PTQ deploy load uses this path for robustness.
     """
-    _ensure_quant_descriptors_initialized()
+    ensure_quant_descriptors_initialized()
     q = QuantConv2d(
         conv.in_channels,
         conv.out_channels,
@@ -106,7 +97,7 @@ def _rebuild_conv2d_as_quant(conv: nn.Conv2d) -> QuantConv2d:
 
 def _rebuild_conv_transpose2d_as_quant(conv: nn.ConvTranspose2d) -> QuantConvTranspose2d:
     """Same as :func:`_rebuild_conv2d_as_quant` for transposed conv (FPN upsample)."""
-    _ensure_quant_descriptors_initialized()
+    ensure_quant_descriptors_initialized()
     q = QuantConvTranspose2d(
         conv.in_channels,
         conv.out_channels,
@@ -168,7 +159,7 @@ def transfer_to_quantization(nn_instance: nn.Module, quant_module: Type) -> nn.M
         Quantized module with copied weights and initialized quantizers
     """
     # Ensure quantization descriptors are initialized
-    _ensure_quant_descriptors_initialized()
+    ensure_quant_descriptors_initialized()
 
     # Create new instance without calling __init__
     quant_instance = quant_module.__new__(quant_module)

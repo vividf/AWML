@@ -8,11 +8,12 @@ graph transform and TensorRT plugin remain in the project that owns that deploym
 
 from .naming import tail_without_encoder_layers, topologically_sorted_sparse_stems
 from .spconv_add_patch import ensure_spconv_quantize_per_tensor_float_activations
-from .spconv_int8 import apply_nvidia_spconv_int8, calibrate_spconv_nvidia
+from .spconv_int8 import apply_nvidia_spconv_int8, calibrate_spconv_nvidia, fuse_spconv_bn_in_encoder
 
 __all__ = [
     "apply_nvidia_spconv_int8",
     "calibrate_spconv_nvidia",
+    "fuse_spconv_bn_in_encoder",
     "ensure_spconv_quantize_per_tensor_float_activations",
     "tail_without_encoder_layers",
     "topologically_sorted_sparse_stems",

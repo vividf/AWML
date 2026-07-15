@@ -72,9 +72,9 @@ class SpconvInt8Scheme(QuantizationScheme):
             return model
 
         if self.fuse_bn:
-            from deployment.quantization.sparse.spconv_int8 import _fuse_spconv_bn_in_encoder
+            from deployment.quantization.sparse import fuse_spconv_bn_in_encoder
 
-            count = _fuse_spconv_bn_in_encoder(encoder)
+            count = fuse_spconv_bn_in_encoder(encoder)
             logger.info("  [spconv_int8] fused %d SparseConv-BN pairs in %s", count, SPARSE_SUBMODULE)
 
         if self.int8:

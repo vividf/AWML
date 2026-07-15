@@ -201,9 +201,9 @@ def build_float_sparse_encoder_shadow(
     enc.eval()
 
     if fuse_spconv_bn:
-        from deployment.quantization.sparse.spconv_int8 import _fuse_spconv_bn_in_encoder
+        from deployment.quantization.sparse import fuse_spconv_bn_in_encoder
 
-        _fuse_spconv_bn_in_encoder(enc)
+        fuse_spconv_bn_in_encoder(enc)
     else:
         logger.info("Sparse ONNX float shadow: keep SparseConv+BN unfused (fuse_spconv_bn=False).")
 

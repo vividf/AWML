@@ -5,6 +5,7 @@
 /graphify-out
 .gitignore
 CLAUDE.md
+_trace
 
 *.bin
 *.onnx

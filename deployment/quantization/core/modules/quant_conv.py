@@ -1,21 +1,20 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 """Quantized Conv2d and ConvTranspose2d modules."""
 
+import importlib.util
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-try:
-    from pytorch_quantization import tensor_quant
-    from pytorch_quantization.nn.modules import _utils
-
-    PYTORCH_QUANTIZATION_AVAILABLE = True
-except ImportError:
-    PYTORCH_QUANTIZATION_AVAILABLE = False
-    _utils = None
-    tensor_quant = None
+PYTORCH_QUANTIZATION_AVAILABLE = importlib.util.find_spec("pytorch_quantization") is not None
 
 from deployment.quantization.core.availability import require_pytorch_quantization
+from deployment.quantization.core.descriptors import (
+    conv2d_weight_desc,
+    conv_transpose2d_weight_desc,
+    default_input_desc,
+)
 
 
 def _check_pytorch_quantization():
@@ -77,11 +76,11 @@ class QuantConv2d(nn.Conv2d):
         _check_pytorch_quantization()
         super().__init__(in_channels, out_channels, kernel_size, **kwargs)
 
-        # Set default quantization descriptors
+        # Set default quantization descriptors (single source: core.descriptors)
         if QuantConv2d.default_quant_desc_input is None:
-            QuantConv2d.default_quant_desc_input = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+            QuantConv2d.default_quant_desc_input = default_input_desc()
         if QuantConv2d.default_quant_desc_weight is None:
-            QuantConv2d.default_quant_desc_weight = tensor_quant.QUANT_DESC_8BIT_CONV2D_WEIGHT_PER_CHANNEL
+            QuantConv2d.default_quant_desc_weight = conv2d_weight_desc()
 
         self._input_quantizer = None
         self._weight_quantizer = None
@@ -136,14 +135,11 @@ class QuantConvTranspose2d(nn.ConvTranspose2d):
         _check_pytorch_quantization()
         super().__init__(in_channels, out_channels, kernel_size, **kwargs)
 
-        # Set default quantization descriptors
+        # Set default quantization descriptors (single source: core.descriptors)
         if QuantConvTranspose2d.default_quant_desc_input is None:
-            QuantConvTranspose2d.default_quant_desc_input = tensor_quant.QuantDescriptor(
-                num_bits=8, calib_method="histogram"
-            )
+            QuantConvTranspose2d.default_quant_desc_input = default_input_desc()
         if QuantConvTranspose2d.default_quant_desc_weight is None:
-            # Use per-tensor weight quantization for TensorRT compatibility.
-            QuantConvTranspose2d.default_quant_desc_weight = tensor_quant.QUANT_DESC_8BIT_PER_TENSOR
+            QuantConvTranspose2d.default_quant_desc_weight = conv_transpose2d_weight_desc()
 
         self._input_quantizer = None
         self._weight_quantizer = None

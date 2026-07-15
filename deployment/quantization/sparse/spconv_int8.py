@@ -20,11 +20,13 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 
-def _fuse_spconv_bn_in_encoder(sparse_encoder: nn.Module) -> int:
-    """Fuse BatchNorm into sparse convolutions inside the given sparse encoder.
+def fuse_spconv_bn_in_encoder(sparse_encoder: nn.Module) -> int:
+    """Fuse each ``SparseConvolution + BatchNorm1d`` pair in ``sparse_encoder`` (eval mode).
 
-    Used by PTQ and deployment ``model_loader`` so state_dict keys match.
-    Returns the number of fused Conv-BN pairs.
+    Single source of truth for SECOND-style spconv BN folding: used by the PTQ producer, the
+    deploy loader (both the FP16 and INT8 paths), and :class:`SpconvInt8Scheme`, so the module
+    tree — and therefore the ``state_dict`` keys — line up on every side. Returns the number of
+    fused Conv-BN pairs.
     """
     try:
         from spconv.pytorch.quantization.utils import fuse_spconv_bn_eval
@@ -242,7 +244,7 @@ def _collect_sparse_tail_absmax_before_conv_out(
             "[nvidia-calib] sparse INT8: _sparse_tail_absmax is invalid (0 or non-finite). "
             "Encoder forwards failed, or conv_out pre-hook never saw non-empty features."
         )
-    print(
+    logger.info(
         f"[nvidia-calib] sparse INT8: max |sparse features| before conv_out = {val:.6f} "
         f"(saved as pts_middle_encoder._sparse_tail_absmax for sparse_int8_onnx_transform)"
     )
@@ -328,7 +330,7 @@ def _collect_last_int8_conv_output_absmax(
             "[nvidia-calib] sparse INT8: _last_int8_conv_output_absmax is invalid (0 or non-finite). "
             "Encoder forwards failed, or last INT8 sparse conv never produced non-empty features."
         )
-    print(
+    logger.info(
         f"[nvidia-calib] sparse INT8: max |features| after last INT8 sparse conv ({last_stem}) = "
         f"{val:.6f} (saved as pts_middle_encoder._last_int8_conv_output_absmax; "
         "preferred for ONNX terminal output_scale)"
@@ -363,8 +365,8 @@ def calibrate_spconv_nvidia(
                 mod.enable_calib()
             else:
                 mod.disable()
-    print(f"[nvidia-calib] {n_quantizers} TensorQuantizers in calibration mode")
-    print(f"[nvidia-calib] Collecting histograms over {n_samples} samples...")
+    logger.info(f"[nvidia-calib] {n_quantizers} TensorQuantizers in calibration mode")
+    logger.info(f"[nvidia-calib] Collecting histograms over {n_samples} samples...")
 
     with torch.no_grad():
         pbar = tqdm(calibration_data, total=n_samples, desc="NVIDIA calib", leave=True)
@@ -376,7 +378,7 @@ def calibrate_spconv_nvidia(
                     f"[nvidia-calib] sample {i + 1}/{n_samples} failed during histogram collection"
                 ) from e
 
-    print("[nvidia-calib] Computing amax (method=mse) from histograms...")
+    logger.info("[nvidia-calib] Computing amax (method=mse) from histograms...")
     for name, mod in encoder.named_modules():
         if isinstance(mod, quant_nn.TensorQuantizer):
             if mod._calibrator is not None:
@@ -411,11 +413,11 @@ def _report_nvidia_quantizer_stats(encoder: nn.Module) -> None:
             if amax is not None:
                 if amax.numel() <= 3:
                     vals = amax.flatten().tolist()
-                    print(f"  [nvidia-amax] {name}: amax={vals}")
+                    logger.info(f"  [nvidia-amax] {name}: amax={vals}")
                 else:
-                    print(
+                    logger.info(
                         f"  [nvidia-amax] {name}: amax shape={tuple(amax.shape)}, "
                         f"min={amax.min():.4f}, max={amax.max():.4f}, mean={amax.mean():.4f}"
                     )
                 count += 1
-    print(f"[nvidia-calib] {count} quantizers with calibrated amax")
+    logger.info(f"[nvidia-calib] {count} quantizers with calibrated amax")

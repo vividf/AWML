@@ -42,7 +42,6 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Tuple
 
 # Add project root to path
 project_root = Path(__file__).resolve().parents[4]
@@ -179,101 +178,6 @@ def initialize_quantization():
         pass
 
 
-def _load_deploy_quantization_cfg(
-    deploy_cfg_path: str,
-) -> Tuple[Dict[str, Any], Optional[str]]:
-    """
-    Load `quantization` dict and (optional) `checkpoint_path` from a deploy config file.
-    """
-    from mmengine.config import Config
-
-    deploy_cfg = Config.fromfile(deploy_cfg_path)
-    quant = dict(getattr(deploy_cfg, "quantization", {}) or {})
-    ckpt = getattr(deploy_cfg, "checkpoint_path", None)
-    return quant, ckpt
-
-
-def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
-    """
-    Build PTQ quantization settings from (optional) deploy config.
-
-    Returns:
-        fuse_bn: bool
-        skip_layers: Set[str]
-        quant_flags: Dict[str, bool] with keys:
-            - quant_voxel_encoder
-            - quant_backbone
-            - quant_neck
-            - quant_head
-            - quant_add
-            - quant_linear_backbone
-            - quant_linear_backbone
-            - quant_ese_mul_identity
-            - quant_ese_pool_input
-            - quant_maxpool_input
-    """
-    # Baseline: from deploy config if provided, otherwise defaults.
-    fuse_bn = True
-    skip_layers: Set[str] = set()
-    quant_flags: Dict[str, bool] = {
-        "quant_voxel_encoder": True,
-        "quant_backbone": True,
-        "quant_neck": True,
-        "quant_head": True,
-        "quant_add": False,  # Default to False for backward compatibility
-        "quant_linear_backbone": False,  # ConvNeXt pointwise linear support
-        "quant_ese_mul_identity": False,  # Quantize both inputs to eSE Mul (identity + gate) for INT8
-        "quant_ese_pool_input": False,  # Q/DQ before pooling layer in eSE
-        "quant_maxpool_input": False,  # Q/DQ before MaxPool2d (e.g. VoVNet _OSA_stage)
-    }
-
-    # Deploy config baseline
-    if args.deploy_cfg:
-        quant_cfg, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
-
-        # BN fusion baseline
-        if "fuse_bn" in quant_cfg:
-            fuse_bn = bool(quant_cfg.get("fuse_bn", True))
-
-        # Quant flags baseline
-        for k in list(quant_flags.keys()):
-            if k in quant_cfg:
-                quant_flags[k] = bool(quant_cfg[k])
-
-        # Handle quant_add specifically (for ResNet-style backbones)
-        if "quant_add" in quant_cfg:
-            quant_flags["quant_add"] = bool(quant_cfg["quant_add"])
-        if "quant_linear_backbone" in quant_cfg:
-            quant_flags["quant_linear_backbone"] = bool(quant_cfg["quant_linear_backbone"])
-        if "quant_ese_mul_identity" in quant_cfg:
-            quant_flags["quant_ese_mul_identity"] = bool(quant_cfg["quant_ese_mul_identity"])
-        if "quant_ese_pool_input" in quant_cfg:
-            quant_flags["quant_ese_pool_input"] = bool(quant_cfg["quant_ese_pool_input"])
-        if "quant_maxpool_input" in quant_cfg:
-            quant_flags["quant_maxpool_input"] = bool(quant_cfg["quant_maxpool_input"])
-
-        # Sensitive layers baseline (deployment terminology)
-        skip_layers |= set(quant_cfg.get("sensitive_layers", []) or [])
-
-        # Optional backbone stage skips (SECOND/ResNet use .blocks; VoVNet uses .stem, .stage2, .stage3, .stage4)
-        skip_first = int(quant_cfg.get("skip_backbone_first_stages", 0) or 0)
-        if skip_first > 0:
-            for i in range(skip_first):
-                skip_layers.add(f"pts_backbone.blocks.{i}")
-        for i in quant_cfg.get("skip_backbone_stages", []) or []:
-            skip_layers.add(f"pts_backbone.blocks.{int(i)}")
-
-        # VoVNet-specific: skip backbone stages by index (0=stem, 1=stage2, 2=stage3, 3=stage4)
-        vovnet_stages = quant_cfg.get("skip_vovnet_stages", None)
-        if vovnet_stages is not None:
-            _vovnet_names = ["stem", "stage2", "stage3", "stage4"]
-            for idx in vovnet_stages:
-                i = int(idx)
-                if 0 <= i < len(_vovnet_names):
-                    skip_layers.add(f"pts_backbone.{_vovnet_names[i]}")
-    return fuse_bn, skip_layers, quant_flags
-
-
 def run_ptq(args):
     """Run PTQ quantization pipeline."""
     import math
@@ -283,14 +187,14 @@ def run_ptq(args):
     from mmengine.config import Config
     from mmengine.runner import Runner
 
+    from deployment.config.schema import load_quantization_config
     from deployment.quantization import (
         CalibrationManager,
         disable_quantization,
-        fuse_model_bn,
         print_quantizer_status,
     )
 
-    from .quant_model import quant_model
+    from .plan import build_centerpoint_plan
 
     # Auto-calculate calibrate_batches from calibrate_samples and batch_size
     args.calibrate_batches = math.ceil(args.calibrate_samples / args.batch_size)
@@ -316,9 +220,10 @@ def run_ptq(args):
     print(f"Output: {args.output}")
     print("=" * 80)
 
-    # Build quantization settings to show quant_add status
-    _, _, quant_flags = _build_ptq_quant_settings(args)
-    if quant_flags["quant_add"]:
+    # Single source of truth: parse the deploy ``quantization`` block once.
+    config, _ = load_quantization_config(args.deploy_cfg)
+    skip_layers = config.resolved_sensitive_layers()
+    if config.quant_add:
         print("Note: Residual quantization enabled for residual connections (ResNet-style backbones)")
         print("      Using residual_quantizer (only quantizes identity branch, not conv path)")
 
@@ -328,42 +233,19 @@ def run_ptq(args):
     model = init_model(cfg, args.checkpoint, device=args.device)
     model.eval()
 
-    # Build quantization settings
-    fuse_bn, skip_layers, quant_flags = _build_ptq_quant_settings(args)
+    # Fuse BN + insert Q/DQ via the SHARED CenterPoint plan. The deploy loader builds the same plan,
+    # so the PTQ state_dict and the deployed module tree line up by construction.
+    print("\n[2-3/5] Fusing BatchNorm + inserting Q/DQ via shared CenterPoint plan...")
+    build_centerpoint_plan(config).prepare(model)
 
-    if fuse_bn:
-        print("\n[2/5] Fusing BatchNorm layers...")
-        fuse_model_bn(model)
-    else:
-        print("\n[2/5] Skipping BatchNorm fusion")
-
-    # Insert Q/DQ nodes
-    print("\n[3/5] Inserting Q/DQ nodes...")
-    quant_model(
-        model,
-        quant_backbone=quant_flags["quant_backbone"],
-        quant_neck=quant_flags["quant_neck"],
-        quant_head=quant_flags["quant_head"],
-        quant_voxel_encoder=quant_flags["quant_voxel_encoder"],
-        quant_add=quant_flags["quant_add"],
-        quant_linear_backbone=quant_flags["quant_linear_backbone"],
-        quant_ese_mul_identity=quant_flags.get("quant_ese_mul_identity", False),
-        quant_ese_pool_input=quant_flags.get("quant_ese_pool_input", False),
-        quant_maxpool_input=quant_flags.get("quant_maxpool_input", False),
-        skip_names=skip_layers,
-    )
-
-    if quant_flags["quant_add"]:
+    if config.quant_add:
         print("  - Residual quantizer attached to residual blocks (BasicBlock/SparseBasicBlock)")
         print("    Only identity branch is quantized to enable TensorRT Conv+Add fusion")
-
-    if quant_flags.get("quant_ese_mul_identity"):
+    if config.quant_ese_mul_identity:
         print("  - eSE Mul: both inputs quantized (identity + gate) for INT8 → Q-DQ on both sides before Mul")
-
-    if quant_flags.get("quant_ese_pool_input"):
+    if config.quant_ese_pool_input:
         print("  - eSE Pool: Q/DQ before avg_pool for INT8 (input -> QDQ -> avg_pool -> fc -> Hsigmoid)")
-
-    if quant_flags.get("quant_maxpool_input"):
+    if config.quant_maxpool_input:
         print("  - MaxPool: Q/DQ before MaxPool2d for INT8 (e.g. VoVNet _OSA_stage)")
 
     # Build dataloader
@@ -425,7 +307,7 @@ def run_ptq(args):
     print_quantizer_status(model)
 
     # Debug: Check residual_quantizer status
-    if quant_flags["quant_add"]:
+    if config.quant_add:
         print("\nResidual Quantizer Status:")
         residual_count = 0
         for name, module in model.named_modules():
@@ -544,52 +426,22 @@ def run_qat(args):
     if not hasattr(cfg, "custom_hooks"):
         cfg.custom_hooks = []
 
-    # Sensitive layers: use deploy config as the single source of truth (if provided).
-    sensitive_layers = []
-    quant_add = False
-    quant_linear_backbone = False
-    quant_backbone = True
-    quant_neck = True
-    quant_head = True
-    quant_voxel_encoder = True
+    # Sensitive layers + quant toggles: the deploy config is the single source of truth.
+    from deployment.config.schema import load_quantization_config
 
-    if args.deploy_cfg:
-        quant_cfg, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
-        sensitive_layers = list(quant_cfg.get("sensitive_layers", []) or [])
+    config, _ = load_quantization_config(args.deploy_cfg)
+    sensitive_layers = config.resolved_sensitive_layers()
 
-        # Expand backbone stage skips to match PTQ behavior
-        skip_first = int(quant_cfg.get("skip_backbone_first_stages", 0) or 0)
-        if skip_first > 0:
-            for i in range(skip_first):
-                sensitive_layers.append(f"pts_backbone.blocks.{i}")
-        for i in quant_cfg.get("skip_backbone_stages", []) or []:
-            sensitive_layers.append(f"pts_backbone.blocks.{int(i)}")
-
-        # If deploy config disables whole components, treat as sensitive roots
-        if not bool(quant_cfg.get("quant_voxel_encoder", True)):
-            sensitive_layers.append("pts_voxel_encoder")
-        if not bool(quant_cfg.get("quant_backbone", True)):
-            sensitive_layers.append("pts_backbone")
-        if not bool(quant_cfg.get("quant_neck", True)):
-            sensitive_layers.append("pts_neck")
-        if not bool(quant_cfg.get("quant_head", True)):
-            sensitive_layers.append("pts_bbox_head")
-
-        # Read quantization toggle settings
-        quant_add = bool(quant_cfg.get("quant_add", False))
-        quant_linear_backbone = bool(quant_cfg.get("quant_linear_backbone", False))
-        quant_backbone = bool(quant_cfg.get("quant_backbone", True))
-        quant_neck = bool(quant_cfg.get("quant_neck", True))
-        quant_head = bool(quant_cfg.get("quant_head", True))
-        quant_voxel_encoder = bool(quant_cfg.get("quant_voxel_encoder", True))
-
-    # De-duplicate while preserving order
-    deduped = []
-    seen = set()
-    for x in sensitive_layers:
-        if x not in seen:
-            deduped.append(x)
-            seen.add(x)
+    # If deploy config disables whole components, treat their roots as sensitive too (belt and
+    # suspenders: the quant_* flags already skip them).
+    if not config.quant_voxel_encoder:
+        sensitive_layers.add("pts_voxel_encoder")
+    if not config.quant_backbone:
+        sensitive_layers.add("pts_backbone")
+    if not config.quant_neck:
+        sensitive_layers.add("pts_neck")
+    if not config.quant_head:
+        sensitive_layers.add("pts_bbox_head")
 
     cfg.custom_hooks.append(
         dict(
@@ -597,13 +449,13 @@ def run_qat(args):
             calibration_batches=calibration_batches,
             calibration_epoch=0,
             freeze_bn=True,
-            sensitive_layers=deduped,
-            quant_add=quant_add,
-            quant_linear_backbone=quant_linear_backbone,
-            quant_backbone=quant_backbone,
-            quant_neck=quant_neck,
-            quant_head=quant_head,
-            quant_voxel_encoder=quant_voxel_encoder,
+            sensitive_layers=sorted(sensitive_layers),
+            quant_add=config.quant_add,
+            quant_linear_backbone=config.quant_linear_backbone,
+            quant_backbone=config.quant_backbone,
+            quant_neck=config.quant_neck,
+            quant_head=config.quant_head,
+            quant_voxel_encoder=config.quant_voxel_encoder,
             calib_cache_path=args.ptq_calib_cache,
         )
     )

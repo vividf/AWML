@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 from deployment.config.enums import (
     DEFAULT_WORKSPACE_SIZE,
@@ -259,6 +259,76 @@ class QuantizationConfig:
             spconv_int8_fp16_layers=cls._str_tuple(raw.get("spconv_int8_fp16_layers")),
             raw=MappingProxyType(dict(raw)),
         )
+
+    # -- Behavior shared by every stage (PTQ producer, deploy loader, QAT hook) ---------------
+
+    _VOVNET_STAGE_NAMES = ("stem", "stage2", "stage3", "stage4")
+
+    def resolved_sensitive_layers(self) -> Set[str]:
+        """Expand the convenience skip-flags into concrete dotted module names.
+
+        Combines ``sensitive_layers`` with the SECOND/ResNet backbone-stage skips
+        (``skip_backbone_first_stages`` + ``skip_backbone_stages`` -> ``pts_backbone.blocks.N``)
+        and the VoVNet stage skips (``skip_vovnet_stages`` -> ``pts_backbone.<stem|stageN>``). The
+        insert side and the load side both call this, so the FP-retained set is identical.
+        """
+        skip: Set[str] = set(self.sensitive_layers)
+
+        stage_ids: Set[int] = set()
+        if self.skip_backbone_first_stages > 0:
+            stage_ids.update(range(self.skip_backbone_first_stages))
+        stage_ids.update(self.skip_backbone_stages)
+        for stage_id in stage_ids:
+            skip.add(f"pts_backbone.blocks.{stage_id}")
+
+        if self.skip_vovnet_stages is not None:
+            for idx in self.skip_vovnet_stages:
+                if 0 <= idx < len(self._VOVNET_STAGE_NAMES):
+                    skip.add(f"pts_backbone.{self._VOVNET_STAGE_NAMES[idx]}")
+
+        return skip
+
+    def dense_quant_enabled(self) -> bool:
+        """Whether any dense Conv/residual tower is quantized (vs sparse-only / fuse-only)."""
+        return bool(self.quant_backbone or self.quant_neck or self.quant_head or self.quant_add)
+
+    def with_overrides(self, **overrides: Any) -> QuantizationConfig:
+        """Return a copy with the given fields replaced (e.g. CLI ``--sparse-int8-only``)."""
+        from dataclasses import replace
+
+        return replace(self, **overrides)
+
+
+def load_quantization_config(deploy_cfg_path: str) -> Tuple[QuantizationConfig, Optional[str]]:
+    """Load ``quantization`` (and the optional ``checkpoint_path``) from a deploy-config file.
+
+    Centralizes the MMEngine ``Config`` access quirks (prefer ``.get`` over ``getattr``) and folds a
+    top-level ``spconv_int8_fp16_layers`` — kept top-level in configs alongside ``spconv_do_sort`` —
+    into the quantization mapping so downstream code only looks in one place. Used by the PTQ / QAT
+    producer CLIs; the deploy loaders instead receive the ``quantization`` dict and call
+    :meth:`QuantizationConfig.from_dict` directly.
+
+    Returns:
+        ``(config, checkpoint_path)``.
+    """
+    from mmengine.config import Config
+
+    deploy_cfg = Config.fromfile(deploy_cfg_path)
+
+    def _cfg_get(key: str, default: Any = None) -> Any:
+        value = deploy_cfg.get(key, None)
+        if value is None:
+            value = getattr(deploy_cfg, key, None)
+        return default if value is None else value
+
+    raw = _cfg_get("quantization")
+    mapping = {k: raw[k] for k in raw} if raw is not None else {}
+    if "spconv_int8_fp16_layers" not in mapping:
+        fp16_layers = _cfg_get("spconv_int8_fp16_layers")
+        if fp16_layers is not None:
+            mapping["spconv_int8_fp16_layers"] = list(fp16_layers)
+
+    return QuantizationConfig.from_dict(mapping), _cfg_get("checkpoint_path")
 
 
 # -----------------------------------------------------------------------------

@@ -30,3 +30,16 @@ def require_pytorch_quantization(available: bool, purpose: str = "quantization s
     """
     if not available:
         raise ImportError(pytorch_quantization_install_hint(purpose))
+
+
+def require_pytorch_quantization_installed(purpose: str = "quantization support") -> None:
+    """Raise a descriptive ImportError if ``pytorch_quantization`` cannot be imported.
+
+    Availability probe (no import side effect) for functions that will build ``TensorQuantizer``s,
+    so a missing dependency surfaces the install hint for *that* feature instead of a generic error
+    deep in a helper.
+    """
+    import importlib.util
+
+    if importlib.util.find_spec("pytorch_quantization") is None:
+        raise ImportError(pytorch_quantization_install_hint(purpose))

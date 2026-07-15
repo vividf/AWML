@@ -102,9 +102,9 @@ class QATHook(Hook):
         Args:
             runner: MMEngine runner instance
         """
-        from deployment.quantization.core.fusion import fuse_model_bn
+        from deployment.config.schema import QuantizationConfig
 
-        from .quant_model import quant_model
+        from .plan import build_centerpoint_plan
 
         model = runner.model
 
@@ -114,25 +114,22 @@ class QATHook(Hook):
 
         runner.logger.info("QATHook: Initializing quantization...")
 
-        # Step 1: Fuse BatchNorm
-        if self.freeze_bn:
-            runner.logger.info("QATHook: Fusing BatchNorm layers...")
-            model.eval()
-            fuse_model_bn(model)
-            model.train()
-
-        # Step 2: Insert Q/DQ nodes (same composition the PTQ / deploy paths use)
-        runner.logger.info("QATHook: Inserting Q/DQ nodes...")
-        quant_model(
-            model,
+        # Fuse BN + insert Q/DQ via the SAME shared plan the PTQ / deploy paths use, so the QAT
+        # module tree is identical to what will be deployed. ``sensitive_layers`` arrives already
+        # resolved from the deploy config.
+        runner.logger.info("QATHook: Fusing BatchNorm + inserting Q/DQ via shared CenterPoint plan...")
+        config = QuantizationConfig(
+            fuse_bn=self.freeze_bn,
             quant_backbone=self.quant_backbone,
             quant_neck=self.quant_neck,
             quant_head=self.quant_head,
             quant_voxel_encoder=self.quant_voxel_encoder,
             quant_add=self.quant_add,
             quant_linear_backbone=self.quant_linear_backbone,
-            skip_names=self.sensitive_layers,
+            sensitive_layers=tuple(sorted(self.sensitive_layers)),
         )
+        build_centerpoint_plan(config).prepare(model)
+        model.train()
 
         self._quantized = True
         runner.logger.info("QATHook: Quantization modules inserted")

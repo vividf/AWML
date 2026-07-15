@@ -1,12 +1,15 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 """Calibration manager for PTQ."""
 
+import logging
 import traceback
 from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 try:
     from pytorch_quantization import calib
@@ -28,7 +31,7 @@ def _check_pytorch_quantization():
 
 class CalibrationManager:
     """
-    Manages PTQ calibration for CenterPoint model.
+    Manages PTQ calibration for a quantized model (model-agnostic).
 
     This class handles the complete calibration workflow:
     1. Enable calibration mode on all quantizers
@@ -198,15 +201,14 @@ class CalibrationManager:
             >>> calibrator = CalibrationManager(model)
             >>> calibrator.calibrate(val_dataloader, num_batches=100, method="mse")
         """
-        print(f"Starting calibration with {num_batches} batches, method={method}")
+        logger.info("Starting calibration with %d batches, method=%s", num_batches, method)
 
         self.set_quantizer_fast()
         self.collect_stats(dataloader, num_batches, forward_fn)
         self.compute_amax(method)
 
-        # Print summary
         num_quantizers = sum(1 for _, m in self.model.named_modules() if isinstance(m, TensorQuantizer))
-        print(f"Calibration complete. {num_quantizers} quantizers calibrated.")
+        logger.info("Calibration complete. %d quantizers calibrated.", num_quantizers)
 
     def save_calib_cache(self, path: str):
         """
@@ -222,7 +224,7 @@ class CalibrationManager:
                     calib_cache[name] = module._amax.cpu()
 
         torch.save(calib_cache, path)
-        print(f"Saved calibration cache to {path}")
+        logger.info("Saved calibration cache to %s", path)
 
     def load_calib_cache(self, path: str):
         """
@@ -238,4 +240,4 @@ class CalibrationManager:
                 if name in calib_cache:
                     module._amax = calib_cache[name].to(self.device)
 
-        print(f"Loaded calibration cache from {path}")
+        logger.info("Loaded calibration cache from %s", path)

@@ -30,7 +30,6 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
 
 project_root = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(project_root))
@@ -80,87 +79,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def _load_deploy_quantization_cfg(deploy_cfg_path: str) -> Tuple[Dict[str, Any], Optional[str]]:
-    from mmengine.config import Config
-
-    deploy_cfg = Config.fromfile(deploy_cfg_path)
-    # MMEngine Config: prefer .get("quantization"); getattr() can miss keys on some Config wrappers.
-    quant_raw = deploy_cfg.get("quantization", None)
-    if quant_raw is None:
-        quant_raw = getattr(deploy_cfg, "quantization", None)
-    if quant_raw is None:
-        quant = {}
-    else:
-        try:
-            quant = {k: quant_raw[k] for k in quant_raw}
-        except Exception:
-            quant = dict(quant_raw)
-
-    # Hoist top-level ``spconv_int8_fp16_layers`` (kept top-level for consistency with
-    # ``spconv_do_sort``) into the returned quant dict so downstream PTQ/loader code
-    # only has to look in ONE place. Entries are substring-matched against
-    # ``named_modules()`` names in ``apply_nvidia_spconv_int8(exclude_patterns=...)``.
-    if "spconv_int8_fp16_layers" not in quant:
-        fp16_layers = deploy_cfg.get("spconv_int8_fp16_layers", None)
-        if fp16_layers is None:
-            fp16_layers = getattr(deploy_cfg, "spconv_int8_fp16_layers", None)
-        if fp16_layers is not None:
-            try:
-                quant["spconv_int8_fp16_layers"] = list(fp16_layers)
-            except TypeError:
-                quant["spconv_int8_fp16_layers"] = []
-
-    ckpt = deploy_cfg.get("checkpoint_path", None)
-    if ckpt is None:
-        ckpt = getattr(deploy_cfg, "checkpoint_path", None)
-    return quant, ckpt
-
-
-def _build_ptq_quant_settings(args) -> Tuple[bool, Set[str], Dict[str, bool]]:
-    """Build PTQ quantization settings from deploy config.
-
-    BEVFusion uses bbox_head (not pts_bbox_head), so we handle
-    component names explicitly.
-    """
-    fuse_bn = True
-    skip_layers: Set[str] = set()
-    quant_flags: Dict[str, bool] = {
-        "quant_backbone": True,
-        "quant_neck": True,
-        "quant_head": True,
-        "quant_add": False,
-    }
-
-    if args.deploy_cfg:
-        quant_cfg, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
-
-        if "fuse_bn" in quant_cfg:
-            fuse_bn = bool(quant_cfg.get("fuse_bn", True))
-
-        for k in list(quant_flags.keys()):
-            if k in quant_cfg:
-                quant_flags[k] = bool(quant_cfg[k])
-
-        skip_layers |= set(quant_cfg.get("sensitive_layers", []) or [])
-
-    if getattr(args, "sparse_int8_only", False):
-        quant_flags["quant_backbone"] = False
-        quant_flags["quant_neck"] = False
-        quant_flags["quant_head"] = False
-        quant_flags["quant_add"] = False
-
-    return fuse_bn, skip_layers, quant_flags
-
-
-def _dense_quant_enabled(quant_flags: Dict[str, bool]) -> bool:
-    return bool(
-        quant_flags.get("quant_backbone")
-        or quant_flags.get("quant_neck")
-        or quant_flags.get("quant_head")
-        or quant_flags.get("quant_add")
-    )
-
-
 def _build_bevfusion_model(config_path: str, checkpoint_path: str, device: str):
     """Build BEVFusion model using mmdet3d init_model."""
     from mmdet3d.apis import init_model
@@ -175,40 +93,16 @@ def _build_bevfusion_model(config_path: str, checkpoint_path: str, device: str):
     return model
 
 
-def _fuse_spconv_bn(model):
-    """Fuse BatchNorm in sparse encoder (pts_middle_encoder).
+def _fuse_spconv_bn(model) -> int:
+    """Fuse SparseConv+BN in ``pts_middle_encoder`` via the shared framework implementation."""
+    from deployment.quantization.sparse import fuse_spconv_bn_in_encoder
 
-    Uses spconv's fuse_spconv_bn_eval for correct sparse weight permutation.
-    """
     sparse_encoder = getattr(model, "pts_middle_encoder", None)
     if sparse_encoder is None:
         print("  No pts_middle_encoder found; skipping spconv BN fusion")
         return 0
 
-    try:
-        from spconv.pytorch.quantization.utils import fuse_spconv_bn_eval
-    except ImportError:
-        print("  spconv quantization utils not available; skipping spconv BN fusion")
-        return 0
-
-    import torch.nn as nn
-    from spconv.pytorch.conv import SparseConvolution
-
-    sparse_encoder.eval()
-    fused_count = 0
-
-    for name, module in sparse_encoder.named_modules():
-        children = list(module._modules.items())
-        for i in range(len(children) - 1):
-            left_name, left_mod = children[i]
-            right_name, right_mod = children[i + 1]
-
-            if isinstance(left_mod, SparseConvolution) and isinstance(right_mod, nn.BatchNorm1d):
-                fused_conv = fuse_spconv_bn_eval(left_mod, right_mod)
-                setattr(module, left_name, fused_conv)
-                setattr(module, right_name, nn.Identity())
-                fused_count += 1
-
+    fused_count = fuse_spconv_bn_in_encoder(sparse_encoder)
     print(f"  Fused {fused_count} SparseConv-BN pairs in pts_middle_encoder")
     return fused_count
 
@@ -273,7 +167,7 @@ def _calibrate_spconv(
     num_samples,
     device,
     output_path,
-    quant_cfg,
+    fp16_layers,
 ):
     """Run spconv INT8 for sparse encoder using NVIDIA TensorQuantizer (histogram + MSE).
 
@@ -364,7 +258,7 @@ def _calibrate_spconv(
         calibrate_spconv_nvidia,
     )
 
-    fp16_layers: List[str] = list(quant_cfg.get("spconv_int8_fp16_layers", []) or [])
+    fp16_layers = list(fp16_layers or [])
     if fp16_layers:
         print(f"  [nvidia-quant] spconv_int8_fp16_layers active ({len(fp16_layers)} pattern(s)): {fp16_layers}")
         print(
@@ -469,16 +363,24 @@ def run_ptq(args):
     print(f"Output: {args.output}")
     print("=" * 80)
 
-    fuse_bn, skip_layers, quant_flags = _build_ptq_quant_settings(args)
-    dense_on = _dense_quant_enabled(quant_flags)
+    from deployment.config.schema import load_quantization_config
+    from deployment.projects.bevfusion_l.quantization.plan import build_bevfusion_plan
+
+    # Single source of truth: parse the deploy ``quantization`` block once.
+    config, _ = load_quantization_config(args.deploy_cfg)
+    if getattr(args, "sparse_int8_only", False):
+        # Sparse-only PTQ: keep the dense towers FP32 (no QuantConv2d in the .pth).
+        config = config.with_overrides(quant_backbone=False, quant_neck=False, quant_head=False, quant_add=False)
+
+    fuse_bn = config.fuse_bn
+    skip_layers = config.resolved_sensitive_layers()
+    dense_on = config.dense_quant_enabled()
 
     if getattr(args, "sparse_int8_only", False):
         print("\n  --sparse-int8-only: dense backbone/neck/head will stay FP32 (no QuantConv2d in .pth).")
-    if getattr(args, "sparse_int8_only", False) and args.skip_spconv_int8:
-        print("  Warning: --sparse-int8-only with --skip-spconv-int8 → no INT8 path is calibrated.")
-    if getattr(args, "sparse_int8_only", False):
-        qwarn, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
-        if not qwarn.get("spconv_int8", False):
+        if args.skip_spconv_int8:
+            print("  Warning: --sparse-int8-only with --skip-spconv-int8 → no INT8 path is calibrated.")
+        if not config.spconv_int8:
             print(
                 "  Warning: deploy quantization.spconv_int8=False; spconv INT8 step will be skipped. "
                 "Use a deploy cfg with spconv_int8=True for sparse-only PTQ."
@@ -488,7 +390,7 @@ def run_ptq(args):
     print("\n[1/6] Loading BEVFusion model...")
     model = _build_bevfusion_model(args.config, args.checkpoint, args.device)
 
-    # [2/6] Sparse BN fuse (sparse INT8 quantizers are attached + calibrated later in [5]).
+    # [2/6] Sparse BN fuse (sparse INT8 quantizers are attached + calibrated later in [4b]).
     if fuse_bn:
         print("\n[2/6] Fusing sparse SparseConv-BN...")
         _fuse_spconv_bn(model)
@@ -498,22 +400,12 @@ def run_ptq(args):
     # [3/6] Dense BN fuse + Q/DQ via the SHARED QuantizationPlan.
     # The deploy loader (model_loader._load_with_quantization) builds the SAME dense scheme, so the
     # PTQ state_dict and the deployed module tree line up by construction (no drift by convention).
-    from deployment.projects.bevfusion_l.quantization.plan import build_bevfusion_plan
-
-    dense_cfg = {
-        "fuse_bn": fuse_bn,
-        "quant_backbone": quant_flags["quant_backbone"],
-        "quant_neck": quant_flags["quant_neck"],
-        "quant_head": quant_flags["quant_head"],
-        "quant_add": quant_flags["quant_add"],
-        "sensitive_layers": list(skip_layers),
-        "spconv_int8": False,  # sparse handled by [2]/[5], not this dense plan
-    }
+    # ``include_sparse=False``: the sparse tower is handled by [2]/[4b], not this dense plan.
     if dense_on:
         print("\n[3/6] Dense BN fuse + Q/DQ via shared QuantizationPlan...")
     else:
         print("\n[3/6] Dense Q/DQ skipped (sparse INT8 only); dense BN still fused if fuse_bn.")
-    build_bevfusion_plan(dense_cfg, include_sparse=False).prepare(model)
+    build_bevfusion_plan(config, include_sparse=False).prepare(model)
 
     # [4/6] Build dataloader (spconv calib + optional dense calib)
     print("\n[4/6] Building calibration dataloader...")
@@ -547,10 +439,8 @@ def run_ptq(args):
     # Spconv INT8 *before* dense CalibrationManager stats. If dense is calibrated while sparse is still
     # FP32, TensorQuantizer amax matches the wrong BEV distribution → inference (INT8 sparse → dense)
     # gets OOD activations and mAP can collapse (~0).
-    quant_cfg_for_sparse: Dict[str, Any] = {}
     if not args.skip_spconv_int8:
-        quant_cfg_for_sparse, _ = _load_deploy_quantization_cfg(args.deploy_cfg)
-        if quant_cfg_for_sparse.get("spconv_int8", False):
+        if config.spconv_int8:
             print("\n[4b/6] Spconv INT8 for sparse encoder (NVIDIA TensorQuantizer, runs before dense PTQ calib)...")
             spconv_samples = min(total_ds, int(args.calibrate_samples))
             print(
@@ -564,7 +454,7 @@ def run_ptq(args):
                     spconv_samples,
                     args.device,
                     args.output,
-                    quant_cfg_for_sparse,
+                    config.spconv_int8_fp16_layers,
                 )
             except Exception as e:
                 # Fail loud: spconv INT8 was explicitly requested (spconv_int8=True). Silently

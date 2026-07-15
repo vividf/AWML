@@ -157,11 +157,9 @@ def _load_quantized_checkpoint(
         Model with quantized checkpoint loaded.
     """
     try:
-        from deployment.projects.centerpoint.quantization.quant_model import quant_model
-        from deployment.quantization import (
-            CalibrationManager,
-            fuse_model_bn,
-        )
+        from deployment.config.schema import QuantizationConfig
+        from deployment.projects.centerpoint.quantization.plan import build_centerpoint_plan
+        from deployment.quantization import CalibrationManager
     except ImportError as e:
         raise ImportError(
             "Quantization modules not found. Make sure deployment/quantization " f"is properly installed. Error: {e}"
@@ -169,44 +167,21 @@ def _load_quantized_checkpoint(
 
     logger.info("Loading quantized checkpoint with transformations...")
 
-    # 1. Fuse BatchNorm if enabled (must be done before quantization)
-    fuse_bn = quantization.get("fuse_bn", True)
-    if fuse_bn:
-        logger.info("Fusing BatchNorm layers...")
-        model.eval()
-        fuse_model_bn(model)
-
-    # 2. Insert Q/DQ nodes
-    logger.info("Inserting Q/DQ nodes...")
-    skip_layers = _build_skip_layers(quantization)
-
+    # 1-2. Build the SAME quantized module tree the PTQ producer built (BN fuse + Q/DQ insert),
+    # via the shared plan, so the calibrated state_dict lines up on load.
+    config = QuantizationConfig.from_dict(quantization)
+    skip_layers = config.resolved_sensitive_layers()
     logger.info(
-        "Quantization flags: backbone=%s, neck=%s, head=%s, voxel_encoder=%s, "
-        "add=%s, linear_backbone=%s, quant_ese_mul_identity=%s, quant_ese_pool_input=%s, quant_maxpool_input=%s",
-        bool(quantization.get("quant_backbone", True)),
-        bool(quantization.get("quant_neck", True)),
-        bool(quantization.get("quant_head", True)),
-        bool(quantization.get("quant_voxel_encoder", True)),
-        bool(quantization.get("quant_add", False)),
-        bool(quantization.get("quant_linear_backbone", False)),
-        bool(quantization.get("quant_ese_mul_identity", False)),
-        bool(quantization.get("quant_ese_pool_input", False)),
-        bool(quantization.get("quant_maxpool_input", False)),
+        "Building quantized tree via CenterPoint plan (fuse_bn=%s, backbone=%s, neck=%s, head=%s, "
+        "voxel_encoder=%s, add=%s)",
+        config.fuse_bn,
+        config.quant_backbone,
+        config.quant_neck,
+        config.quant_head,
+        config.quant_voxel_encoder,
+        config.quant_add,
     )
-
-    quant_model(
-        model,
-        quant_backbone=bool(quantization.get("quant_backbone", True)),
-        quant_neck=bool(quantization.get("quant_neck", True)),
-        quant_head=bool(quantization.get("quant_head", True)),
-        quant_voxel_encoder=bool(quantization.get("quant_voxel_encoder", True)),
-        quant_add=bool(quantization.get("quant_add", False)),
-        quant_linear_backbone=bool(quantization.get("quant_linear_backbone", False)),
-        quant_ese_mul_identity=bool(quantization.get("quant_ese_mul_identity", False)),
-        quant_ese_pool_input=bool(quantization.get("quant_ese_pool_input", False)),
-        quant_maxpool_input=bool(quantization.get("quant_maxpool_input", False)),
-        skip_names=skip_layers,
-    )
+    build_centerpoint_plan(config).prepare(model)
 
     # 2.5 Load calibration cache if provided
     calib_cache_path = quantization.get("calib_cache_path")
@@ -250,34 +225,6 @@ def _load_quantized_checkpoint(
 
     logger.info("Quantized checkpoint loaded successfully")
     return model
-
-
-def _build_skip_layers(quantization: dict) -> Set[str]:
-    """Build the set of layer name prefixes to skip during quantization."""
-    skip_layers: Set[str] = set(quantization.get("sensitive_layers", []) or [])
-
-    # SECOND/ResNet: pts_backbone.blocks.*
-    # Merge two controls into one effective stage set:
-    # 1) contiguous first-N from skip_backbone_first_stages
-    # 2) explicit indexes from skip_backbone_stages
-    skip_backbone_stage_ids: Set[int] = set()
-    skip_first = int(quantization.get("skip_backbone_first_stages", 0) or 0)
-    if skip_first > 0:
-        skip_backbone_stage_ids.update(range(skip_first))
-    skip_backbone_stage_ids.update(int(i) for i in (quantization.get("skip_backbone_stages", []) or []))
-    for stage_id in skip_backbone_stage_ids:
-        skip_layers.add(f"pts_backbone.blocks.{stage_id}")
-
-    # VoVNet: pts_backbone.stem, .stage2, .stage3, .stage4 (must match PTQ so model structure = checkpoint)
-    vovnet_stages = quantization.get("skip_vovnet_stages", None)
-    if vovnet_stages is not None:
-        _vovnet_names = ["stem", "stage2", "stage3", "stage4"]
-        for idx in vovnet_stages:
-            i = int(idx)
-            if 0 <= i < len(_vovnet_names):
-                skip_layers.add(f"pts_backbone.{_vovnet_names[i]}")
-
-    return skip_layers
 
 
 def _move_quantizer_amax_to_device(model: torch.nn.Module, device: str) -> None:

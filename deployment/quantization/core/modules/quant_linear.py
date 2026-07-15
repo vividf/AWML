@@ -1,20 +1,15 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 """Quantized Linear module for PillarFeatureNet."""
 
+import importlib.util
+
 import torch.nn as nn
 import torch.nn.functional as F
 
-try:
-    from pytorch_quantization import tensor_quant
-    from pytorch_quantization.nn.modules import _utils
-
-    PYTORCH_QUANTIZATION_AVAILABLE = True
-except ImportError:
-    PYTORCH_QUANTIZATION_AVAILABLE = False
-    _utils = None
-    tensor_quant = None
+PYTORCH_QUANTIZATION_AVAILABLE = importlib.util.find_spec("pytorch_quantization") is not None
 
 from deployment.quantization.core.availability import require_pytorch_quantization
+from deployment.quantization.core.descriptors import default_input_desc, linear_weight_desc
 
 
 def _check_pytorch_quantization():
@@ -46,14 +41,11 @@ class QuantLinear(nn.Linear):
         _check_pytorch_quantization()
         super().__init__(in_features, out_features, bias, **kwargs)
 
-        # Set default quantization descriptors
+        # Set default quantization descriptors (single source: core.descriptors)
         if QuantLinear.default_quant_desc_input is None:
-            QuantLinear.default_quant_desc_input = tensor_quant.QuantDescriptor(num_bits=8, calib_method="histogram")
+            QuantLinear.default_quant_desc_input = default_input_desc()
         if QuantLinear.default_quant_desc_weight is None:
-            # Per-row quantization for Linear layers
-            QuantLinear.default_quant_desc_weight = tensor_quant.QuantDescriptor(
-                num_bits=8, axis=(0,)  # Per output channel
-            )
+            QuantLinear.default_quant_desc_weight = linear_weight_desc()
 
         self._input_quantizer = None
         self._weight_quantizer = None

@@ -267,9 +267,7 @@ def build_bevfusion_model(
             model = _load_with_quantization(model, checkpoint_path, torch_device, quantization)
         except Exception as e:
             logger.exception("Quantization pipeline failed (full traceback above). Summary: %s", e)
-            logger.error(
-                f"Quantization failed: {e}. See message below for whether a safe FP32 fallback is possible."
-            )
+            logger.error(f"Quantization failed: {e}. See message below for whether a safe FP32 fallback is possible.")
             if quantization.get("ptq_checkpoint"):
                 raise RuntimeError(
                     "PTQ checkpoint load failed; cannot fall back to plain FP32 load_checkpoint. "
@@ -323,17 +321,19 @@ def _load_with_quantization(
     B) FP32 checkpoint: ``load_state_dict`` first, then ``plan.prepare`` inserts uncalibrated Q/DQ
        (dense only; would need runtime calibration).
     """
+    from deployment.config.schema import QuantizationConfig
     from deployment.projects.bevfusion_l.quantization.plan import build_bevfusion_plan
 
-    is_ptq = quantization.get("ptq_checkpoint", False)
-    spconv_int8 = bool(quantization.get("spconv_int8", False))
+    config = QuantizationConfig.from_dict(quantization)
+    is_ptq = config.ptq_checkpoint
+    spconv_int8 = config.spconv_int8
 
     if is_ptq:
         logger.info("Loading PTQ checkpoint (pre-calibrated Q/DQ nodes)...")
 
         # Rebuild the quantized module tree BEFORE load_state_dict, using the shared plan
         # (dense Q/DQ + BN fuse, sparse BN fuse / NVIDIA quantizers). Identical to the PTQ producer.
-        build_bevfusion_plan(quantization, include_sparse=True).prepare(model)
+        build_bevfusion_plan(config, include_sparse=True).prepare(model)
 
         checkpoint = torch.load(checkpoint_path, map_location=device)
         state_dict = checkpoint.get("state_dict", checkpoint)
@@ -403,7 +403,7 @@ def _load_with_quantization(
         load_checkpoint(model, checkpoint_path, map_location=device)
         model.eval()
         logger.info("Applying dense quantization (uncalibrated) to BEVFusion model...")
-        build_bevfusion_plan(quantization, include_sparse=False).prepare(model)
+        build_bevfusion_plan(config, include_sparse=False).prepare(model)
 
     logger.info("Quantization applied successfully")
     return model
