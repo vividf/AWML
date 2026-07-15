@@ -9,23 +9,23 @@
 
 使用流程（配合部署 step 0~5，詳見 ``docs/16_PRIORITY_A_PROFILING_USAGE.md``）::
 
-    # 已經跑過 step 0 ~ step 5，有了 bevfusion_sparse.engine 之後：
+    # 有了 bevfusion_sparse.engine 之後：
     python -m deployment.projects.bevfusion_l.benchmark.profile_sparse_encoder \\
-        --engine work_dirs/bevfusion_split_int8_deployment/tensorrt/bevfusion_sparse.engine \\
-        --deploy-cfg deployment/projects/bevfusion_l/config/deploy_config_split_int8.py \\
+        --engine work_dirs/bevfusion_deployment_2_8_dense_int8/tensorrt/bevfusion_sparse.engine \\
+        --deploy-cfg deployment/projects/bevfusion_l/config/deploy_config_split_sparse_fp16_dense_int8_2_8.py \\
         --model-cfg projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m.py \\
         --warmup 20 --iterations 200 \\
-        --output work_dirs/bevfusion_split_int8_deployment/sparse_profile.json
+        --output work_dirs/bevfusion_deployment_2_8_dense_int8/sparse_profile.json
 
 工具負責：
 
-  * 載入 ``bevfusion_sparse.engine``（含 ``ImplicitGemmInt8`` / pair-gen /
+  * 載入 ``bevfusion_sparse.engine``（含 ``ImplicitGemm`` / pair-gen /
     scatter 等 plugin）。
   * 產生真實 voxel input（透過 ``BEVFusionDataLoader`` + ``pts_voxel_layer``）
     或在 CI 裡用 ``--synthetic`` 走簡易合成 input 做冒煙測試。
   * 分離 warmup 與 measured 階段，回報 CUDA-event 穩態總時間。
   * 掛上 ``trt.IProfiler``，蒐集 per-layer 時間，再依 layer 名稱分類成
-    ``pair_gen`` / ``implicit_gemm_int8`` / ``implicit_gemm_fp`` / ``relu`` /
+    ``pair_gen`` / ``implicit_gemm_fp`` / ``relu`` /
     ``add`` / ``scatter_nd`` / ``cast`` / ``other`` 等 bucket。
   * 依 encoder block（``conv_input`` / ``encoder_layer.0..3`` / ``conv_out``）
     做第二層 roll-up，對照現有第 8 章的 layer 結構。
@@ -81,7 +81,6 @@ logger = logging.getLogger("priority_a.profile_sparse_encoder")
 # sparse_functional.py``）：
 #
 # * ``autoware::GetIndicePairsImplicitGemm``   → pair_gen（含 argsort 輸出）
-# * ``autoware::ImplicitGemmInt8``             → implicit_gemm（INT8 分支）
 # * ``autoware::ImplicitGemm``                 → implicit_gemm（FP16 / conv_out）
 # * ``ScatterND``                              → sparse → dense 投影
 # * ``Add`` / ``Relu``                          → sparse residual 鏈
@@ -93,12 +92,8 @@ _BUCKET_PATTERNS: Tuple[Tuple[re.Pattern, str], ...] = (
     # pair-gen / sort — 這是 A2 要放大檢視的 bucket
     (re.compile(r"GetIndicePairsImplicitGemm", re.IGNORECASE), "pair_gen"),
     (re.compile(r"GetIndicePairs(?!ImplicitGemm)", re.IGNORECASE), "pair_gen"),
-    # implicit gemm（INT8 / FP16）
-    # NOTE: TRT layer names use mixed casing/underscores e.g. ``ImplicitGemm_int8``
-    # so the INT8 rule needs to tolerate a separator between ``ImplicitGemm`` and
-    # ``int8`` and the FP rule must explicitly anchor on a non-int8 ending.
-    (re.compile(r"ImplicitGemm[_\- ]?Int8", re.IGNORECASE), "implicit_gemm_int8"),
-    (re.compile(r"ImplicitGemm(?![_\- ]?Int8)", re.IGNORECASE), "implicit_gemm_fp"),
+    # implicit gemm（FP16 sparse conv）
+    (re.compile(r"ImplicitGemm", re.IGNORECASE), "implicit_gemm_fp"),
     (re.compile(r"IndiceConv", re.IGNORECASE), "implicit_gemm_fp"),
     # dense / scatter
     (re.compile(r"ScatterND", re.IGNORECASE), "scatter_nd"),
@@ -112,7 +107,6 @@ _BUCKET_PATTERNS: Tuple[Tuple[re.Pattern, str], ...] = (
 
 _BUCKET_ORDER: Tuple[str, ...] = (
     "pair_gen",
-    "implicit_gemm_int8",
     "implicit_gemm_fp",
     "scatter_nd",
     "add",
@@ -199,7 +193,7 @@ def _load_real_sparse_inputs(
 ) -> SparseInputs:
     """以 BEVFusion voxelizer 產生一個真實 voxel input（和 eval 路徑一致）。
 
-    為避免 profile 工具順便跑了 PTQ / spconv_int8 的重建流程，這裡不走
+    為避免 profile 工具順便跑了 PTQ 的重建流程，這裡不走
     ``BEVFusionDeploymentRunner``，而是直接 build 資料集 + voxel layer。
     """
     from mmengine.config import Config  # noqa: WPS433

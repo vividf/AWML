@@ -40,8 +40,8 @@ def _try_get_constant_numpy(
     """Return the constant numpy array for tensor ``name``, or ``None`` if not a constant.
 
     Checks ``init_map`` (pre-built from ``graph.initializer``) first, then searches
-    for a ``Constant`` node that produces ``name``. Used by the sparse INT8 ONNX transform
-    (``sparse_int8_onnx_transform``) to read baked constants out of the exported sparse graph.
+    for a ``Constant`` node that produces ``name``. Used by the ImplicitGemm trailing-ReLU
+    fuse to read baked constants (e.g. the merged bias) out of the exported sparse graph.
     """
     if name in init_map:
         return init_map[name]

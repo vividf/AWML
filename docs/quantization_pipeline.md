@@ -16,15 +16,12 @@ Shared plan:
 flowchart TD
     A["Start: bevfusion_l quantize.py ptq"] --> B["Parse args"]
     B --> C["Load deploy quantization config"]
-    C --> D{"sparse-int8-only enabled?"}
-    D -->|yes| D1["Override dense flags off<br/>quant_backbone=false<br/>quant_neck=false<br/>quant_head=false<br/>quant_add=false"]
-    D -->|no| E
-    D1 --> E["Build BEVFusion model<br/>init_model with config and checkpoint"]
+    C --> E["Build BEVFusion model<br/>init_model with config and checkpoint"]
 
     E --> F{"fuse_bn enabled?"}
-    F -->|yes| F1["Fuse SparseConv + BN<br/>pts_middle_encoder"]
+    F -->|yes| F1["Fuse SparseConv + BN<br/>pts_middle_encoder (sparse stays FP16)"]
     F -->|no| G
-    F1 --> G["Prepare dense QuantizationPlan<br/>include_sparse=false"]
+    F1 --> G["build_bevfusion_plan(config, include_sparse=false).prepare(model)"]
 
     G --> H{"Dense quant enabled?"}
     H -->|yes| H1["DenseQDQScheme<br/>Fuse BN in pts_backbone, pts_neck, bbox_head<br/>Conv2d to QuantConv2d<br/>optional residual-add quantizers"]
@@ -33,29 +30,10 @@ flowchart TD
     H1 --> I["Build validation dataloader<br/>batch_size, seed, shuffle"]
     H2 --> I
 
-    I --> J{"spconv_int8 enabled and not skipped?"}
-    J -->|yes| K["Collect voxelized calibration samples"]
-    J -->|no| N["Use FP32 sparse encoder distribution"]
+    I --> P{"Dense quant enabled?"}
+    P -->|yes| P1["Dense calibration with CalibrationManager"]
+    P -->|no| S["Skip dense calibration"]
 
-    K --> K1["points to pts_voxel_layer"]
-    K1 --> K2["pts_voxel_encoder<br/>preserve real feature layout"]
-    K2 --> K3["calibration_data<br/>voxel_features, coords, batch_size"]
-    K3 --> L["Apply NVIDIA TensorQuantizer to sparse convs<br/>input histogram quantizer<br/>weight per-output-channel quantizer"]
-    L --> M["Sparse calibration"]
-
-    M --> M1["Disable fake quant<br/>Enable calib"]
-    M1 --> M2["Run pts_middle_encoder on calibration_data<br/>Collect histograms"]
-    M2 --> M3["Compute amax with MSE"]
-    M3 --> M4["Enable quant<br/>Disable calib"]
-    M4 --> M5["Collect sparse terminal scales<br/>_sparse_tail_absmax<br/>_last_int8_conv_output_absmax"]
-    M5 --> O
-    N --> O
-
-    O{"Dense quant enabled?"}
-    O -->|yes| P["Dense calibration with CalibrationManager<br/>uses current sparse encoder<br/>INT8 if sparse step succeeded"]
-    O -->|no| S["Skip dense calibration"]
-
-    P --> P1["Force voxel and points float when needed"]
     P1 --> P2["Disable fake quant<br/>Enable calib for all TensorQuantizers"]
     P2 --> P3["Run model.test_step over N batches"]
     P3 --> P4["Compute amax with MSE"]
@@ -63,43 +41,27 @@ flowchart TD
     P5 --> Q["Disable sensitive layers if configured"]
     Q --> R["Save PTQ checkpoint<br/>Save dense .calib cache"]
     S --> R
-    R --> T["Deploy later with deployment.cli.main bevfusion<br/>module main_body"]
+    R --> T["Deploy later with deployment.cli.main bevfusion_l"]
 ```
 
-Key detail: BEVFusion sparse INT8 calibration intentionally runs before dense
-calibration. Dense Q/DQ is calibrated against the BEV distribution produced by
-the current sparse encoder, so when `spconv_int8=True`, dense calibration sees
-the sparse INT8 fake-quant behavior rather than the FP32 sparse distribution.
+Key detail: the BEVFusion sparse encoder deploys in **FP16** — PTQ only folds its SparseConv+BN
+(so the module tree matches deploy) and never quantizes it. Dense Q/DQ is calibrated against the BEV
+distribution produced by the FP16 sparse encoder, which is exactly what the deploy path also runs.
 
 ## BEVFusion Calibration Detail
 
 ```mermaid
 flowchart LR
-    subgraph Sparse_SpConv_Calibration[BEVFusion sparse encoder calibration]
-        A["Calibration dataloader"] --> B["Extract points"]
-        B --> C["pts_voxel_layer"]
-        C --> D["pts_voxel_encoder"]
-        D --> E["voxel_features, coords, batch_size"]
-        E --> F["pts_middle_encoder<br/>with sparse TensorQuantizers"]
-        F --> G["Histograms"]
-        G --> H["MSE amax"]
-        H --> I["_amax buffers"]
-        F --> J["Terminal absmax hooks"]
-        J --> K["_sparse_tail_absmax<br/>_last_int8_conv_output_absmax"]
-    end
-
     subgraph Dense_Calibration[BEVFusion dense QDQ calibration]
-        L["Same dataloader"] --> M["model.test_step"]
+        L["Calibration dataloader"] --> M["model.test_step<br/>(FP16 sparse -> dense Q/DQ)"]
         M --> N["TensorQuantizer histograms"]
         N --> O["MSE amax"]
         O --> P["PTQ checkpoint + .calib cache"]
     end
-
-    K --> M
 ```
 
-Sparse implementation:
-`deployment/quantization/sparse/spconv_int8.py`
+Sparse BN fold:
+`deployment/quantization/sparse/fusion.py`
 
 Dense calibration implementation:
 `deployment/quantization/core/calibration.py`
@@ -205,8 +167,8 @@ flowchart TD
 | --- | --- |
 | BEVFusion PTQ CLI | `deployment/projects/bevfusion_l/quantization/quantize.py` |
 | BEVFusion shared quantization plan | `deployment/projects/bevfusion_l/quantization/plan.py` |
-| BEVFusion sparse INT8 scheme | `deployment/projects/bevfusion_l/quantization/schemes.py` |
-| SparseConv INT8 attach/calibrate | `deployment/quantization/sparse/spconv_int8.py` |
+| BEVFusion sparse BN-fuse scheme (FP16) | `deployment/projects/bevfusion_l/quantization/schemes.py` |
+| SparseConv+BN fold | `deployment/quantization/sparse/fusion.py` |
 | Generic dense Q/DQ scheme | `deployment/quantization/schemes/dense_qdq.py` |
 | CenterPoint PTQ/QAT CLI | `deployment/projects/centerpoint/quantization/quantize.py` |
 | CenterPoint shared quantization plan | `deployment/projects/centerpoint/quantization/plan.py` |

@@ -189,7 +189,7 @@ class QuantizationConfig:
 
     Field defaults match the ``.get(..., default)`` calls in those loaders:
     ``quant_{backbone,neck,head,voxel_encoder}`` default True; everything else
-    (add/linear/eSE/maxpool, spconv) defaults False. ``skip_vovnet_stages`` defaults
+    (add/linear/eSE/maxpool) defaults False. ``skip_vovnet_stages`` defaults
     to ``None`` (not VoVNet) and must be distinguished from an empty tuple.
     """
 
@@ -214,9 +214,6 @@ class QuantizationConfig:
     skip_vovnet_stages: Optional[Tuple[int, ...]] = None
     sensitive_layers: Tuple[str, ...] = ()
     calib_cache_path: Optional[str] = None
-    # BEVFusion sparse-encoder INT8
-    spconv_int8: bool = False
-    spconv_int8_fp16_layers: Tuple[str, ...] = ()
     # Verbatim deploy-config dict for per-project loaders.
     raw: Mapping[str, Any] = field(default_factory=_empty_mapping)
 
@@ -255,8 +252,6 @@ class QuantizationConfig:
             skip_vovnet_stages=(None if vov is None else cls._int_tuple(vov)),
             sensitive_layers=cls._str_tuple(raw.get("sensitive_layers")),
             calib_cache_path=raw.get("calib_cache_path"),
-            spconv_int8=bool(raw.get("spconv_int8", False)),
-            spconv_int8_fp16_layers=cls._str_tuple(raw.get("spconv_int8_fp16_layers")),
             raw=MappingProxyType(dict(raw)),
         )
 
@@ -293,7 +288,7 @@ class QuantizationConfig:
         return bool(self.quant_backbone or self.quant_neck or self.quant_head or self.quant_add)
 
     def with_overrides(self, **overrides: Any) -> QuantizationConfig:
-        """Return a copy with the given fields replaced (e.g. CLI ``--sparse-int8-only``)."""
+        """Return a copy with the given fields replaced (e.g. a CLI flag overriding a deploy-cfg value)."""
         from dataclasses import replace
 
         return replace(self, **overrides)
@@ -302,10 +297,8 @@ class QuantizationConfig:
 def load_quantization_config(deploy_cfg_path: str) -> Tuple[QuantizationConfig, Optional[str]]:
     """Load ``quantization`` (and the optional ``checkpoint_path``) from a deploy-config file.
 
-    Centralizes the MMEngine ``Config`` access quirks (prefer ``.get`` over ``getattr``) and folds a
-    top-level ``spconv_int8_fp16_layers`` — kept top-level in configs alongside ``spconv_do_sort`` —
-    into the quantization mapping so downstream code only looks in one place. Used by the PTQ / QAT
-    producer CLIs; the deploy loaders instead receive the ``quantization`` dict and call
+    Centralizes the MMEngine ``Config`` access quirks (prefer ``.get`` over ``getattr``). Used by the
+    PTQ / QAT producer CLIs; the deploy loaders instead receive the ``quantization`` dict and call
     :meth:`QuantizationConfig.from_dict` directly.
 
     Returns:
@@ -323,10 +316,6 @@ def load_quantization_config(deploy_cfg_path: str) -> Tuple[QuantizationConfig, 
 
     raw = _cfg_get("quantization")
     mapping = {k: raw[k] for k in raw} if raw is not None else {}
-    if "spconv_int8_fp16_layers" not in mapping:
-        fp16_layers = _cfg_get("spconv_int8_fp16_layers")
-        if fp16_layers is not None:
-            mapping["spconv_int8_fp16_layers"] = list(fp16_layers)
 
     return QuantizationConfig.from_dict(mapping), _cfg_get("checkpoint_path")
 

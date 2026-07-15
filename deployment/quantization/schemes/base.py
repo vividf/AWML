@@ -4,16 +4,16 @@
 Motivation
 ----------
 Quantization used to be smeared across every deployment stage, and the PTQ producer re-created the
-quantized module tree by convention (a code comment saying "must match the loader"). Dense
-(pytorch_quantization Q/DQ) and sparse (spconv ``ImplicitGemmInt8``) were two unrelated
-implementations with no shared contract.
+quantized module tree by convention (a code comment saying "must match the loader"). The dense
+(pytorch_quantization Q/DQ) tower and the sparse encoder (SparseConv+BN fold for FP16 deploy) had no
+shared contract.
 
 A :class:`QuantizationScheme` is a strategy object with one structural step, :meth:`prepare`, that
-inserts quantizers / fuses BN. Both dense and sparse implement it; their *internals stay different*
-(native TensorRT INT8 vs. a custom plugin + graph rewrite), but the **seam** is uniform. Because the
-loader and the PTQ producer both build their module tree by calling the *same* scheme's ``prepare``,
-the PTQ ``state_dict`` and the deploy ``load_state_dict`` line up by construction, not by a
-"keep these two code paths in sync" comment.
+inserts quantizers / fuses BN. Both the dense and sparse towers implement it; their *internals stay
+different* (native TensorRT INT8 Q/DQ vs. a SparseConv+BN fold), but the **seam** is uniform. Because
+the loader and the PTQ producer both build their module tree by calling the *same* scheme's
+``prepare``, the PTQ ``state_dict`` and the deploy ``load_state_dict`` line up by construction, not by
+a "keep these two code paths in sync" comment.
 
 A :class:`QuantizationPlan` composes schemes for a whole model (e.g. a sparse scheme on
 ``pts_middle_encoder`` + a dense scheme on the backbone/neck/head) and fans ``prepare`` out to every

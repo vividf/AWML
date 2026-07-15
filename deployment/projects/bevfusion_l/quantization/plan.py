@@ -12,9 +12,8 @@ Composition:
   BN is fused across **all three** dense submodules when ``fuse_bn``; only the enabled ones are
   quantized. If no dense conv is enabled but ``fuse_bn`` is set, a fuse-only dense scheme is still
   added.
-* Sparse tower (``pts_middle_encoder``): a :class:`SpconvInt8Scheme`, added only when
-  ``include_sparse`` (the PTQ-checkpoint load path). ``int8`` follows ``spconv_int8``; when INT8 is
-  off but ``fuse_bn`` is on, the sparse scheme fuses BN only.
+* Sparse tower (``pts_middle_encoder``): a :class:`SpconvBnFuseScheme` (FP16 deploy — SparseConv+BN
+  fold only), added only when ``include_sparse`` (the PTQ-checkpoint load path) and ``fuse_bn``.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ from __future__ import annotations
 from deployment.config.schema import QuantizationConfig
 from deployment.quantization.schemes.base import QuantizationPlan
 
-from .schemes import SpconvInt8Scheme
+from .schemes import SpconvBnFuseScheme
 
 DENSE_SUBMODULES = ("pts_backbone", "pts_neck", "bbox_head")
 
@@ -72,16 +71,8 @@ def build_bevfusion_plan(config: QuantizationConfig, *, include_sparse: bool) ->
             )
         )
 
-    # Sparse scheme (PTQ-checkpoint load path only). INT8 attaches quantizers; otherwise BN-fuse
-    # only when ``fuse_bn``.
-    if include_sparse and (config.spconv_int8 or config.fuse_bn):
-        plan.add(
-            SpconvInt8Scheme(
-                int8=config.spconv_int8,
-                fuse_bn=config.fuse_bn,
-                fp16_layers=config.spconv_int8_fp16_layers,
-                register_load_buffers=True,
-            )
-        )
+    # Sparse scheme (PTQ-checkpoint load path only): FP16 deploy, so BN-fuse only when ``fuse_bn``.
+    if include_sparse and config.fuse_bn:
+        plan.add(SpconvBnFuseScheme(fuse_bn=config.fuse_bn))
 
     return plan

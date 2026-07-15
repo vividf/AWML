@@ -7,7 +7,7 @@ the eSE / MaxPool / residual-add recipes) behind the uniform
 loader, the PTQ producer, and the QAT hook all build the tree by calling the *same* scheme's
 :meth:`prepare`, they compose an identical quantized module tree and the PTQ ``state_dict`` lines up
 with the deploy ``load_state_dict`` by construction — the same guarantee BEVFusion gets from its
-:class:`~deployment.projects.bevfusion_l.quantization.schemes.SpconvInt8Scheme`.
+:class:`~deployment.projects.bevfusion_l.quantization.schemes.SpconvBnFuseScheme`.
 """
 
 from __future__ import annotations

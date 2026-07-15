@@ -103,11 +103,7 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
             logger.info("=" * 60)
             logger.info("BEVFusion INT8 Quantization Enabled")
             logger.info("  Dense (backbone/neck/head): pytorch_quantization")
-            if quantization.get("spconv_int8", False):
-                logger.info("  Sparse encoder: spconv INT8 (cumm kernels)")
-            fp16_layers_ = quantization.get("spconv_int8_fp16_layers") or []
-            if fp16_layers_:
-                logger.info("  Sparse FP16 keep-list (spconv_int8_fp16_layers): %s", fp16_layers_)
+            logger.info("  Sparse encoder: FP16")
             logger.info("=" * 60)
 
         model = build_bevfusion_model(
@@ -117,9 +113,6 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
             quantization=quantization,
             fuse_spconv_bn=self.config.fuse_spconv_bn,
         )
-
-        if quantization and quantization.get("enabled") and quantization.get("spconv_int8"):
-            model = self._apply_spconv_int8(model, quantization)
 
         if quantization and quantization.get("enabled", False):
             # Enable ``TensorQuantizer.use_fb_fake_quant`` so ONNX export emits QuantizeLinear/
@@ -132,32 +125,8 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
     def _resolve_quantization(self) -> Optional[dict]:
         """Return the effective quantization dict, or None when quantization is not configured.
 
-        ``quantization_config.raw`` is the verbatim deploy ``quantization`` dict with the top-level
-        ``spconv_int8_fp16_layers`` already folded in by ``BaseDeploymentConfig`` — the sparse-conv
-        FP16 keep-list the model loader and sparse-INT8 ONNX transform both consult. Copied so
-        mutation never touches the config; empty (section absent) yields None.
+        ``quantization_config.raw`` is the verbatim deploy ``quantization`` dict. Copied so mutation
+        never touches the config; empty (section absent) yields None.
         """
         raw = self.config.quantization_config.raw
         return dict(raw) if raw else None
-
-    def _apply_spconv_int8(self, model: torch.nn.Module, quantization: dict) -> torch.nn.Module:
-        """Sparse INT8 is applied at PTQ time and recreated in ``model_loader`` for PTQ checkpoints."""
-        sparse_encoder = getattr(model, "pts_middle_encoder", None)
-        if sparse_encoder is None:
-            logger.warning("No pts_middle_encoder found; skipping spconv INT8")
-            return model
-
-        has_nvidia_quantizers = any(hasattr(m, "_input_quantizer") for m in sparse_encoder.modules())
-        if has_nvidia_quantizers:
-            logger.info(
-                "pts_middle_encoder has NVIDIA TensorQuantizer modules (PTQ checkpoint load); "
-                "no runner-side sparse calibration."
-            )
-            return model
-
-        logger.warning(
-            "spconv_int8 is enabled but pts_middle_encoder has no NVIDIA TensorQuantizers — "
-            "use a PTQ .pth from bevfusion_l/quantization/quantize.py with spconv INT8 calibration, "
-            "or disable spconv_int8 in deploy."
-        )
-        return model

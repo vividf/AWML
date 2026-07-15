@@ -1,19 +1,19 @@
 """BEVFusion model loading utilities for deployment.
 
-Supports optional quantization:
-- Dense parts (backbone, neck, head): pytorch_quantization (TensorQuantizer Q/DQ)
-- Sparse encoder (pts_middle_encoder): NVIDIA TensorQuantizer Sparse INT8 (including ``conv_out``).
+Supports optional dense quantization (backbone, neck, head via pytorch_quantization TensorQuantizer
+Q/DQ). The sparse encoder (``pts_middle_encoder``) always deploys in FP16 and is only SparseConv+BN
+folded.
 
 The plain (non-quantized) path stays on the shared :func:`build_mmdet3d_model` core plus the
 refactor's ``fuse_spconv_bn_in_encoder`` fold; the quantized path builds the model, inserts the
-Q/DQ tree via the shared :func:`build_bevfusion_plan`, and loads a PTQ/FP32 checkpoint.
+dense Q/DQ tree via the shared :func:`build_bevfusion_plan`, and loads a PTQ/FP32 checkpoint.
 """
 
 from __future__ import annotations
 
 import copy
 import logging
-from typing import Any, Dict, Optional
+from typing import Optional
 
 import torch
 from mmengine.config import Config
@@ -76,57 +76,6 @@ def _strip_module_prefix_state_dict(state_dict: dict, model: torch.nn.Module) ->
     return state_dict
 
 
-def _permute_sparse_encoder_weights_to_match_model(
-    state_dict: dict,
-    model: torch.nn.Module,
-) -> None:
-    """Permute pts_middle_encoder 5D weights from (C_in, C_out, K, K, K) to (C_out, K, K, K, C_in) when checkpoint and model shapes differ.
-
-    PTQ may save sparse conv in one layout; the built model expects KRSC (out, k, k, k, in). Mutates state_dict in place.
-    """
-    model_sd = model.state_dict()
-    for key in list(state_dict.keys()):
-        if not key.startswith("pts_middle_encoder") or not key.endswith(".weight"):
-            continue
-        if key not in model_sd:
-            continue
-        v = state_dict[key]
-        m = model_sd[key]
-        if v.dim() != 5 or m.dim() != 5 or v.shape == m.shape:
-            continue
-        # Checkpoint (C_in, C_out, Kz, Ky, Kx) -> (C_out, Kz, Ky, Kx, C_in) to match KRSC
-        perm = v.permute(1, 2, 3, 4, 0)
-        if perm.shape == m.shape:
-            state_dict[key] = perm
-            logger.info(
-                "Permuted sparse encoder weight layout for %s: %s -> %s", key, tuple(v.shape), tuple(perm.shape)
-            )
-        else:
-            logger.warning(
-                "Cannot fix pts_middle_encoder weight %s: ckpt %s perm-> %s, model %s",
-                key,
-                tuple(v.shape),
-                tuple(perm.shape),
-                tuple(m.shape),
-            )
-
-
-def verify_spconv_int8_encoder(model: torch.nn.Module) -> Dict[str, Any]:
-    """Summarize sparse encoder INT8 readiness (NVIDIA ``TensorQuantizer`` on SparseConvolution)."""
-    enc = getattr(model, "pts_middle_encoder", None)
-    n_quant_convs = 0
-    if enc is not None:
-        for _name, mod in enc.named_modules():
-            if hasattr(mod, "_input_quantizer") and hasattr(mod, "_weight_quantizer"):
-                n_quant_convs += 1
-    return {
-        "is_int8": n_quant_convs > 0,
-        "encoder_type": type(enc).__name__ if enc is not None else "None",
-        "nvidia_quantized_sparse_conv_count": n_quant_convs,
-        "total_param_count": sum(p.numel() for p in enc.parameters()) if enc is not None else 0,
-    }
-
-
 def _log_load_state_dict_result(result) -> None:
     """Log missing/unexpected keys from ``load_state_dict``, split by sparse vs. dense."""
 
@@ -149,46 +98,6 @@ def _log_load_state_dict_result(result) -> None:
             logger.info("[load-state-dict] sparse %s sample: %s", kind, sparse[:10])
         if other:
             logger.info("[load-state-dict] other %s sample: %s", kind, other[:10])
-
-
-def _verify_spconv_scale_buffers(model: torch.nn.Module, ckpt_state_dict: dict) -> None:
-    """Verify that spconv INT8 quantization params were loaded from checkpoint.
-
-    Primarily for NVIDIA checkpoints (_amax keys). Legacy checkpoints may still show scale/zero_point keys.
-    """
-    enc = getattr(model, "pts_middle_encoder", None)
-    if enc is None:
-        logger.warning("[spconv-quant-check] NO pts_middle_encoder found!")
-        return
-
-    ckpt_sparse_keys = [k for k in ckpt_state_dict if k.startswith("pts_middle_encoder.")]
-    ckpt_amax_keys = [k for k in ckpt_sparse_keys if "_amax" in k]
-    ckpt_scale_keys = [k for k in ckpt_sparse_keys if "scale" in k or "zero_point" in k]
-
-    if ckpt_amax_keys:
-        logger.info("[spconv-quant-check] NVIDIA approach: checkpoint has %d _amax keys", len(ckpt_amax_keys))
-        sample_keys = ckpt_amax_keys[:5]
-    elif ckpt_scale_keys:
-        logger.info("[spconv-quant-check] legacy approach: checkpoint has %d scale/zp keys", len(ckpt_scale_keys))
-        sample_keys = ckpt_scale_keys[:5]
-    else:
-        logger.warning(
-            "[spconv-quant-check] no _amax or scale/zp keys in checkpoint (has %d pts_middle_encoder keys total)",
-            len(ckpt_sparse_keys),
-        )
-        sample_keys = []
-    for k in sample_keys:
-        v = ckpt_state_dict[k]
-        logger.info("  %s shape=%s first3=%s", k, tuple(v.shape), v.flatten().tolist()[:3])
-
-    if ckpt_scale_keys:
-        logger.info("[spconv-scale-check] ckpt scale/zp keys sample: %s", ckpt_scale_keys[:5])
-
-    model_all_keys = [f"pts_middle_encoder.{k}" for k in dict(enc.named_parameters())]
-    model_all_keys += [f"pts_middle_encoder.{k}" for k in dict(enc.named_buffers())]
-    model_scale_keys = [k for k in model_all_keys if "scale" in k or "zero_point" in k]
-    if model_scale_keys:
-        logger.info("[spconv-scale-check] model scale/zp keys sample: %s", model_scale_keys[:5])
 
 
 def _import_tensor_quantizer():
@@ -242,7 +151,6 @@ def build_bevfusion_model(
             - quant_backbone, quant_neck, quant_head: bool
             - quant_add: bool (quantize residual add)
             - sensitive_layers: list of layer name prefixes to skip
-            - spconv_int8: bool (use spconv INT8 for sparse encoder)
         fuse_spconv_bn: If True and ``quantization`` is not enabled, fuse each
             ``SparseConvolution`` + ``BatchNorm1d`` pair in ``pts_middle_encoder`` after load
             (eval-mode Conv-BN fold, a graph optimization for the sparse ONNX export).
@@ -271,10 +179,9 @@ def build_bevfusion_model(
             if quantization.get("ptq_checkpoint"):
                 raise RuntimeError(
                     "PTQ checkpoint load failed; cannot fall back to plain FP32 load_checkpoint. "
-                    "Typical causes: (1) deploy PTQ load order must match "
-                    "bevfusion_l/quantization/quantize.py (dense BN fuse + Q/DQ insert, then NVIDIA "
-                    "sparse quantizer tree, then load_state_dict). (2) ``spconv_int8_fp16_layers`` in "
-                    "deploy must match the PTQ run. Fix the error above or set quantization.enabled=False "
+                    "Typical cause: the deploy PTQ load order must match "
+                    "bevfusion_l/quantization/quantize.py (sparse BN fuse, then dense BN fuse + Q/DQ "
+                    "insert, then load_state_dict). Fix the error above or set quantization.enabled=False "
                     "and use an FP32 checkpoint."
                 ) from e
             # Non-PTQ quant failure: rebuild clean model and load FP32 checkpoint.
@@ -326,42 +233,20 @@ def _load_with_quantization(
 
     config = QuantizationConfig.from_dict(quantization)
     is_ptq = config.ptq_checkpoint
-    spconv_int8 = config.spconv_int8
 
     if is_ptq:
         logger.info("Loading PTQ checkpoint (pre-calibrated Q/DQ nodes)...")
 
         # Rebuild the quantized module tree BEFORE load_state_dict, using the shared plan
-        # (dense Q/DQ + BN fuse, sparse BN fuse / NVIDIA quantizers). Identical to the PTQ producer.
+        # (dense Q/DQ + BN fuse, sparse BN fuse). Identical to the PTQ producer.
         build_bevfusion_plan(config, include_sparse=True).prepare(model)
 
         checkpoint = torch.load(checkpoint_path, map_location=device)
         state_dict = checkpoint.get("state_dict", checkpoint)
         state_dict = _strip_module_prefix_state_dict(state_dict, model)
 
-        # PTQ checkpoint may have sparse conv weights in (C_in, C_out, K, K, K);
-        # runtime model expects (C_out, K, K, K, C_in). Permute to match.
-        if spconv_int8:
-            _permute_sparse_encoder_weights_to_match_model(state_dict, model)
-
         result = model.load_state_dict(state_dict, strict=False)
         _log_load_state_dict_result(result)
-
-        if spconv_int8:
-            _verify_spconv_scale_buffers(model, state_dict)
-            miss_sparse_bn = any(k.startswith("pts_middle_encoder") and ".bn" in k for k in result.missing_keys)
-            unexp_legacy_obs = any(
-                k.startswith("pts_middle_encoder")
-                and ("_scale_" in k or "_zero_point_" in k or k.endswith("_scale_0") or k.endswith("_zero_point_0"))
-                for k in result.unexpected_keys
-            )
-            if miss_sparse_bn and unexp_legacy_obs:
-                logger.error(
-                    "PTQ sparse tower key mismatch: checkpoint looks like a legacy observer-style sparse tower "
-                    "(scale/zero_point observer keys) but the loaded model expects BN/Conv weights. "
-                    "Regenerate the PTQ .pth with the current NVIDIA TensorQuantizer pipeline in "
-                    "bevfusion_l/quantization/quantize.py (sparse _amax keys)."
-                )
 
         num_amax = sum(1 for k in state_dict if "_amax" in k)
         logger.info(f"PTQ state_dict contains {num_amax} amax entries, {len(state_dict)} total keys")
@@ -377,27 +262,6 @@ def _load_with_quantization(
             logger.info(f"PTQ checkpoint loaded: {loaded} quantizers have calibrated amax values")
 
         _set_tensor_quantizers_inference_mode(model)
-
-        if spconv_int8:
-            from deployment.quantization.sparse.spconv_add_patch import (
-                ensure_spconv_quantize_per_tensor_float_activations,
-            )
-
-            ensure_spconv_quantize_per_tensor_float_activations()
-
-            info = verify_spconv_int8_encoder(model)
-            nqc = int(info.get("nvidia_quantized_sparse_conv_count", 0))
-            if info.get("is_int8"):
-                logger.info(
-                    "Spconv INT8 encoder: %d SparseConvolution module(s) with NVIDIA TensorQuantizer",
-                    nqc,
-                )
-            else:
-                logger.warning(
-                    "Spconv INT8: no SparseConvolution modules with _input_quantizer/_weight_quantizer "
-                    "found after load — sparse PTQ keys may not have applied. Check missing_keys and "
-                    "spconv_int8_fp16_layers alignment with the PTQ run."
-                )
 
     else:
         load_checkpoint(model, checkpoint_path, map_location=device)

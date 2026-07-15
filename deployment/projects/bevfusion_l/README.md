@@ -15,14 +15,13 @@ first — BEVFusion is one *project bundle* that implements the stage contract d
 | Piece | Where it lives | What it owns |
 | --- | --- | --- |
 | **Shared quantization framework** | [`deployment/quantization/`](../../quantization/) | Model-agnostic PTQ/QAT on NVIDIA `pytorch-quantization`: Q/DQ module replacement, BN fusion, calibration, sensitivity. Used by **both** CenterPoint and BEVFusion. |
-| **BEVFusion project bundle** | [`deployment/projects/bevfusion_l/`](.) | BEVFusion-specific export/inference/eval, the **sparse-encoder INT8** path (spconv `ImplicitGemmInt8`), and the split (sparse+dense) topology. |
+| **BEVFusion project bundle** | [`deployment/projects/bevfusion_l/`](.) | BEVFusion-specific export/inference/eval, the FP16 sparse encoder (spconv `ImplicitGemm`), and the split (sparse+dense) topology. |
 
 The dividing line matters: the **dense** tower (backbone/neck/head) is quantized by the
 *shared* framework (standard `QuantConv2d` Q/DQ, TensorRT-native INT8). The **sparse** tower
-(`pts_middle_encoder`, spconv) uses framework spconv-INT8 primitives
-([`quantization/sparse/`](../../quantization/sparse/)) composed by BEVFusion's `SpconvInt8Scheme`,
-because spconv needs a custom TensorRT plugin (`ImplicitGemmInt8`), not native TRT INT8. The two paths have different
-internals, but both now sit behind **one uniform interface** — see
+(`pts_middle_encoder`, spconv) deploys in **FP16** — it is *not* quantized. The only structural step
+it needs is SparseConv+BN folding ([`quantization/sparse/fusion.py`](../../quantization/sparse/fusion.py)),
+composed by BEVFusion's `SpconvBnFuseScheme`. The two towers sit behind **one uniform interface** — see
 [§ Quantization scheme architecture](#quantization-scheme-architecture), which is the seam every
 deployment stage uses instead of touching quantization internals directly.
 
@@ -33,22 +32,20 @@ deployment stage uses instead of touching quantization internals directly.
 ```mermaid
 flowchart TD
     ckpt["FP32/FP16 checkpoint"] --> run["deployment.cli.main bevfusion_l"]
-    ckpt -. "INT8: offline PTQ (separate CLI)<br/>bevfusion_l/quantization/quantize.py" .-> ptqpth["PTQ .pth<br/>(dense _amax + sparse _amax)"]
+    ckpt -. "dense INT8: offline PTQ (separate CLI)<br/>bevfusion_l/quantization/quantize.py" .-> ptqpth["PTQ .pth<br/>(dense _amax)"]
     ptqpth -. INT8 .-> run
-    run --> load["model_loader<br/>build model, load_checkpoint (INT8: re-attach quantizers, load_state_dict)"]
+    run --> load["model_loader<br/>build model, load_checkpoint (INT8: re-attach dense Q/DQ, load_state_dict)"]
     load --> onnx["ONNX export<br/>sparse.onnx + dense.onnx (→ merged full graph)"]
-    onnx -. "INT8 only" .-> xform["sparse INT8 transform<br/>ImplicitGemm → ImplicitGemmInt8"]
-    onnx --> trt["TensorRT engines<br/>+ Autoware ImplicitGemm[Int8] plugin (sparse)"]
-    xform -. INT8 .-> trt
+    onnx --> trt["TensorRT engines<br/>+ Autoware ImplicitGemm plugin (FP16 sparse)"]
     trt --> eval["evaluate / verify<br/>PyTorch vs ONNX vs TRT"]
 ```
 
 Two **distinct** entry points — do not confuse them:
 
-- **PTQ (offline, produces a checkpoint):**
+- **PTQ (offline, produces a dense-INT8 checkpoint):**
   `python -m deployment.projects.bevfusion_l.quantization.quantize ptq --config ... --checkpoint ... --deploy-cfg ... --output ptq.pth`
 - **Deploy (consumes the PTQ checkpoint, exports + evaluates):**
-  `python -m deployment.cli.main bevfusion <deploy_cfg.py> <model_cfg.py> --module main_body`
+  `python -m deployment.cli.main bevfusion_l <deploy_cfg.py> <model_cfg.py>`
 
 ---
 
@@ -78,9 +75,8 @@ quantizer across both inputs; ONNX symbolic registered in
 > The framework holds **only generic** quantization code. Model-specific producers live in each
 > project: [`quantize.py`](quantization/quantize.py) here and
 > [`../centerpoint/quantization/quantize.py`](../centerpoint/quantization/quantize.py). BEVFusion's
-> PTQ handles dense (pytorch_quantization) **and** sparse (spconv INT8) in one run; flags
-> `--sparse-int8-only` / `--skip-spconv-int8` isolate them. Run:
-> `python -m deployment.projects.bevfusion_l.quantization.quantize ptq …`.
+> PTQ quantizes the dense tower (pytorch_quantization) and BN-folds the FP16 sparse encoder in one
+> run. Run: `python -m deployment.projects.bevfusion_l.quantization.quantize ptq …`.
 
 ---
 
@@ -93,20 +89,16 @@ match the loader).
 
 ### The one idea
 
-A **`QuantizationScheme`** is a strategy object whose lifecycle maps 1:1 onto the deployment
-stages. Dense and sparse implement the *same* interface; their internals stay different (native
-TRT INT8 vs. a custom plugin + graph rewrite), but the **seam** is uniform:
+A **`QuantizationScheme`** is a strategy object with one structural step, `prepare(model)`. The dense
+and sparse towers implement the *same* interface; their internals differ (dense Q/DQ vs. a SparseConv+BN
+fold), but the **seam** is uniform:
 
-| Lifecycle hook | When | Dense (`DenseQDQScheme`) | Sparse (`SpconvInt8Scheme`) |
-| --- | --- | --- | --- |
-| `prepare(model)` | structural (PTQ **and** deploy) | fuse BN + `Conv2d→QuantConv2d` | fuse SparseConv-BN (+ NVIDIA `TensorQuantizer` if `int8`) |
-| `calibrate(model, …)` | PTQ only | `CalibrationManager` | `calibrate_spconv_nvidia` |
-| `before_onnx_export(model)` | pre-export | enable `use_fb_fake_quant` | — |
-| `after_onnx_export(paths)` | post-export | — | `ImplicitGemm → ImplicitGemmInt8` rewrite |
-| `tensorrt_plugins()` | TRT build | `[]` | Autoware INT8 plugin `.so` |
-| `manifest()` | save | serializable recipe | serializable recipe |
+| Scheme | `prepare(model)` (PTQ **and** deploy) |
+| --- | --- |
+| Dense (`DenseQDQScheme`) | fuse BN + `Conv2d→QuantConv2d` (calibrated by `CalibrationManager` at PTQ) |
+| Sparse (`SpconvBnFuseScheme`) | fuse SparseConv+BN (FP16 deploy — no quantizers) |
 
-A **`QuantizationPlan`** composes schemes for a whole model and fans each hook out in order. A
+A **`QuantizationPlan`** composes schemes for a whole model and fans `prepare` out in order. A
 project declares *which* schemes apply (composition); schemes own *how* (algorithm). **Stage code
 holds a plan and calls lifecycle methods — it never sees quantization internals.**
 
@@ -117,13 +109,12 @@ shared; each model owns its quantization composition + producer**:
 deployment/quantization/                     # GENERIC toolkit only (no model names)
 ├── schemes/base.py        # QuantizationScheme (ABC), QuantizationPlan, SchemeManifest
 ├── schemes/dense_qdq.py   # DenseQDQScheme — reusable by any Conv2d tower
-├── sparse/spconv_int8.py  # spconv INT8 primitives (NVIDIA TensorQuantizer on SparseConvolution)
-├── sparse/spconv_add_patch.py, sparse/naming.py   # spconv add-patch + stem-ordering helpers
-├── modules/  calibration/  fusion/  hooks/  replace.py  sensitivity.py  ptq.py  utils.py
+├── sparse/fusion.py       # SparseConv+BN fold (FP16 sparse deploy — no INT8)
+├── core/  recipes/  schemes/   # Q/DQ modules, replace, fusion, calibration, descriptors; recipes; seam
 
 deployment/projects/bevfusion_l/quantization/  # BEVFusion's quantization
-├── quantize.py     # offline PTQ producer CLI  (python -m ...bevfusion.quantization.quantize ptq)
-├── schemes.py      # SpconvInt8Scheme — composes framework sparse primitives + ONNX rewrite + plugins
+├── quantize.py     # offline PTQ producer CLI  (python -m ...bevfusion_l.quantization.quantize ptq)
+├── schemes.py      # SpconvBnFuseScheme — fuse SparseConv+BN for FP16 sparse deploy
 └── plan.py         # build_bevfusion_plan(quant_cfg) → composes dense + sparse schemes
 
 deployment/projects/centerpoint/quantization/  # CenterPoint's quantization
@@ -145,10 +136,8 @@ placement, inference-mode toggles); the structural quantization is one `plan.pre
 ### Dependency rule (enforce this)
 
 Deployment stages (loader / export / inference / runner) touch quantization **only through the
-scheme/plan interface**. They must **not** import `pytorch_quantization` / `TensorQuantizer` /
-spconv quant utils directly, and any monkeypatch (e.g. the spconv forward swap in
-[`sparse/spconv_int8.py`](../../quantization/sparse/spconv_int8.py)) belongs inside a scheme's
-`prepare`, never in stage code.
+scheme/plan interface**. They must **not** import `pytorch_quantization` / `TensorQuantizer`
+directly; the structural work belongs inside a scheme's `prepare`, never in stage code.
 
 ### Status (verified in the `awml-bevfusion` container)
 
@@ -166,20 +155,11 @@ spconv quant utils directly, and any monkeypatch (e.g. the spconv forward swap i
 
 ### Continuation guide (next steps for future agents)
 
-1. **Sparse INT8 round-trip:** validate `deploy_config_split_sparse_int8_dense_int8.py` end-to-end
-   (PTQ with `spconv_int8=True` → export → TRT eval). The sparse scheme's `prepare`/`calibrate`
-   are wired; confirm the checkpoint `_amax` keys still match after the plan change.
-2. **Migrate the export pipeline** to call `plan.after_onnx_export(onnx_paths, context=…)` and
-   `plan.tensorrt_plugins()` instead of the standalone `_postprocess_sparse_onnx_int8` in
-   [`onnx_export_pipeline.py`](export/onnx_export_pipeline.py). `SpconvInt8Scheme.after_onnx_export`
-   already reuses the same transform primitives, so this is a wiring change: build the plan once in
-   the runner and pass it to both the loader and the export pipeline.
-3. **Self-describing checkpoints:** save `plan.manifest()` into the PTQ `.pth` and rebuild the plan
-   from it on load (`SchemeManifest.from_dict`), so deploy no longer needs the `quantization` dict
-   flags to match the PTQ run.
-4. **Consolidate config:** collapse the scattered top-level keys (`spconv_int8_fp16_layers`,
-   `fuse_spconv_bn`, `spconv_do_sort`, `spconv_fuse_implicit_gemm_relu`) into the `quantization`
-   section that `build_bevfusion_plan` reads. Keep one parser, one path.
+1. **Self-describing checkpoints:** save the plan recipe into the PTQ `.pth` and rebuild the plan
+   from it on load, so deploy no longer needs the `quantization` dict flags to match the PTQ run.
+2. **Consolidate config (Goal 2, see [`spec.md`](../../../spec.md)):** collapse the ~13 boolean flags
+   into a declarative `default_precision` + `keep_fp16` surface, and move the architecture recipes
+   into `build_bevfusion_plan`. Keep one parser, one path.
 
 **Always re-verify with the container** after a change:
 
@@ -207,8 +187,8 @@ and reuses the shared `TensorRTExportPipeline`.
 | --- | --- | --- |
 | Config | [`config/`](config/) | `deploy_config.py` (split, optimized) + `deploy_config_without_opt.py` (split, no opt) + INT8/PTQ variants (§6) |
 | IO | [`io/`](io/) | [`model_loader.py`](io/model_loader.py) (build + `load_checkpoint`, optional sparse BN fuse; INT8: re-attach quantizers + load PTQ), `data_loader.py`, `coors_contract.py` (voxel `[x,y,z]`→graph `[z,y,x]`), `component_utils.py` (split vs merged) |
-| Export | [`export/`](export/) | [`sample_extractor.py`](export/sample_extractor.py) (voxelize) + [`component_builder.py`](export/component_builder.py) (split sparse/dense, wires post-transforms + INT8 shadow) feed the shared `OnnxExportPipeline`; `onnx_models/bevfusion_onnx.py` (sparse/dense wrappers), `transforms.py` (TopK fix, split→merge), `sparse_encoder_float_shadow.py` (FP32 shadow for INT8 tracing), `onnx_fuse_implicit_gemm_activation.py` (ImplicitGemm ReLU fuse), [`sparse_int8_onnx_transform.py`](export/sparse_int8_onnx_transform.py) (ImplicitGemm→ImplicitGemmInt8 rewrite), `spconv_bn_fusion.py` |
-| Quantization | [`quantization/`](quantization/) | [`quantize.py`](quantization/quantize.py) (PTQ producer CLI), [`plan.py`](quantization/plan.py) (`build_bevfusion_plan`), [`schemes.py`](quantization/schemes.py) (`SpconvInt8Scheme`). Generic spconv-INT8 primitives + dense scheme live in the framework ([`quantization/sparse/`](../../quantization/sparse/), `DenseQDQScheme`). |
+| Export | [`export/`](export/) | [`sample_extractor.py`](export/sample_extractor.py) (voxelize) + [`component_builder.py`](export/component_builder.py) (split sparse/dense, wires post-transforms) feed the shared `OnnxExportPipeline`; `onnx_models/bevfusion_onnx.py` (sparse/dense wrappers), `transforms.py` (TopK fix, split→merge), `onnx_fuse_implicit_gemm_activation.py` (ImplicitGemm ReLU fuse), `spconv_bn_fusion.py` (SparseConv+BN fold shim) |
+| Quantization | [`quantization/`](quantization/) | [`quantize.py`](quantization/quantize.py) (PTQ producer CLI), [`plan.py`](quantization/plan.py) (`build_bevfusion_plan`), [`schemes.py`](quantization/schemes.py) (`SpconvBnFuseScheme`, FP16 sparse). The generic dense scheme lives in the framework (`DenseQDQScheme`); the SparseConv+BN fold in [`quantization/sparse/fusion.py`](../../quantization/sparse/fusion.py). |
 | Inference | [`inference/`](inference/) | `pytorch_/onnx_/tensorrt_inference_pipeline.py` (all `preprocess→run→postprocess`) |
 | Evaluation | [`evaluation/`](evaluation/) | `executor.py` (pipeline construction + output routing), `evaluator.py` (3D metrics + latency breakdown) |
 
@@ -217,86 +197,53 @@ and reuses the shared `TensorRTExportPipeline`.
 ### Sparse vs dense split
 
 BEVFusion (LiDAR) exports as two components so the dense backbone/neck/head can go to plain
-TensorRT while the sparse encoder uses the custom `ImplicitGemm` plugin:
+TensorRT while the sparse encoder uses the custom FP16 `ImplicitGemm` plugin:
 
 | | Sparse encoder (`pts_middle_encoder`) | Dense backbone/neck/head |
 | --- | --- | --- |
 | ONNX I/O | `voxels,coors,num_points → lidar_bev` | `lidar_bev → bbox_pred,score,label_pred` |
-| ONNX op | `autoware::ImplicitGemm[Int8]` (custom) | standard `Conv2d/ReLU/Add` |
-| TensorRT | **custom plugin** `ImplicitGemm[Int8]` (`libautoware_tensorrt_plugins.so`) | TRT-native (+ INT8) |
-| Quantizer (INT8) | NVIDIA `TensorQuantizer` on each `SparseConvolution` | shared framework `QuantConv2d` Q/DQ |
-| Accuracy knob (INT8) | `spconv_int8_fp16_layers` (node-name substrings) | `sensitive_layers` (layer names) |
+| ONNX op | `autoware::ImplicitGemm` (custom, FP16) | standard `Conv2d/ReLU/Add` |
+| TensorRT | **custom plugin** `ImplicitGemm` (`libautoware_tensorrt_plugins.so`), FP16 | TRT-native (+ INT8) |
+| Precision | **FP16** (not quantized) | INT8 via shared framework `QuantConv2d` Q/DQ |
+| Accuracy knob | — | `sensitive_layers` (layer names) |
 
-The sparse encoder is traced through a **fused FP32 shadow encoder**
-([`sparse_encoder_float_shadow.py`](export/sparse_encoder_float_shadow.py)) so BN can be folded
-(`fuse_spconv_bn`) into a clean BN-free sparse ONNX without mutating the runtime model — and, for the
-INT8 path, so the traced sparse graph carries no Q/DQ around `ImplicitGemm` (scales are injected later
-from the PTQ checkpoint). Graph knobs:
+The sparse encoder is traced directly; BN is folded (`fuse_spconv_bn`) into a clean BN-free sparse
+ONNX so the exported graph matches the runtime. Graph knobs:
 
 - `fuse_spconv_bn` — fold SparseConv+BN in `pts_middle_encoder` before export.
 - `spconv_do_sort` — bake the pair-mask argsort attribute into the exported `ImplicitGemm` nodes.
 - `spconv_fuse_implicit_gemm_relu` — fuse trailing Relu into `ImplicitGemm` (see
   [`onnx_fuse_implicit_gemm_activation.py`](export/onnx_fuse_implicit_gemm_activation.py)).
 
-The `ImplicitGemm` TensorRT plugin (with the `do_sort` attribute; INT8 lives inside it as
-`precision=1`) is built from an Autoware fork; see
+The `ImplicitGemm` TensorRT plugin (with the `do_sort` attribute) is built from an Autoware fork; see
 [`projects/BEVFusion/plugins/README.md`](../../../projects/BEVFusion/plugins/README.md) and
 [`projects/BEVFusion/Dockerfile`](../../../projects/BEVFusion/Dockerfile).
 
 ---
 
-## 5. The sparse INT8 path (the hard part)
+## 5. Sparse encoder precision
 
-This is where most of the docs and debugging effort went. Read
-[`docs/12_int8_sparse_pipeline_ptq_onnx_trt.md`](docs/12_int8_sparse_pipeline_ptq_onnx_trt.md) and
-[`docs/README_INT8_WHERE_AND_HOW.md`](docs/README_INT8_WHERE_AND_HOW.md) for the full story.
-
-1. **PTQ** calibrates each `SparseConvolution` with `_input_quantizer._amax` / `_weight_quantizer._amax`
-   (per-output-channel weights, histogram+MSE activations) via
-   [`quantization/sparse/spconv_int8.py:apply_nvidia_spconv_int8`](../../quantization/sparse/spconv_int8.py) → saved into the `.pth`.
-2. **Deploy load** re-attaches the same quantizer structure so `load_state_dict` restores scales
-   ([`io/model_loader.py`](io/model_loader.py)). BN is already folded in the checkpoint (`fuse_spconv_bn=True`).
-3. **ONNX export** emits *float* `autoware::ImplicitGemm` nodes (the sparse graph usually has **no** Q/DQ).
-4. **INT8 transform** ([`sparse_int8_onnx_transform.py`](export/sparse_int8_onnx_transform.py)) rewrites
-   `ImplicitGemm` (5 inputs) → `ImplicitGemmInt8` (7 inputs: `+channel_scale +bias_scaled`), deriving
-   scales from the checkpoint `_amax`. Runs automatically during split export when `quantization.spconv_int8=True`.
-   - `spconv_int8_fp16_layers`: **case-insensitive substrings matched only against `node.name`** keep
-     selected layers as FP16 `ImplicitGemm` (accuracy recovery). Matching inputs/outputs would silently
-     FP16-ify downstream layers — don't change this.
-   - `spconv_fuse_implicit_gemm_relu=True` fuses trailing `Relu`/`Add(const)+Relu` into the node.
-   - `spconv_do_sort=False` for INT8 (skip pair-mask argsort; matches New3D `do_sort = !int8_inference_`);
-     leave unset (`True`) for FP16 engines.
-5. **TensorRT** builds one engine per component and loads
-   `/opt/plugins/libautoware_tensorrt_plugins.so` (the INT8 spconv now lives inside the single Autoware
-   plugin as `ImplicitGemm precision=1`; the standalone `libimplicit_gemm_int8_plugin.so` is no longer needed).
-
-> ⚠️ Known epilogue bug: cumm's Turing `s8s8f16` `Int8Inference` epilogue historically **dropped the
-> `output_scale` (alpha) multiply**, blowing up `lidar_bev` by ~`1/output_scale` and driving TRT mAP→0
-> while PyTorch stayed correct. Fixed plugin-side. See
-> [`cpp/int8_plugin/README.md`](cpp/int8_plugin/README.md).
+The spconv sparse encoder deploys in **FP16** — sparse INT8 was removed (no meaningful mAP/latency
+win for the extra complexity of a custom `ImplicitGemmInt8` plugin + ONNX rewrite + sparse
+calibration). Only the dense tower is quantized to INT8. The historical sparse-INT8 notes under
+[`docs/`](docs/README.md) (e.g. `12_int8_sparse_pipeline_ptq_onnx_trt.md`) are kept as background but
+no longer describe the deployed path.
 
 ---
 
 ## 6. Config variants (how to pick a mode)
 
-All configs are MMEngine files; variants inherit
-[`deploy_config_split_int8_base.py`](config/deploy_config_split_int8_base.py) via `_base_` and override
-only `checkpoint_path`, `quantization`, `export`, `spconv_int8_fp16_layers`, `evaluation`.
+All configs are MMEngine files.
 
 | Config | Topology | Precision |
 | --- | --- | --- |
 | [`deploy_config.py`](config/deploy_config.py) | split sparse+dense (+merge) | FP16 (optimized) |
-| [`deploy_config_without_opt.py`](config/deploy_config_without_opt.py) | split sparse+dense (+merge) | FP16 (no opt) |
-| `deploy_config_split_sparse_fp16_dense_int8_2_8.py` | split | sparse FP16 + dense INT8 |
-| `deploy_config_split_int8_all.py` | split | sparse INT8 only (dense FP) |
-| `deploy_config_split_sparse_int8_dense_int8.py` | split | sparse INT8 + dense INT8 |
-| `deploy_config_int8.py` | single | full INT8 |
+| `deploy_config_split_sparse_fp16_dense_int8_2_8.py` | split | sparse FP16 + dense INT8 (canonical INT8 config) |
 
 Key `quantization` fields: `enabled`, `ptq_checkpoint` (checkpoint came from PTQ CLI), `fuse_bn`,
-`quant_backbone/neck/head`, `spconv_int8`, `quant_add`, `sensitive_layers`. When quantizing **sparse
-only**, dense flags **must** be `False` to match the `--sparse-int8-only` PTQ checkpoint.
+`quant_backbone/neck/head`, `quant_add`, `sensitive_layers`. The sparse encoder is always FP16.
 
-**Isolation tip** (from the split-int8 config header): keep the same CLI/config/work_dir, just point
+**Isolation tip:** keep the same CLI/config/work_dir, just point
 `checkpoint_path` at the FP32 `.pth` and set `quantization=dict(enabled=False)`. If mAP is fine, the
 split/voxel/eval pipeline is healthy and the regression is in PTQ or quantizer loading.
 
@@ -314,4 +261,4 @@ split/voxel/eval pipeline is healthy and the regression is in PTQ or quantizer l
 
 > **Environment note:** PTQ and quantized-checkpoint loading require NVIDIA `pytorch-quantization`
 > (install inside Docker: `pip install --index-url https://pypi.nvidia.com --extra-index-url https://pypi.org/simple pytorch-quantization==2.1.3`).
-> The TensorRT INT8 spconv plugin `.so` must be built and present at the path in `tensorrt_config.plugin_libraries`.
+> The FP16 spconv `ImplicitGemm` TensorRT plugin `.so` must be built and present at the path in `tensorrt_config.plugin_libraries`.

@@ -2,7 +2,7 @@
 BEVFusion-L Deployment Configuration — split sparse (FP16) + dense (INT8), merged (PTQ).
 
 Loads a PTQ checkpoint and deploys the dense tower (backbone/neck/head) in INT8 while the sparse
-encoder stays FP16 (``quantization.spconv_int8=False``).
+encoder stays FP16.
 
 Layout (single file, grouped by concern; mirrors centerpoint/config/deploy_config.py):
   1. SHARED VALUES  - single source of truth reused across sections (paths, devices, shapes).
@@ -73,9 +73,9 @@ spconv_fuse_implicit_gemm_relu = True
 # Aligns the FP16 sparse subgraph with INT8 deploy for a fair latency-vs-mAP comparison.
 fuse_spconv_bn = True
 
-# Quantization: dense tower (backbone/neck/head) INT8 via pytorch_quantization; sparse encoder
-# stays FP16 (spconv_int8=False). ptq_checkpoint=True re-attaches the Q/DQ tree before loading the
-# PTQ .pth so the calibrated _amax line up.
+# Quantization: dense tower (backbone/neck/head) INT8 via pytorch_quantization; the sparse encoder
+# always stays FP16. ptq_checkpoint=True re-attaches the Q/DQ tree before loading the PTQ .pth so the
+# calibrated _amax line up.
 quantization = dict(
     enabled=True,
     ptq_checkpoint=True,
@@ -84,7 +84,6 @@ quantization = dict(
     quant_neck=True,
     quant_head=True,
     quant_add=False,
-    spconv_int8=False,
     sensitive_layers=[],
 )
 

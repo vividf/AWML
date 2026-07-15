@@ -1,4 +1,4 @@
-"""Optional forward hooks on pts_middle_encoder sparse conv layers (compare to TRT ImplicitGemmInt8).
+"""Optional forward hooks on pts_middle_encoder sparse conv layers (compare to the TRT ImplicitGemm).
 
 Enable::
 
@@ -11,13 +11,9 @@ Each hook fires after a ``SubMConv3d`` / ``SparseConv3d`` forward; stats are on
 FP16 output buffer.
 
 **Semantic mismatch (important for numeric diff):** the hook sees **conv output only**
-(BN/ReLU run on the next modules in the same ``SparseSequential``). The TRT
-``ImplicitGemmInt8`` node implements **fused conv + INT8 epilogue** (``channel_scale`` /
-``bias_scaled`` absorb BN etc.), and ``BEVFUSION_INT8_GEMM_DEBUG`` dumps that **final FP16**
-activations. Large ratios vs PyTorch (e.g. ~40× on layer 0) can reflect **BN scaling**,
-not only a wrong engine or scales. For apples-to-apples, compare against the **same**
-point in the PT graph (e.g. after the block's BN) or run fake-quant forward aligned
-with export.
+(BN/ReLU run on the next modules in the same ``SparseSequential``), while the TRT
+``ImplicitGemm`` node fuses conv + BN + activation. For apples-to-apples, compare against the
+**same** point in the PT graph (e.g. after the block's BN).
 """
 
 from __future__ import annotations

@@ -2,7 +2,8 @@
 
 INT8 PTQ/QAT quantization for AWML deployment models (CenterPoint, BEVFusion-L), built on top of
 NVIDIA's [`pytorch-quantization`](https://github.com/NVIDIA/TensorRT/tree/main/tools/pytorch-quantization)
-toolkit and spconv's INT8 path.
+toolkit. Dense Conv/Linear towers deploy in INT8; the BEVFusion spconv sparse encoder deploys in
+**FP16** (SparseConv+BN folded only — no sparse INT8).
 
 The framework is split into a **model-agnostic engine** (`deployment/quantization/`) and
 **per-project composition** (`deployment/projects/<model>/quantization/`). The engine knows *how* to
@@ -43,10 +44,8 @@ deployment/quantization/                      # model-agnostic engine
 ├── schemes/                                   # the "seam" between deploy stages and quantization
 │   ├── base.py                                #   QuantizationScheme (ABC) + QuantizationPlan
 │   └── dense_qdq.py                           #   generic DenseQDQScheme
-└── sparse/                                    # spconv INT8 subsystem
-    ├── spconv_int8.py                         #   fuse_spconv_bn_in_encoder + NVIDIA TensorQuantizer path
-    ├── spconv_add_patch.py                    #   runtime monkeypatches for spconv quant ops
-    └── naming.py                              #   forward-order sort of sparse conv stems
+└── sparse/                                    # spconv sparse-encoder helpers (FP16 deploy)
+    └── fusion.py                              #   fuse_spconv_bn_in_encoder (SparseConv+BN fold)
 
 deployment/projects/centerpoint/quantization/ # CenterPoint composition
 ├── quant_model.py                             #   applies engine+recipes to CP's named submodules
@@ -56,15 +55,14 @@ deployment/projects/centerpoint/quantization/ # CenterPoint composition
 └── quantize.py                                #   PTQ + QAT producer CLI
 
 deployment/projects/bevfusion_l/quantization/ # BEVFusion composition
-├── schemes.py                                 #   SpconvInt8Scheme (sparse tower)
+├── schemes.py                                 #   SpconvBnFuseScheme (sparse tower: FP16, BN fold only)
 ├── plan.py                                    #   build_bevfusion_plan(config, include_sparse) -> QuantizationPlan
 └── quantize.py                                #   PTQ producer CLI
 ```
 
 **Dependency direction:** `projects/* → deployment.quantization`. The engine never imports a project.
-Cross-cutting knowledge both a project's export path and the engine need (e.g. sparse stem ordering
-in `sparse/naming.py`, or SparseConv+BN folding in `sparse/spconv_int8.py`) lives in the engine so
-neither project has to import the other.
+Cross-cutting knowledge both a project's export path and the engine need (e.g. SparseConv+BN folding
+in `sparse/fusion.py`) lives in the engine so neither project has to import the other.
 
 ---
 
@@ -74,10 +72,10 @@ neither project has to import the other.
 The deploy config carries a `quantization = dict(...)` block. `QuantizationConfig` (in the shared
 config schema, next to `ExportConfig` / `ComponentsConfig` / …) is the **single** typed view of it:
 `QuantizationConfig.from_dict(dict)` (from an in-memory dict, e.g. in a loader) or
-`load_quantization_config(path)` (from a deploy-config file, e.g. in a CLI — it also folds a
-top-level `spconv_int8_fp16_layers` in). Defaults live in exactly one place, so the insert side and
-the load side cannot drift. `resolved_sensitive_layers()` expands the convenience skip-flags into
-concrete dotted module names; `dense_quant_enabled()` and `with_overrides()` support the CLIs.
+`load_quantization_config(path)` (from a deploy-config file, e.g. in a CLI). Defaults live in exactly
+one place, so the insert side and the load side cannot drift. `resolved_sensitive_layers()` expands
+the convenience skip-flags into concrete dotted module names; `dense_quant_enabled()` and
+`with_overrides()` support the CLIs.
 
 ### 2.2 Quantized modules (`core/modules/`) + descriptors (`core/descriptors.py`)
 `QuantConv2d`, `QuantConvTranspose2d`, `QuantLinear` subclass their `nn.*` counterparts and add
@@ -92,7 +90,7 @@ their quantized subclasses, honoring a `skip_names` set (full dotted paths).
 
 ### 2.4 BN fusion
 `fuse_model_bn` (dense) folds adjacent Conv→BN pairs into the conv and replaces the BN with
-`nn.Identity`. `fuse_spconv_bn_in_encoder` (`sparse/spconv_int8.py`) does the same for SECOND-style
+`nn.Identity`. `fuse_spconv_bn_in_encoder` (`sparse/fusion.py`) does the same for SECOND-style
 spconv encoders. Fusion changes `state_dict` keys, so **PTQ and deploy must fuse the exact same
 set** — which the shared plan guarantees.
 
@@ -115,13 +113,13 @@ ships a `build_<model>_plan(config)` that composes its schemes:
 | Model | Plan builder | Schemes composed |
 |-------|--------------|------------------|
 | CenterPoint | `build_centerpoint_plan(config)` | `CenterPointDenseScheme` (Conv/Linear + eSE/MaxPool/residual recipes) |
-| BEVFusion | `build_bevfusion_plan(config, include_sparse)` | `DenseQDQScheme` + (optional) `SpconvInt8Scheme` |
+| BEVFusion | `build_bevfusion_plan(config, include_sparse)` | `DenseQDQScheme` + `SpconvBnFuseScheme` |
 
-### 2.8 Sparse INT8 (`sparse/`)
-The spconv sparse encoder can't use TRT-native INT8; it needs a custom `ImplicitGemmInt8` plugin plus
-a post-export ONNX rewrite (in the BEVFusion export path). This subsystem attaches `TensorQuantizer`
-to every `SparseConvolution`, calibrates with histogram+MSE, and records two terminal-scale buffers
-(`_sparse_tail_absmax`, `_last_int8_conv_output_absmax`) the ONNX transform later reads.
+### 2.8 Sparse encoder (`sparse/`) — FP16
+The spconv sparse encoder deploys in **FP16** (TRT's ImplicitGemm plugin); it is not quantized to
+INT8. The only structural step it needs is SparseConv+BN folding (`sparse/fusion.py`), applied so the
+PTQ and deploy module trees — and the exported sparse ONNX — are BN-free and identical. BEVFusion's
+`SpconvBnFuseScheme` wraps that fold behind the uniform scheme lifecycle.
 
 ---
 
@@ -133,8 +131,8 @@ to every `SparseConvolution`, calibrates with histogram+MSE, and records two ter
 flowchart TD
     A[FP32 checkpoint + model config + deploy cfg] --> B[QuantizationConfig from deploy cfg]
     B --> C[build model, eval]
-    C --> D["build_&lt;model&gt;_plan(config).prepare(model)<br/>= fuse BN + insert Q/DQ"]
-    D --> E[calibrate<br/>sparse first, then dense]
+    C --> D["build_&lt;model&gt;_plan(config).prepare(model)<br/>= fuse BN + insert dense Q/DQ"]
+    D --> E[calibrate dense Q/DQ]
     E --> F[disable sensitive layers]
     F --> G[save state_dict + .calib cache]
 ```
@@ -142,8 +140,8 @@ flowchart TD
 - **CenterPoint:** `python -m deployment.projects.centerpoint.quantization.quantize ptq ...`
 - **BEVFusion:** `python -m deployment.projects.bevfusion_l.quantization.quantize ptq ...`
 
-For BEVFusion, sparse INT8 is calibrated **before** dense so the dense quantizers see the true
-(INT8-sparse) BEV distribution; otherwise dense amax matches the wrong distribution and mAP collapses.
+For BEVFusion the sparse encoder stays FP16 (only SparseConv+BN is folded); PTQ calibrates the dense
+Q/DQ against the FP16 sparse BEV distribution the deploy path also produces.
 
 ### 3.2 Deploy load (PTQ checkpoint)
 The loader rebuilds the **identical** tree via the same plan *before* `load_state_dict`, so the
@@ -157,8 +155,8 @@ flowchart LR
     D --> E[export ONNX / TRT · eval]
 ```
 
-BEVFusion passes `include_sparse=True` here (rebuild the sparse tower too); the PTQ producer passes
-`include_sparse=False` (sparse handled separately during calibration).
+BEVFusion passes `include_sparse=True` here (BN-fold the sparse tower too); the PTQ producer passes
+`include_sparse=False` (the sparse BN fold is done separately before dense calibration).
 
 ### 3.3 Deploy load (FP32 checkpoint)
 `load_state_dict` first, **then** the plan inserts uncalibrated dense Q/DQ (needs runtime calibration).
@@ -186,16 +184,16 @@ All settings live under `quantization = dict(...)` in the deploy config and are 
 | `quant_ese_mul_identity` / `quant_ese_pool_input` / `quant_maxpool_input` | CenterPoint | VoVNet eSE / MaxPool Q/DQ placement. |
 | `sensitive_layers` | both | Dotted module paths left in FP. |
 | `skip_backbone_first_stages` / `skip_backbone_stages` / `skip_vovnet_stages` | CenterPoint | Convenience expansions into `sensitive_layers`. |
-| `spconv_int8` | BEVFusion | Attach NVIDIA quantizers to the sparse encoder. |
-| `spconv_int8_fp16_layers` | BEVFusion | Substrings of sparse-conv names kept FP16. |
 | `ptq_checkpoint` | both | The checkpoint carries calibrated `_amax` (rebuild tree before load). |
 | `calib_cache_path` | both | Load amax from a `.calib` cache instead of calibrating. |
+
+> The BEVFusion spconv sparse encoder always deploys in FP16 — there is no sparse-INT8 config key.
 
 ---
 
 ## 5. Requirements
 - `pytorch-quantization` (`pip install pytorch-quantization --extra-index-url https://pypi.ngc.nvidia.com`)
-- `spconv` with the quantization utils, for the BEVFusion sparse path.
+- `spconv` (SparseConv+BN fold), for the BEVFusion sparse encoder.
 - Runs inside the AWML deployment Docker image (host Python lacks torch/spconv).
 
 See `deployment/quantization/docs/` for BN-fusion, eSE INT8, and VoV-99 PTQ-accuracy notes.
