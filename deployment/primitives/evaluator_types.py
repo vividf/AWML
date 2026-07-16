@@ -120,10 +120,23 @@ class InferenceInput:
 
 @dataclass(frozen=True)
 class InferenceResult:
-    """Standard inference return payload."""
+    """Standard inference return payload.
+
+    Attributes:
+        output: Postprocessed prediction (or raw model output when ``return_raw_outputs``).
+        latency_ms: End-to-end wall-clock of ``infer()`` (preprocess + model + postprocess),
+            kept for diagnostics/verification logs.
+        model_latency_ms: Model-inference time only, excluding preprocess/postprocess. For
+            TensorRT this is the pure-GPU CUDA-event time (H2D/D2H and buffer alloc excluded);
+            for PyTorch/ONNX it is the ``run_model`` wall-clock. This is what evaluation reports
+            as the headline latency so backends are compared on model compute, not Python
+            per-sample overhead.
+        breakdown: Per-stage timings in ms (preprocessing_ms, model_ms, model stages, ...).
+    """
 
     output: Any
     latency_ms: float
+    model_latency_ms: float = 0.0
     breakdown: Optional[Dict[str, float]] = None
 
 

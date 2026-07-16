@@ -172,10 +172,21 @@ class BaseInferencePipeline(ABC):
 
             latency_breakdown.update(model_latency)
 
+            # Model-inference time reported as the headline latency (excludes pre/postprocess).
+            # When run_model reports explicit stage times (TensorRT CUDA-event GPU times, or the
+            # per-stage breakdown of multi-stage models), their sum is the model time. Single-model
+            # PyTorch/ONNX backends report no stages, so fall back to the run_model wall-clock.
+            model_latency_ms = sum(model_latency.values()) if model_latency else latency_breakdown["model_ms"]
+
             total_latency = (time.perf_counter() - start_time) * 1000
 
             if return_raw_outputs:
-                return InferenceResult(output=model_output, latency_ms=total_latency, breakdown=latency_breakdown)
+                return InferenceResult(
+                    output=model_output,
+                    latency_ms=total_latency,
+                    model_latency_ms=model_latency_ms,
+                    breakdown=latency_breakdown,
+                )
 
             # Postprocess
             postprocess_start = time.perf_counter()
@@ -184,7 +195,12 @@ class BaseInferencePipeline(ABC):
             latency_breakdown["postprocessing_ms"] = (postprocess_time - postprocess_start) * 1000
 
             total_latency = (time.perf_counter() - start_time) * 1000
-            return InferenceResult(output=postprocess_output, latency_ms=total_latency, breakdown=latency_breakdown)
+            return InferenceResult(
+                output=postprocess_output,
+                latency_ms=total_latency,
+                model_latency_ms=model_latency_ms,
+                breakdown=latency_breakdown,
+            )
 
         except Exception:
             logger.exception("Inference failed.")

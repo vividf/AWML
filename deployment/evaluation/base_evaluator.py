@@ -176,7 +176,9 @@ class BaseEvaluator(ABC):
                 ground_truths = self._parse_ground_truths(sample)
 
                 infer_result = pipeline.infer(inference_input.data, metadata=inference_input.metadata)
-                latencies.append(infer_result.latency_ms)
+                # Headline latency is model-inference time only (pure-GPU for TensorRT, run_model
+                # wall-clock for PyTorch/ONNX); the end-to-end total lives in the breakdown.
+                latencies.append(infer_result.model_latency_ms)
                 if infer_result.breakdown:
                     latency_breakdowns.append(infer_result.breakdown)
 
@@ -224,7 +226,7 @@ class BaseEvaluator(ABC):
         """Compute mean, std, min, max, median over per-sample latencies (milliseconds).
 
         Args:
-            latencies: Per-inference `latency_ms` values (empty list yields zeros via `LatencyStats.empty()`).
+            latencies: Per-inference `model_latency_ms` values (empty list yields zeros via `LatencyStats.empty()`).
 
         Returns:
             Immutable `LatencyStats`.
