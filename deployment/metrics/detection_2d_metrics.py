@@ -33,6 +33,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from mmengine.config import Config
 from perception_eval.common.dataset import FrameGroundTruth
 from perception_eval.common.object2d import DynamicObject2D
 from perception_eval.common.schema import FrameID
@@ -108,6 +109,52 @@ class Detection2DMetricsConfig(BaseMetricsConfig):
                     "confidence_threshold_list": None,
                 },
             )
+
+
+def extract_detection2d_metrics_config(
+    model_cfg: Config,
+    class_names: Optional[List[str]] = None,
+    iou_thresholds: Optional[List[float]] = None,
+    frame_id: str = "cam_front",
+) -> Detection2DMetricsConfig:
+    """Build a `Detection2DMetricsConfig` from an MMEngine model config.
+
+    Shared by every 2D-detection deployment project: the class names come from the model config's
+    ``classes`` (the dataset labels), not from the model architecture, so projects reuse this
+    instead of reimplementing it — the 2D sibling of
+    :func:`~deployment.metrics.detection_3d_metrics.extract_t4metric_v2_config`. The per-threshold
+    perception_eval dicts are filled by ``Detection2DMetricsConfig.__post_init__``, so this only
+    resolves the class names and passes through the tuning knobs.
+
+    Args:
+        model_cfg: MMEngine model configuration; must expose a list/tuple ``classes`` when
+            ``class_names`` is not given.
+        class_names: Explicit class names; overrides ``model_cfg.classes`` when provided.
+        iou_thresholds: IoU-2D matching thresholds; defaults to ``Detection2DMetricsConfig``'s.
+        frame_id: perception_eval camera frame id (must be a valid 2D frame).
+
+    Returns:
+        Detection2DMetricsConfig with the resolved class names and thresholds.
+
+    Raises:
+        ValueError: If ``class_names`` is not given and ``model_cfg`` has no list/tuple ``classes``.
+    """
+    if class_names is None:
+        classes = getattr(model_cfg, "classes", None)
+        if classes is None and hasattr(model_cfg, "get"):
+            classes = model_cfg.get("classes")
+        if not isinstance(classes, (tuple, list)):
+            raise ValueError(
+                "class_names not provided and model_cfg has no list/tuple 'classes'. "
+                "Pass class_names explicitly or ensure the model config defines 'classes'."
+            )
+        class_names = list(classes)
+
+    kwargs: Dict[str, Any] = {}
+    if iou_thresholds is not None:
+        kwargs["iou_thresholds"] = list(iou_thresholds)
+
+    return Detection2DMetricsConfig(class_names=list(class_names), frame_id=frame_id, **kwargs)
 
 
 class Detection2DMetricsInterface(DetectionMetricsInterface):

@@ -1,7 +1,7 @@
 _base_ = [
     "../../../../../autoware_ml/configs/detection2d/default_runtime.py",
     "../../../../../autoware_ml/configs/detection2d/schedules/schedule_1x.py",
-    "../../../../../autoware_ml/configs/detection2d/dataset/t4dataset/t4dataset_DynamicRecognition.py",
+    "../../../../../autoware_ml/configs/detection2d/dataset/t4dataset/t4dataset_dynamic_recognition.py",
 ]
 
 custom_imports = dict(
@@ -69,7 +69,7 @@ model = dict(
 )
 
 data_root = ""
-anno_file_root = "./data/t4dataset/"
+anno_file_root = "./data/t4dataset/2d_info/"
 dataset_type = "T4Dataset"
 
 backend_args = None

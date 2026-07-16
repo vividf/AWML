@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+from mmengine.config import Config
 from perception_eval.common.dataset import FrameGroundTruth
 from perception_eval.common.object2d import DynamicObject2D
 from perception_eval.common.schema import FrameID
@@ -121,10 +122,54 @@ class ClassificationMetricsConfig(BaseMetricsConfig):
                 "frame_pass_fail_config",
                 {
                     "target_labels": self.class_names,
-                    "matching_threshold_list": [1.0] * len(self.class_names),
+                    # classification2d is thresholdless: perception_eval keys its object results
+                    # under the sentinel -1.0 and requires matching_threshold_list to be None
+                    # (see PassFailNusceneResult.__init__ / _build_label_thresholds). A concrete
+                    # list here (e.g. [1.0, ...]) makes the label→threshold lookup miss the bucket.
+                    "matching_threshold_list": None,
                     "confidence_threshold_list": None,
                 },
             )
+
+
+def extract_classification_metrics_config(
+    model_cfg: Config,
+    class_names: Optional[List[str]] = None,
+    frame_id: str = "cam_front",
+) -> ClassificationMetricsConfig:
+    """Build a `ClassificationMetricsConfig` for a classification deployment project.
+
+    The classification sibling of
+    :func:`~deployment.metrics.detection_2d_metrics.extract_detection2d_metrics_config`. Class
+    names are the *only* task input, and classifier model configs do not always carry them
+    (mmpretrain heads record ``num_classes``, not label strings), so ``class_names`` may be passed
+    explicitly by the project entrypoint (e.g. from a deploy-config key). When omitted, they are
+    read from ``model_cfg.classes``.
+
+    Args:
+        model_cfg: MMEngine model configuration; consulted for ``classes`` only when
+            ``class_names`` is not given.
+        class_names: Explicit class names in label-index order; overrides ``model_cfg.classes``.
+        frame_id: perception_eval camera frame id (must be a valid 2D frame).
+
+    Returns:
+        ClassificationMetricsConfig with the resolved class names.
+
+    Raises:
+        ValueError: If ``class_names`` is not given and ``model_cfg`` has no list/tuple ``classes``.
+    """
+    if class_names is None:
+        classes = getattr(model_cfg, "classes", None)
+        if classes is None and hasattr(model_cfg, "get"):
+            classes = model_cfg.get("classes")
+        if not isinstance(classes, (tuple, list)):
+            raise ValueError(
+                "class_names not provided and model_cfg has no list/tuple 'classes'. "
+                "Pass class_names explicitly (e.g. from the deploy config's class_names key)."
+            )
+        class_names = list(classes)
+
+    return ClassificationMetricsConfig(class_names=list(class_names), frame_id=frame_id)
 
 
 class ClassificationMetricsInterface(BaseMetricsInterface):
@@ -234,14 +279,23 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
 
     @staticmethod
     def _summarize_classification_score(classification_score: Any) -> Tuple[float, float, float, float]:
-        """Read overall (accuracy, precision, recall, f1) from a perception_eval score."""
+        """Read overall (accuracy, precision, recall, f1) from a perception_eval score.
+
+        ``ClassificationMetricsScore._summarize`` returns a nested
+        ``{MatchingMode: {threshold: ClassificationScores}}`` mapping. Classification is
+        single-mode (CLASSIFICATION_2D) and thresholdless (one bucket, key -1.0), so there is
+        exactly one ``ClassificationScores`` to read; an empty mapping (no matched frames) → zeros.
+        """
         summarize = getattr(classification_score, "_summarize", None)
         if not callable(summarize):
             raise AttributeError(
                 "perception_eval classification score no longer exposes '_summarize'; "
                 "update ClassificationMetricsInterface to the current perception_eval API."
             )
-        return summarize()
+        for threshold_scores in summarize().values():
+            for scores in threshold_scores.values():
+                return scores.accuracy, scores.precision, scores.recall, scores.f1score
+        return 0.0, 0.0, 0.0, 0.0
 
     @staticmethod
     def _finite_or_zero(value: float) -> float:
@@ -260,22 +314,26 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
             metric_dict["recall"] = self._finite_or_zero(recall)
             metric_dict["f1score"] = self._finite_or_zero(f1score)
 
-            # Per-class metrics
-            for acc in classification_score.accuracies:
-                if not acc.target_labels:
-                    continue
+            # Per-class metrics. `accuracies` is now nested
+            # {MatchingMode: {LabelType: {threshold: ClassificationAccuracy}}}; classification is
+            # single-mode and single-threshold, so flatten to the leaf ClassificationAccuracy.
+            for label_accuracies in classification_score.accuracies.values():
+                for threshold_accuracies in label_accuracies.values():
+                    for acc in threshold_accuracies.values():
+                        if not acc.target_labels:
+                            continue
 
-                target_label = acc.target_labels[0]
-                class_name = getattr(target_label, "name", str(target_label))
+                        target_label = acc.target_labels[0]
+                        class_name = getattr(target_label, "name", str(target_label))
 
-                metric_dict[f"{class_name}_accuracy"] = self._finite_or_zero(acc.accuracy)
-                metric_dict[f"{class_name}_precision"] = self._finite_or_zero(acc.precision)
-                metric_dict[f"{class_name}_recall"] = self._finite_or_zero(acc.recall)
-                metric_dict[f"{class_name}_f1score"] = self._finite_or_zero(acc.f1score)
-                metric_dict[f"{class_name}_tp"] = acc.num_tp
-                metric_dict[f"{class_name}_fp"] = acc.num_fp
-                metric_dict[f"{class_name}_num_gt"] = acc.num_ground_truth
-                metric_dict[f"{class_name}_num_pred"] = acc.objects_results_num
+                        metric_dict[f"{class_name}_accuracy"] = self._finite_or_zero(acc.accuracy)
+                        metric_dict[f"{class_name}_precision"] = self._finite_or_zero(acc.precision)
+                        metric_dict[f"{class_name}_recall"] = self._finite_or_zero(acc.recall)
+                        metric_dict[f"{class_name}_f1score"] = self._finite_or_zero(acc.f1score)
+                        metric_dict[f"{class_name}_tp"] = acc.num_tp
+                        metric_dict[f"{class_name}_fp"] = acc.num_fp
+                        metric_dict[f"{class_name}_num_gt"] = acc.num_ground_truth
+                        metric_dict[f"{class_name}_num_pred"] = acc.objects_results_num
 
         metric_dict["total_samples"] = self._frame_count
         return metric_dict
@@ -298,28 +356,33 @@ class ClassificationMetricsInterface(BaseMetricsInterface):
 
         confusion_matrix = np.zeros((num_classes, num_classes), dtype=int)
 
+        # perception_eval now stores matched results as a nested
+        # {MatchingMode: {LabelType: {threshold: [DynamicObjectWithPerceptionResult]}}} mapping;
+        # each object result appears exactly once across the label buckets, so walking every leaf
+        # list counts each prediction/GT pair once.
         for frame_result in self._frame_results or []:
-            if not frame_result.object_results:
-                continue
+            mode_results = getattr(frame_result, "nuscene_object_results", None) or {}
+            for label_results in mode_results.values():
+                for threshold_results in label_results.values():
+                    for object_results in threshold_results.values():
+                        for obj_result in object_results:
+                            if obj_result.ground_truth_object is None:
+                                continue
 
-            for obj_result in frame_result.object_results:
-                if obj_result.ground_truth_object is None:
-                    continue
+                            pred_name = obj_result.estimated_object.semantic_label.name
+                            gt_name = obj_result.ground_truth_object.semantic_label.name
 
-                pred_name = obj_result.estimated_object.semantic_label.name
-                gt_name = obj_result.ground_truth_object.semantic_label.name
+                            pred_idx = next(
+                                (i for i, n in enumerate(self.class_names) if n.lower() == pred_name.lower()),
+                                -1,
+                            )
+                            gt_idx = next(
+                                (i for i, n in enumerate(self.class_names) if n.lower() == gt_name.lower()),
+                                -1,
+                            )
 
-                pred_idx = next(
-                    (i for i, n in enumerate(self.class_names) if n.lower() == pred_name.lower()),
-                    -1,
-                )
-                gt_idx = next(
-                    (i for i, n in enumerate(self.class_names) if n.lower() == gt_name.lower()),
-                    -1,
-                )
-
-                if 0 <= pred_idx < num_classes and 0 <= gt_idx < num_classes:
-                    confusion_matrix[gt_idx, pred_idx] += 1
+                            if 0 <= pred_idx < num_classes and 0 <= gt_idx < num_classes:
+                                confusion_matrix[gt_idx, pred_idx] += 1
 
         return confusion_matrix
 

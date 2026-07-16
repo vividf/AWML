@@ -6,6 +6,7 @@
 .gitignore
 CLAUDE.md
 _trace
+deployment_old
 
 *.bin
 *.onnx
