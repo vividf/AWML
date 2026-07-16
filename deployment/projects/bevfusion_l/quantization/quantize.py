@@ -3,21 +3,36 @@
 """
 BEVFusion Quantization Tools
 
-This script provides CLI commands for PTQ (Post-Training Quantization) for BEVFusion models. It
-mirrors centerpoint/quantization/quantize.py. The dense tower (pts_backbone, pts_neck, bbox_head) is
+This script provides CLI commands for PTQ (Post-Training Quantization) and QAT
+(Quantization-Aware Training) for BEVFusion models. It mirrors
+centerpoint/quantization/quantize.py. The dense tower (pts_backbone, pts_neck, bbox_head) is
 quantized with pytorch_quantization Q/DQ; the sparse encoder (pts_middle_encoder) deploys in FP16 and
-is only BN-folded so the PTQ and deploy module trees line up.
+is only BN-folded so the PTQ and deploy module trees line up. QAT is a frozen-amax STE fine-tune of
+the same tree (spec_qat.md); the packaged QAT checkpoint deploys exactly like a PTQ one.
 
 Usage:
-    # PTQ Mode - Quantize a pre-trained BEVFusion model (dense INT8, sparse FP16)
+    # PTQ Mode - config-driven (settings from the deploy config's quantization.ptq block;
+    # --output defaults to the config's checkpoint_path)
     python -m deployment.projects.bevfusion_l.quantization.quantize ptq \
+        --deploy-cfg deployment/projects/bevfusion_l/config/deploy_config_split_sparse_fp16_dense_int8_2_8.py
+
+    # PTQ Mode - CLI-driven (flags override / substitute the ptq block)
+    python -m deployment.projects.bevfusion_l.quantization.quantize ptq \
+        --deploy-cfg deployment/projects/bevfusion_l/config/deploy_config_split_sparse_fp16_dense_int8_2_8.py \
         --config projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m.py \
         --checkpoint work_dirs/bevfusion/epoch_30.pth \
-        --deploy-cfg deployment/projects/bevfusion_l/config/deploy_config_split_sparse_fp16_dense_int8_2_8.py \
         --calibrate-samples 256 \
         --batch-size 1 \
         --calib-seed 0 \
         --output work_dirs/bevfusion/epoch_30_ptq.pth
+
+    # QAT Mode - Fine-tune the quantized model (single GPU; AMP forced off)
+    python -m deployment.projects.bevfusion_l.quantization.quantize qat \
+        --deploy-cfg deployment/projects/bevfusion_l/config/deploy_config_split_sparse_fp16_dense_int8_2_8.py \
+        --config projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_4xb8_j6gen2_base_120m.py \
+        --checkpoint work_dirs/bevfusion/epoch_30.pth \
+        --epochs 3 --lr 1e-4 --calibrate-samples 400 \
+        --output work_dirs/bevfusion/epoch_30_qat.pth
 """
 
 import argparse
@@ -37,24 +52,128 @@ def parse_args():
     subparsers = parser.add_subparsers(dest="command", required=True, help="Available commands")
 
     ptq_parser = subparsers.add_parser("ptq", help="Post-Training Quantization")
-    ptq_parser.add_argument("--config", required=True, help="Model config file path")
-    ptq_parser.add_argument("--checkpoint", required=True, help="Model checkpoint file path")
     ptq_parser.add_argument(
         "--deploy-cfg",
         required=True,
-        help="Deployment config path with quantization settings.",
+        help=(
+            "Required deployment config path. Its `quantization` block is the single source of "
+            "truth for placement (keep_fp16 / disable_recipes / fuse_bn); with mode='ptq' its "
+            "`ptq` sub-block supplies the producer settings (CLI flags below override them) — "
+            "same shape as the QAT command."
+        ),
+    )
+    ptq_parser.add_argument(
+        "--config", default=None, help="Model config path (overrides the deploy config's top-level model_cfg)."
+    )
+    ptq_parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="FP checkpoint path to quantize (overrides quantization.ptq.checkpoint).",
     )
     ptq_parser.add_argument(
         "--calibrate-samples",
         type=int,
-        default=256,
-        help="Total number of samples for calibration (default: 256).",
+        default=None,
+        help=(
+            "Total number of samples for calibration "
+            "(overrides quantization.ptq.calibrate_samples; 256 without either)."
+        ),
     )
-    ptq_parser.add_argument("--output", required=True, help="Output PTQ checkpoint path")
+    ptq_parser.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "Output PTQ checkpoint path (+ sibling .calib). Defaults to the deploy config's "
+            "`checkpoint_path`, so the run produces exactly the artifact the deploy config expects."
+        ),
+    )
     ptq_parser.add_argument("--device", default="cuda:0", help="Device for calibration")
-    ptq_parser.add_argument("--calib-shuffle", action="store_true", help="Shuffle calibration data")
-    ptq_parser.add_argument("--calib-seed", type=int, default=None, help="Random seed for calibration")
-    ptq_parser.add_argument("--batch-size", type=int, default=1, help="Batch size for calibration")
+    ptq_parser.add_argument(
+        "--calib-shuffle",
+        action="store_true",
+        default=None,
+        help="Shuffle calibration data (overrides quantization.ptq.calib_shuffle)",
+    )
+    ptq_parser.add_argument(
+        "--calib-seed",
+        type=int,
+        default=None,
+        help="Random seed for calibration (overrides quantization.ptq.calib_seed)",
+    )
+    ptq_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Batch size for calibration (overrides quantization.ptq.batch_size; 1 without either)",
+    )
+
+    qat_parser = subparsers.add_parser(
+        "qat",
+        help="Quantization-Aware Training (dense INT8 fine-tune; sparse encoder stays FP16)",
+    )
+    qat_parser.add_argument(
+        "--deploy-cfg",
+        required=True,
+        help=(
+            "Required deployment config path. Its `quantization` block is the single source of "
+            "truth for placement (keep_fp16 / disable_recipes / fuse_bn); with mode='qat' its "
+            "`qat` sub-block supplies the training settings (CLI flags below override them)."
+        ),
+    )
+    qat_parser.add_argument(
+        "--config", default=None, help="Model training config path (overrides quantization.qat.train_cfg)."
+    )
+    qat_parser.add_argument(
+        "--checkpoint", default=None, help="Initial FP checkpoint path (overrides quantization.qat.checkpoint)."
+    )
+    qat_parser.add_argument(
+        "--calibrate-samples",
+        type=int,
+        default=None,
+        help=(
+            "Total number of samples for the epoch-0 calibration "
+            "(overrides quantization.qat.calibrate_samples; reference: 400). "
+            "Without either, all training batches are used."
+        ),
+    )
+    qat_parser.add_argument(
+        "--batch-size", type=int, default=1, help="Batch size for calibration/training dataloaders (default: 1)"
+    )
+    qat_parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help=(
+            "Number of fine-tuning epochs (overrides quantization.qat.epochs). "
+            "Reference recipe: ~10%% of the original training epochs (spec_qat.md §2)."
+        ),
+    )
+    qat_parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help=(
+            "Learning rate for fine-tuning (overrides quantization.qat.lr). "
+            "Reference recipe: 1e-4 (CUDA-CenterPoint / modelopt CNN QAT)."
+        ),
+    )
+    qat_parser.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "Output path for the packaged QAT checkpoint (`{'state_dict'}` + sibling .calib). "
+            "Defaults to the deploy config's `checkpoint_path`."
+        ),
+    )
+    qat_parser.add_argument(
+        "--work-dir", default=None, help="Working directory for training (overrides quantization.qat.work_dir)."
+    )
+    qat_parser.add_argument(
+        "--ptq-calib-cache",
+        default=None,
+        help="Path to PTQ calibration cache (.calib file) — overrides quantization.qat.calib_cache. "
+        "If provided, QAT will load existing amax values instead of running new calibration.",
+    )
     return parser.parse_args()
 
 
@@ -74,55 +193,12 @@ def _build_bevfusion_model(config_path: str, checkpoint_path: str, device: str):
 
 def _calibrate_dense(model, dataloader, num_batches, method="mse"):
     """Run calibration for dense Q/DQ nodes using CalibrationManager."""
-    import torch
-
     from deployment.quantization import CalibrationManager
 
-    def _force_float_voxel_inputs(batch):
-        """Best-effort dtype normalization before test_step during calibration.
-
-        Some dataloader/preprocessor paths may provide integer voxel features.
-        Integer voxel features or points are coerced to float32 where needed for
-        dense Q/DQ calibration.
-        """
-        if not isinstance(batch, dict):
-            return batch
-        inputs = batch.get("inputs", None)
-        if not isinstance(inputs, dict):
-            return batch
-
-        vox = inputs.get("voxels", None)
-        if isinstance(vox, dict):
-            v = vox.get("voxels", None)
-            if isinstance(v, torch.Tensor) and not v.is_floating_point():
-                vox["voxels"] = v.to(dtype=torch.float32).contiguous()
-
-        points = inputs.get("points", None)
-        if isinstance(points, (list, tuple)):
-            normalized = []
-            changed = False
-            for p in points:
-                if isinstance(p, torch.Tensor) and not p.is_floating_point():
-                    normalized.append(p.to(dtype=torch.float32))
-                    changed = True
-                else:
-                    normalized.append(p)
-            if changed:
-                inputs["points"] = type(points)(normalized) if isinstance(points, tuple) else normalized
-        return batch
-
-    def _forward_for_calibration(m, batch):
-        batch = _force_float_voxel_inputs(batch)
-        if hasattr(m, "test_step"):
-            return m.test_step(batch)
-        if isinstance(batch, dict):
-            return m(**batch)
-        if isinstance(batch, (list, tuple)):
-            return m(*batch)
-        return m(batch)
+    from .calibration import calibration_forward
 
     calibrator = CalibrationManager(model)
-    calibrator.calibrate(dataloader, num_batches=num_batches, method=method, forward_fn=_forward_for_calibration)
+    calibrator.calibrate(dataloader, num_batches=num_batches, method=method, forward_fn=calibration_forward)
     return calibrator
 
 
@@ -132,29 +208,39 @@ def run_ptq(args):
 
     from mmengine.config import Config
 
-    from deployment.quantization.producer import build_calib_dataloader, save_ptq_checkpoint
+    from deployment.config.schema import load_quantization_config
+    from deployment.projects.bevfusion_l.quantization.plan import build_bevfusion_plan
+    from deployment.quantization.producer import build_calib_dataloader, resolve_ptq_settings, save_ptq_checkpoint
 
-    num_batches = math.ceil(args.calibrate_samples / args.batch_size)
-    actual_samples = num_batches * args.batch_size
+    # The deploy config is the single source of truth: placement (keep_fp16 / disable_recipes /
+    # fuse_bn) always; producer settings via its `ptq` block; model_cfg / checkpoint_path from the
+    # top-level manifest keys — CLI flags override any of them.
+    config, deploy_checkpoint_path, deploy_model_cfg = load_quantization_config(args.deploy_cfg)
+    if config.mode != "ptq":
+        print(
+            f'Note: deploy config has quantization.mode="{config.mode}" — a PTQ run usually pairs '
+            'with mode="ptq" (+ a ptq block). Proceeding with CLI settings.'
+        )
+    settings = resolve_ptq_settings(
+        args, config, deploy_checkpoint_path, deploy_model_cfg, default_calibrate_samples=256
+    )
+    batch_size = settings["batch_size"]
+
+    num_batches = math.ceil(settings["calibrate_samples"] / batch_size)
+    actual_samples = num_batches * batch_size
 
     print("=" * 80)
     print("BEVFusion PTQ Quantization (dense INT8, sparse FP16)")
     print("=" * 80)
-    print(f"Config: {args.config}")
-    print(f"Checkpoint: {args.checkpoint}")
     print(f"Deploy cfg: {args.deploy_cfg}")
-    print(f"Calibration: {args.calibrate_samples} samples -> {num_batches} batches x {args.batch_size}")
+    print(f"Config: {settings['model_cfg']}")
+    print(f"Checkpoint: {settings['checkpoint']}")
+    print(f"Calibration: {settings['calibrate_samples']} samples -> {num_batches} batches x {batch_size}")
     print(f"Actual calibration samples: {actual_samples}")
-    if args.calib_seed is not None:
-        print(f"Calibration seed: {args.calib_seed}")
-    print(f"Output: {args.output}")
+    if settings["calib_seed"] is not None:
+        print(f"Calibration seed: {settings['calib_seed']}")
+    print(f"Output: {settings['output']}")
     print("=" * 80)
-
-    from deployment.config.schema import load_quantization_config
-    from deployment.projects.bevfusion_l.quantization.plan import build_bevfusion_plan
-
-    # Single source of truth: parse the deploy ``quantization`` block once.
-    config, _ = load_quantization_config(args.deploy_cfg)
 
     from deployment.quantization import expand_keep_fp16
 
@@ -163,7 +249,7 @@ def run_ptq(args):
 
     # [1/5] Load model
     print("\n[1/5] Loading BEVFusion model...")
-    model = _build_bevfusion_model(args.config, args.checkpoint, args.device)
+    model = _build_bevfusion_model(settings["model_cfg"], settings["checkpoint"], args.device)
 
     # Resolve keep_fp16 → concrete module names for the disable loop below (same expansion the plan
     # uses internally; log=False to avoid duplicate per-pattern match logging).
@@ -182,18 +268,18 @@ def run_ptq(args):
     # [4/5] Build dataloader + calibrate dense Q/DQ (shared PTQ-producer helper; BEVFusion caps
     # dataloader workers and disables persistent workers to keep calibration memory bounded).
     print("\n[4/5] Building calibration dataloader...")
-    cfg = Config.fromfile(args.config)
+    cfg = Config.fromfile(settings["model_cfg"])
     dataloader = build_calib_dataloader(
         cfg,
-        batch_size=args.batch_size,
-        seed=args.calib_seed,
-        shuffle=args.calib_shuffle,
+        batch_size=batch_size,
+        seed=settings["calib_seed"],
+        shuffle=settings["calib_shuffle"],
         max_num_workers=4,
         persistent_workers=False,
     )
     total_ds = len(dataloader.dataset)
     print(f"  Dataset size: {total_ds}")
-    print(f"  Calibration: {num_batches} batches x {args.batch_size} = {actual_samples} samples")
+    print(f"  Calibration: {num_batches} batches x {batch_size} = {actual_samples} samples")
 
     if dense_on:
         print(f"  Calibrating dense Q/DQ nodes ({num_batches} batches, method=mse)...")
@@ -219,7 +305,7 @@ def run_ptq(args):
     except Exception:
         pass
 
-    output_path, calib_path = save_ptq_checkpoint(model, args.output, calibrator)
+    output_path, calib_path = save_ptq_checkpoint(model, settings["output"], calibrator)
 
     print("\n" + "=" * 80)
     print("BEVFusion PTQ Complete!")
@@ -228,12 +314,83 @@ def run_ptq(args):
         print(f"Calibration cache saved to: {calib_path}")
     print("=" * 80)
     print("\nTo use this PTQ checkpoint for deployment:")
-    print(f'  1. Set checkpoint_path = "{args.output}" in your deploy config')
+    print(f'  1. Ensure checkpoint_path = "{settings["output"]}" in your deploy config')
     print(f"  2. Set quantization.ptq_checkpoint = True")
     print(f"  3. Run:")
     print(f"     python -m deployment.cli.main bevfusion_l \\")
     print(f"       {args.deploy_cfg} \\")
-    print(f"       {args.config}")
+    print(f"       {settings['model_cfg']}")
+
+
+def run_qat(args):
+    """Run QAT training pipeline (shared driver; BEVFusion supplies only project constants)."""
+    import math
+
+    from deployment.config.schema import load_quantization_config
+    from deployment.quantization.producer import resolve_qat_settings, run_qat_training
+
+    # The deploy config is the single source of truth: placement (keep_fp16 / disable_recipes /
+    # fuse_bn) always; training settings via its `qat` block, with CLI flags as overrides.
+    # (The top-level model_cfg is the DEPLOY pairing — QAT trains on qat.train_cfg instead.)
+    config, deploy_checkpoint_path, _ = load_quantization_config(args.deploy_cfg)
+    if config.mode != "qat":
+        print(
+            f'Note: deploy config has quantization.mode="{config.mode}" — a QAT run usually pairs '
+            'with mode="qat" (+ a qat block). Proceeding with CLI settings.'
+        )
+    settings = resolve_qat_settings(args, config, deploy_checkpoint_path)
+
+    if settings["calibrate_samples"] is not None:
+        calibration_batches = math.ceil(settings["calibrate_samples"] / args.batch_size)
+    else:
+        calibration_batches = 0
+
+    print("=" * 80)
+    print("BEVFusion QAT Training (dense INT8 frozen-amax STE fine-tune; sparse FP16)")
+    print("=" * 80)
+    print(f"Deploy cfg: {args.deploy_cfg}")
+    print(f"Train config: {settings['train_cfg']}")
+    print(f"Init checkpoint: {settings['checkpoint']}")
+    if calibration_batches > 0:
+        print(
+            f"Calibration: {calibration_batches} batches "
+            f"(from calibrate_samples={settings['calibrate_samples']}, batch_size={args.batch_size})"
+        )
+    else:
+        print("Calibration: using all training batches (or loading calib cache if provided)")
+    print(f"Epochs: {settings['epochs']}")
+    print(f"Learning rate: {settings['lr']}")
+    print(f"Output: {settings['output']}")
+    print("=" * 80)
+
+    output_path, calib_path = run_qat_training(
+        train_cfg_path=settings["train_cfg"],
+        checkpoint=settings["checkpoint"],
+        hook_import="deployment.projects.bevfusion_l.quantization.qat_hook",
+        hook_type="BEVFusionQATHook",
+        quant_config=config,
+        epochs=settings["epochs"],
+        lr=settings["lr"],
+        output=settings["output"],
+        batch_size=args.batch_size,
+        calibration_batches=calibration_batches,
+        calib_cache=settings["calib_cache"],
+        work_dir=settings["work_dir"],
+        # Model-registry imports the BEVFusion train config needs before the Runner builds.
+        # Deliberately WITHOUT projects.SparseConvolution: that package force-registers the
+        # deploy-only SparseConv3d/SubMConv3d fork whose forward raises NotImplementedError in
+        # training mode (projects/SparseConvolution/sparse_conv.py). QAT must train on the stock
+        # spconv classes, exactly like FP training does; state_dict keys and the SparseConv+BN
+        # fold are identical either way, so the deploy side (which does import it) still lines up.
+        extra_imports=("projects.BEVFusion.bevfusion",),
+    )
+
+    print("\n" + "=" * 80)
+    print("QAT training completed!")
+    print(f"Packaged checkpoint: {output_path}")
+    print(f"Calibration cache: {calib_path}")
+    print("Deploy it exactly like a PTQ checkpoint (same loader path; set ptq_checkpoint=True).")
+    print("=" * 80)
 
 
 def main():
@@ -244,6 +401,8 @@ def main():
 
     if args.command == "ptq":
         run_ptq(args)
+    elif args.command == "qat":
+        run_qat(args)
     else:
         print(f"Unknown command: {args.command}")
         sys.exit(1)

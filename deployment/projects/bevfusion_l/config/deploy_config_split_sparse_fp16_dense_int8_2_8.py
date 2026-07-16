@@ -10,23 +10,26 @@ Layout (single file, grouped by concern; mirrors centerpoint/config/deploy_confi
   3. EVALUATION     - per-backend evaluation settings.
   4. VERIFICATION   - cross-backend numerical verification scenarios.
 
-Only the top-level names `checkpoint_path`, `devices`, `runtime_io`, `export`, `components`,
-`onnx_config`, `tensorrt_config`, `evaluation`, `verification`, `quantization`, plus the
-BEVFusion-only flags `spconv_do_sort`, `spconv_fuse_implicit_gemm_relu`, `fuse_spconv_bn`,
-`bevfusion_merge`, are read (by `BaseDeploymentConfig` / `BEVFusionDeploymentConfig`). Names
-prefixed with `_` are local single-source helpers and are intentionally not consumed directly.
+Only the top-level names `model_cfg`, `checkpoint_path`, `devices`, `runtime_io`, `export`,
+`components`, `onnx_config`, `tensorrt_config`, `evaluation`, `verification`, `quantization`, plus
+the BEVFusion-only flags `spconv_do_sort`, `spconv_fuse_implicit_gemm_relu`, `fuse_spconv_bn`,
+`bevfusion_merge`, are read (by `BaseDeploymentConfig` / `BEVFusionDeploymentConfig` / the shared
+entrypoint). Names prefixed with `_` are local single-source helpers and are intentionally not
+consumed directly.
 
-CLI::
+CLI (model config comes from `model_cfg` below; a second positional overrides)::
 
     python -m deployment.cli.main bevfusion_l \\
-        deployment/projects/bevfusion_l/config/deploy_config_split_sparse_fp16_dense_int8_2_8.py \\
-        <your_model_cfg.py>
+        deployment/projects/bevfusion_l/config/deploy_config_split_sparse_fp16_dense_int8_2_8.py
 """
 
 # ============================================================================
 # 1. SHARED VALUES (single source of truth)
 # ============================================================================
 
+# Artifact manifest: the model this artifact is (canonical pairing for PTQ calibration and
+# deploy/eval; the CLI's second positional overrides) and the checkpoint it lives in.
+model_cfg = "projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_8xb16_j6gen2_base_120m_t4metric_v2.py"
 # Checkpoint - single source of truth for the PyTorch model (PTQ .pth: dense _amax).
 checkpoint_path = "work_dirs/bevfusion/bevfusion_2_8/best_epoch_25_ptq.pth"
 # checkpoint_path = "vivid/bench_comparison/bevfusion_2_7/best_epoch_28.pth"
@@ -85,6 +88,15 @@ quantization = dict(
     # BEVFusion keeps residual-add in FP16 (was quant_add=False). Verify in Docker whether this is
     # load-bearing (i.e. whether the dense backbone has a block attach_quant_add matches).
     disable_recipes=["add"],
+    ptq=dict(
+        # Producer half of the run (CLI flags override any of these); calibration data comes from
+        # the top-level model_cfg's val dataloader, and the producer's --output defaults to
+        # checkpoint_path above, so producing and deploying use the same artifact.
+        checkpoint="work_dirs/bevfusion/bevfusion_2_8/best_epoch_25.pth",  # FP input
+        calibrate_samples=1024,
+        batch_size=1,
+        calib_seed=0,
+    ),
 )
 
 # Export mode: "onnx", "trt", "both", "none".

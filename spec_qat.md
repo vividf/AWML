@@ -1,6 +1,40 @@
-# QAT Completion Spec — CenterPoint + BEVFusion (DRAFT — plan only, no code changes yet)
+# QAT Completion Spec — CenterPoint + BEVFusion
 
-Status: **DRAFT for design review** (2026-07-16). Nothing below is implemented.
+Status: **IMPLEMENTED in the working tree** (2026-07-16, reviewed then landed). All five work
+packages (WP1–WP5) are in code, host-verified: ast clean over all 160 deployment `.py` files;
+pyflakes clean on every touched file (remaining hits pre-existing); 9 new QAT config tests green
+(pytest-stub run — host has no pytest); merged `_base_`+QAT deploy config parses (mode="qat",
+inherited placement); grep gates pass (one hook body, one calibration forward, no `freeze_bn`).
+**Docker-pending:** the §5 gates — tree-parity test (`deployment/tests/test_qat_tree_parity.py`),
+CenterPoint/BEVFusion QAT e2e (QAT mAP ≥ PTQ mAP), PTQ numerics unchanged, and the §6 R1/R5/R6/R7
+open questions. Landed shape notes vs plan: hook base = `QATHookBase` in
+`deployment/quantization/qat_hook.py` with per-project registered subclasses (D3b as planned;
+CenterPoint keeps the name `QATHook`); `resolve_qat_settings` + `run_qat_training` +
+`save_qat_checkpoint` live in `deployment/quantization/producer.py`; `--output` defaults to the
+deploy config's `checkpoint_path` so one config both produces and deploys the artifact.
+
+**Fix found in first Docker QAT run (BEVFusion, 2026-07-16):** `projects/SparseConvolution` is a
+**deploy-only** spconv fork — importing it force-registers `SparseConv3d`/`SubMConv3d` whose
+`_conv_forward` raises `NotImplementedError` in training mode. The QAT run crashed at the first
+train step because (a) the producer passed it in `extra_imports` and (b) the hook's import chain
+(`bevfusion_l/__init__` → entrypoint → runner → model_loader) imported it at module level. Fix:
+dropped from `extra_imports`, and the two module-level imports (`runner.py` `set_do_sort`,
+`io/model_loader.py` registry side-effect imports) became lazy — the registry overwrite is now a
+model-*load*-time action, never an import side effect. QAT trains on stock spconv classes exactly
+like FP training; state_dict keys and the SparseConv+BN fold are identical either way, so the
+deploy side (which still imports the fork inside `build_bevfusion_model`) lines up unchanged.
+
+**Fix 2 found in second Docker QAT run (BEVFusion, 2026-07-16):** after the spconv fix, the first
+train step crashed in the Hungarian matcher (`linear_sum_assignment: matrix contains invalid
+numeric entries`) — the fake-quantized model output NaN, exercised only on the training `loss`
+path (PTQ eval never runs `get_targets`/`assign`). Root cause was the QAT calibration data path
+(the §D8 open question): the hook calibrated on the **augmented train dataloader** via `test_step`,
+so GT-paste/rot/flip could feed degenerate inputs that poison a histogram with Inf → NaN amax.
+Fixes: (a) QAT now calibrates on the **clean val (test-pipeline) dataloader** (matches PTQ,
+`test_step`-compatible), train-loader fallback with a warning; (b) **best practice = reuse the PTQ
+`.calib`** via `--ptq-calib-cache`; (c) an **amax health check** after calibration — clamp dead
+all-zero channels to eps, raise with layer names on NaN/Inf/None. This turns a silent
+NaN-in-matcher into an actionable failure and makes QAT amax match the proven-good PTQ amax.
 Scope: `deployment/` QAT for CenterPoint and BEVFusion-L, on top of the landed Goals 1–4
 (see `spec.md`). References: `Lidar_AI_Solution` (CUDA-BEVFusion / CUDA-CenterPoint /
 CUDA-V2XFusion) and `TensorRT-Model-Optimizer` (modelopt ~0.35).

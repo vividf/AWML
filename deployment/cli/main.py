@@ -2,7 +2,10 @@
 Single deployment entrypoint.
 
 Usage:
-    python -m deployment.cli.main <project> <deploy_cfg.py> <model_cfg.py> [--log-level LEVEL]
+    python -m deployment.cli.main <project> <deploy_cfg.py> [model_cfg.py] [--log-level LEVEL]
+
+The model config is optional when the deploy config declares a top-level ``model_cfg`` (the
+artifact's canonical pairing); passing it positionally overrides that key.
 """
 
 from __future__ import annotations

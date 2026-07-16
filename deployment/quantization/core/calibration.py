@@ -3,6 +3,7 @@
 
 import logging
 import traceback
+from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
 import torch
@@ -27,6 +28,27 @@ from deployment.quantization.core.availability import require_pytorch_quantizati
 def _check_pytorch_quantization():
     """Check if pytorch-quantization is available (raises ImportError if not)."""
     require_pytorch_quantization(PYTORCH_QUANTIZATION_AVAILABLE)
+
+
+@contextmanager
+def _allow_nondeterministic_algorithms():
+    """Temporarily lift ``torch.use_deterministic_algorithms`` around the calibration forward pass.
+
+    Under QAT the training config's ``randomness = dict(..., deterministic=True)`` makes mmengine
+    call ``torch.use_deterministic_algorithms(True)``, but pytorch_quantization's
+    ``HistogramCalibrator.collect`` uses ``torch.histc``, which has no deterministic CUDA kernel —
+    every calibration batch would raise ``RuntimeError: _histc_cuda ... does not have a
+    deterministic implementation`` and calibration would end with ``amax=None`` on every quantizer.
+    Statistics collection has no bearing on training reproducibility, so the flag is lifted only
+    for the collection loop and restored exactly (including ``warn_only``) afterwards.
+    """
+    enabled = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    torch.use_deterministic_algorithms(False)
+    try:
+        yield
+    finally:
+        torch.use_deterministic_algorithms(enabled, warn_only=warn_only)
 
 
 class CalibrationManager:
@@ -117,7 +139,8 @@ class CalibrationManager:
         self._enable_calibration_mode()
         first_exception_reported = False
 
-        with torch.no_grad():
+        # histc-based histogram collection is non-deterministic on CUDA; see the context manager.
+        with torch.no_grad(), _allow_nondeterministic_algorithms():
             pbar = tqdm(enumerate(dataloader), total=num_batches, desc="Calibrating")
             for i, batch in pbar:
                 if i >= num_batches:

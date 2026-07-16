@@ -60,13 +60,21 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
     """
     Setup logging configuration.
 
+    ``force=True`` is essential: by the time this runs, the CLI's ``build_parser`` has already
+    imported every ``deployment.projects.*`` package (to register adapters), and those imports
+    pull in ``deployment.quantization`` → ``pytorch_quantization`` → ``absl.logging``, which
+    installs its own root handler (WARNING+ only) and can raise the root level *at import time*.
+    A plain ``logging.basicConfig`` is a no-op once any root handler exists, so without ``force``
+    every deployment INFO record — the entire run — would be silently swallowed. ``force=True``
+    drops the foreign handler(s), installs ours, and resets the root level.
+
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 
     Returns:
         Configured logger instance
     """
-    logging.basicConfig(level=getattr(logging, level), format=_LOG_FORMAT)
+    logging.basicConfig(level=getattr(logging, level), format=_LOG_FORMAT, force=True)
     _record_deployment_logging()
     return logging.getLogger("deployment")
 
@@ -115,7 +123,15 @@ def parse_base_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         ArgumentParser with deployment arguments
     """
     parser.add_argument("deploy_cfg", help="Deploy config path")
-    parser.add_argument("model_cfg", help="Model config path")
+    parser.add_argument(
+        "model_cfg",
+        nargs="?",
+        default=None,
+        help=(
+            "Model config path. Optional when the deploy config declares a top-level `model_cfg` "
+            "(the artifact's canonical pairing); given here, it overrides that key."
+        ),
+    )
     # Optional overrides
     parser.add_argument(
         "--log-level",

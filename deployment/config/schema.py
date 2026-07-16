@@ -175,6 +175,135 @@ class TensorRTConfig:
 
 
 @dataclass(frozen=True)
+class QATConfig:
+    """Typed view of the optional ``quantization["qat"]`` sub-block (spec_qat.md §D2/WP1).
+
+    Present only when ``quantization.mode == "qat"`` — the block records the training half of a QAT
+    run so one deploy config reproduces it (placement already lives in ``keep_fp16`` /
+    ``disable_recipes``, which the QAT hook consumes unchanged). ``epochs`` and ``lr`` are required:
+    there is no silent recipe default — the reference values (~10% of original training epochs,
+    lr=1e-4 per CUDA-CenterPoint / modelopt) belong in the config, visibly.
+
+    ``train_cfg`` / ``checkpoint`` may be omitted and supplied on the producer CLI instead;
+    ``calibrate_samples`` defaults to the CUDA-CenterPoint reference (400 @ bs=1).
+    """
+
+    epochs: int
+    lr: float
+    train_cfg: Optional[str] = None
+    checkpoint: Optional[str] = None
+    calibrate_samples: int = 400
+    calib_cache: Optional[str] = None
+    work_dir: Optional[str] = None
+
+    # Typo guard — same rationale as QuantizationConfig.KNOWN_KEYS.
+    KNOWN_KEYS = frozenset(
+        {
+            "epochs",
+            "lr",
+            "train_cfg",
+            "checkpoint",
+            "calibrate_samples",
+            "calib_cache",
+            "work_dir",
+        }
+    )
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> QATConfig:
+        """Build QATConfig from ``quantization["qat"]``.
+
+        Raises:
+            TypeError: If ``raw`` is not a mapping.
+            ValueError: On unknown keys, or when ``epochs`` / ``lr`` are missing.
+        """
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"quantization.qat must be a dict, got {type(raw).__name__}")
+        unknown = set(raw) - cls.KNOWN_KEYS
+        if unknown:
+            raise ValueError(
+                f"Unknown quantization.qat key(s): {sorted(unknown)}. Valid keys: {sorted(cls.KNOWN_KEYS)}."
+            )
+        missing = {k for k in ("epochs", "lr") if raw.get(k) is None}
+        if missing:
+            raise ValueError(
+                f"quantization.qat requires {sorted(missing)} — no silent recipe default. "
+                "Reference values: epochs ≈ 10% of original training, lr=1e-4 (spec_qat.md §2)."
+            )
+        return cls(
+            epochs=int(raw["epochs"]),
+            lr=float(raw["lr"]),
+            train_cfg=raw.get("train_cfg"),
+            checkpoint=raw.get("checkpoint"),
+            calibrate_samples=int(raw.get("calibrate_samples", 400)),
+            calib_cache=raw.get("calib_cache"),
+            work_dir=raw.get("work_dir"),
+        )
+
+
+@dataclass(frozen=True)
+class PTQConfig:
+    """Typed view of the optional ``quantization["ptq"]`` sub-block.
+
+    The producer half of a PTQ run, recorded in the deploy config so one file reproduces the
+    checkpoint at ``checkpoint_path`` — the exact sibling of :class:`QATConfig` (placement already
+    lives in ``keep_fp16`` / ``disable_recipes``, shared by producer and deploy loader).
+    ``calibrate_samples`` is required: it is *the* calibration-recipe knob and gets no silent
+    default — same rationale as ``QATConfig.epochs`` / ``lr``.
+
+    The model config is NOT a block key: PTQ calibrates against the same model config the artifact
+    deploys with, so it lives once at the deploy config's top level (``model_cfg``, next to
+    ``checkpoint_path``). ``checkpoint`` (the FP input) may be omitted and supplied on the producer
+    CLI instead; CLI flags always override block values (``resolve_ptq_settings``).
+    """
+
+    calibrate_samples: int
+    checkpoint: Optional[str] = None
+    batch_size: int = 1
+    calib_seed: Optional[int] = None
+    calib_shuffle: bool = False
+
+    # Typo guard — same rationale as QuantizationConfig.KNOWN_KEYS.
+    KNOWN_KEYS = frozenset(
+        {
+            "calibrate_samples",
+            "checkpoint",
+            "batch_size",
+            "calib_seed",
+            "calib_shuffle",
+        }
+    )
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> PTQConfig:
+        """Build PTQConfig from ``quantization["ptq"]``.
+
+        Raises:
+            TypeError: If ``raw`` is not a mapping.
+            ValueError: On unknown keys, or when ``calibrate_samples`` is missing.
+        """
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"quantization.ptq must be a dict, got {type(raw).__name__}")
+        unknown = set(raw) - cls.KNOWN_KEYS
+        if unknown:
+            raise ValueError(
+                f"Unknown quantization.ptq key(s): {sorted(unknown)}. Valid keys: {sorted(cls.KNOWN_KEYS)}."
+            )
+        if raw.get("calibrate_samples") is None:
+            raise ValueError(
+                "quantization.ptq requires calibrate_samples — no silent recipe default. "
+                "It is the calibration-recipe knob (CenterPoint release reference: 400 @ bs=1)."
+            )
+        return cls(
+            calibrate_samples=int(raw["calibrate_samples"]),
+            checkpoint=raw.get("checkpoint"),
+            batch_size=int(raw.get("batch_size", 1)),
+            calib_seed=raw.get("calib_seed"),
+            calib_shuffle=bool(raw.get("calib_shuffle", False)),
+        )
+
+
+@dataclass(frozen=True)
 class QuantizationConfig:
     """Typed view of the deploy-config ``quantization`` section.
 
@@ -203,6 +332,13 @@ class QuantizationConfig:
     # List a recipe name here to opt this config out. Recognized: "add", "ese", "maxpool".
     disable_recipes: Tuple[str, ...] = ()
     calib_cache_path: Optional[str] = None
+    # Producer blocks — each present only under its matching mode (a block under the wrong mode is
+    # a config lie and from_dict raises; an explicit ``ptq=None`` / ``qat=None`` is fine, so a
+    # mode="qat" child config can drop a ptq block inherited via _base_).
+    # Deploy-load behavior NEVER branches on these: the loader rebuilds the identical tree for PTQ
+    # and QAT checkpoints alike (spec_qat.md §D6).
+    ptq: Optional[PTQConfig] = None
+    qat: Optional[QATConfig] = None
 
     # The full key set of the ``quantization`` deploy-config section. ``from_dict`` rejects anything
     # else: a misspelled key (``keep_fp16s=...``) would otherwise silently degrade to "quantize
@@ -218,6 +354,8 @@ class QuantizationConfig:
             "keep_fp16",
             "disable_recipes",
             "calib_cache_path",
+            "ptq",
+            "qat",
         }
     )
 
@@ -243,15 +381,31 @@ class QuantizationConfig:
                 f"Valid keys: {sorted(cls.KNOWN_KEYS)}. "
                 "A misspelled key would silently change what gets quantized."
             )
+        mode = str(raw.get("mode", "ptq"))
+        qat_raw = raw.get("qat")
+        if qat_raw is not None and mode != "qat":
+            raise ValueError(
+                f'quantization has a "qat" block but mode="{mode}" — set mode="qat" or drop the block. '
+                "A qat block under a non-qat mode is a config lie."
+            )
+        ptq_raw = raw.get("ptq")
+        if ptq_raw is not None and mode != "ptq":
+            raise ValueError(
+                f'quantization has a "ptq" block but mode="{mode}" — set mode="ptq" or drop the block '
+                "(a mode='qat' config inheriting one via _base_ can set ptq=None). "
+                "A ptq block under a non-ptq mode is a config lie."
+            )
         return cls(
             enabled=bool(raw.get("enabled", False)),
-            mode=str(raw.get("mode", "ptq")),
+            mode=mode,
             fuse_bn=bool(raw.get("fuse_bn", True)),
             ptq_checkpoint=bool(raw.get("ptq_checkpoint", False)),
             default_precision=str(raw.get("default_precision", "int8")),
             keep_fp16=cls._str_tuple(raw.get("keep_fp16")),
             disable_recipes=cls._str_tuple(raw.get("disable_recipes")),
             calib_cache_path=raw.get("calib_cache_path"),
+            ptq=PTQConfig.from_dict(ptq_raw) if ptq_raw is not None else None,
+            qat=QATConfig.from_dict(qat_raw) if qat_raw is not None else None,
         )
 
     def with_overrides(self, **overrides: Any) -> QuantizationConfig:
@@ -261,15 +415,16 @@ class QuantizationConfig:
         return replace(self, **overrides)
 
 
-def load_quantization_config(deploy_cfg_path: str) -> Tuple[QuantizationConfig, Optional[str]]:
-    """Load ``quantization`` (and the optional ``checkpoint_path``) from a deploy-config file.
+def load_quantization_config(deploy_cfg_path: str) -> Tuple[QuantizationConfig, Optional[str], Optional[str]]:
+    """Load ``quantization`` (and the top-level ``checkpoint_path`` / ``model_cfg``) from a deploy config.
 
     Centralizes the MMEngine ``Config`` access quirks (prefer ``.get`` over ``getattr``). Used by the
     PTQ / QAT producer CLIs; the deploy loaders instead receive the ``quantization`` dict and call
     :meth:`QuantizationConfig.from_dict` directly.
 
     Returns:
-        ``(config, checkpoint_path)``.
+        ``(config, checkpoint_path, model_cfg)`` — the latter two are the deploy config's top-level
+        artifact-manifest keys (producer output default / canonical model pairing).
     """
     from mmengine.config import Config
 
@@ -284,7 +439,7 @@ def load_quantization_config(deploy_cfg_path: str) -> Tuple[QuantizationConfig, 
     raw = _cfg_get("quantization")
     mapping = {k: raw[k] for k in raw} if raw is not None else {}
 
-    return QuantizationConfig.from_dict(mapping), _cfg_get("checkpoint_path")
+    return QuantizationConfig.from_dict(mapping), _cfg_get("checkpoint_path"), _cfg_get("model_cfg")
 
 
 # -----------------------------------------------------------------------------

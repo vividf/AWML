@@ -15,7 +15,7 @@ Shared plan:
 ```mermaid
 flowchart TD
     A["Start: bevfusion_l quantize.py ptq"] --> B["Parse args"]
-    B --> C["Load deploy quantization config"]
+    B --> C["Load deploy quantization config<br/>resolve settings: CLI flags over quantization.ptq block"]
     C --> E["Build BEVFusion model<br/>init_model with config and checkpoint"]
 
     E --> F{"fuse_bn enabled?"}
@@ -77,8 +77,8 @@ Shared plan:
 ```mermaid
 flowchart TD
     A["Start: centerpoint quantize.py ptq"] --> B["Parse args"]
-    B --> C["calibrate_batches = ceil samples over batch_size"]
-    C --> D["Load deploy quantization config"]
+    B --> C["Load deploy quantization config<br/>resolve settings: CLI flags over quantization.ptq block"]
+    C --> D["calibrate_batches = ceil samples over batch_size"]
     D --> E["Resolve sensitive layers"]
     E --> F["Load CenterPoint model<br/>init_model with config and checkpoint"]
 
@@ -119,59 +119,73 @@ CenterPoint is currently a dense Q/DQ path in this AWML pipeline. The named
 components are quantized by `quant_model.py`, while the actual calibration state
 machine is shared through `CalibrationManager`.
 
-## CenterPoint QAT Pipeline
+## QAT Pipeline (CenterPoint + BEVFusion)
 
-Entry point:
-`deployment/projects/centerpoint/quantization/quantize.py qat`
+QAT is a **frozen-amax STE fine-tune** (calibrated scales stay fixed; only weights train — see
+`spec_qat.md` §0/§2 for why this is the production method in both CUDA-CenterPoint and modelopt).
+One shared hook body + one shared training driver serve both projects:
 
-Hook:
-`deployment/projects/centerpoint/quantization/qat_hook.py`
+Entry points (identical shape; settings come from the deploy config's `quantization.qat` block,
+CLI flags override):
+`deployment/projects/centerpoint/quantization/quantize.py qat` and
+`deployment/projects/bevfusion_l/quantization/quantize.py qat`
+
+Shared machinery:
+`deployment/quantization/qat_hook.py` (`QATHookBase`) and
+`deployment/quantization/producer.py` (`run_qat_training`, `save_qat_checkpoint`).
+Project subclasses supply only the plan (+ BEVFusion's calibration forward):
+`centerpoint/quantization/qat_hook.py` (`QATHook`),
+`bevfusion_l/quantization/qat_hook.py` (`BEVFusionQATHook`).
 
 ```mermaid
 flowchart TD
-    A["Start: centerpoint quantize.py qat"] --> B["Parse args"]
-    B --> C["Load train config"]
-    C --> D["Register QATHook import"]
-    D --> E["Override lr, epochs, batch_size, work_dir"]
-    E --> F["Load deploy quantization config"]
-    F --> G["Resolve sensitive layers and quant flags"]
-    G --> H["Append QATHook to custom_hooks"]
-    H --> I["Set cfg.load_from checkpoint"]
-    I --> J["Build MMEngine Runner"]
-    J --> K["runner.train"]
+    A["Start: quantize.py qat --deploy-cfg ..."] --> B["Load deploy quantization config<br/>(placement + qat block; CLI overrides)"]
+    B --> C["run_qat_training (shared driver)"]
+    C --> C1["Force AMP off (fp32 QAT)"]
+    C1 --> C2["Strip EMA hooks · refuse resume"]
+    C2 --> C3["Override lr, epochs, batch_size, work_dir"]
+    C3 --> C4["Append project QATHook to custom_hooks<br/>(fuse_bn, keep_fp16, disable_recipes from deploy cfg)"]
+    C4 --> C5["cfg.load_from = FP checkpoint"]
+    C5 --> K["Runner.train (single GPU)"]
 
     K --> L["QATHook.before_train"]
-    L --> L1["Build same CenterPoint QuantizationPlan"]
-    L1 --> L2["Fuse BN if freeze_bn"]
+    L --> L1["Build the SAME QuantizationPlan<br/>as PTQ / deploy (tree parity)"]
+    L1 --> L2["Fuse BN (fuse_bn)"]
     L2 --> L3["Insert Q/DQ modules"]
     L3 --> L4["model.train"]
 
-    L4 --> M["QATHook.before_train_epoch at calibration_epoch"]
-    M --> N{"ptq_calib_cache provided?"}
-    N -->|yes| N1["Load amax values from .calib<br/>Skip new calibration"]
-    N -->|no| O["CalibrationManager.calibrate<br/>train dataloader"]
-    O --> O1["Enable calib and disable fake quant"]
-    O1 --> O2["Run calibration batches<br/>or all train batches"]
-    O2 --> O3["Compute amax with MSE"]
-    O3 --> O4["Enable fake quant and disable calib"]
+    L4 --> M["QATHook.before_train_epoch (epoch 0)"]
+    M --> N{"calib cache provided?"}
+    N -->|yes| N1["Load amax values from .calib<br/>(reuse the PTQ amax — recommended)"]
+    N -->|no| O["CalibrationManager.calibrate<br/>VAL dataloader (clean, un-augmented), MSE amax<br/>(BEVFusion: voxel-dtype forward)"]
     N1 --> P
-    O4 --> P["Disable sensitive layers"]
-    P --> Q["Continue QAT fine-tuning"]
+    O --> P["amax health check + disable keep_fp16 quantizers"]
+    P --> Q["Fine-tune weights (STE, frozen amax)"]
     Q --> R["QATHook.after_train<br/>log quantizer counts"]
-    R --> S["MMEngine saves trained checkpoint in work_dir"]
+    R --> S["save_qat_checkpoint:<br/>package best/last as {'state_dict'} + .calib"]
+    S --> T["Deploy exactly like a PTQ checkpoint"]
 ```
+
+The packaged QAT artifact is byte-shape-identical to a PTQ one, so the deploy loaders need no
+`mode` branch; `deployment/tests/test_qat_tree_parity.py` pins the tree parity between the hook
+path and the plan path.
 
 ## Implementation Map
 
 | Area | File |
 | --- | --- |
-| BEVFusion PTQ CLI | `deployment/projects/bevfusion_l/quantization/quantize.py` |
+| BEVFusion PTQ/QAT CLI | `deployment/projects/bevfusion_l/quantization/quantize.py` |
 | BEVFusion shared quantization plan | `deployment/projects/bevfusion_l/quantization/plan.py` |
 | BEVFusion sparse BN-fuse scheme (FP16) | `deployment/projects/bevfusion_l/quantization/schemes.py` |
+| BEVFusion calibration forward (voxel dtype) | `deployment/projects/bevfusion_l/quantization/calibration.py` |
+| BEVFusion QAT hook | `deployment/projects/bevfusion_l/quantization/qat_hook.py` |
 | SparseConv+BN fold | `deployment/quantization/sparse/fusion.py` |
 | Generic dense Q/DQ scheme | `deployment/quantization/schemes/dense_qdq.py` |
 | CenterPoint PTQ/QAT CLI | `deployment/projects/centerpoint/quantization/quantize.py` |
 | CenterPoint shared quantization plan | `deployment/projects/centerpoint/quantization/plan.py` |
 | CenterPoint quant module composition | `deployment/projects/centerpoint/quantization/quant_model.py` |
 | CenterPoint QAT hook | `deployment/projects/centerpoint/quantization/qat_hook.py` |
+| Shared QAT hook body | `deployment/quantization/qat_hook.py` |
+| Shared QAT training driver + packaging | `deployment/quantization/producer.py` |
 | Shared calibration manager | `deployment/quantization/core/calibration.py` |
+| QAT ↔ PTQ tree-parity test | `deployment/tests/test_qat_tree_parity.py` |

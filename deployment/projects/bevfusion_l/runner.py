@@ -21,7 +21,6 @@ from deployment.projects.bevfusion_l.export.transforms import bevfusion_merge_fi
 from deployment.projects.bevfusion_l.io.model_loader import build_bevfusion_model
 from deployment.quantization import setup_quantization_for_onnx_export
 from deployment.runtime.runner import BaseDeploymentRunner
-from projects.SparseConvolution.sparse_functional import set_do_sort
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +89,12 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
         # export and in the spconv forward path. Set it here — once, before any export or inference —
         # so the exported sparse graph and PyTorch inference agree. It is deploy-time config, not a
         # per-component concern, so it lives on the runner rather than in the component builder.
+        # Imported lazily: importing projects.SparseConvolution force-registers the deploy-only
+        # (inference-only) sparse conv classes into MODELS, which must NOT happen as a side effect
+        # of importing this module — the QAT hook's import chain traverses this file, and QAT must
+        # train on the stock spconv classes.
+        from projects.SparseConvolution.sparse_functional import set_do_sort
+
         set_do_sort(self.config.spconv_do_sort)
         logger.info(
             "spconv_do_sort=%s (baked into GetIndicePairsImplicitGemm.do_sort_i at ONNX export)",

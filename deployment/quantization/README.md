@@ -46,8 +46,11 @@ deployment/quantization/                      # model-agnostic engine
 ├── schemes/                                   # the "seam" between deploy stages and quantization
 │   ├── base.py                                #   QuantizationScheme (ABC) + QuantizationPlan
 │   └── dense_qdq.py                           #   generic DenseQDQScheme
-├── producer.py                                # shared PTQ-producer plumbing (calib dataloader
-│                                              #   seed/shuffle, checkpoint+.calib save, logging init)
+├── producer.py                                # shared PTQ/QAT-producer plumbing (calib dataloader
+│                                              #   seed/shuffle, ckpt+.calib save, run_qat_training,
+│                                              #   save_qat_checkpoint, logging init)
+├── qat_hook.py                                # QATHookBase — shared mmengine QAT hook body
+│                                              #   (projects register thin subclasses)
 └── sparse/                                    # spconv sparse-encoder helpers (FP16 deploy)
     └── fusion.py                              #   fuse_spconv_bn_in_encoder (SparseConv+BN fold)
 
@@ -55,13 +58,15 @@ deployment/projects/centerpoint/quantization/ # CenterPoint composition
 ├── quant_model.py                             #   applies engine+recipes to CP's named submodules
 ├── schemes.py                                 #   CenterPointDenseScheme (wraps quant_model)
 ├── plan.py                                    #   build_centerpoint_plan(config) -> QuantizationPlan
-├── qat_hook.py                                #   MMEngine QATHook
+├── qat_hook.py                                #   QATHook = QATHookBase + build_centerpoint_plan
 └── quantize.py                                #   PTQ + QAT producer CLI
 
 deployment/projects/bevfusion_l/quantization/ # BEVFusion composition
 ├── schemes.py                                 #   SpconvBnFuseScheme (sparse tower: FP16, BN fold only)
 ├── plan.py                                    #   build_bevfusion_plan(config) -> QuantizationPlan
-└── quantize.py                                #   PTQ producer CLI
+├── calibration.py                             #   voxel-dtype-normalizing calibration forward
+├── qat_hook.py                                #   BEVFusionQATHook = QATHookBase + plan + calib fwd
+└── quantize.py                                #   PTQ + QAT producer CLI
 ```
 
 **Dependency direction:** `projects/* → deployment.quantization`. The engine never imports a project.
@@ -141,7 +146,7 @@ PTQ and deploy module trees — and the exported sparse ONNX — are BN-free and
 
 ```mermaid
 flowchart TD
-    A[FP32 checkpoint + model config + deploy cfg] --> B[QuantizationConfig from deploy cfg]
+    A[deploy cfg] --> B["QuantizationConfig + producer settings<br/>(quantization.ptq block; CLI flags override)"]
     B --> C[build model, eval]
     C --> D["build_&lt;model&gt;_plan(config).prepare(model)<br/>= fuse BN + insert dense Q/DQ"]
     D --> E[calibrate dense Q/DQ]
@@ -153,7 +158,8 @@ flowchart TD
 - **BEVFusion:** `python -m deployment.projects.bevfusion_l.quantization.quantize ptq ...`
 
 For BEVFusion the sparse encoder stays FP16 (only SparseConv+BN is folded); PTQ calibrates the dense
-Q/DQ against the FP16 sparse BEV distribution the deploy path also produces.
+Q/DQ against the FP16 sparse BEV distribution the deploy path also produces. Full copy-paste
+command sequences (produce → deploy) are in **§3.5**.
 
 ### 3.2 Deploy load (PTQ checkpoint)
 The loader rebuilds the **identical** tree via the same plan *before* `load_state_dict`, so the
@@ -174,10 +180,113 @@ identical by construction, not reconciled by a separate fold step (no `include_s
 ### 3.3 Deploy load (FP32 checkpoint)
 `load_state_dict` first, **then** the plan inserts uncalibrated dense Q/DQ (needs runtime calibration).
 
-### 3.4 QAT (CenterPoint only)
-`QATHook` (MMEngine `Hook`): `before_train` calls `build_centerpoint_plan(config).prepare(model)`
-(same tree as PTQ/deploy), then `before_train_epoch` calibrates once (or loads a `.calib` cache), and
-training fine-tunes the fake-quantized model.
+### 3.4 QAT (CenterPoint + BEVFusion)
+QAT is a **frozen-amax STE fine-tune**: calibrated scales stay fixed buffers and only the weights
+train — the production method in both references (modelopt deprecated `learn_amax`;
+CUDA-CenterPoint never had it). See `spec_qat.md` §0/§2 for the evidence.
+
+One shared hook body (`deployment/quantization/qat_hook.py`, `QATHookBase`); each project registers
+a thin subclass supplying its plan (+ optionally a calibration forward): CenterPoint `QATHook`,
+BEVFusion `BEVFusionQATHook`. Flow: `before_train` → `build_<model>_plan(config).prepare(model)`
+(**the same tree as PTQ/deploy** — verified by `deployment/tests/test_qat_tree_parity.py`);
+`before_train_epoch` (epoch 0) → calibrate once (or load a `.calib` cache), disable `keep_fp16`
+quantizers; normal mmengine training fine-tunes the fake-quantized model. For BEVFusion the sparse
+encoder carries no fake-quant (FP16 deploy) but its weights still fine-tune.
+
+Calibration runs on the **clean val (test-pipeline) dataloader**, not the augmented train loader —
+so the QAT amax matches the proven-good PTQ amax and train augmentation can't feed degenerate
+inputs that poison a histogram into NaN. **Best practice: reuse the PTQ `.calib` cache**
+(`--ptq-calib-cache <model>_ptq.calib`) so QAT starts from the exact amax the PTQ deploy validated.
+After calibration the hook runs an amax health check: it clamps genuinely-dead (all-zero) channels
+to a tiny epsilon and **raises with layer names** on any NaN/Inf/uncalibrated amax, instead of
+letting the model NaN deep inside the loss.
+
+The producer CLI (`quantize.py qat`, both projects) drives everything through the shared
+`run_qat_training` (`producer.py`): AMP is **always forced off** (both references run QAT in fp32),
+EMA hooks are stripped, resume is refused (v1), and single-GPU only (the hook refuses multi-rank —
+the tree mutation happens after the DDP wrap). The run ends with `save_qat_checkpoint`: the packaged
+artifact is the same `{"state_dict"}` + sibling `.calib` shape PTQ emits, so **a QAT checkpoint
+deploys exactly like a PTQ one** (the loader never branches on `mode`).
+
+Reference recipe (spec_qat.md §2): epochs ≈ **10%** of the original training, **lr = 1e-4**,
+**400** calibration samples, histogram + MSE amax (the engine defaults). Full command sequences
+below (§3.5).
+
+### 3.5 End-to-end usage (produce → deploy)
+
+The workflow is always two steps: a **producer** run emits the quantized checkpoint
+(`{"state_dict"}` + sibling `.calib`), then the **unified CLI** deploys it (export / verify / eval).
+PTQ and QAT checkpoints are the same artifact shape, so **step 2 is identical for both** — only the
+`checkpoint_path` in the deploy config changes.
+
+Every command is **config-driven the same way**: the deploy config is the artifact's manifest —
+its top-level `model_cfg` / `checkpoint_path` name what the artifact is, the `quantization.ptq` /
+`quantization.qat` block records how it is produced, and the export/evaluation sections say how it
+deploys. Producer CLI flags override block values; `--output` defaults to `checkpoint_path`; the
+deploy CLI's `model_cfg` positional is now an optional override of the config's `model_cfg`.
+One file, one path per command, both steps.
+
+**BEVFusion — PTQ:**
+
+```bash
+# 1. Produce the PTQ checkpoint (dense INT8, sparse FP16; settings from the config's ptq block,
+#    any CLI flag overrides — e.g. add --calib-seed 1 to sweep seeds)
+python -m deployment.projects.bevfusion_l.quantization.quantize ptq \
+    --deploy-cfg deployment/projects/bevfusion_l/config/deploy_config_split_sparse_fp16_dense_int8_2_8.py
+
+# 2. Deploy (export / verify / eval) — model_cfg + checkpoint_path both come from the config
+python -m deployment.cli.main bevfusion_l \
+    deployment/projects/bevfusion_l/config/deploy_config_split_sparse_fp16_dense_int8_2_8.py
+```
+
+**BEVFusion — QAT** (same two steps; the producer fine-tunes instead of only calibrating —
+single GPU, AMP forced off). Shown CLI-driven; a `mode="qat"` config with a `qat` block reduces
+step 1 to `--deploy-cfg` alone, like the CenterPoint QAT example below:
+
+```bash
+# 1. QAT fine-tune from the FP checkpoint → packaged best_epoch_25_qat.pth (+ .calib)
+python -m deployment.projects.bevfusion_l.quantization.quantize qat \
+    --config projects/BEVFusion/configs/t4dataset/BEVFusion-L/bevfusion_lidar_voxel_second_secfpn_30e_8xb16_j6gen2_base_120m_t4metric_v2.py \
+    --checkpoint work_dirs/bevfusion/bevfusion_2_8/best_epoch_25.pth \
+    --deploy-cfg deployment/projects/bevfusion_l/config/deploy_config_split_sparse_fp16_dense_int8_2_8.py \
+    --epochs 3 --lr 1e-4 --calibrate-samples 400 --batch-size 1 \
+    --ptq-calib-cache work_dirs/bevfusion/bevfusion_2_8/best_epoch_25_ptq.calib \
+    --output work_dirs/bevfusion/bevfusion_2_8/best_epoch_25_qat.pth
+# --ptq-calib-cache reuses the proven-good PTQ amax (recommended). Omit it to calibrate fresh on
+# the clean val dataloader instead.
+
+# 2. Point the deploy config at the QAT artifact, then deploy EXACTLY like PTQ
+#    (edit checkpoint_path = ".../best_epoch_25_qat.pth"; ptq_checkpoint=True stays as-is)
+python -m deployment.cli.main bevfusion_l \
+    deployment/projects/bevfusion_l/config/deploy_config_split_sparse_fp16_dense_int8_2_8.py
+```
+
+**CenterPoint — QAT:** `deploy_config_int8_second_qat.py` carries the whole run in its
+`quantization.qat` block (train_cfg, FP checkpoint, epochs, lr, …):
+
+```bash
+# 1. QAT fine-tune (settings from the config's qat block; any CLI flag overrides)
+python -m deployment.projects.centerpoint.quantization.quantize qat \
+    --deploy-cfg deployment/projects/centerpoint/config/deploy_config_int8_second_qat.py
+
+# 2. Deploy — same config; model_cfg + the packaged _qat.pth both come from it
+python -m deployment.cli.main centerpoint \
+    deployment/projects/centerpoint/config/deploy_config_int8_second_qat.py
+```
+
+**CenterPoint — PTQ:** `deploy_config_int8_second_2_6_quant_release.py` names the model
+(top-level `model_cfg`) and carries the release calibration recipe in its `quantization.ptq` block
+(FP checkpoint, 400 samples @ bs=1, seed 0):
+
+```bash
+# 1. Produce the PTQ checkpoint (dense INT8; voxel encoder / sensitive stages kept FP16 via keep_fp16)
+python -m deployment.projects.centerpoint.quantization.quantize ptq \
+    --deploy-cfg deployment/projects/centerpoint/config/deploy_config_int8_second_2_6_quant_release.py
+
+# 2. Deploy — same config; model_cfg + the produced _ptq.pth both come from it
+python -m deployment.cli.main centerpoint \
+    deployment/projects/centerpoint/config/deploy_config_int8_second_2_6_quant_release.py
+```
 
 ---
 
@@ -196,6 +305,8 @@ All settings live under `quantization = dict(...)` in the deploy config and are 
 | `disable_recipes` | both | Always-on recipes to opt out of: `"add"` / `"ese"` / `"maxpool"`. |
 | `ptq_checkpoint` | both | The checkpoint carries calibrated `_amax` (rebuild tree before load). |
 | `calib_cache_path` | both | Load amax from a `.calib` cache instead of calibrating. |
+| `ptq` | both | PTQ producer block (only with `mode="ptq"`): `checkpoint` (FP input), `calibrate_samples` (required — the calibration recipe knob), `batch_size` (default 1), `calib_seed`, `calib_shuffle`. The model config is NOT here — calibration uses the deploy config's top-level `model_cfg` (the artifact's canonical pairing). Parsed into `PTQConfig`; producer CLI flags override. Deploy-load behavior never branches on it. A `mode="qat"` config inheriting one via `_base_` drops it with `ptq=None`. |
+| `qat` | both | QAT training block (only with `mode="qat"`): `train_cfg`, `checkpoint` (FP init), `epochs` + `lr` (required — reference: ~10% of training, 1e-4), `calibrate_samples` (default 400), `calib_cache`, `work_dir`. Parsed into `QATConfig`; producer CLI flags override. Deploy-load behavior never branches on it. |
 
 Example (CenterPoint VoVNet):
 

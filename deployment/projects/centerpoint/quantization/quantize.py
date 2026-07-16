@@ -7,34 +7,32 @@ This script provides CLI commands for PTQ (Post-Training Quantization) and
 QAT (Quantization-Aware Training) for CenterPoint models.
 
 Usage:
-    # PTQ Mode - Quantize a pre-trained model (required: --deploy-cfg)
+    # PTQ Mode - config-driven (settings from the deploy config's quantization.ptq block;
+    # --output defaults to the config's checkpoint_path)
     python -m deployment.projects.centerpoint.quantization.quantize ptq \
+        --deploy-cfg deployment/projects/centerpoint/config/deploy_config_int8_second_2_6_quant_release.py
+
+    # PTQ Mode - CLI-driven (flags override / substitute the ptq block)
+    python -m deployment.projects.centerpoint.quantization.quantize ptq \
+        --deploy-cfg deployment/projects/centerpoint/config/deploy_config_int8.py \
         --config projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
         --checkpoint work_dirs/centerpoint/best.pth \
-        --deploy-cfg deployment/projects/centerpoint/config/deploy_config_int8.py \
         --calibrate-samples 938 \
         --batch-size 4 \
         --calib-seed 0 \
         --output work_dirs/centerpoint_ptq.pth
 
-    # PTQ Mode with larger batch_size (reduces seed sensitivity)
-    python -m deployment.projects.centerpoint.quantization.quantize ptq \
-        --config projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
-        --checkpoint work_dirs/centerpoint/best.pth \
-        --deploy-cfg deployment/projects/centerpoint/config/deploy_config_int8.py \
-        --calibrate-samples 938 \
-        --batch-size 16 \
-        --calib-seed 0 \
-        --output work_dirs/centerpoint_ptq.pth
-
-    # QAT Mode - Fine-tune with quantization (required: --deploy-cfg)
+    # QAT Mode - config-driven (settings from the deploy config's quantization.qat block)
     python -m deployment.projects.centerpoint.quantization.quantize qat \
+        --deploy-cfg deployment/projects/centerpoint/config/deploy_config_int8_second_qat.py
+
+    # QAT Mode - CLI-driven (flags override / substitute the qat block)
+    python -m deployment.projects.centerpoint.quantization.quantize qat \
+        --deploy-cfg deployment/projects/centerpoint/config/deploy_config_int8.py \
         --config projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_base_amp.py \
         --checkpoint work_dirs/centerpoint/best.pth \
-        --deploy-cfg deployment/projects/centerpoint/config/deploy_config_int8.py \
-        --calibrate-samples 100 \
-        --batch-size 1 \
-        --epochs 10 \
+        --calibrate-samples 400 \
+        --epochs 3 \
         --lr 0.0001 \
         --output work_dirs/centerpoint_qat.pth
 """
@@ -65,27 +63,43 @@ def parse_args():
         help="Post-Training Quantization",
         description="Apply PTQ to a pre-trained CenterPoint model",
     )
-    ptq_parser.add_argument("--config", required=True, help="Model config file path")
-    ptq_parser.add_argument("--checkpoint", required=True, help="Model checkpoint file path")
     ptq_parser.add_argument(
         "--deploy-cfg",
         required=True,
         help=(
-            "Required deployment config path (e.g. deployment/projects/centerpoint/config/deploy_config_int8.py). "
-            "PTQ uses its `quantization` settings as the single source of truth "
-            "(default_precision, keep_fp16, disable_recipes and fuse_bn)."
+            "Required deployment config path. Its `quantization` block is the single source of "
+            "truth for placement (default_precision / keep_fp16 / disable_recipes / fuse_bn); with "
+            "mode='ptq' its `ptq` sub-block supplies the producer settings (CLI flags below "
+            "override them) — same shape as the QAT command."
         ),
+    )
+    ptq_parser.add_argument(
+        "--config",
+        default=None,
+        help="Model config path (overrides the deploy config's top-level model_cfg).",
+    )
+    ptq_parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="FP checkpoint path to quantize (overrides quantization.ptq.checkpoint).",
     )
     ptq_parser.add_argument(
         "--calibrate-samples",
         type=int,
-        default=100,
+        default=None,
         help=(
-            "Total number of samples for calibration (default: 100). "
-            "Batches will be auto-calculated based on --batch-size."
+            "Total number of samples for calibration (overrides quantization.ptq.calibrate_samples; "
+            "100 without either). Batches are auto-calculated from the batch size."
         ),
     )
-    ptq_parser.add_argument("--output", required=True, help="Output checkpoint path")
+    ptq_parser.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "Output checkpoint path (+ sibling .calib). Defaults to the deploy config's "
+            "`checkpoint_path`, so the run produces exactly the artifact the deploy config expects."
+        ),
+    )
     ptq_parser.add_argument(
         "--device",
         default="cuda:0",
@@ -94,19 +108,23 @@ def parse_args():
     ptq_parser.add_argument(
         "--calib-shuffle",
         action="store_true",
-        help="Shuffle the calibration data",
+        default=None,
+        help="Shuffle the calibration data (overrides quantization.ptq.calib_shuffle).",
     )
     ptq_parser.add_argument(
         "--calib-seed",
         type=int,
         default=None,
-        help="Random seed for calibration data shuffling",
+        help="Random seed for calibration data shuffling (overrides quantization.ptq.calib_seed)",
     )
     ptq_parser.add_argument(
         "--batch-size",
         type=int,
-        default=1,
-        help="Batch size for calibration (default: 1). Larger batch size can reduce seed sensitivity.",
+        default=None,
+        help=(
+            "Batch size for calibration (overrides quantization.ptq.batch_size; 1 without either). "
+            "Larger batch size can reduce seed sensitivity."
+        ),
     )
 
     # =========================================================================
@@ -117,25 +135,33 @@ def parse_args():
         help="Quantization-Aware Training",
         description="Fine-tune model with quantization-aware training",
     )
-    qat_parser.add_argument("--config", required=True, help="Model config file path")
-    qat_parser.add_argument("--checkpoint", required=True, help="Initial checkpoint file path")
     qat_parser.add_argument(
         "--deploy-cfg",
         required=True,
         help=(
-            "Required deployment config path (e.g. deployment/projects/centerpoint/config/deploy_config_int8.py). "
-            "QAT uses its `quantization` settings as the single source of truth "
-            "for sensitive layers and component quantization toggles."
+            "Required deployment config path. Its `quantization` block is the single source of "
+            "truth for placement (keep_fp16 / disable_recipes / fuse_bn); with mode='qat' its "
+            "`qat` sub-block supplies the training settings (CLI flags below override them)."
         ),
+    )
+    qat_parser.add_argument(
+        "--config",
+        default=None,
+        help="Model training config path (overrides quantization.qat.train_cfg).",
+    )
+    qat_parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Initial FP checkpoint path (overrides quantization.qat.checkpoint).",
     )
     qat_parser.add_argument(
         "--calibrate-samples",
         type=int,
         default=None,
         help=(
-            "Total number of samples for initial calibration. "
-            "If not specified, use all training batches (recommended for QAT). "
-            "Batches will be auto-calculated based on --batch-size if specified."
+            "Total number of samples for the epoch-0 calibration "
+            "(overrides quantization.qat.calibrate_samples; reference: 400). "
+            "Without either, all training batches are used."
         ),
     )
     qat_parser.add_argument(
@@ -147,23 +173,40 @@ def parse_args():
     qat_parser.add_argument(
         "--epochs",
         type=int,
-        default=10,
-        help="Number of fine-tuning epochs (default: 10)",
+        default=None,
+        help=(
+            "Number of fine-tuning epochs (overrides quantization.qat.epochs). "
+            "Reference recipe: ~10%% of the original training epochs (spec_qat.md §2)."
+        ),
     )
     qat_parser.add_argument(
         "--lr",
         type=float,
-        default=0.0001,
-        help="Learning rate for fine-tuning (default: 0.0001)",
+        default=None,
+        help=(
+            "Learning rate for fine-tuning (overrides quantization.qat.lr). "
+            "Reference recipe: 1e-4 (CUDA-CenterPoint / modelopt CNN QAT)."
+        ),
     )
-    qat_parser.add_argument("--output", required=True, help="Output checkpoint path")
-    qat_parser.add_argument("--work-dir", default=None, help="Working directory for training")
+    qat_parser.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "Output path for the packaged QAT checkpoint (`{'state_dict'}` + sibling .calib). "
+            "Defaults to the deploy config's `checkpoint_path`, so the run produces exactly the "
+            "artifact the deploy config expects."
+        ),
+    )
+    qat_parser.add_argument(
+        "--work-dir",
+        default=None,
+        help="Working directory for training (overrides quantization.qat.work_dir).",
+    )
     qat_parser.add_argument(
         "--ptq-calib-cache",
         default=None,
-        help="Path to PTQ calibration cache (.calib file). If provided, QAT will load "
-        "existing amax values instead of running new calibration, significantly "
-        "speeding up the process.",
+        help="Path to PTQ calibration cache (.calib file) — overrides quantization.qat.calib_cache. "
+        "If provided, QAT will load existing amax values instead of running new calibration.",
     )
     return parser.parse_args()
 
@@ -182,44 +225,55 @@ def run_ptq(args):
         expand_keep_fp16,
         print_quantizer_status,
     )
-    from deployment.quantization.producer import build_calib_dataloader, save_ptq_checkpoint
+    from deployment.quantization.producer import build_calib_dataloader, resolve_ptq_settings, save_ptq_checkpoint
 
     from .plan import build_centerpoint_plan
 
+    # The deploy config is the single source of truth: placement (keep_fp16 / disable_recipes /
+    # fuse_bn) always; producer settings via its `ptq` block; model_cfg / checkpoint_path from the
+    # top-level manifest keys — CLI flags override any of them.
+    config, deploy_checkpoint_path, deploy_model_cfg = load_quantization_config(args.deploy_cfg)
+    if config.mode != "ptq":
+        print(
+            f'Note: deploy config has quantization.mode="{config.mode}" — a PTQ run usually pairs '
+            'with mode="ptq" (+ a ptq block). Proceeding with CLI settings.'
+        )
+    settings = resolve_ptq_settings(
+        args, config, deploy_checkpoint_path, deploy_model_cfg, default_calibrate_samples=100
+    )
+    batch_size = settings["batch_size"]
+
     # Auto-calculate calibrate_batches from calibrate_samples and batch_size
-    args.calibrate_batches = math.ceil(args.calibrate_samples / args.batch_size)
-    actual_samples = args.calibrate_batches * args.batch_size
+    calibrate_batches = math.ceil(settings["calibrate_samples"] / batch_size)
+    actual_samples = calibrate_batches * batch_size
     print(
-        f"Auto-calculated: {args.calibrate_samples} samples → "
-        f"{args.calibrate_batches} batches × {args.batch_size} = {actual_samples} samples"
+        f"Auto-calculated: {settings['calibrate_samples']} samples → "
+        f"{calibrate_batches} batches × {batch_size} = {actual_samples} samples"
     )
 
     print("=" * 80)
     print("CenterPoint PTQ Quantization")
     print("=" * 80)
-    print(f"Config: {args.config}")
-    print(f"Checkpoint: {args.checkpoint}")
-    print(f"Calibration batches: {args.calibrate_batches}")
-    print(f"Batch size: {args.batch_size}")
-    print(f"Calibration shuffle: {args.calib_shuffle}")
-    if args.calib_seed is not None:
-        print(f"Calibration seed: {args.calib_seed}")
+    print(f"Deploy cfg: {args.deploy_cfg}")
+    print(f"Config: {settings['model_cfg']}")
+    print(f"Checkpoint: {settings['checkpoint']}")
+    print(f"Calibration batches: {calibrate_batches}")
+    print(f"Batch size: {batch_size}")
+    print(f"Calibration shuffle: {settings['calib_shuffle']}")
+    if settings["calib_seed"] is not None:
+        print(f"Calibration seed: {settings['calib_seed']}")
     print("Amax method: mse")
-    if args.deploy_cfg:
-        print(f"Deploy cfg: {args.deploy_cfg}")
-    print(f"Output: {args.output}")
+    print(f"Output: {settings['output']}")
     print("=" * 80)
 
-    # Single source of truth: parse the deploy ``quantization`` block once.
-    config, _ = load_quantization_config(args.deploy_cfg)
     if "add" not in config.disable_recipes:
         print("Note: Residual-add quantization enabled (only the identity branch is quantized, to")
         print("      enable TensorRT Conv+Add fusion; class-gated). Disable via disable_recipes=['add'].")
 
     # Load model
     print("\n[1/5] Loading model...")
-    cfg = Config.fromfile(args.config)
-    model = init_model(cfg, args.checkpoint, device=args.device)
+    cfg = Config.fromfile(settings["model_cfg"])
+    model = init_model(cfg, settings["checkpoint"], device=args.device)
     model.eval()
 
     # Resolve keep_fp16 → concrete module names for the disable loop below (needs the model; same
@@ -240,27 +294,25 @@ def run_ptq(args):
     print("\n[4/5] Building calibration dataloader...")
     dataloader = build_calib_dataloader(
         cfg,
-        batch_size=args.batch_size,
-        seed=args.calib_seed,
-        shuffle=args.calib_shuffle,
+        batch_size=batch_size,
+        seed=settings["calib_seed"],
+        shuffle=settings["calib_shuffle"],
     )
 
     # Print dataset size (best-effort)
     try:
         total_samples = len(dataloader.dataset)
-        total_calib_samples = args.calibrate_batches * args.batch_size
         print(f"  Total samples in dataset: {total_samples}")
-        print(f"  Total calibration samples: {total_calib_samples}")
+        print(f"  Total calibration samples: {actual_samples}")
     except Exception:
         pass
 
     # Calibrate
-    total_calib_samples = args.calibrate_batches * args.batch_size
-    print(f"\n[5/5] Calibrating with {args.calibrate_batches} batches ({total_calib_samples} samples)...")
+    print(f"\n[5/5] Calibrating with {calibrate_batches} batches ({actual_samples} samples)...")
     calibrator = CalibrationManager(model)
     calibrator.calibrate(
         dataloader,
-        num_batches=args.calibrate_batches,
+        num_batches=calibrate_batches,
         method="mse",  # fixed to mse to match CUDA-CenterPoint behavior
     )
 
@@ -274,7 +326,7 @@ def run_ptq(args):
     print_quantizer_status(model)
 
     # Save checkpoint + calibration cache (shared PTQ-producer helper)
-    output_path, calib_path = save_ptq_checkpoint(model, args.output, calibrator)
+    output_path, calib_path = save_ptq_checkpoint(model, settings["output"], calibrator)
 
     print("\n" + "=" * 80)
     print("PTQ Complete!")
@@ -284,146 +336,66 @@ def run_ptq(args):
 
 
 def run_qat(args):
-    """Run QAT training pipeline."""
+    """Run QAT training pipeline (shared driver; CenterPoint supplies only project constants)."""
     import math
 
-    import torch
-    from mmengine.config import Config
+    from deployment.config.schema import load_quantization_config
+    from deployment.quantization.producer import resolve_qat_settings, run_qat_training
 
-    # Auto-calculate calibrate_batches from calibrate_samples and batch_size
-    # If not specified, use all training batches (handled inside QATHook)
-    if args.calibrate_samples is not None:
-        calibration_batches = math.ceil(args.calibrate_samples / args.batch_size)
+    # The deploy config is the single source of truth: placement (keep_fp16 / disable_recipes /
+    # fuse_bn) always; training settings via its `qat` block, with CLI flags as overrides.
+    # (The top-level model_cfg is the DEPLOY pairing — QAT trains on qat.train_cfg instead.)
+    config, deploy_checkpoint_path, _ = load_quantization_config(args.deploy_cfg)
+    if config.mode != "qat":
+        print(
+            f'Note: deploy config has quantization.mode="{config.mode}" — a QAT run usually pairs '
+            'with mode="qat" (+ a qat block). Proceeding with CLI settings.'
+        )
+    settings = resolve_qat_settings(args, config, deploy_checkpoint_path)
+
+    if settings["calibrate_samples"] is not None:
+        calibration_batches = math.ceil(settings["calibrate_samples"] / args.batch_size)
     else:
         calibration_batches = 0
 
     print("=" * 80)
-    print("CenterPoint QAT Training")
+    print("CenterPoint QAT Training (frozen-amax STE fine-tune)")
     print("=" * 80)
-    print(f"Config: {args.config}")
-    print(f"Checkpoint: {args.checkpoint}")
+    print(f"Deploy cfg: {args.deploy_cfg}")
+    print(f"Train config: {settings['train_cfg']}")
+    print(f"Init checkpoint: {settings['checkpoint']}")
     if calibration_batches > 0:
         print(
             f"Calibration: {calibration_batches} batches "
-            f"(from calibrate_samples={args.calibrate_samples}, batch_size={args.batch_size})"
+            f"(from calibrate_samples={settings['calibrate_samples']}, batch_size={args.batch_size})"
         )
     else:
         print("Calibration: using all training batches (or loading calib cache if provided)")
-    print(f"Epochs: {args.epochs}")
-    print(f"Learning rate: {args.lr}")
-    print(f"Output: {args.output}")
+    print(f"Epochs: {settings['epochs']}")
+    print(f"Learning rate: {settings['lr']}")
+    print(f"Output: {settings['output']}")
     print("=" * 80)
 
-    # Load and modify config
-    cfg = Config.fromfile(args.config)
-
-    # Ensure QATHook is registered
-    if not hasattr(cfg, "custom_imports"):
-        cfg.custom_imports = dict(imports=[], allow_failed_imports=False)
-    if "imports" not in cfg.custom_imports:
-        cfg.custom_imports["imports"] = []
-
-    qat_hook_import = "deployment.projects.centerpoint.quantization.qat_hook"
-    if qat_hook_import not in cfg.custom_imports["imports"]:
-        cfg.custom_imports["imports"].append(qat_hook_import)
-
-    try:
-        __import__(qat_hook_import)
-        print(f"  Imported QATHook module: {qat_hook_import}")
-    except ImportError as e:
-        raise ImportError(
-            f"Failed to import QATHook module '{qat_hook_import}'. "
-            f"Please ensure the module is available. Error: {e}"
-        ) from e
-
-    # Override training settings
-    cfg.optim_wrapper.optimizer.lr = args.lr
-    cfg.train_cfg.max_epochs = args.epochs
-
-    # Check if AmpOptimWrapper is used but GPU is not available
-    if cfg.optim_wrapper.get("type") == "AmpOptimWrapper":
-        if not torch.cuda.is_available():
-            print("Warning: AmpOptimWrapper detected but CUDA is not available.")
-            print("Switching to OptimWrapper for CPU/GPU compatibility...")
-            cfg.optim_wrapper.type = "OptimWrapper"
-            cfg.optim_wrapper.pop("dtype", None)
-            cfg.optim_wrapper.pop("loss_scale", None)
-            print("Optimizer wrapper changed to: OptimWrapper")
-
-    # Override dataloader batch_size (best-effort)
-    if isinstance(getattr(cfg, "train_dataloader", None), dict):
-        cfg.train_dataloader["batch_size"] = args.batch_size
-    if isinstance(getattr(cfg, "val_dataloader", None), dict):
-        cfg.val_dataloader["batch_size"] = args.batch_size
-
-    # Set work directory
-    if args.work_dir:
-        cfg.work_dir = args.work_dir
-    else:
-        cfg.work_dir = str(Path(args.output).parent / "qat_training")
-
-    # Add QAT hook
-    if not hasattr(cfg, "custom_hooks"):
-        cfg.custom_hooks = []
-
-    # Quantization placement: the deploy config is the single source of truth. The QATHook builds the
-    # SAME plan (via build_centerpoint_plan) the PTQ producer and deploy loader use, so keep_fp16 /
-    # disable_recipes flow straight through.
-    from deployment.config.schema import load_quantization_config
-
-    config, _ = load_quantization_config(args.deploy_cfg)
-
-    cfg.custom_hooks.append(
-        dict(
-            type="QATHook",
-            calibration_batches=calibration_batches,
-            calibration_epoch=0,
-            freeze_bn=True,
-            keep_fp16=list(config.keep_fp16),
-            disable_recipes=list(config.disable_recipes),
-            calib_cache_path=args.ptq_calib_cache,
-        )
+    output_path, calib_path = run_qat_training(
+        train_cfg_path=settings["train_cfg"],
+        checkpoint=settings["checkpoint"],
+        hook_import="deployment.projects.centerpoint.quantization.qat_hook",
+        hook_type="QATHook",
+        quant_config=config,
+        epochs=settings["epochs"],
+        lr=settings["lr"],
+        output=settings["output"],
+        batch_size=args.batch_size,
+        calibration_batches=calibration_batches,
+        calib_cache=settings["calib_cache"],
+        work_dir=settings["work_dir"],
     )
-
-    # Load checkpoint
-    cfg.load_from = args.checkpoint
-
-    print("\nQAT training configuration prepared.")
-    print(f"Work directory: {cfg.work_dir}")
-    if args.ptq_calib_cache:
-        print(f"Using PTQ calibration cache: {args.ptq_calib_cache}")
-        print("Note: This will skip the initial calibration phase and use existing amax values.")
-    print("\nStarting QAT training...")
-    print("=" * 80)
-
-    # Import custom modules before building runner (ensures registries are populated)
-    if hasattr(cfg, "custom_imports") and "imports" in cfg.custom_imports:
-        for module_path in cfg.custom_imports["imports"]:
-            try:
-                __import__(module_path)
-                print(f"  Imported: {module_path}")
-            except ImportError as e:
-                if not cfg.custom_imports.get("allow_failed_imports", False):
-                    raise ImportError(
-                        f"Failed to import module '{module_path}'. "
-                        f"Please ensure the module is available. Error: {e}"
-                    ) from e
-                else:
-                    print(f"  Warning: Failed to import {module_path}: {e}")
-
-    from mmengine.registry import RUNNERS
-    from mmengine.runner import Runner
-
-    if "runner_type" not in cfg:
-        runner = Runner.from_cfg(cfg)
-    else:
-        runner = RUNNERS.build(cfg)
-
-    runner.train()
 
     print("\n" + "=" * 80)
     print("QAT training completed!")
-    print(f"Model saved in: {cfg.work_dir}")
+    print(f"Packaged checkpoint: {output_path}")
+    print(f"Calibration cache: {calib_path}")
+    print("Deploy it exactly like a PTQ checkpoint (same loader path; spec_qat.md D6).")
     print("=" * 80)
 
 

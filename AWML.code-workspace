@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../Lidar_AI_Solution"
+		},
+		{
+			"path": "../TensorRT-Model-Optimizer"
+		}
+	],
+	"settings": {}
+}

@@ -55,7 +55,15 @@ def run_detection3d_deployment(
     logger = setup_logging(args.log_level)
 
     deploy_cfg = Config.fromfile(args.deploy_cfg)
-    model_cfg = Config.fromfile(args.model_cfg)
+    # The deploy config's top-level ``model_cfg`` records the artifact's canonical pairing (next to
+    # ``checkpoint_path``); the CLI positional stays as an override for eval-variant runs.
+    model_cfg_path = args.model_cfg or deploy_cfg.get("model_cfg")
+    if not model_cfg_path:
+        raise SystemExit(
+            "No model config: pass it as the second positional argument or set a top-level "
+            f"`model_cfg` in the deploy config ({args.deploy_cfg})."
+        )
+    model_cfg = Config.fromfile(model_cfg_path)
     config = config_factory(deploy_cfg)
 
     log_file = config.resolved_deploy_log_file

@@ -20,10 +20,6 @@ from mmengine.config import Config
 from mmengine.registry import MODELS, init_default_scope
 from mmengine.runner import load_checkpoint
 
-# Imported for their side effect: registering BEVFusion and SparseConvolution modules into the
-# MMDet3D registries so ``MODELS.build`` can resolve them during export.
-import projects.BEVFusion.bevfusion  # noqa: F401
-import projects.SparseConvolution  # noqa: F401
 from deployment.config.schema import QuantizationConfig
 from deployment.io.mmdet3d_model import build_mmdet3d_model
 from deployment.primitives.device import DeviceSpec
@@ -130,6 +126,14 @@ def build_bevfusion_model(
         RuntimeError: If the checkpoint is not a LiDAR-only BEVFusion model (see
             :func:`_require_lidar_only_bevfusion`).
     """
+    # Imported for their side effect: registering BEVFusion and the deploy-only SparseConvolution
+    # classes into the MMDet3D registries so ``MODELS.build`` resolves them for export/inference.
+    # Deliberately lazy (inside the builder, not at module level): the SparseConvolution fork is
+    # inference-only (its forward raises in training mode), and this module sits on the QAT hook's
+    # import chain — QAT training must build the model on the stock spconv classes instead.
+    import projects.BEVFusion.bevfusion  # noqa: F401
+    import projects.SparseConvolution  # noqa: F401
+
     if quantization is not None and quantization.enabled:
         # Quantized path: build + insert Q/DQ + load PTQ/FP32 ourselves (the shared
         # build_mmdet3d_model cannot express the pre-load quant-tree insertion).
