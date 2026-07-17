@@ -9,8 +9,15 @@ import math
 import torch
 import torch.nn as nn
 from einops import rearrange
-from flash_attn.bert_padding import unpad_input
-from flash_attn.flash_attn_interface import flash_attn_varlen_kvpacked_func
+
+# flash-attn is optional: deployment environments swap PETRMultiheadFlashAttention for
+# PETRMultiheadAttention at export time and never construct FlashAttention.
+try:
+    from flash_attn.bert_padding import unpad_input
+    from flash_attn.flash_attn_interface import flash_attn_varlen_kvpacked_func
+except ImportError:
+    unpad_input = None
+    flash_attn_varlen_kvpacked_func = None
 from torch.nn.functional import linear
 from torch.nn.init import constant_, xavier_normal_, xavier_uniform_
 
@@ -37,6 +44,11 @@ class FlashAttention(nn.Module):
 
     def __init__(self, softmax_scale=None, attention_dropout=0.0, device=None, dtype=None):
         super().__init__()
+        if flash_attn_varlen_kvpacked_func is None:
+            raise ImportError(
+                "flash-attn is not installed but FlashAttention was constructed. "
+                "Install flash-attn for training, or use PETRMultiheadAttention for export."
+            )
         self.softmax_scale = softmax_scale
         self.dropout_p = attention_dropout
         self.fp16_enabled = True
