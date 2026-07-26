@@ -16,14 +16,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-/tmp/trt_plugin_build}"
 SRC_DIR="${SRC_DIR:-/tmp/autoware_tensorrt_plugins_src}"
 INSTALL_PLUGINS_DIR="${INSTALL_PLUGINS_DIR:-/opt/plugins}"
-# AWML clones autoware_tensorrt_plugins from an AWML-maintained fork that bakes
-# in the do_sort-attribute change (see §10.9 of
-# deployment/projects/bevfusion/docs/15_README_AWML_SPCONV_INT8_ACCEL_PLAN.md).
-# Override the URL/ref via env vars when you want to track a different fork/branch
-# (e.g. upstream autowarefoundation/autoware.universe main for an A/B build).
+# Everything the AWML deploy configs need from the plugins (the GetIndicePairs `do_sort`
+# attribute and the fused bias/activation ImplicitGemm, autoware_universe PR #12658) is
+# upstreamed, so we build from `main`. The fork URL is kept as a user-controlled sync point;
+# override via env vars to track a different repo/branch (e.g. upstream
+# autowarefoundation/autoware_universe main, or a feature branch for an A/B build).
+# NOTE: sparse/ImplicitGemm INT8 is no longer supported — `main` has no quantize_ops, and
+# CMakeLists.standalone no longer compiles quantize_features.cu.
 AUTOWARE_UNIVERSE_REPO="${AUTOWARE_UNIVERSE_REPO:-https://github.com/vividf/autoware.universe.git}"
-# AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF:-feat/spconv-do-sort-attribute}"
-AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF:-feat/implicit_gemm_int8}"
+AUTOWARE_UNIVERSE_REF="${AUTOWARE_UNIVERSE_REF:-main}"
 
 echo "[build_plugin] Script dir: $SCRIPT_DIR"
 echo "[build_plugin] Build dir: $BUILD_DIR"
@@ -195,11 +196,11 @@ if [ -n "$AUTOWARE_TENSORRT_PLUGINS_SRC" ]; then
   fi
 fi
 
-# Clone only perception/autoware_tensorrt_plugins from the configured fork.
-# The fork (default: vividf/autoware.universe @ feat/spconv-do-sort-attribute)
-# already contains the `do_sort` attribute change; no source patching here.
-# To A/B against stock upstream, set:
-#   AUTOWARE_UNIVERSE_REPO=https://github.com/autowarefoundation/autoware.universe.git
+# Clone only perception/autoware_tensorrt_plugins from the configured repo/ref
+# (default: vividf/autoware.universe @ main, a sync of upstream — the do_sort attribute
+# and fused bias/activation are upstreamed, so no source patching here).
+# To build straight from upstream, set:
+#   AUTOWARE_UNIVERSE_REPO=https://github.com/autowarefoundation/autoware_universe.git
 #   AUTOWARE_UNIVERSE_REF=main
 #
 # Cache invalidation: if $SRC_DIR exists but was cloned from a different

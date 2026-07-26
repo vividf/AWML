@@ -131,8 +131,9 @@ add_library(cuda_ops SHARED
   "${PLUGIN_SRC_DIR}/src/multi_scale_deform_attn_ops/ms_deform_attn_kernel.cu"
   "${PLUGIN_SRC_DIR}/src/rotate_ops/rotate_kernel.cu"
   "${PLUGIN_SRC_DIR}/src/select_and_pad_ops/select_and_pad_kernel.cu"
-  "${PLUGIN_SRC_DIR}/src/quantize_ops/quantize_features.cu"
 )
+# src/quantize_ops/quantize_features.cu intentionally absent: sparse/ImplicitGemm INT8 was
+# dropped from the deployment framework, and `main` no longer carries the quantize_ops sources.
 target_include_directories(cuda_ops PRIVATE ${CUDA_INCLUDE_DIRS} "${PLUGIN_SRC_DIR}/include" "${PLUGIN_SRC_DIR}/src")
 set_target_properties(cuda_ops PROPERTIES
   POSITION_INDEPENDENT_CODE ON
