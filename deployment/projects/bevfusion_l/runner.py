@@ -36,8 +36,8 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
     ``TensorRTExportPipeline``.
 
     BEVFusion-only deploy-config flags (``fuse_spconv_bn``, ``spconv_do_sort``,
-    ``spconv_fuse_implicit_gemm_relu``, ``merge_bevfusion``) are typed attributes on
-    ``BEVFusionDeploymentConfig``.
+    ``spconv_fuse_implicit_gemm_relu``, ``spconv_remove_trainstation``, ``merge_bevfusion``)
+    are typed attributes on ``BEVFusionDeploymentConfig``.
     """
 
     def __init__(

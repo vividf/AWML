@@ -42,6 +42,8 @@ Numbered filenames follow **creation time** (filesystem birth time, with mtime t
 | 31 | [`31_README_MODEL_ARCHITECTURE_AND_SHAPE_WALKTHROUGH.md`](./31_README_MODEL_ARCHITECTURE_AND_SHAPE_WALKTHROUGH.md) | BEVFusion model architecture + tensor-shape walkthrough |
 | 32 | [`32_README_MODEL_ARCHITECTURE_detailed.md`](./32_README_MODEL_ARCHITECTURE_detailed.md) | Detailed model architecture reference |
 | 33 | [`33_README_MODEL_ARCHITECTURE_code_mapping.md`](./33_README_MODEL_ARCHITECTURE_code_mapping.md) | Model architecture → code mapping |
+| 34 | [`34_README_SPCONV_DDS_TRAINSTATION_REMOVAL.md`](./34_README_SPCONV_DDS_TRAINSTATION_REMOVAL.md) ([zh](./34_README_SPCONV_DDS_TRAINSTATION_REMOVAL.zh.md)) | **trainStation/DDS removal（`spconv_remove_trainstation`）**：刪除 4 個下採樣 GetIndicePairs、rulebook 變 graph input；profiling 證據、正確性驗證、export/runtime 接線 |
+| 35 | [`35_README_SPCONV_FULL_FLOW_AND_DDS_zh.md`](./35_README_SPCONV_FULL_FLOW_AND_DDS_zh.md) | spconv 全流程中文詳解：GetIndicePairsImplicitGemm / ImplicitGemm 輸入輸出與內部運作 + DDS 加速原理（流程圖 [`BEVFusion_spconv_DDS_flow.png`](./BEVFusion_spconv_DDS_flow.png)） |
 | — | [**`README_PTQ_INT8_SPCONV_DEPLOYMENT.md`**](./README_PTQ_INT8_SPCONV_DEPLOYMENT.md) | **PTQ → ONNX → TRT 全流程詳解；與 spconv 官方、CUDA-BEVFusion（libspconv）對照** |
 | — | [**`README_INT8_WHERE_AND_HOW.md`**](./README_INT8_WHERE_AND_HOW.md) | **哪裡 FP16／哪裡真 INT8；sparse INT8 與 `ConvGemmOps::implicit_gemm`、`is_int8_inference`、spconv `ops.py` 對照** |
 | — | [**`README_NEW3D_LIDAR_OPEN_SPCONV.md`**](./README_NEW3D_LIDAR_OPEN_SPCONV.md) | New3D LiDAR open spconv notes |

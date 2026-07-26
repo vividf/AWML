@@ -27,6 +27,11 @@ from deployment.projects.bevfusion_l.config.component_layout import has_componen
 
 logger = logging.getLogger(__name__)
 
+# ``onnx.compose`` namespaces every tensor of each sub-model before merging, so the two halves
+# cannot collide on a shared name.
+_SPARSE_PREFIX = "sparse/"
+_DENSE_PREFIX = "dense/"
+
 
 def fix_topk_constant_k(model: onnx.ModelProto, num_proposals: int) -> onnx.ModelProto:
     """Replace the TopK node's ``K`` with a constant ``num_proposals``.
@@ -127,23 +132,35 @@ def merge_split_sparse_dense_onnx(
     del dense_model.opset_import[:]
     dense_model.opset_import.extend(merged_opset_ids)
 
-    sparse_pref = onnx_compose.add_prefix(sparse_model, prefix="sparse/")
-    dense_pref = onnx_compose.add_prefix(dense_model, prefix="dense/")
+    sparse_pref = onnx_compose.add_prefix(sparse_model, prefix=_SPARSE_PREFIX)
+    dense_pref = onnx_compose.add_prefix(dense_model, prefix=_DENSE_PREFIX)
 
     sparse_out_name = config.components_cfg.get_component("bevfusion_sparse").io.outputs[0].name
     dense_in_name = config.components_cfg.get_component("bevfusion_dense").io.inputs[0].name
-    io_map = [(f"sparse/{sparse_out_name}", f"dense/{dense_in_name}")]
+    io_map = [(f"{_SPARSE_PREFIX}{sparse_out_name}", f"{_DENSE_PREFIX}{dense_in_name}")]
 
     merged_model = onnx_compose.merge_models(sparse_pref, dense_pref, io_map=io_map)
     merged_graph = gs.import_onnx(merged_model)
 
     sparse_inputs = [inp.name for inp in config.components_cfg.get_component("bevfusion_sparse").io.inputs]
     dense_outputs = [out.name for out in config.components_cfg.get_component("bevfusion_dense").io.outputs]
-    if len(merged_graph.inputs) != len(sparse_inputs):
+
+    # Drop the ``sparse/`` namespace from the merged graph's inputs so they keep the names the
+    # sparse ONNX was exported with. This covers the declared voxel inputs *and* any input promoted
+    # after export — with ``spconv_remove_trainstation`` the graph also has 16 ``rulebook/...``
+    # inputs, which the on-board runtime and the deploy config's TensorRT profile both name without
+    # a prefix. graphsurgeon renames by object identity, so consuming nodes follow.
+    for graph_input in merged_graph.inputs:
+        if graph_input.name.startswith(_SPARSE_PREFIX):
+            graph_input.name = graph_input.name[len(_SPARSE_PREFIX) :]
+
+    merged_input_names = {graph_input.name for graph_input in merged_graph.inputs}
+    missing_inputs = [name for name in sparse_inputs if name not in merged_input_names]
+    if missing_inputs:
         logger.warning(
-            "Merged ONNX input count mismatch: graph=%d expected=%d",
-            len(merged_graph.inputs),
-            len(sparse_inputs),
+            "Merged ONNX is missing declared bevfusion_sparse input(s) %s; graph inputs are %s",
+            missing_inputs,
+            sorted(merged_input_names),
         )
     if len(merged_graph.outputs) != len(dense_outputs):
         logger.warning(
@@ -151,15 +168,20 @@ def merge_split_sparse_dense_onnx(
             len(merged_graph.outputs),
             len(dense_outputs),
         )
-    for i, name in enumerate(sparse_inputs):
-        if i < len(merged_graph.inputs):
-            merged_graph.inputs[i].name = name
     for i, name in enumerate(dense_outputs):
         if i < len(merged_graph.outputs):
             merged_graph.outputs[i].name = name
 
     merged_graph.cleanup().toposort()
     final_model = gs.export_onnx(merged_graph)
+    # Both ``onnx.compose.merge_models`` and ``gs.export_onnx`` build a fresh ModelProto and drop the
+    # component models' metadata_props. Re-attach the sparse model's props so the merged graph keeps
+    # carrying its ``rulebook_stages`` entry (embedded when trainStation removal ran) — that entry is
+    # how the on-board runtime learns the down-sample stage geometry.
+    for prop in sparse_model.metadata_props:
+        entry = final_model.metadata_props.add()
+        entry.key = prop.key
+        entry.value = prop.value
     # onnx.compose.merge_models concatenated both sub-models' (already-unified) opset lists, so the
     # merged graph lists each domain twice. Restore the single deduped union computed above so the
     # merged ONNX carries the same opset_import a monolithic single-graph export would.

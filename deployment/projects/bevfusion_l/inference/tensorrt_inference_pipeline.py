@@ -21,6 +21,11 @@ from deployment.primitives.device import DeviceSpec
 from deployment.primitives.tensorrt_plugins import load_tensorrt_plugin_libraries
 from deployment.projects.bevfusion_l.config.component_layout import has_component, is_split_components
 from deployment.projects.bevfusion_l.inference.bevfusion_inference_pipeline import BEVFusionInferencePipeline
+from deployment.projects.bevfusion_l.io.sparse_rulebook_inputs import (
+    compute_rulebook_inputs,
+    sparse_shape_from_model,
+    split_rulebook_inputs,
+)
 from deployment.projects.bevfusion_l.io.voxel_inputs import map_voxel_inputs, voxel_indices_xyz_to_graph_input_zyx
 
 logger = logging.getLogger(__name__)
@@ -37,6 +42,10 @@ class BEVFusionTensorRTInferencePipeline(GPUResourceMixin, BEVFusionInferencePip
       ``run_sparse_encoder`` / ``run_dense`` seams (``sparse_ms`` / ``dense_ms``).
     - Merged layout: a single ``bevfusion_merged`` full-graph engine that cannot be split, so
       it reports one ``model_ms`` GPU total.
+
+    Engines built with ``spconv_remove_trainstation`` take the 4 down-sample spconv rulebooks as
+    graph inputs; the pipeline detects them from the engine's declared inputs and precomputes them
+    per sample (see :meth:`_trt_infer_voxel_inputs`), so both layouts work unchanged.
     """
 
     def __init__(
@@ -119,9 +128,26 @@ class BEVFusionTensorRTInferencePipeline(GPUResourceMixin, BEVFusionInferencePip
         coors_np: np.ndarray,
         num_points_np: np.ndarray,
     ) -> Tuple[Dict[str, np.ndarray], float]:
-        """Assemble the multi-input voxel map (sparse/merged engines) and run the engine."""
+        """Assemble the multi-input voxel map (sparse/merged engines) and run the engine.
+
+        An engine exported with ``spconv_remove_trainstation`` declares 16 extra ``rulebook/...``
+        inputs in place of its 4 down-sample ``GetIndicePairsImplicitGemm`` nodes; those are
+        precomputed here from ``coors``, exactly as the on-board runtime does. Note that this moves
+        the rulebook generation *outside* the CUDA-event window in :func:`run_trt_engine`, so the
+        reported GPU time excludes it — see ``io/sparse_rulebook_inputs``.
+        """
         input_names, output_names = list_trt_io_names(engine)
-        input_map = map_voxel_inputs(input_names, voxels=voxels_np, coors=coors_np, num_points=num_points_np)
+        voxel_names, rulebook_names = split_rulebook_inputs(input_names)
+        input_map = map_voxel_inputs(voxel_names, voxels=voxels_np, coors=coors_np, num_points=num_points_np)
+        if rulebook_names:
+            input_map.update(
+                compute_rulebook_inputs(
+                    coors_zyx=coors_np,
+                    rulebook_names=rulebook_names,
+                    sparse_shape=sparse_shape_from_model(self.model),
+                    device=self.torch_device,
+                )
+            )
         return run_trt_engine(engine, context, input_map, output_names)
 
     def _prepare_voxel_inputs(

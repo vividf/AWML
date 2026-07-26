@@ -1,0 +1,69 @@
+digraph BEVFusion_spconv_DDS_flow {
+    rankdir=TB;
+    fontname="Helvetica";
+    labelloc="t";
+    fontsize=20;
+    label="BEVFusion Sparse Encoder — trainStation/DDS removal (Route A): export surgery + runtime rulebook precompute + ImplicitGemm wiring";
+    node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, margin="0.12,0.07"];
+    edge [fontname="Helvetica", fontsize=9, color="#444444"];
+
+    /* ============================== EXPORT (offline, AWML) ============================== */
+    subgraph cluster_export {
+        label="A. EXPORT TIME  (AWML, offline — one-time graph surgery)";
+        style="rounded,filled"; color="#1f6feb"; fillcolor="#eaf1fc"; fontsize=14; fontname="Helvetica-Bold";
+
+        e0 [label="PyTorch BEVFusion-L (LiDAR)\npts_middle_encoder = BEVFusionSparseEncoder", fillcolor="#ffffff"];
+        e1 [label="Export split sparse ONNX (baseline)\n21 GetIndicePairsImplicitGemm + 21 ImplicitGemm\n• 4 downsample (subm=0) -> declareSizeTensor  => DDS / trainStation\n• 17 submanifold (subm=1) -> no DDS", fillcolor="#ffffff"];
+        e2 [label="remove_trainstation_dds()\n(export/sparse_trainstation_transform.py)", fillcolor="#fff3cd"];
+        e3 [label="DELETE the 4 downsample GetIndicePairs nodes\nPROMOTE out[0..3] to graph inputs ; drop out[4]=num_act_out (no consumer)\nrulebook_input_name(tag, slot) = 'rulebook/<tag>/<slot>'\ntag in {l1,l2,l3,out} ; slot in {out_indices,pair_fwd,pair_mask,mask_argsort}", fillcolor="#fff3cd"];
+        e4 [label="REWRITE consumer edges old node-output -> rulebook/<tag>/<slot>\n=> graph inputs 3 -> 19 (+16) ; 12 ImplicitGemm edges now from inputs\n=> Netron groups all 16 under one 'rulebook' box", fillcolor="#fff3cd"];
+        e5 [label="merge sparse+dense (strip 'sparse/' prefix) -> build TensorRT engine\nResult: 0 trainStation, 0 DeviceToShapeHostCopy ; ImplicitGemm UNCHANGED", fillcolor="#d4edda"];
+
+        e0 -> e1 -> e2 -> e3 -> e4 -> e5;
+    }
+
+    /* ============================== RUNTIME (per-frame) ============================== */
+    subgraph cluster_runtime {
+        label="B. RUNTIME  (per frame — AWML eval: pipelines/sparse_rulebook_precompute.py ; autoware: preprocess/sparse_rulebook_precompute.cu)";
+        style="rounded,filled"; color="#8957e5"; fillcolor="#f3eefc"; fontsize=14; fontname="Helvetica-Bold";
+
+        r0 [label="point cloud -> voxelization\ncoors [N0,3]  (order z,y,x)", fillcolor="#ffffff"];
+        r1 [label="convert coors -> spconv [batch,x,y,z]", fillcolor="#ffffff"];
+        r2 [label="COORDINATE-ONLY CASCADE over 4 downsample stages (l1->l2->l3->out)\nfor each stage i: SpconvOps::get_indice_pairs_implicit_gemm(coords_i, spatial_i, ksize,stride,padding)\n(same routine the in-graph plugin used ; uses geometry ONLY, no features)\nspatial shrinks 1440 -> 720 -> 360 -> 180", fillcolor="#ede3fb"];
+        r3 [label="per stage i it returns the rulebook + count:\nout_indices_i [N_i,4] | pair_fwd_i [KV,N_i] | pair_mask_i [N_i,1] | mask_argsort_i [N_i] | N_i=num_act_out", fillcolor="#ede3fb"];
+        r4 [label="THREAD out_indices forward:\nstage i out_indices = stage i+1 input coords\n(submanifold layers between don't change the coord set)", fillcolor="#ede3fb"];
+        r5 [label="each stage returns N_i as host int -> 4 SEQUENTIAL D2H readbacks\n(cascade is data-dependent, cannot be merged ; same count as baseline\nbut now in preprocessing, off the engine critical path)", fillcolor="#ede3fb"];
+        r6 [label="bind 16 inputs: setTensorAddress(rulebook/<tag>/<slot>, device ptr)\nsetInputShape(... , N_i)   BEFORE enqueueV3", fillcolor="#d8c9f5"];
+        r7 [label="enqueueV3()  (run TensorRT engine)", fillcolor="#d4edda"];
+
+        r0 -> r1 -> r2 -> r3 -> r4 -> r5 -> r6 -> r7;
+    }
+
+    /* ============================== INSIDE ENGINE (ImplicitGemm) ============================== */
+    subgraph cluster_gemm {
+        label="C. INSIDE THE ENGINE  — how the 4 tensors drive ImplicitGemm (per downsample conv)";
+        style="rounded,filled"; color="#cf222e"; fillcolor="#fcebec"; fontsize=14; fontname="Helvetica-Bold";
+
+        t_pf  [label="pair_fwd [KV,N]\nrulebook: pair_fwd[k,j] = input row\nfeeding output j via kernel tap k (-1=empty)", shape=note, fillcolor="#fff8e1"];
+        t_pm  [label="pair_mask [N,1] uint32\nper-output bitmask of active taps", shape=note, fillcolor="#fff8e1"];
+        t_ma  [label="mask_argsort [N]\norder rows so equal mask patterns\nare grouped -> dense GEMM tiles", shape=note, fillcolor="#fff8e1"];
+        t_oi  [label="out_indices [N,4]\nOUTPUT geometry (next layer's coords)", shape=note, fillcolor="#fff8e1"];
+
+        gemm [label="ImplicitGemm conv  (plugin, UNCHANGED)\ninputs = [features, filters, pair_fwd, pair_mask, mask_argsort]\nout[j] = SUM_k W[k] . in[pair_fwd[k,j]]  over active taps\nN reaches it via SHAPE: outputs[0].d[0] = inputs[3].d[0] (=pair_mask dim0 = N)\noutputs[0].d[1] = C_out   (no num_act_out scalar needed)", fillcolor="#ffd8dc"];
+        out_feat [label="out_features [N, C_out]", fillcolor="#ffffff"];
+        nextlayer [label="NEXT layer: in-graph submanifold GetIndicePairsImplicitGemm (indices=out_indices)\n... -> final scatter-to-dense BEV", fillcolor="#ffffff"];
+
+        t_pf -> gemm;
+        t_pm -> gemm;
+        t_ma -> gemm;
+        gemm -> out_feat;
+        t_oi -> nextlayer [label="feeds geometry of next stage"];
+    }
+
+    /* ============================== cross-cluster links ============================== */
+    e5 -> r0 [style=dashed, color="#1f6feb", label="engine reused every frame"];
+    r6 -> t_pf [style=dashed, color="#8957e5", label="bound as\nrulebook/<tag>/pair_fwd"];
+    r6 -> t_pm [style=dashed, color="#8957e5", label="rulebook/<tag>/pair_mask\n(its N dim sizes the output)"];
+    r6 -> t_ma [style=dashed, color="#8957e5", label="rulebook/<tag>/mask_argsort"];
+    r6 -> t_oi [style=dashed, color="#8957e5", label="rulebook/<tag>/out_indices"];
+}

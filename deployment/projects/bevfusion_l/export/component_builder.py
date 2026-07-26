@@ -25,6 +25,7 @@ import logging
 from functools import partial
 from typing import List
 
+import onnx
 import torch
 
 from deployment.export.pipelines.component_builder import ExportableComponent, ModelComponentBuilder
@@ -36,6 +37,10 @@ from deployment.projects.bevfusion_l.export.onnx_fuse_implicit_gemm_activation i
 from deployment.projects.bevfusion_l.export.onnx_models.bevfusion_onnx import (
     BEVFusionDenseWrapper,
     BEVFusionSparseWrapper,
+)
+from deployment.projects.bevfusion_l.export.onnx_remove_trainstation_dds import (
+    embed_rulebook_stages_metadata,
+    remove_trainstation_dds,
 )
 from deployment.projects.bevfusion_l.export.transforms import fix_topk_constant_k
 from deployment.projects.bevfusion_l.io.sample_types import BEVFusionVoxelSample
@@ -68,6 +73,22 @@ def _fuse_implicit_gemm_relu(model_proto):
     return model_proto
 
 
+def _remove_trainstation_dds(model_proto):
+    """Post-export transform: promote the 4 down-sample rulebooks to graph inputs.
+
+    Structural surgery (nodes deleted, graph inputs added), so the result is checked before it is
+    written back — a malformed graph must fail here rather than at engine build.
+    """
+    model_proto, promoted_inputs, stages_meta = remove_trainstation_dds(model_proto)
+    model_proto = embed_rulebook_stages_metadata(model_proto, stages_meta)
+    onnx.checker.check_model(model_proto)
+    logger.info(
+        "Sparse ONNX postprocess: trainStation/DDS removal done (%d rulebook graph inputs added).",
+        len(promoted_inputs),
+    )
+    return model_proto
+
+
 def _run_sparse_encoder(model: torch.nn.Module, sample: BEVFusionVoxelSample) -> torch.Tensor:
     """Run the sparse encoder on the sample to get a BEV feature map for tracing the dense graph."""
     with torch.no_grad():
@@ -78,7 +99,7 @@ class BEVFusionComponentBuilder(ModelComponentBuilder):
     """Build exportable BEVFusion components (the split sparse + dense pair)."""
 
     def __init__(self, config: BEVFusionDeploymentConfig) -> None:
-        """Store the deploy config (component layout + ``spconv_fuse_implicit_gemm_relu`` flag)."""
+        """Store the deploy config (component layout + the sparse post-transform flags)."""
         self._config = config
 
     def build_components(
@@ -102,16 +123,32 @@ class BEVFusionComponentBuilder(ModelComponentBuilder):
     def _sparse_component(self, model: torch.nn.Module, sample: BEVFusionVoxelSample) -> ExportableComponent:
         """Sparse encoder (FP16 deploy): voxels/coors/num_points -> ``lidar_bev``.
 
-        Traces the real encoder, optionally folding a trailing ImplicitGemm ReLU into ``act_type``.
+        Traces the real encoder, then applies the deploy-config-gated sparse graph rewrites.
         """
-        if self._config.spconv_fuse_implicit_gemm_relu:
-            post_transforms: tuple = (_fuse_implicit_gemm_relu,)
-        else:
-            post_transforms = ()
-            logger.info("Sparse ONNX postprocess: ImplicitGemm ReLU fuse disabled by deploy config.")
         return self._component(
-            "bevfusion_sparse", BEVFusionSparseWrapper(model), _voxel_inputs(sample), post_transforms
+            "bevfusion_sparse",
+            BEVFusionSparseWrapper(model),
+            _voxel_inputs(sample),
+            self._sparse_post_transforms(),
         )
+
+    def _sparse_post_transforms(self) -> tuple:
+        """The enabled sparse-ONNX graph rewrites, in application order.
+
+        The trainStation/DDS removal runs first: it only touches ``GetIndicePairsImplicitGemm``
+        nodes, so the ReLU fuse then sees the same ``ImplicitGemm`` nodes it would have seen anyway,
+        and the (structural) surgery is validated before the fuse rewrites node inputs.
+        """
+        transforms: List = []
+        if self._config.spconv_remove_trainstation:
+            transforms.append(_remove_trainstation_dds)
+        else:
+            logger.info("Sparse ONNX postprocess: trainStation/DDS removal disabled by deploy config.")
+        if self._config.spconv_fuse_implicit_gemm_relu:
+            transforms.append(_fuse_implicit_gemm_relu)
+        else:
+            logger.info("Sparse ONNX postprocess: ImplicitGemm ReLU fuse disabled by deploy config.")
+        return tuple(transforms)
 
     def _dense_component(self, model: torch.nn.Module, sample: BEVFusionVoxelSample) -> ExportableComponent:
         """Dense graph: ``lidar_bev`` -> detection triple. Traced with a BEV map from the sparse encoder."""

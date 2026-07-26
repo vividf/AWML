@@ -13,6 +13,7 @@ from mmengine.config import Config
 from deployment.config.base import BaseDeploymentConfig
 from deployment.projects.bevfusion_l.config.component_layout import (
     add_merged_component,
+    add_rulebook_input_profiles,
     is_split_components,
     merge_requested,
 )
@@ -28,6 +29,9 @@ class BEVFusionDeploymentConfig(BaseDeploymentConfig):
       export (default ``True``).
     - ``spconv_fuse_implicit_gemm_relu``: fuse a trailing ReLU into ImplicitGemm nodes in the sparse
       ONNX postprocess (default ``False``).
+    - ``spconv_remove_trainstation``: strip the data-dependent-shape (``trainStation``) boundaries
+      from the sparse graph by promoting the 4 down-sample rulebooks to graph inputs
+      (default ``False``; requires a runtime that precomputes and binds them).
     - ``merge_bevfusion``: keep the split (sparse+dense) export and also emit the merged
       full-graph artifacts (derived from the deploy config's ``bevfusion_merge`` key).
     """
@@ -37,7 +41,14 @@ class BEVFusionDeploymentConfig(BaseDeploymentConfig):
         self.fuse_spconv_bn: bool = bool(deploy_cfg.get("fuse_spconv_bn", False))
         self.spconv_do_sort: bool = bool(deploy_cfg.get("spconv_do_sort", True))
         self.spconv_fuse_implicit_gemm_relu: bool = bool(deploy_cfg.get("spconv_fuse_implicit_gemm_relu", False))
+        self.spconv_remove_trainstation: bool = bool(deploy_cfg.get("spconv_remove_trainstation", False))
         self.merge_bevfusion: bool = merge_requested(deploy_cfg)
+
+        # The rulebook graph inputs appear only after the post-export transform, so their TensorRT
+        # profile entries are derived here rather than restated in the deploy config. Resolved
+        # before the merged component so the merged graph inherits the same (sparse) profile.
+        if self.spconv_remove_trainstation and is_split_components(self.components_cfg):
+            self.components_cfg = add_rulebook_input_profiles(self.components_cfg)
 
         # The merged graph is *derived* from the split sparse+dense pair (sparse inputs +
         # dense outputs), so it is resolved here as part of the config rather than mutated onto
