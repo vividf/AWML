@@ -1,4 +1,4 @@
-ARG AWML_BASE_IMAGE="autoware-ml:latest"
+ARG AWML_BASE_IMAGE="awml:latest"
 FROM ${AWML_BASE_IMAGE}
 
 ARG TRT_VERSION=10.8.0.43
@@ -11,8 +11,8 @@ ARG BUILD_TRT_PLUGINS="true"
 # The fork branch carries both the GetIndicePairsImplicitGemm `do_sort` attribute
 # change AND the INT8 quantize_ops sources (quantize_features.cu) required by
 # CMakeLists.standalone. Stock upstream autowarefoundation main lacks quantize_ops.
-ARG AUTOWARE_UNIVERSE_REPO="https://github.com/vividf/autoware.universe.git"
-ARG AUTOWARE_UNIVERSE_REF="feat/implicit_gemm_int8"
+ARG AUTOWARE_UNIVERSE_REPO="https://github.com/autowarefoundation/autoware_universe.git"
+ARG AUTOWARE_UNIVERSE_REF="main"
 
 # Install deployment/runtime dependencies
 RUN python3 -m pip --no-cache-dir install \
