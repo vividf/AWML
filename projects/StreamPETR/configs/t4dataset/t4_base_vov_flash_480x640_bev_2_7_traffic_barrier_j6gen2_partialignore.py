@@ -3,16 +3,16 @@ _base_ = [
     "../default/vov_flash_480x640_baseline.py",
 ]
 
-load_from = "work_dirs/t4_base_vov_flash_480x640_bev_2_8_traffic_barrier_base_partialignore/epoch_32.pth"
+load_from = "streampetr_base/epoch_32.pth"
 
 info_directory_path = "info/cameraonly/kokseang_2_7/"
-data_root = "data/"
+data_root = "data/t4datasets/"
 
 batch_size = 8
 num_workers = 32
 
-num_epochs = 35
-val_interval = 5
+num_epochs = 10
+val_interval = 2
 
 info_train_file_name = "t4dataset_j6gen2_base_infos_train.pkl"
 info_val_file_name = "t4dataset_j6gen2_base_infos_val.pkl"

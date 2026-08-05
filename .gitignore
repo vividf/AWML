@@ -1,6 +1,9 @@
 # autoware-ml
 /data
 /work_dirs
+CLAUDE.md
+_trace
+graphify-out
 
 *.bin
 *.onnx
@@ -145,3 +148,6 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# model checkpoints (too large for GitHub)
+*.pth

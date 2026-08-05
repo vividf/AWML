@@ -12,7 +12,7 @@ custom_imports["imports"] += _base_.custom_imports["imports"]
 backbone_norm_cfg = dict(type="LN", requires_grad=True)
 
 info_directory_path = "info/cameraonly/baseline/"
-data_root = "data/"
+data_root = "data/t4datasets/"
 
 
 # If point cloud range is changed, the models should also change their point

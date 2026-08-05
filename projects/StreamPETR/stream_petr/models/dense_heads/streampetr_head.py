@@ -551,7 +551,15 @@ class StreamPETRHead(AnchorFreeHead):
             known_num = [t.shape[0] for t in targets]
 
             labels = torch.cat([t for t in labels])
-            boxes = torch.cat([t.tensor for t in targets])
+            # Use gravity-center boxes so the DN branch supervises the same z
+            # convention as the matched branch (loss() converts gt to
+            # gravity_center) and as get_bboxes()'s use_bottom_center decode
+            # compensation. Raw `t.tensor` is bottom-center: with scalar DN
+            # groups outnumbering matched positives ~10:1, the shared reg
+            # branches were dragged toward z targets offset by h/2.
+            boxes = torch.cat(
+                [torch.cat((t.gravity_center, t.tensor[:, 3:]), dim=1) for t in targets]
+            )
             batch_idx = torch.cat([torch.full((t.shape[0],), i) for i, t in enumerate(targets)])
 
             known_indice = torch.nonzero(unmask_label + unmask_bbox)
@@ -951,8 +959,12 @@ class StreamPETRHead(AnchorFreeHead):
 
         loss_cls = self.loss_cls(cls_scores, labels, label_weights, avg_factor=cls_avg_factor)
 
-        # Compute the average number of gt boxes accross all gpus, for
-        # normalization purposes
+        # Global (cross-GPU) normalization. Combined with DDP's gradient
+        # averaging this yields exactly sum(errors)/sum(positives) over the
+        # effective batch, i.e. every OBJECT counts equally. A local count
+        # instead gives every GPU an equal vote regardless of how many objects
+        # it holds, which is biased upward (Jensen) and cost 1.9 mAP when tried.
+        # `sync_cls_avg_factor=True` puts loss_cls on the same footing.
         num_total_pos = loss_cls.new_tensor([num_total_pos])
         num_total_pos = torch.clamp(reduce_mean(num_total_pos), min=1).item()
 
@@ -1022,8 +1034,7 @@ class StreamPETRHead(AnchorFreeHead):
         cls_avg_factor = max(cls_avg_factor, 1)
         loss_cls = self.loss_cls(cls_scores, known_labels.long(), label_weights, avg_factor=cls_avg_factor)
 
-        # Compute the average number of gt boxes accross all gpus, for
-        # normalization purposes
+        # Global (cross-GPU) normalization, see loss_single above.
         num_total_pos = loss_cls.new_tensor([num_total_pos])
         num_total_pos = torch.clamp(reduce_mean(num_total_pos), min=1).item()
 

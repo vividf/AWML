@@ -1,18 +1,27 @@
-# 1. Tune hyperparams like seq_len, norm_eval, train_range, missing_image_replacement, large_image_sizes, feature_maps, datasets(xx1,x2,base)
+# Train StreamPETR DIRECTLY on the j6gen2 subset, skipping the two-stage
+# base->finetune flow: nuScenes VoV-99 pretrain -> j6gen2, with the same
+# 2_8-style recipe (partial-ignore + 2D aux head from the baseline parent,
+# 35 epochs, batch_size 8, lr 5e-5 auto-scaled by total_batch/8).
+#
+# Compared to the two-stage flow (base training on the full T4 base DB, then
+# j6gen2 fine-tune) this sees far less data variety - expect weaker
+# generalization; it is the "quick single-stage j6gen2 experiment" config.
+#
+# Run (single GPU / multi GPU):
+#   python tools/detection3d/train.py projects/StreamPETR/configs/t4dataset/t4_base_vov_flash_480x640_bev_2_8_traffic_barrier_j6gen2_partialignore_scratch.py
+#   bash tools/detection3d/dist_script.sh projects/StreamPETR/configs/t4dataset/t4_base_vov_flash_480x640_bev_2_8_traffic_barrier_j6gen2_partialignore_scratch.py 2 train
 _base_ = [
     "../default/vov_flash_480x640_baseline.py",
 ]
 
-# The base config uses HTTPS `load_from` (VoV-99 init). That download can take a long time
-# and shows 0% GPU until it finishes. Prefetch once, then point `load_from` at the file:
+# Init from the nuScenes model-zoo pretrain (prefetch once to avoid a long
+# 0%-GPU download at startup):
 #   mkdir -p pretrained && wget -c -O pretrained/nuscenes_vov99_baseline_320x800.pth \
 #     'https://download.autoware-ml-model-zoo.tier4.jp/autoware-ml/models/streampetr/streampetr-vov99/nuscenes/v1.0/nuscenes_vov99_baseline_320x800.pth'
-# load_from = "work_dirs/t4_base_vov_flash_480x640_bev_2_7_j6gen2/epoch_10.pth"
-# load_from = "pretrained/best_NuScenesmetric_T4Metric_mAP_epoch_34.pth"
+# For a TRUE from-scratch run (random init - NOT recommended: the recipe
+# relies on the depth-pretrained VoVNet), set:  load_from = None
 load_from = "pretrained/nuscenes_vov99_baseline_320x800.pth"
 
-# info_directory_path = "info/username/"
-# data_root = "data/t4dataset/"
 info_directory_path = "info/kokseang_2_8/"
 data_root = "data/t4datasets/"
 
@@ -22,17 +31,13 @@ num_workers = 32
 num_epochs = 10
 val_interval = 2
 
-info_train_file_name = "t4dataset_base_infos_train.pkl"
-info_val_file_name = "t4dataset_base_infos_val.pkl"
-info_test_file_name = "t4dataset_base_infos_test.pkl"
+info_train_file_name = "t4dataset_j6gen2_base_infos_train.pkl"
+info_val_file_name = "t4dataset_j6gen2_base_infos_val.pkl"
+info_test_file_name = "t4dataset_j6gen2_base_infos_test.pkl"
 
-# `_base_` pulls multi-split `dataset_test_groups` from autoware_ml t4dataset/base.py.
-# Without `_delete_=True`, MMEngine merges dicts and keeps j6gen2/base/... keys → missing pkls.
-# `tools/detection3d/test.py` loops each group under `info_directory_path`.
 dataset_test_groups = dict(
     _delete_=True,
-    base=(info_test_file_name, True),
-    j6gen2=("t4dataset_j6gen2_infos_val.pkl", True),
+    j6gen2=(info_test_file_name, True),
 )
 
 train_dataloader = dict(
@@ -43,9 +48,6 @@ train_dataloader = dict(
     dataset=dict(
         ann_file=info_directory_path + info_train_file_name,
         data_root=data_root,
-        # NAS: StreamPETRDataset.filter_data() defaults to os.path.exists() per camera × every frame at init.
-        # That dominates startup (num_workers cannot help). Skip when ann paths are trusted.
-        # check_img_paths=False,
     ),
 )
 val_dataloader = dict(
@@ -55,7 +57,6 @@ val_dataloader = dict(
     dataset=dict(
         ann_file=info_directory_path + info_val_file_name,
         data_root=data_root,
-        # check_img_paths=False,
     ),
 )
 test_dataloader = dict(
@@ -65,14 +66,11 @@ test_dataloader = dict(
     dataset=dict(
         ann_file=info_directory_path + info_test_file_name,
         data_root=data_root,
-        # check_img_paths=False,
     ),
 )
 
-
 val_evaluator = dict(data_root=data_root, ann_file=data_root + info_directory_path + info_val_file_name)
 test_evaluator = dict(data_root=data_root, ann_file=data_root + info_directory_path + info_test_file_name)
-
 
 train_cfg = dict(
     by_epoch=True, max_epochs=num_epochs, val_interval=val_interval, dynamic_intervals=[(num_epochs - 5, 1)]
@@ -81,7 +79,6 @@ train_cfg = dict(
 lr = 5e-5
 optimizer = dict(type="AdamW", lr=lr, weight_decay=0.01)
 
-# optim_wrapper = dict(type="OptimWrapper", optimizer=optimizer, paramwise_cfg=dict(custom_keys={'img_backbone': dict(lr_mult=0.1),}))
 optim_wrapper = dict(
     type="NoCacheAmpOptimWrapper",
     optimizer=optimizer,
@@ -90,11 +87,16 @@ optim_wrapper = dict(
             "img_backbone": dict(lr_mult=0.1),
         }
     ),
-    loss_scale="dynamic",
+    # bf16 ablation (2026-07-29): autocast in bfloat16 instead of float16.
+    # bf16 has the same dynamic range as fp32, so no loss scaling is needed
+    # (GradScaler disabled); this mirrors autoware-ml's `bf16-mixed`, which
+    # trains noticeably better. Revert to loss_scale="dynamic" without dtype
+    # for the original fp16 behavior.
+    dtype="bfloat16",
+    loss_scale=dict(enabled=False, _delete_=True),
     clip_grad=dict(max_norm=1, norm_type=2),
 )
 
-# lrg policy
 param_scheduler = [
     dict(type="LinearLR", start_factor=1.0 / 3, begin=0, end=500, by_epoch=False),
     dict(

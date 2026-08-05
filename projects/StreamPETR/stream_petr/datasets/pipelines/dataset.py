@@ -11,6 +11,10 @@ from mmdet3d.registry import DATASETS
 
 from autoware_ml.detection3d.datasets.t4dataset import T4Dataset
 
+# Physical bound on ground-plane speed for a training target, matching
+# autoware-ml's box_is_physical (velocity is never range-filtered downstream).
+_MAX_ABSOLUTE_SPEED = 150.0
+
 
 def convert_to_torch(data):
     """
@@ -299,6 +303,33 @@ class StreamPETRDataset(T4Dataset):
         annos = self.parse_ann_info(info)
         input_dict["ann_info"] = annos
         return input_dict
+
+    def parse_ann_info(self, info: dict) -> dict:
+        """Parse annotations, dropping physically invalid boxes.
+
+        GT hygiene matching autoware-ml's ``box_is_physical``: a box with
+        non-finite values or non-positive dimensions cannot become a valid
+        training target (size targets are log-encoded), and a ground-plane
+        speed beyond the physical bound is annotation noise. Upstream these
+        entered Hungarian matching and DN as positives. Scoped to StreamPETR
+        so other projects sharing T4Dataset are unaffected.
+        """
+        ann_info = super().parse_ann_info(info)
+        gt_bboxes_3d = ann_info.get("gt_bboxes_3d")
+        if gt_bboxes_3d is None or len(gt_bboxes_3d) == 0:
+            return ann_info
+        boxes = gt_bboxes_3d.tensor.float()
+        keep = torch.isfinite(boxes).all(dim=1) & (boxes[:, 3:6].min(dim=1).values > 0.0)
+        if boxes.shape[1] >= 9:
+            keep &= boxes[:, 7:9].norm(dim=1) <= _MAX_ABSOLUTE_SPEED
+        if bool(keep.all()):
+            return ann_info
+        mask = keep.numpy()
+        ann_info["gt_bboxes_3d"] = gt_bboxes_3d[keep]
+        for key, value in ann_info.items():
+            if key != "gt_bboxes_3d" and isinstance(value, np.ndarray) and len(value) == len(mask):
+                ann_info[key] = value[mask]
+        return ann_info
 
     def prepare_data(self, idx):
         """Get item from infos according to the given index.

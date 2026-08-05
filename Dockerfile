@@ -54,7 +54,7 @@ RUN mim install \
 RUN apt update && DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends \
     libgtk-3-dev \
     libxkbcommon-x11-0
-RUN python3 -m pip --no-cache-dir install \
+RUN python3 -m pip --no-cache-dir insta先不要執行download 把其他的做完就好ll \
     rerun-sdk==0.17.0
 
 # Install t4-devkit
