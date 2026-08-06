@@ -1,5 +1,6 @@
 import numpy as np
 from mmcv.transforms import BaseTransform
+from mmdet3d.datasets.transforms import ObjectRangeFilter as MMDet3DObjectRangeFilter
 from mmdet3d.registry import TRANSFORMS
 
 
@@ -188,3 +189,39 @@ class Filter3DBoxesinBlindSpot(BaseTransform):
         results["gt_bboxes_3d"] = results["gt_bboxes_3d"][visibility_mask]
         results["gt_labels_3d"] = results["gt_labels_3d"][visibility_mask]
         return results
+
+
+@TRANSFORMS.register_module()
+class LoadNumLidarPts(BaseTransform):
+    """Expose the annotation keyframe point count alongside the loaded GT boxes.
+
+    ``LoadAnnotations3D`` copies only ``gt_bboxes_3d``/``gt_labels_3d`` out of
+    ``ann_info``; the per-box ``num_lidar_pts`` stays behind and is dropped by
+    the format bundle, so T4MetricV2's annotation-based min-points GT filter
+    has nothing to read on a camera-only model. Must run directly after
+    ``LoadAnnotations3D`` (before anything changes the GT box count).
+    """
+
+    def transform(self, results):
+        ann_info = results.get("ann_info") or {}
+        if "num_lidar_pts" in ann_info:
+            num_pts = np.asarray(ann_info["num_lidar_pts"], dtype=np.int64)
+            assert len(num_pts) == len(results["gt_bboxes_3d"]), (
+                f"num_lidar_pts ({len(num_pts)}) out of sync with gt_bboxes_3d "
+                f"({len(results['gt_bboxes_3d'])}); place LoadNumLidarPts right after LoadAnnotations3D"
+            )
+            results["num_lidar_pts"] = num_pts
+        return results
+
+
+@TRANSFORMS.register_module()
+class ObjectRangeFilterKeepNumPts(MMDet3DObjectRangeFilter):
+    """ObjectRangeFilter that keeps ``num_lidar_pts`` aligned with the kept boxes."""
+
+    def transform(self, input_dict):
+        num_pts = input_dict.pop("num_lidar_pts", None)
+        if num_pts is not None:
+            bev_range = self.pcd_range[[0, 1, 3, 4]]
+            mask = input_dict["gt_bboxes_3d"].in_range_bev(bev_range).numpy().astype(bool)
+            input_dict["num_lidar_pts"] = num_pts[mask]
+        return super().transform(input_dict)

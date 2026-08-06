@@ -424,8 +424,9 @@ class FocalHead(AnchorFreeHead):
             cls_avg_factor = reduce_mean(cls_scores.new_tensor([cls_avg_factor]))
         cls_avg_factor = max(cls_avg_factor, 1)
         loss_cls = self.loss_cls2d(cls_scores, (labels, iou_score.detach()), label_weights, avg_factor=cls_avg_factor)
-        # Compute the average number of gt boxes across all gpus, for
-        # normalization purposes
+        # Global (cross-GPU) normalization so every OBJECT counts equally once
+        # DDP averages gradients; see streampetr_head.loss_single for why the
+        # local count is biased. `sync_cls_avg_factor=True` aligns loss_cls2d.
         num_total_pos = loss_cls.new_tensor([num_total_pos])
         num_total_pos = torch.clamp(reduce_mean(num_total_pos), min=1).item()
 

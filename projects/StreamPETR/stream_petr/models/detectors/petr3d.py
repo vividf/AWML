@@ -356,19 +356,34 @@ class Petr3D(MVXTwoStageDetector):
         g3d = data.get("gt_bboxes_3d")
         g3l = data.get("gt_labels_3d")
         if g3d is not None and len(g3d) > 0:
-            eval_ann["gt_bboxes_3d"] = g3d[0]
+            boxes = g3d[0]
+            # Collate can leave the per-frame boxes wrapped in nested singleton
+            # list/tuples (batch dim, then queue dim); unwrap to the box object.
+            while isinstance(boxes, (list, tuple)) and len(boxes) == 1:
+                boxes = boxes[0]
+            eval_ann["gt_bboxes_3d"] = boxes
         if g3l is not None and len(g3l) > 0:
             labels = g3l[0]
             # Val/test may carry CUDA tensors, Tensor subclasses, or list/tuple of tensors.
             if torch.is_tensor(labels):
-                eval_ann["gt_labels_3d"] = labels.detach().cpu().numpy()
+                eval_ann["gt_labels_3d"] = labels.detach().cpu().numpy().reshape(-1)
             elif isinstance(labels, (list, tuple)) and len(labels) > 0 and torch.is_tensor(labels[0]):
-                eval_ann["gt_labels_3d"] = torch.stack(list(labels)).detach().cpu().numpy()
+                # Singleton queue nesting: stacking would add a leading 1-dim,
+                # so flatten back to (N,) for the metric.
+                eval_ann["gt_labels_3d"] = torch.stack(list(labels)).detach().cpu().numpy().reshape(-1)
             else:
                 try:
-                    eval_ann["gt_labels_3d"] = np.asarray(labels)
+                    eval_ann["gt_labels_3d"] = np.asarray(labels).reshape(-1)
                 except (TypeError, RuntimeError):
-                    eval_ann["gt_labels_3d"] = torch.as_tensor(labels).detach().cpu().numpy()
+                    eval_ann["gt_labels_3d"] = torch.as_tensor(labels).detach().cpu().numpy().reshape(-1)
+        num_pts = data.get("num_lidar_pts")
+        if num_pts is not None and len(num_pts) > 0:
+            # Same collate nesting as gt_labels_3d above; _union2one always
+            # stores this as a tensor, so a list/tuple is the queue dimension.
+            pts = num_pts[0]
+            if isinstance(pts, (list, tuple)):
+                pts = torch.stack(list(pts))
+            eval_ann["num_lidar_pts"] = pts.detach().cpu().numpy().astype(np.int64).reshape(-1)
         if eval_ann:
             out["eval_ann_info"] = eval_ann
         return out

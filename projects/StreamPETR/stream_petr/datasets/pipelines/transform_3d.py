@@ -10,6 +10,7 @@
 #  Modified by Shihao Wang
 # ------------------------------------------------------------------------
 
+import cv2
 import mmcv
 import numpy as np
 import pyquaternion
@@ -199,7 +200,6 @@ class ResizeCropFlipRotImage:
     def __call__(self, results):
 
         imgs = results["img"]
-        H, W = imgs[0].shape[:2]
         N = len(imgs)
         new_imgs = []
         new_gt_bboxes = []
@@ -208,9 +208,13 @@ class ResizeCropFlipRotImage:
         new_depths = []
         assert self.data_aug_conf["rot_lim"] == (0.0, 0.0), "Rotation is not currently supported"
 
-        resize, resize_dims, crop, flip, rotate = self._sample_augmentation(H, W)
-
         for i in range(N):
+            # Sample resize jitter / crop / flip per camera rather than once per
+            # frame: each view's intrinsics are updated from its own ida_mat
+            # below, so the views stay geometrically consistent. At test time
+            # _sample_augmentation is deterministic and this is identical to a
+            # single shared draw.
+            resize, resize_dims, crop, flip, rotate = self._sample_augmentation(imgs[i].shape[0], imgs[i].shape[1])
             img = Image.fromarray(np.uint8(imgs[i]))
             img, ida_mat = self._img_transform(
                 img,
@@ -334,7 +338,14 @@ class ResizeCropFlipRotImage:
         ida_rot = torch.eye(2)
         ida_tran = torch.zeros(2)
         # adjust image
-        img = img.resize(resize_dims)
+        # Resize with cv2's INTER_LINEAR rather than PIL's resize. PIL scales
+        # its bicubic filter support by the reduction factor, so it antialiases;
+        # cv2's INTER_LINEAR samples a fixed 2x2 neighbourhood and does not. At
+        # this pipeline's ~0.26x downscale (2880x1860 -> 743x480) the two differ
+        # by ~4% in pixel std, and autoware-ml is the parity reference here.
+        img = Image.fromarray(
+            cv2.resize(np.asarray(img), tuple(resize_dims), interpolation=cv2.INTER_LINEAR)
+        )
         img = img.crop(crop)
         if flip:
             img = img.transpose(method=Image.FLIP_LEFT_RIGHT)
@@ -345,7 +356,10 @@ class ResizeCropFlipRotImage:
         ida_tran -= torch.Tensor(crop[:2])
         if flip:
             A = torch.Tensor([[-1, 0], [0, 1]])
-            b = torch.Tensor([crop[2] - crop[0], 0])
+            # PIL's FLIP_LEFT_RIGHT maps pixel x -> (width - 1) - x, so the
+            # homography translation must use width - 1; plain `width` leaves a
+            # systematic 1-px horizontal miscalibration on every flipped view.
+            b = torch.Tensor([crop[2] - crop[0] - 1, 0])
             ida_rot = A.matmul(ida_rot)
             ida_tran = A.matmul(ida_tran) + b
         A = self._get_rot(rotate / 180 * np.pi)

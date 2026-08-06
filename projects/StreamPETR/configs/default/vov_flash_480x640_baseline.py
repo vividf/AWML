@@ -12,7 +12,7 @@ custom_imports["imports"] += _base_.custom_imports["imports"]
 backbone_norm_cfg = dict(type="LN", requires_grad=True)
 
 info_directory_path = "info/cameraonly/baseline/"
-data_root = "data/"
+data_root = "data/t4datasets/"
 
 
 # If point cloud range is changed, the models should also change their point
@@ -251,11 +251,15 @@ test_pipeline = [
         with_label=False,
         with_bbox_depth=False,
     ),
+    # Carry the annotation num_lidar_pts next to the GT boxes so T4MetricV2
+    # can apply its annotation-based min-points GT filter (camera-only model
+    # has no input points to recount from).
+    dict(type="LoadNumLidarPts"),
     dict(type="mmdet.ResizeCropFlipRotImage", data_aug_conf=ida_aug_conf_test, training=False, with_2d=False),
     dict(type="mmdet.PadMultiViewImage", size_divisor=32),
     dict(type="mmdet.NormalizeMultiviewImage", **img_norm_cfg),
     dict(type="StreamPETRLoadAnnotations2D"),
-    dict(type="ObjectRangeFilter", point_cloud_range=point_cloud_range),
+    dict(type="ObjectRangeFilterKeepNumPts", point_cloud_range=point_cloud_range),
     dict(type="PETRFormatBundle3D", class_names=class_names, collect_keys=collect_keys + ["prev_exists"]),
 ]
 

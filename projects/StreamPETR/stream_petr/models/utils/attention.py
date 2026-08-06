@@ -15,6 +15,19 @@ from torch.nn.functional import linear
 from torch.nn.init import constant_, xavier_normal_, xavier_uniform_
 
 
+def _deterministic_backward() -> bool:
+    """Whether FlashAttention should use its deterministic backward pass.
+
+    FlashAttention accumulates dq with atomics, so its backward is
+    nondeterministic by default. It is a custom CUDA op, so
+    ``torch.use_deterministic_algorithms`` neither overrides it nor warns about
+    it - a run looks reproducible and silently is not. Gating on torch's own
+    flag keeps deterministic runs actually deterministic while normal training
+    keeps the faster nondeterministic path.
+    """
+    return torch.are_deterministic_algorithms_enabled()
+
+
 def _in_projection_packed(q, k, v, w, b=None):
     w_q, w_k, w_v = w.chunk(3)
     if b is None:
@@ -53,7 +66,14 @@ class FlashAttention(nn.Module):
         # assert q.is_cuda and kv.is_cuda
         assert q.shape[0] == kv.shape[0] and q.shape[-2] == kv.shape[-2] and q.shape[-1] == kv.shape[-1]
 
-        fp16 = q.dtype in [torch.float16, torch.bfloat16]
+        input_dtype = q.dtype
+        fp16 = input_dtype in [torch.float16, torch.bfloat16]
+        # Run flash_attn in the caller's dtype instead of unconditionally
+        # casting to fp16. Before this, `.half()` silently downcast bf16 inputs
+        # to fp16, so switching the training recipe to bf16 never actually
+        # changed the attention precision. fp32 inputs still take the fp16 cast,
+        # since flash_attn only ships 16-bit kernels.
+        attn_dtype = input_dtype if fp16 else torch.float16
         batch_size = q.shape[0]
         seqlen_q, seqlen_k = q.shape[1], kv.shape[1]
         if key_padding_mask is None:
@@ -66,8 +86,8 @@ class FlashAttention(nn.Module):
                 0, (batch_size + 1) * seqlen_k, step=seqlen_k, dtype=torch.int32, device=kv.device
             )
             output = flash_attn_varlen_kvpacked_func(
-                q.half(),
-                kv.half(),
+                q.to(attn_dtype),
+                kv.to(attn_dtype),
                 cu_seqlens_q,
                 cu_seqlens_k,
                 max_sq,
@@ -75,9 +95,8 @@ class FlashAttention(nn.Module):
                 self.dropout_p if self.training else 0.0,
                 softmax_scale=self.softmax_scale,
                 causal=causal,
+                deterministic=_deterministic_backward(),
             )
-            if not fp16:
-                output = output.float()
             output = rearrange(output, "(b s) ... -> b s ...", b=batch_size)
         else:
             nheads = kv.shape[-2]
@@ -90,8 +109,8 @@ class FlashAttention(nn.Module):
             x_unpad, indices, cu_seqlens_k, max_sk = unpad_input(x, key_padding_mask)
             x_unpad = rearrange(x_unpad, "nnz (two h d) -> nnz two h d", two=2, h=nheads)
             output_unpad = flash_attn_varlen_kvpacked_func(
-                q.half(),
-                x_unpad.half(),
+                q.to(attn_dtype),
+                x_unpad.to(attn_dtype),
                 cu_seqlens_q,
                 cu_seqlens_k,
                 max_sq,
@@ -99,12 +118,15 @@ class FlashAttention(nn.Module):
                 self.dropout_p if self.training else 0.0,
                 softmax_scale=self.softmax_scale,
                 causal=causal,
+                deterministic=_deterministic_backward(),
             )
-            if not fp16:
-                output = output.float()
             output = rearrange(output_unpad, "(b s) ... -> b s ...", b=batch_size)
 
-        return output, None
+        # Restore the caller's dtype. This replaces two `if not fp16:
+        # output = output.float()` blocks, the second of which referenced
+        # `output` before assignment and would have raised UnboundLocalError on
+        # any fp32 call that supplied a key_padding_mask.
+        return output.to(input_dtype), None
 
 
 class FlashMHA(nn.Module):
