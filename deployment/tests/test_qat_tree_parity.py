@@ -21,7 +21,10 @@ import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("mmengine")
-pytest.importorskip("pytorch_quantization")
+from deployment.quantization.core import backend as _quant_backend
+
+if not _quant_backend.available():
+    pytest.skip("no quantization backend (pytorch-quantization or nvidia-modelopt) installed", allow_module_level=True)
 
 import torch.nn as nn  # noqa: E402
 
@@ -54,7 +57,7 @@ class _DummyBEVFusion(nn.Module):
 
 
 def _quantizer_names(model: nn.Module) -> set:
-    from pytorch_quantization.nn import TensorQuantizer
+    TensorQuantizer = _quant_backend.get_tensor_quantizer_cls()
 
     return {n for n, m in model.named_modules() if isinstance(m, TensorQuantizer)}
 

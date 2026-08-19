@@ -74,7 +74,10 @@ def test_ese_forward_hook_fp_fallback_without_pool_input() -> None:
 
 def test_ese_attach_produces_single_q_no_mul_identity() -> None:
     """The merged eSE recipe (one attach call, no ordering contract) yields the single-Q structure."""
-    pytest.importorskip("pytorch_quantization")
+    from deployment.quantization.core import backend as _quant_backend
+
+    if not _quant_backend.available():
+        pytest.skip("no quantization backend installed")
     from deployment.quantization.recipes.attach import attach_ese_quantizers
 
     # The recipe dispatches on the class *name* "eSEModule".

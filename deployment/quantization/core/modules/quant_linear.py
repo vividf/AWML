@@ -1,14 +1,13 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 """Quantized Linear module for PillarFeatureNet."""
 
-import importlib.util
-
 import torch.nn as nn
 import torch.nn.functional as F
 
-PYTORCH_QUANTIZATION_AVAILABLE = importlib.util.find_spec("pytorch_quantization") is not None
-
+from deployment.quantization.core import backend as quant_backend
 from deployment.quantization.core.availability import require_pytorch_quantization
+
+PYTORCH_QUANTIZATION_AVAILABLE = quant_backend.available()
 from deployment.quantization.core.descriptors import default_input_desc, linear_weight_desc
 
 
@@ -53,7 +52,7 @@ class QuantLinear(nn.Linear):
     def init_quantizer(self, quant_desc_input=None, quant_desc_weight=None):
         """Initialize input and weight quantizers."""
         _check_pytorch_quantization()
-        from pytorch_quantization.nn import TensorQuantizer
+        TensorQuantizer = quant_backend.get_tensor_quantizer_cls()
 
         quant_desc_input = quant_desc_input or self.default_quant_desc_input
         quant_desc_weight = quant_desc_weight or self.default_quant_desc_weight

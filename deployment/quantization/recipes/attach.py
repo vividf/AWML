@@ -18,6 +18,7 @@ from typing import Optional, Set
 
 import torch.nn as nn
 
+from deployment.quantization.core import backend as quant_backend
 from deployment.quantization.core.availability import require_pytorch_quantization_installed
 from deployment.quantization.core.descriptors import default_input_desc
 from deployment.quantization.core.modules import QuantConv2d
@@ -47,14 +48,17 @@ def _input_quant_desc():
     if desc is None:
         desc = default_input_desc()
         QuantConv2d.default_quant_desc_input = desc
-    if not getattr(desc, "calib_method", None):
-        desc.calib_method = "histogram"
+    if quant_backend.desc_calib_method(desc) != "histogram":
+        # Never expected (default_input_desc always sets histogram); rebuild rather than mutate,
+        # since modelopt descriptors are pydantic models and reject ad-hoc attribute writes.
+        desc = default_input_desc()
+        QuantConv2d.default_quant_desc_input = desc
     return desc
 
 
 def _new_input_quantizer():
     """Create a fresh ``TensorQuantizer`` on the shared conv-input descriptor."""
-    from pytorch_quantization.nn import TensorQuantizer
+    TensorQuantizer = quant_backend.get_tensor_quantizer_cls()
 
     return TensorQuantizer(_input_quant_desc())
 

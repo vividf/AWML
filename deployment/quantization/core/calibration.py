@@ -12,21 +12,18 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
-try:
-    from pytorch_quantization import calib
-    from pytorch_quantization.nn import TensorQuantizer
-
-    PYTORCH_QUANTIZATION_AVAILABLE = True
-except ImportError:
-    PYTORCH_QUANTIZATION_AVAILABLE = False
-    TensorQuantizer = None
-    calib = None
-
+from deployment.quantization.core import backend as quant_backend
 from deployment.quantization.core.availability import require_pytorch_quantization
+
+# Resolved once at import: the framework does not support switching backends mid-process
+# (see deployment.quantization.core.backend.resolve).
+TensorQuantizer = quant_backend.get_tensor_quantizer_cls_or_none()
+calib = quant_backend.get_calib_or_none()
+PYTORCH_QUANTIZATION_AVAILABLE = TensorQuantizer is not None
 
 
 def _check_pytorch_quantization():
-    """Check if pytorch-quantization is available (raises ImportError if not)."""
+    """Check that a quantization backend is available (raises ImportError if not)."""
     require_pytorch_quantization(PYTORCH_QUANTIZATION_AVAILABLE)
 
 
@@ -88,7 +85,8 @@ class CalibrationManager:
         Enable fast histogram computation using PyTorch.
 
         This significantly speeds up calibration by using PyTorch's
-        native histogram implementation instead of numpy.
+        native histogram implementation instead of numpy. Both backends'
+        ``HistogramCalibrator`` expose ``_torch_hist`` (modelopt defaults it to True).
         """
         for name, module in self.model.named_modules():
             if isinstance(module, TensorQuantizer):

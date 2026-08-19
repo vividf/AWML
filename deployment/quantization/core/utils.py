@@ -7,15 +7,11 @@ from typing import Iterable, Optional, Type, Union
 import torch
 import torch.nn as nn
 
-try:
-    from pytorch_quantization.nn import TensorQuantizer
-
-    PYTORCH_QUANTIZATION_AVAILABLE = True
-except ImportError:
-    PYTORCH_QUANTIZATION_AVAILABLE = False
-    TensorQuantizer = None
-
+from deployment.quantization.core import backend as quant_backend
 from deployment.quantization.core.availability import require_pytorch_quantization
+
+TensorQuantizer = quant_backend.get_tensor_quantizer_cls_or_none()
+PYTORCH_QUANTIZATION_AVAILABLE = TensorQuantizer is not None
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +22,7 @@ def _check_pytorch_quantization():
 
 
 def get_tensor_quantizer_cls() -> Optional[Type]:
-    """Return the ``TensorQuantizer`` class, or ``None`` when pytorch_quantization is not installed.
+    """Return the backend ``TensorQuantizer`` class, or ``None`` when no backend is installed.
 
     Also re-asserts the deployment logging configuration: importing pytorch_quantization pulls in
     ``absl.logging``, which hijacks the root logger (installs its own handler, only WARNING+ reaches
@@ -68,17 +64,16 @@ def move_quantizer_amax_to_device(model: nn.Module, device: Union[str, torch.dev
 
 
 def setup_quantization_for_onnx_export() -> None:
-    """Configure pytorch-quantization for proper ONNX export.
+    """Configure the quantization backend for proper ONNX export.
 
-    Enables ``use_fb_fake_quant`` so ``TensorQuantizer`` exports as QuantizeLinear/DequantizeLinear
-    ONNX ops (recognized by TensorRT). Global flag; must be set before ONNX export of a quantized
-    model. No-op when pytorch_quantization is not installed.
+    pytorch-quantization: enables the global ``use_fb_fake_quant`` so ``TensorQuantizer`` exports
+    as QuantizeLinear/DequantizeLinear ONNX ops (recognized by TensorRT); must be set before ONNX
+    export of a quantized model. modelopt: no-op — its ``TensorQuantizer`` traces to Q/DQ natively.
+    No-op when no backend is installed.
     """
-    tensor_quantizer_cls = get_tensor_quantizer_cls()
-    if tensor_quantizer_cls is None:
-        return
-    tensor_quantizer_cls.use_fb_fake_quant = True
-    logger.info("Enabled use_fb_fake_quant for ONNX export of quantized models")
+    # Re-assert deployment logging first (same absl-hijack concern as get_tensor_quantizer_cls).
+    get_tensor_quantizer_cls()
+    quant_backend.setup_onnx_export()
 
 
 class disable_quantization:

@@ -3,6 +3,15 @@
 /work_dirs
 /deployment/graphify-out
 /graphify-out
+
+# CenterPoint tutorial generated artifacts (reproduce with scripts/run_all.sh)
+/deployment/centerpoint_tutorial/checkpoints/
+/deployment/centerpoint_tutorial/calib_trace/
+/deployment/centerpoint_tutorial/calib_trace_modelopt/
+/deployment/centerpoint_tutorial/fp16/
+/deployment/centerpoint_tutorial/fp16_modelopt/
+/deployment/centerpoint_tutorial/int8/
+/deployment/centerpoint_tutorial/int8_modelopt/
 .gitignore
 CLAUDE.md
 _trace
