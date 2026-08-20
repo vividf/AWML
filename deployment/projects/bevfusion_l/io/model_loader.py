@@ -1,6 +1,6 @@
 """BEVFusion model loading utilities for deployment.
 
-Supports optional dense quantization (backbone, neck, head via pytorch_quantization TensorQuantizer
+Supports optional dense quantization (backbone, neck, head via modelopt TensorQuantizer
 Q/DQ). The sparse encoder (``pts_middle_encoder``) always deploys in FP16 and is only SparseConv+BN
 folded.
 

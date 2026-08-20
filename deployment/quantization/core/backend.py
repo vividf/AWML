@@ -1,34 +1,33 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-"""Quantization backend resolver: pytorch-quantization or nvidia-modelopt.
+"""Quantization backend: nvidia-modelopt (``modelopt.torch.quantization``).
 
-Single seam through which the framework reaches the fake-quant library. Both backends descend
-from the same NVIDIA codebase and share the calibration surface the framework relies on
-(``TensorQuantizer`` with ``disable_quant``/``enable_calib``/``load_calib_amax``, ``_amax``
-buffers with identical state_dict keys, ``MaxCalibrator``/``HistogramCalibrator``), so the rest
-of ``deployment.quantization`` stays backend-agnostic and imports everything quantizer-related
-from here instead of from ``pytorch_quantization`` directly.
+Single seam through which the framework reaches the fake-quant library. The framework was
+originally built on ``pytorch-quantization``; modelopt descends from the same NVIDIA codebase
+and kept the calibration surface the framework relies on (``TensorQuantizer`` with
+``disable_quant``/``enable_calib``/``load_calib_amax``, ``_amax`` buffers with identical
+state_dict keys, ``MaxCalibrator``/``HistogramCalibrator``), so the rest of
+``deployment.quantization`` imports everything quantizer-related from here instead of from the
+library directly. pytorch-quantization support has been dropped (it is deprecated upstream);
+PTQ checkpoints produced with it remain loadable — the ``_amax`` state_dict layout is identical,
+verified by the cross-backend A/B in ``deployment/centerpoint_tutorial``.
 
-Backend selection (resolved once, then cached):
+Two places the framework must know modelopt differs from the pytorch-quantization heritage,
+both wrapped here:
 
-- ``AWML_QUANT_BACKEND=pytorch-quantization`` — force the classic backend.
-- ``AWML_QUANT_BACKEND=modelopt``            — force nvidia-modelopt (``modelopt.torch.quantization``).
-- unset / ``auto``                            — pytorch-quantization when installed, else modelopt.
+1. **Descriptors**: modelopt's ``config.QuantizerAttributeConfig`` spells the calibrator field
+   ``calibrator`` (pytorch-quantization said ``calib_method``) and takes ``axis`` as an int.
+   :func:`make_quant_desc` keeps accepting the framework's historical vocabulary and translates.
+2. **ONNX export**: modelopt's ``TensorQuantizer`` traces to QuantizeLinear/DequantizeLinear
+   natively — no global ``use_fb_fake_quant`` switch, and the quantizers must NOT be bypassed
+   during tracing (:func:`exports_qdq_natively` → :func:`setup_onnx_export` is a no-op).
 
-The two backends differ in exactly two places the framework must know about, both wrapped here:
+It also carries the modelopt bug workarounds in :func:`_ensure_modelopt_patches`.
 
-1. **Descriptors**: pytorch-quantization uses ``tensor_quant.QuantDescriptor(calib_method=...)``;
-   modelopt uses ``config.QuantizerAttributeConfig(calibrator=...)``. See
-   :mod:`.descriptors` for the per-layer choices built on :func:`make_quant_desc`.
-2. **ONNX export**: pytorch-quantization needs the global ``TensorQuantizer.use_fb_fake_quant=True``
-   switch; modelopt's ``TensorQuantizer`` traces to QuantizeLinear/DequantizeLinear natively
-   (:func:`exports_qdq_natively` → :func:`setup_onnx_export` is a no-op there).
-
-Leaf module: imports only stdlib + the backend package (lazily); safe for every core submodule.
+Leaf module: imports only stdlib + modelopt (lazily); safe for every core submodule.
 """
 
 from __future__ import annotations
 
-import importlib
 import importlib.util
 import logging
 import os
@@ -37,49 +36,32 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _ENV_VAR = "AWML_QUANT_BACKEND"
-PYTORCH_QUANTIZATION = "pytorch-quantization"
 MODELOPT = "modelopt"
-_KNOWN = (PYTORCH_QUANTIZATION, MODELOPT)
-
-# Module import names per backend.
-_IMPORT_NAME = {PYTORCH_QUANTIZATION: "pytorch_quantization", MODELOPT: "modelopt"}
 
 _resolved: Optional[str] = None
 _resolve_done = False
 
 
-def _installed(backend: str) -> bool:
-    return importlib.util.find_spec(_IMPORT_NAME[backend]) is not None
-
-
 def resolve() -> Optional[str]:
-    """Return the active backend name, or ``None`` when neither library is installed.
+    """Return ``"modelopt"`` when nvidia-modelopt is installed, else ``None``.
 
-    Resolution is cached for the life of the process: the quantized modules bind their
-    ``TensorQuantizer`` class at attach time, so switching backends mid-process is not supported —
-    set ``AWML_QUANT_BACKEND`` before the first quantization import.
+    Resolution is cached for the life of the process (the quantized modules bind their
+    ``TensorQuantizer`` class at attach time). ``AWML_QUANT_BACKEND`` survives only as a guard:
+    selecting the removed ``pytorch-quantization`` backend raises instead of silently running
+    on modelopt.
     """
     global _resolved, _resolve_done
     if _resolve_done:
         return _resolved
 
     requested = os.environ.get(_ENV_VAR, "auto").strip().lower() or "auto"
-    if requested in ("auto", ""):
-        if _installed(PYTORCH_QUANTIZATION):
-            _resolved = PYTORCH_QUANTIZATION
-        elif _installed(MODELOPT):
-            _resolved = MODELOPT
-        else:
-            _resolved = None
-    elif requested in _KNOWN:
-        if not _installed(requested):
-            raise ImportError(
-                f"{_ENV_VAR}={requested} but '{_IMPORT_NAME[requested]}' is not installed. {install_hint()}"
-            )
-        _resolved = requested
-    else:
-        raise ValueError(f"{_ENV_VAR}={requested!r} — expected one of {_KNOWN + ('auto',)}")
+    if requested not in ("auto", MODELOPT):
+        raise ValueError(
+            f"{_ENV_VAR}={requested!r} — the pytorch-quantization backend has been removed; "
+            f"only nvidia-modelopt is supported (unset {_ENV_VAR} or set it to 'modelopt')."
+        )
 
+    _resolved = MODELOPT if importlib.util.find_spec("modelopt") is not None else None
     _resolve_done = True
     if _resolved is not None:
         logger.info("Quantization backend: %s", _resolved)
@@ -94,22 +76,17 @@ def _reset_for_testing() -> None:
 
 
 def available() -> bool:
-    """Whether any quantization backend is installed."""
+    """Whether the quantization backend (nvidia-modelopt) is installed."""
     return resolve() is not None
 
 
 def install_hint(purpose: str = "quantization support") -> str:
-    """Standard install message naming both accepted backends."""
-    return (
-        f"A quantization backend is required for {purpose}. Install one of:\n"
-        "  pip install pytorch-quantization --extra-index-url https://pypi.ngc.nvidia.com\n"
-        "  pip install nvidia-modelopt\n"
-        f"(select explicitly with {_ENV_VAR}=pytorch-quantization|modelopt)"
-    )
+    """Standard install message for the quantization backend."""
+    return f"nvidia-modelopt is required for {purpose}. Install it with: pip install nvidia-modelopt"
 
 
 def require(purpose: str = "quantization support") -> str:
-    """Return the active backend name, raising the install hint when none is available."""
+    """Return the active backend name, raising the install hint when it is not available."""
     name = resolve()
     if name is None:
         raise ImportError(install_hint(purpose))
@@ -124,7 +101,7 @@ _modelopt_patched = False
 
 
 def _ensure_modelopt_patches() -> None:
-    """Apply behavior-probed fixes for modelopt gaps vs pytorch-quantization (as of 0.46.0).
+    """Apply behavior-probed fixes for modelopt bugs (as of 0.46.0).
 
     Two seams, both detected behaviorally so a fixed upstream is left untouched, both applied
     once per process:
@@ -141,7 +118,7 @@ def _ensure_modelopt_patches() -> None:
        creates the ``_amax`` buffer on the fly when the incoming state_dict carries one; modelopt's
        ``TensorQuantizer`` has no such override, so loading a PTQ checkpoint into a freshly built
        (uncalibrated) quantizer tree silently drops every ``_amax`` as an "unexpected key". Add an
-       equivalent override so PTQ checkpoints are interchangeable across backends.
+       equivalent override so existing PTQ checkpoints keep loading.
     """
     global _modelopt_patched
     if _modelopt_patched:
@@ -216,19 +193,16 @@ def _ensure_modelopt_patches() -> None:
 
 
 def get_tensor_quantizer_cls() -> Any:
-    """The backend's ``TensorQuantizer`` class (raises when no backend is installed)."""
-    name = require("TensorQuantizer")
-    if name == PYTORCH_QUANTIZATION:
-        from pytorch_quantization.nn import TensorQuantizer
-    else:
-        from modelopt.torch.quantization.nn import TensorQuantizer
+    """The backend's ``TensorQuantizer`` class (raises when the backend is not installed)."""
+    require("TensorQuantizer")
+    from modelopt.torch.quantization.nn import TensorQuantizer
 
-        _ensure_modelopt_patches()
+    _ensure_modelopt_patches()
     return TensorQuantizer
 
 
 def get_tensor_quantizer_cls_or_none() -> Optional[Any]:
-    """Like :func:`get_tensor_quantizer_cls`, but ``None`` when no backend is installed."""
+    """Like :func:`get_tensor_quantizer_cls`, but ``None`` when the backend is not installed."""
     if not available():
         return None
     return get_tensor_quantizer_cls()
@@ -236,18 +210,15 @@ def get_tensor_quantizer_cls_or_none() -> Optional[Any]:
 
 def get_calib() -> Any:
     """The backend's ``calib`` module (``MaxCalibrator`` / ``HistogramCalibrator``)."""
-    name = require("calibrators")
-    if name == PYTORCH_QUANTIZATION:
-        from pytorch_quantization import calib
-    else:
-        from modelopt.torch.quantization import calib
+    require("calibrators")
+    from modelopt.torch.quantization import calib
 
-        _ensure_modelopt_patches()
+    _ensure_modelopt_patches()
     return calib
 
 
 def get_calib_or_none() -> Optional[Any]:
-    """Like :func:`get_calib`, but ``None`` when no backend is installed."""
+    """Like :func:`get_calib`, but ``None`` when the backend is not installed."""
     if not available():
         return None
     return get_calib()
@@ -259,18 +230,13 @@ def get_calib_or_none() -> Optional[Any]:
 
 
 def make_quant_desc(**kwargs: Any) -> Any:
-    """Build a quantizer descriptor in the active backend's dialect.
+    """Build a ``QuantizerAttributeConfig`` from the framework's descriptor vocabulary.
 
-    Accepts pytorch-quantization's vocabulary (``num_bits``, ``axis``, ``calib_method``) and
-    translates for modelopt (whose ``QuantizerAttributeConfig`` spells the calibrator field
-    ``calibrator`` and takes ``axis`` as an int).
+    Accepts the historical pytorch-quantization spelling (``num_bits``, ``axis`` tuple,
+    ``calib_method``) that the framework's descriptor helpers speak, and translates to
+    modelopt's (``calibrator``, int ``axis``).
     """
-    name = require("quantization descriptors")
-    if name == PYTORCH_QUANTIZATION:
-        from pytorch_quantization import tensor_quant
-
-        return tensor_quant.QuantDescriptor(**kwargs)
-
+    require("quantization descriptors")
     from modelopt.torch.quantization.config import QuantizerAttributeConfig
 
     translated = dict(kwargs)
@@ -283,23 +249,25 @@ def make_quant_desc(**kwargs: Any) -> Any:
 
 
 def desc_calib_method(desc: Any) -> Optional[str]:
-    """The calibrator name (``"max"``/``"histogram"``) of a descriptor, whichever dialect it is."""
-    method = getattr(desc, "calib_method", None)
+    """The calibrator name (``"max"``/``"histogram"``) of a descriptor.
+
+    Reads modelopt's ``calibrator`` field, falling back to the historical ``calib_method``
+    so descriptors deserialized from old artifacts still answer.
+    """
+    method = getattr(desc, "calibrator", None)
     if method is None:
-        method = getattr(desc, "calibrator", None)
+        method = getattr(desc, "calib_method", None)
     return method if isinstance(method, str) else None
 
 
 def get_preset_desc(preset: str) -> Any:
-    """A named ``QUANT_DESC_*`` preset from the backend's ``tensor_quant`` module.
+    """A named ``QUANT_DESC_*`` preset from ``modelopt.torch.quantization.tensor_quant``.
 
-    The preset names are identical in both backends (modelopt kept pytorch-quantization's).
+    (modelopt kept pytorch-quantization's preset names.)
     """
-    name = require("quantization descriptors")
-    if name == PYTORCH_QUANTIZATION:
-        from pytorch_quantization import tensor_quant
-    else:
-        from modelopt.torch.quantization import tensor_quant
+    require("quantization descriptors")
+    from modelopt.torch.quantization import tensor_quant
+
     return getattr(tensor_quant, preset)
 
 
@@ -309,28 +277,16 @@ def get_preset_desc(preset: str) -> Any:
 
 
 def exports_qdq_natively() -> bool:
-    """Whether the backend's ``TensorQuantizer`` traces to Q/DQ during ONNX export on its own.
+    """Whether ``TensorQuantizer`` traces to Q/DQ during ONNX export on its own.
 
     modelopt registers ONNX symbolics for its fake-quant autograd functions, so a quantized model
-    exports QuantizeLinear/DequantizeLinear without any global switch — and the quantizers must NOT
-    be bypassed during tracing. pytorch-quantization needs ``use_fb_fake_quant=True`` first.
+    exports QuantizeLinear/DequantizeLinear without any global switch — and the quantizers must
+    NOT be bypassed during tracing. (pytorch-quantization needed ``use_fb_fake_quant=True``.)
     """
     return resolve() == MODELOPT
 
 
 def setup_onnx_export() -> None:
-    """Put the backend into ONNX-export mode (idempotent; no-op without a backend).
-
-    pytorch-quantization: sets the global ``TensorQuantizer.use_fb_fake_quant = True`` so
-    quantizers trace as Q/DQ pairs. modelopt: nothing to do (see :func:`exports_qdq_natively`).
-    """
-    name = resolve()
-    if name is None:
-        return
-    if name == PYTORCH_QUANTIZATION:
-        from pytorch_quantization.nn import TensorQuantizer
-
-        TensorQuantizer.use_fb_fake_quant = True
-        logger.info("Enabled use_fb_fake_quant for ONNX export of quantized models")
-    else:
+    """Put the backend into ONNX-export mode (idempotent; no-op — see :func:`exports_qdq_natively`)."""
+    if resolve() is not None:
         logger.info("modelopt backend: TensorQuantizer exports Q/DQ natively (no global switch)")

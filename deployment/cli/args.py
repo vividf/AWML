@@ -15,7 +15,7 @@ _LOG_FORMAT = "%(levelname)s:%(name)s:%(message)s"
 
 # Snapshot of the deployment's own root-logger configuration, taken the moment we install
 # it. ``restore_deployment_logging`` re-asserts this after a third-party library hijacks the
-# root logger — notably ``absl.logging``, which is pulled in by ``pytorch_quantization`` when a
+# root logger — notably ``absl.logging``, which third-party imports can pull in when a
 # quantized model is loaded. absl installs its own root handler (emitting only WARNING+ to
 # stderr) and can raise the root level, which otherwise silences every subsequent INFO record
 # (the entire evaluation phase). See ``restore_deployment_logging``.
@@ -34,7 +34,7 @@ def _record_deployment_logging() -> None:
 def restore_deployment_logging() -> None:
     """Re-assert the deployment's root-logger config after a third-party hijack.
 
-    ``pytorch_quantization`` imports ``absl.logging``, which installs its own root handler
+    Some third-party imports pull in ``absl.logging``, which installs its own root handler
     (only WARNING+ reaches stderr) and can raise the root level. That silences every
     subsequent ``logging.INFO`` record — including the whole evaluation phase, so runs with
     quantization enabled print calibrator warnings and then nothing else. Call this after the
@@ -62,7 +62,7 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
 
     ``force=True`` is essential: by the time this runs, the CLI's ``build_parser`` has already
     imported every ``deployment.projects.*`` package (to register adapters), and those imports
-    pull in ``deployment.quantization`` → ``pytorch_quantization`` → ``absl.logging``, which
+    pull in ``deployment.quantization`` and, transitively, ``absl.logging``, which
     installs its own root handler (WARNING+ only) and can raise the root level *at import time*.
     A plain ``logging.basicConfig`` is a no-op once any root handler exists, so without ``force``
     every deployment INFO record — the entire run — would be silently swallowed. ``force=True``
@@ -108,7 +108,7 @@ def add_deployment_file_logging(log_file_path: str) -> None:
     root.addHandler(fh)
 
     # Fold the new file handler into the canonical snapshot so restore_deployment_logging()
-    # keeps writing to disk after any later root-logger hijack (absl via pytorch_quantization).
+    # keeps writing to disk after any later root-logger hijack (e.g. absl).
     _record_deployment_logging()
 
 

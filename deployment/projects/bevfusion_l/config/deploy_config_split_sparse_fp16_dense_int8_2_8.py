@@ -76,7 +76,7 @@ spconv_fuse_implicit_gemm_relu = True
 # Aligns the FP16 sparse subgraph with INT8 deploy for a fair latency-vs-mAP comparison.
 fuse_spconv_bn = True
 
-# Quantization: dense tower (backbone/neck/head) INT8 via pytorch_quantization; the sparse encoder
+# Quantization: dense tower (backbone/neck/head) INT8 via modelopt Q/DQ; the sparse encoder
 # always stays FP16. ptq_checkpoint=True re-attaches the Q/DQ tree before loading the PTQ .pth so the
 # calibrated _amax line up.
 quantization = dict(

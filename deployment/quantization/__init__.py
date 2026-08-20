@@ -2,7 +2,7 @@
 """
 Quantization framework (model-agnostic).
 
-PTQ / QAT building blocks based on NVIDIA's pytorch-quantization toolkit, organized in layers:
+PTQ / QAT building blocks based on NVIDIA's modelopt toolkit, organized in layers:
 
 - :mod:`~deployment.quantization.core`    — model-agnostic engine (quant modules, BN fusion,
   calibration, the Q/DQ module-replacement engine, sensitivity, utils, ONNX symbolic).

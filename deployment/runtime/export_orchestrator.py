@@ -156,7 +156,7 @@ class ExportOrchestrator:
         except Exception as e:
             raise RuntimeError(f"Failed to load PyTorch model from '{checkpoint_path}': {e}") from e
         finally:
-            # Loading a quantized model imports pytorch_quantization, which pulls in
+            # Loading a quantized model imports the quantization backend, which can pull in
             # absl.logging and hijacks the root logger — silencing all later INFO logs
             # (ONNX/TensorRT export tail AND the entire evaluation phase). Re-assert the
             # deployment logging config here so those stages remain visible. Runs on both

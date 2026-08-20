@@ -1,7 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 """Attach quantizers and swap in the architecture-specific forward hooks.
 
-These functions walk a model, insert :class:`~pytorch_quantization.nn.TensorQuantizer` modules at
+These functions walk a model, insert :class:`~modelopt.torch.quantization.nn.TensorQuantizer` modules at
 TensorRT-friendly locations, and replace matched blocks' ``forward`` with the hooks in
 :mod:`.forward_hooks`. They compose the generic engine
 (:mod:`deployment.quantization.core`) with per-architecture placement, and are consumed by project
@@ -19,7 +19,7 @@ from typing import Optional, Set
 import torch.nn as nn
 
 from deployment.quantization.core import backend as quant_backend
-from deployment.quantization.core.availability import require_pytorch_quantization_installed
+from deployment.quantization.core.availability import require_quant_backend_installed
 from deployment.quantization.core.descriptors import default_input_desc
 from deployment.quantization.core.modules import QuantConv2d
 from deployment.quantization.core.replace import ensure_quant_descriptors_initialized
@@ -89,7 +89,7 @@ def attach_quant_add(model: nn.Module):
     Args:
         model: Model whose residual blocks (see ``_RESIDUAL_BLOCK_CLASSES``) get the recipe.
     """
-    require_pytorch_quantization_installed("residual quantization")
+    require_quant_backend_installed("residual quantization")
     ensure_quant_descriptors_initialized()
 
     target_class_names = _RESIDUAL_BLOCK_CLASSES
@@ -171,7 +171,7 @@ def attach_ese_quantizers(model: nn.Module) -> int:
     Returns:
         Number of eSEModules set up.
     """
-    require_pytorch_quantization_installed("eSE quantization")
+    require_quant_backend_installed("eSE quantization")
     ensure_quant_descriptors_initialized()
     count = 0
     for _name, module in model.named_modules():
@@ -201,7 +201,7 @@ def attach_maxpool_input_quantizer(
     Returns:
         Number of MaxPool2d modules replaced with QuantBeforePool.
     """
-    require_pytorch_quantization_installed("MaxPool input quantization")
+    require_quant_backend_installed("MaxPool input quantization")
     ensure_quant_descriptors_initialized()
     skip_names = skip_names or set()
     name_to_module = dict(model.named_modules())

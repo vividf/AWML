@@ -37,7 +37,7 @@ def build_bevfusion_plan(config: QuantizationConfig) -> QuantizationPlan:
     Returns:
         A :class:`QuantizationPlan`.
     """
-    # Import here so ``pytorch_quantization`` is only required when a plan is actually built.
+    # Import here so the quantization backend is only required when a plan is actually built.
     from deployment.quantization.schemes import DenseQDQScheme
 
     plan = QuantizationPlan()

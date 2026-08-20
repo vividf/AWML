@@ -211,7 +211,7 @@ def _load_quantized_checkpoint(
     # QAT hook run, so producer and deploy sides can never diverge on match semantics.
     disable_quantizers_in(model, skip_layers)
 
-    # 7. Configure pytorch-quantization for proper ONNX export
+    # 7. Configure the quantization backend for proper ONNX export
     setup_quantization_for_onnx_export()
 
     logger.info("Quantized checkpoint loaded successfully")

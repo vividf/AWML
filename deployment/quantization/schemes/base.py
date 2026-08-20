@@ -5,7 +5,7 @@ Motivation
 ----------
 Quantization used to be smeared across every deployment stage, and the PTQ producer re-created the
 quantized module tree by convention (a code comment saying "must match the loader"). The dense
-(pytorch_quantization Q/DQ) tower and the sparse encoder (SparseConv+BN fold for FP16 deploy) had no
+(TensorQuantizer Q/DQ) tower and the sparse encoder (SparseConv+BN fold for FP16 deploy) had no
 shared contract.
 
 A :class:`QuantizationScheme` is a strategy object with one structural step, :meth:`prepare`, that

@@ -107,7 +107,7 @@ class BEVFusionDeploymentRunner(BaseDeploymentRunner):
         if quantization.enabled:
             logger.info("=" * 60)
             logger.info("BEVFusion INT8 Quantization Enabled")
-            logger.info("  Dense (backbone/neck/head): pytorch_quantization")
+            logger.info("  Dense (backbone/neck/head): modelopt Q/DQ")
             logger.info("  Sparse encoder: FP16")
             logger.info("=" * 60)
 

@@ -8,7 +8,7 @@ through the plan (the PTQ/deploy path) and one through ``QATHookBase.before_trai
 path) and asserts the resulting trees are identical: same ``state_dict`` key set, same
 ``TensorQuantizer`` module set.
 
-Requires torch + mmengine + pytorch_quantization (the deployment runtime image); no GPU, no
+Requires torch + mmengine + nvidia-modelopt (the deployment runtime image); no GPU, no
 dataset — calibration is not needed to compare tree *structure*.
 """
 
@@ -24,7 +24,7 @@ pytest.importorskip("mmengine")
 from deployment.quantization.core import backend as _quant_backend
 
 if not _quant_backend.available():
-    pytest.skip("no quantization backend (pytorch-quantization or nvidia-modelopt) installed", allow_module_level=True)
+    pytest.skip("quantization backend (nvidia-modelopt) not installed", allow_module_level=True)
 
 import torch.nn as nn  # noqa: E402
 

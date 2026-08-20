@@ -8,23 +8,23 @@ import torch
 import torch.nn as nn
 
 from deployment.quantization.core import backend as quant_backend
-from deployment.quantization.core.availability import require_pytorch_quantization
+from deployment.quantization.core.availability import require_quant_backend
 
 TensorQuantizer = quant_backend.get_tensor_quantizer_cls_or_none()
-PYTORCH_QUANTIZATION_AVAILABLE = TensorQuantizer is not None
+QUANT_BACKEND_AVAILABLE = TensorQuantizer is not None
 
 logger = logging.getLogger(__name__)
 
 
-def _check_pytorch_quantization():
-    """Check if pytorch-quantization is available (raises ImportError if not)."""
-    require_pytorch_quantization(PYTORCH_QUANTIZATION_AVAILABLE)
+def _check_quant_backend():
+    """Check that the quantization backend is available (raises ImportError if not)."""
+    require_quant_backend(QUANT_BACKEND_AVAILABLE)
 
 
 def get_tensor_quantizer_cls() -> Optional[Type]:
     """Return the backend ``TensorQuantizer`` class, or ``None`` when no backend is installed.
 
-    Also re-asserts the deployment logging configuration: importing pytorch_quantization pulls in
+    Also re-asserts the deployment logging configuration: importing the quantization backend can pull in
     ``absl.logging``, which hijacks the root logger (installs its own handler, only WARNING+ reaches
     stderr) — silently swallowing every later log record of ONNX/TensorRT export and evaluation.
     ``restore_deployment_logging`` re-asserts the canonical config captured by the CLI at
@@ -66,10 +66,9 @@ def move_quantizer_amax_to_device(model: nn.Module, device: Union[str, torch.dev
 def setup_quantization_for_onnx_export() -> None:
     """Configure the quantization backend for proper ONNX export.
 
-    pytorch-quantization: enables the global ``use_fb_fake_quant`` so ``TensorQuantizer`` exports
-    as QuantizeLinear/DequantizeLinear ONNX ops (recognized by TensorRT); must be set before ONNX
-    export of a quantized model. modelopt: no-op — its ``TensorQuantizer`` traces to Q/DQ natively.
-    No-op when no backend is installed.
+    modelopt's ``TensorQuantizer`` traces to QuantizeLinear/DequantizeLinear ONNX ops natively,
+    so there is nothing to switch — kept as the single pre-export call site so the logging
+    re-assert below still runs. No-op when no backend is installed.
     """
     # Re-assert deployment logging first (same absl-hijack concern as get_tensor_quantizer_cls).
     get_tensor_quantizer_cls()
@@ -102,7 +101,7 @@ class disable_quantization:
         Args:
             model: PyTorch model or submodule
         """
-        _check_pytorch_quantization()
+        _check_quant_backend()
         self.model = model
 
     def apply(self, disabled: bool = True):
@@ -143,7 +142,7 @@ def disable_quantizers_in(model: nn.Module, module_names: Iterable[str]) -> int:
         Number of named modules found and disabled. Names not present in the model are logged as
         warnings and skipped (an expanded set can never miss, so a miss means stale input).
     """
-    _check_pytorch_quantization()
+    _check_quant_backend()
     modules = dict(model.named_modules())
     count = 0
     for name in sorted(module_names):
@@ -174,7 +173,7 @@ def print_quantizer_status(model: nn.Module):
         TensorQuantizer name: backbone.conv1._weight_quantizer, disabled: False
         ...
     """
-    _check_pytorch_quantization()
+    _check_quant_backend()
 
     print("=" * 80)
     print("Quantizer Status")
@@ -208,7 +207,7 @@ def count_quantizers(model: nn.Module) -> dict:
     Returns:
         Dict with 'enabled', 'disabled', and 'total' counts
     """
-    _check_pytorch_quantization()
+    _check_quant_backend()
 
     enabled = 0
     disabled = 0

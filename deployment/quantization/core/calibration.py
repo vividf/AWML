@@ -13,18 +13,18 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 from deployment.quantization.core import backend as quant_backend
-from deployment.quantization.core.availability import require_pytorch_quantization
+from deployment.quantization.core.availability import require_quant_backend
 
 # Resolved once at import: the framework does not support switching backends mid-process
 # (see deployment.quantization.core.backend.resolve).
 TensorQuantizer = quant_backend.get_tensor_quantizer_cls_or_none()
 calib = quant_backend.get_calib_or_none()
-PYTORCH_QUANTIZATION_AVAILABLE = TensorQuantizer is not None
+QUANT_BACKEND_AVAILABLE = TensorQuantizer is not None
 
 
-def _check_pytorch_quantization():
+def _check_quant_backend():
     """Check that a quantization backend is available (raises ImportError if not)."""
-    require_pytorch_quantization(PYTORCH_QUANTIZATION_AVAILABLE)
+    require_quant_backend(QUANT_BACKEND_AVAILABLE)
 
 
 @contextmanager
@@ -32,7 +32,7 @@ def _allow_nondeterministic_algorithms():
     """Temporarily lift ``torch.use_deterministic_algorithms`` around the calibration forward pass.
 
     Under QAT the training config's ``randomness = dict(..., deterministic=True)`` makes mmengine
-    call ``torch.use_deterministic_algorithms(True)``, but pytorch_quantization's
+    call ``torch.use_deterministic_algorithms(True)``, but the backend's
     ``HistogramCalibrator.collect`` uses ``torch.histc``, which has no deterministic CUDA kernel —
     every calibration batch would raise ``RuntimeError: _histc_cuda ... does not have a
     deterministic implementation`` and calibration would end with ``amax=None`` on every quantizer.
@@ -69,7 +69,7 @@ class CalibrationManager:
     """
 
     def __init__(self, model: nn.Module):
-        _check_pytorch_quantization()
+        _check_quant_backend()
         self.model = model
         self.device = self._get_device()
 

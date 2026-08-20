@@ -21,7 +21,7 @@ from typing import Optional, Sequence, Tuple
 
 
 def init_quant_logging() -> None:
-    """Silence pytorch-quantization's absl logging (verbose INFO chatter) down to ERROR.
+    """Silence any third-party absl logging (verbose INFO chatter) down to ERROR.
 
     No-op when absl is not installed. Call once at producer-CLI start.
     """

@@ -6,7 +6,7 @@ BEVFusion Quantization Tools
 This script provides CLI commands for PTQ (Post-Training Quantization) and QAT
 (Quantization-Aware Training) for BEVFusion models. It mirrors
 centerpoint/quantization/quantize.py. The dense tower (pts_backbone, pts_neck, bbox_head) is
-quantized with pytorch_quantization Q/DQ; the sparse encoder (pts_middle_encoder) deploys in FP16 and
+quantized with modelopt Q/DQ; the sparse encoder (pts_middle_encoder) deploys in FP16 and
 is only BN-folded so the PTQ and deploy module trees line up. QAT is a frozen-amax STE fine-tune of
 the same tree (spec_qat.md); the packaged QAT checkpoint deploys exactly like a PTQ one.
 

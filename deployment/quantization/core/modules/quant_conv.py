@@ -6,9 +6,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from deployment.quantization.core import backend as quant_backend
-from deployment.quantization.core.availability import require_pytorch_quantization
+from deployment.quantization.core.availability import require_quant_backend
 
-PYTORCH_QUANTIZATION_AVAILABLE = quant_backend.available()
+QUANT_BACKEND_AVAILABLE = quant_backend.available()
 from deployment.quantization.core.descriptors import (
     conv2d_weight_desc,
     conv_transpose2d_weight_desc,
@@ -16,34 +16,21 @@ from deployment.quantization.core.descriptors import (
 )
 
 
-def _check_pytorch_quantization():
+def _check_quant_backend():
     """Check that a quantization backend is available (raises ImportError if not)."""
-    require_pytorch_quantization(PYTORCH_QUANTIZATION_AVAILABLE)
+    require_quant_backend(QUANT_BACKEND_AVAILABLE)
 
 
 def _skip_fake_quant_for_export_trace() -> bool:
     """Whether to bypass TensorQuantizer during JIT trace / ONNX export.
 
-    Legacy (non--FB) fake quant can break tracing; we used to skip all quantizers whenever
-    ``torch.jit.is_tracing()`` or ``torch.onnx.is_in_onnx_export()`` was true, which
-    produced **FP32-only** ONNX (no QuantizeLinear/DequantizeLinear) even after
-    ``setup_quantization_for_onnx_export()`` sets ``TensorQuantizer.use_fb_fake_quant = True``.
-
-    When ``use_fb_fake_quant`` is True, NVIDIA's TensorQuantizer is intended to trace as
-    Q/DQ ops; in that case we must **not** skip, or dense ONNX loses all QDQ nodes.
-
-    modelopt's TensorQuantizer always traces to Q/DQ natively, so with that backend the guard
-    must never skip either.
+    modelopt's TensorQuantizer traces to Q/DQ ops natively, so the guard must never skip —
+    bypassing quantizers during tracing would produce FP32-only ONNX (no
+    QuantizeLinear/DequantizeLinear). Skipping remains only for the backend-less case, where a
+    trace with legacy fake-quant modules would break.
     """
     if quant_backend.exports_qdq_natively():
         return False
-    try:
-        TensorQuantizer = quant_backend.get_tensor_quantizer_cls_or_none()
-
-        if TensorQuantizer is not None and getattr(TensorQuantizer, "use_fb_fake_quant", False):
-            return False
-    except Exception:
-        pass
 
     if torch.jit.is_tracing():
         return True
@@ -61,7 +48,7 @@ class QuantConv2d(nn.Conv2d):
     Quantized Conv2d with per-channel weight quantization.
 
     This module extends nn.Conv2d with input and weight quantizers from
-    NVIDIA's pytorch-quantization library. During forward pass, both input
+    NVIDIA's modelopt library. During forward pass, both input
     activations and weights are quantized using fake quantization (Q/DQ nodes).
 
     Args:
@@ -77,7 +64,7 @@ class QuantConv2d(nn.Conv2d):
     default_quant_desc_weight = None
 
     def __init__(self, in_channels, out_channels, kernel_size, **kwargs):
-        _check_pytorch_quantization()
+        _check_quant_backend()
         super().__init__(in_channels, out_channels, kernel_size, **kwargs)
 
         # Set default quantization descriptors (single source: core.descriptors)
@@ -91,7 +78,7 @@ class QuantConv2d(nn.Conv2d):
 
     def init_quantizer(self, quant_desc_input=None, quant_desc_weight=None):
         """Initialize input and weight quantizers."""
-        _check_pytorch_quantization()
+        _check_quant_backend()
         TensorQuantizer = quant_backend.get_tensor_quantizer_cls()
 
         quant_desc_input = quant_desc_input or self.default_quant_desc_input
@@ -136,7 +123,7 @@ class QuantConvTranspose2d(nn.ConvTranspose2d):
     default_quant_desc_weight = None
 
     def __init__(self, in_channels, out_channels, kernel_size, **kwargs):
-        _check_pytorch_quantization()
+        _check_quant_backend()
         super().__init__(in_channels, out_channels, kernel_size, **kwargs)
 
         # Set default quantization descriptors (single source: core.descriptors)
@@ -150,7 +137,7 @@ class QuantConvTranspose2d(nn.ConvTranspose2d):
 
     def init_quantizer(self, quant_desc_input=None, quant_desc_weight=None):
         """Initialize input and weight quantizers."""
-        _check_pytorch_quantization()
+        _check_quant_backend()
         TensorQuantizer = quant_backend.get_tensor_quantizer_cls()
 
         quant_desc_input = quant_desc_input or self.default_quant_desc_input

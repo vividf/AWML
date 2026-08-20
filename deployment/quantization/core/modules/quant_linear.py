@@ -5,15 +5,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from deployment.quantization.core import backend as quant_backend
-from deployment.quantization.core.availability import require_pytorch_quantization
+from deployment.quantization.core.availability import require_quant_backend
 
-PYTORCH_QUANTIZATION_AVAILABLE = quant_backend.available()
+QUANT_BACKEND_AVAILABLE = quant_backend.available()
 from deployment.quantization.core.descriptors import default_input_desc, linear_weight_desc
 
 
-def _check_pytorch_quantization():
-    """Check if pytorch-quantization is available (raises ImportError if not)."""
-    require_pytorch_quantization(PYTORCH_QUANTIZATION_AVAILABLE)
+def _check_quant_backend():
+    """Check that the quantization backend is available (raises ImportError if not)."""
+    require_quant_backend(QUANT_BACKEND_AVAILABLE)
 
 
 class QuantLinear(nn.Linear):
@@ -21,7 +21,7 @@ class QuantLinear(nn.Linear):
     Quantized Linear module for PillarFeatureNet.
 
     This module extends nn.Linear with input and weight quantizers from
-    NVIDIA's pytorch-quantization library. Used in PFNLayer of the
+    NVIDIA's modelopt library. Used in PFNLayer of the
     pillar feature encoder.
 
     Args:
@@ -37,7 +37,7 @@ class QuantLinear(nn.Linear):
     default_quant_desc_weight = None
 
     def __init__(self, in_features, out_features, bias=True, **kwargs):
-        _check_pytorch_quantization()
+        _check_quant_backend()
         super().__init__(in_features, out_features, bias, **kwargs)
 
         # Set default quantization descriptors (single source: core.descriptors)
@@ -51,7 +51,7 @@ class QuantLinear(nn.Linear):
 
     def init_quantizer(self, quant_desc_input=None, quant_desc_weight=None):
         """Initialize input and weight quantizers."""
-        _check_pytorch_quantization()
+        _check_quant_backend()
         TensorQuantizer = quant_backend.get_tensor_quantizer_cls()
 
         quant_desc_input = quant_desc_input or self.default_quant_desc_input
@@ -64,11 +64,9 @@ class QuantLinear(nn.Linear):
         """Forward with quantized input and weights.
 
         Unlike ``QuantConv2d`` / ``QuantConvTranspose2d``, there is no
-        ``_skip_fake_quant_for_export_trace`` guard here: every shipped export path sets
-        ``use_fb_fake_quant=True`` first (``setup_quantization_for_onnx_export``), which makes the
-        conv guard a no-op anyway — and quantized Linears have exported fine without it.
-        TODO(Docker): confirm tracing a quantized Linear *without* fb fake quant either works or
-        should adopt the shared guard (spec.md §5.4 4D.3).
+        ``_skip_fake_quant_for_export_trace`` guard here: modelopt's TensorQuantizer traces to
+        Q/DQ natively, which makes the conv guard a no-op anyway — and quantized Linears have
+        exported fine without it.
         """
         if self._input_quantizer is not None and self._weight_quantizer is not None:
             quant_input = self._input_quantizer(x)

@@ -5,7 +5,7 @@ must reproduce: exactly ONE quantizer at the eSE input, fanned out to *both* ``M
 legacy ``mul_identity`` second quantizer (that path was deleted in Goal 2). The "identical numerics"
 half of R1(d) is covered by the Docker e2e mAP gate; this test covers the *structure*.
 
-Docker-only: needs torch (and, for the attach test, ``pytorch_quantization``); skipped on the
+Docker-only: needs torch (and, for the attach test, ``nvidia-modelopt``); skipped on the
 torch-less host, where only ``ast``/pyflakes run.
 """
 
@@ -77,7 +77,7 @@ def test_ese_attach_produces_single_q_no_mul_identity() -> None:
     from deployment.quantization.core import backend as _quant_backend
 
     if not _quant_backend.available():
-        pytest.skip("no quantization backend installed")
+        pytest.skip("quantization backend (nvidia-modelopt) not installed")
     from deployment.quantization.recipes.attach import attach_ese_quantizers
 
     # The recipe dispatches on the class *name* "eSEModule".

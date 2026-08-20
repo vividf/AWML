@@ -1,5 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-"""Dense Q/DQ quantization scheme (pytorch_quantization ``QuantConv2d`` path).
+"""Dense Q/DQ quantization scheme (TensorQuantizer ``QuantConv2d`` path).
 
 Model-agnostic: it operates on named submodules of the model (e.g. ``pts_backbone``,
 ``pts_neck``, ``bbox_head``). It wraps the existing shared primitives

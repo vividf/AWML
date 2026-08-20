@@ -7,9 +7,8 @@ per-channel weights, histogram activations) were written out as literals in both
 module defines them once so the ``__init__`` path and the ``ensure_quant_descriptors_initialized``
 path can never disagree.
 
-Backend-agnostic: descriptors are built through :mod:`.backend`, which translates to the active
-library's dialect (pytorch-quantization ``QuantDescriptor`` or modelopt
-``QuantizerAttributeConfig``). The ``QUANT_DESC_*`` presets exist under the same names in both.
+Descriptors are built through :mod:`.backend`, which translates the framework's historical
+vocabulary to modelopt's ``QuantizerAttributeConfig``.
 
 Leaf module: it imports only :mod:`.backend` (which imports the library lazily), so every core
 submodule can import it without a cycle.
